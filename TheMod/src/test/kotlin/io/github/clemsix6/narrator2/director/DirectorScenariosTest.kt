@@ -58,7 +58,7 @@ class DirectorScenariosTest {
         h.advance(1)
         h.awaitTurns(1)
 
-        val wake = h.userText(0)
+        val wake = h.wakeText(0)
         assertTrue(wake.startsWith("<events now=\"21:32:01\" since=\"21:32:00\">\n"), wake)
         assertContains(wake, "[-2s] CHAT Bartok (to you 0.92, hostile, provocation): \"narrateur t'es nul\"\n</events>")
         assertContains(wake, "<situation now=\"21:32:01\" day=\"37\" time=\"night\" weather=\"clear\">\n")
@@ -589,9 +589,10 @@ class DirectorScenariosTest {
     }
 
     @Test
-    fun `a chapter close asked by an operator happens at a quiet moment, without a summary`() = harness().use { h ->
+    fun `a chapter close asked by an operator happens at a quiet moment, with a summary`() = harness().use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
+        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
         h.fake.enqueue(reply { text("…") })
 
         h.chat("Bartok", "narrateur ?")
@@ -599,15 +600,19 @@ class DirectorScenariosTest {
         h.awaitTurns(1)
         h.director.post(DirectorSignal.CloseChapter(ConversationRecord.EndReason.OPERATOR))
         h.advance(19_000)
+        assertEquals(1, h.fake.requests.size)
         assertEquals(1, h.director.status().chapter)
         h.advance(1_000)
-        assertEquals(null, h.director.status().chapter)
-        assertEquals(ConversationRecord.EndReason.OPERATOR, h.traces.latestConversation(h.sessionOf(0)!!)?.endReason)
+        h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+        assertEquals(h.sessionOf(0), h.sessionOf(1), "the summary is asked in the chapter's own conversation")
+        val chapter = assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!))
+        assertEquals(ConversationRecord.EndReason.OPERATOR, chapter.endReason)
+        assertEquals("Joueurs vus : Bartok.", chapter.summary)
 
         h.chat("Bartok", "re")
         h.advance(1_500)
         h.awaitTurns(2)
-        assertNotEquals(h.sessionOf(0), h.sessionOf(1))
+        assertNotEquals(h.sessionOf(0), h.sessionOf(2))
         assertEquals(2, h.director.status().chapter)
         h.assertInvariants()
     }
@@ -618,6 +623,7 @@ class DirectorScenariosTest {
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
         h.fake.enqueue(reply { text("…") })
+        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
 
         h.chat("Bartok", "narrateur ?")
         h.advance(1_500)
@@ -631,7 +637,8 @@ class DirectorScenariosTest {
         h.awaitTurns(2)
         assertEquals(h.sessionOf(0), h.sessionOf(1))
         h.advance(20_000)
-        assertEquals(null, h.director.status().chapter)
+        h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+        assertEquals(3, h.fake.requests.size, "one summary request, no spinning")
         h.assertInvariants()
     }
 
