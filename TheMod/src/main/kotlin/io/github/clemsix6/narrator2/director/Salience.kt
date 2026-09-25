@@ -51,11 +51,22 @@ import java.util.UUID
  * other events. Private messages between players never enter this subscription, and never reach the
  * Director. Each chat verdict and each event classified [Urgency.SOON] or [Urgency.IMMEDIATE] is a
  * `salience` decision.
+ *
+ * Each wake-up costs a turn of the Director's model (M2 review, findings 14 and 26):
+ * - a player wakes the Director at once [IMMEDIATE_PER_PLAYER] times per [IMMEDIATE_WINDOW_MS] at most,
+ *   addressed chat and prayers together; beyond, their message waits like a salient event
+ *   ([Urgency.SOON]) and its decision is `salience throttled`;
+ * - while the [budget] of turns per hour is spent, a salient event is still posted as [Urgency.SOON],
+ *   but it waits for a turn to leave the hour ([WakeScheduler.wakeAt]): its decision is
+ *   `salience throttled` instead of `salience soon`.
+ *
+ * @param budget the Director's budget of turns; none in the tests that do not look at it.
  */
 class Salience(
     private val services: NarratorServices,
     private val digest: ActivityDigest,
     private val post: (DirectorSignal) -> Unit,
+    private val budget: TurnBudget? = null,
 ) {
     private val log = Log.director
     private val decisions = Decisions(services.trace, services.clock)
@@ -66,6 +77,9 @@ class Salience(
     private val narratorTo = HashMap<UUID, Spoken>()
     private val names = HashMap<UUID, String>()
     private val griefs = HashMap<Pair<UUID, UUID>, Grief>() // guarded by itself
+
+    /** The immediate wake-ups granted to each player, by message time; the triages' coroutines share it. */
+    private val immediate = HashMap<UUID, ArrayDeque<Long>>() // guarded by itself
 
     /** Where an event goes. */
     sealed interface Route {
@@ -110,7 +124,7 @@ class Salience(
         when (val route = route(event)) {
             is Route.Forward -> {
                 post(DirectorSignal.Event(envelope, route.urgency, null))
-                if (route.urgency != Urgency.NEXT) record(route.urgency, event.player?.name, route.reason, envelope.id)
+                if (route.urgency == Urgency.SOON) salient(event.player?.name, route.reason, envelope.id)
             }
             Route.Triage -> triage(scope, envelope, event as ChatMessage)
             Route.Grief -> grief(scope, envelope, event as BlockBroken)
@@ -134,13 +148,22 @@ class Salience(
                 log.error("salience: chat event ${envelope.id} could not be triaged", e)
                 null
             }
-            val urgency = chatUrgency(message.channel, triage)
+            val wanted = chatUrgency(message.channel, triage)
             val kind = when {
                 message.channel == ChatChannel.PRAY -> "prayer"
-                urgency == Urgency.IMMEDIATE -> "addressed"
+                wanted == Urgency.IMMEDIATE -> "addressed"
                 else -> "between players"
             }
-            record(urgency, message.player.name, "$kind: ${triage?.reason ?: "triage failed"}", envelope.id)
+            val reason = "$kind: ${triage?.reason ?: "triage failed"}"
+            val player = message.player
+            val urgency = if (wanted == Urgency.IMMEDIATE && !grantImmediate(player.uuid, envelope.ts)) {
+                val spent = "${player.name} already woke the Narrator $IMMEDIATE_PER_PLAYER times within ${IMMEDIATE_WINDOW_MS / 60_000} minutes"
+                throttled(player.name, "$reason; $spent: it waits like a salient event", envelope.id)
+                Urgency.SOON
+            } else {
+                record(wanted, player.name, reason, envelope.id)
+                wanted
+            }
             post(DirectorSignal.Event(envelope, urgency, annotation(message.channel, triage)))
         }
     }
@@ -162,7 +185,7 @@ class Salience(
             delay(GRIEF_WINDOW_MS)
             val window = synchronized(griefs) { griefs.remove(key) } ?: return@launch
             val annotation = window.describe()
-            record(Urgency.SOON, event.player.name, "grief: $annotation", envelope.id)
+            salient(event.player.name, "grief: $annotation", envelope.id)
             post(DirectorSignal.Event(window.first, Urgency.SOON, annotation))
         }
     }
@@ -179,6 +202,32 @@ class Salience(
             .maxByOrNull { it.at }
             ?.takeIf { at - it.at <= JevQuestions.NARRATOR_LAST_MAX_AGE_SECONDS * 1_000L }
             ?.text
+
+    /**
+     * Whether [player] may wake the Director at once for a message sent at [at] (M2 review, finding 14):
+     * fewer than [IMMEDIATE_PER_PLAYER] immediate wake-ups granted within the [IMMEDIATE_WINDOW_MS]
+     * before. A granted wake-up is counted.
+     */
+    private fun grantImmediate(player: UUID, at: Long): Boolean = synchronized(immediate) {
+        val granted = immediate.getOrPut(player) { ArrayDeque() }
+        granted.removeAll { it <= at - IMMEDIATE_WINDOW_MS }
+        if (granted.size >= IMMEDIATE_PER_PLAYER) return false
+        granted.addLast(at)
+        true
+    }
+
+    /** The decision of an event classified [Urgency.SOON]: `throttled` while the budget of turns is spent. */
+    private fun salient(subject: String?, reason: String, eventId: Long) {
+        if (budgetSpent()) throttled(subject, reason, eventId) else record(Urgency.SOON, subject, reason, eventId)
+    }
+
+    /** A `salience throttled` decision; it says whether the budget of turns is spent too. */
+    private fun throttled(subject: String?, reason: String, eventId: Long) {
+        val spent = if (budgetSpent()) "; ${budget?.describe()}: it waits for a turn to leave the hour" else ""
+        decisions.record(log, DecisionRecord.Kind.SALIENCE, "throttled", subject = subject, reason = reason + spent, eventId = eventId)
+    }
+
+    private fun budgetSpent(): Boolean = budget?.spent(services.clock.millis()) == true
 
     private fun record(urgency: Urgency, subject: String?, reason: String, eventId: Long) {
         decisions.record(
@@ -219,6 +268,12 @@ class Salience(
 
         /** Breaks of another player's blocks are counted over this window, then told once. */
         const val GRIEF_WINDOW_MS = 10_000L
+
+        /** Immediate wake-ups of one player per [IMMEDIATE_WINDOW_MS], addressed chat and prayers together. */
+        const val IMMEDIATE_PER_PLAYER = 6
+
+        /** The window of [IMMEDIATE_PER_PLAYER], sliding: 10 minutes. */
+        const val IMMEDIATE_WINDOW_MS = 10 * 60_000L
 
         /** Advancements that wake the Director whatever their frame: the milestones of a world. */
         val NOTABLE_ADVANCEMENTS: Set<String> = setOf(

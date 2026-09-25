@@ -171,6 +171,8 @@ data class DirectorConfig(
     val emptyServerCloseMinutes: Int = 10,
     /** Shows "the Narrator is thinking" to the players waiting for an answer. */
     val thinkingIndicator: Boolean = true,
+    /** Turns per hour beyond which only addressed chat and prayers wake the Director: the cost's ceiling. */
+    val turnsPerHour: Int = 30,
 ) {
     /** [heartbeatMinutes] as a range; valid once the configuration is validated. */
     val heartbeatRange: IntRange get() = heartbeatMinutes[0]..heartbeatMinutes[1]
@@ -387,6 +389,7 @@ object ConfigStore {
             add("director.operatorChannel must be one of ${OperatorChannelMode.entries.joinToString { it.id }}")
         }
         range("director.emptyServerCloseMinutes", director.emptyServerCloseMinutes.toLong(), 1, 120)
+        range("director.turnsPerHour", director.turnsPerHour.toLong(), 1, 600)
 
         val workers = config.workers
         range("workers.maxConcurrent", workers.maxConcurrent.toLong(), 1, 8)

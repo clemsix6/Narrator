@@ -230,6 +230,55 @@ class SalienceTest {
     }
 
     @Test
+    fun `a player wakes the Director at once 6 times per 10 minutes, then waits like a salient event`() = runTest {
+        reflexes.chat = { FakeReflexes.verdict(0.92, Tone.HOSTILE, ChatIntent.PROVOCATION) }
+        fun say(player: io.github.clemsix6.narrator2.event.PlayerRef, channel: ChatChannel): Urgency {
+            salience.handle(this, envelope(ChatMessage(player, channel, "narrateur !", emptyList())))
+            testScheduler.advanceUntilIdle()
+            return (posted.last() as DirectorSignal.Event).urgency
+        }
+        // Four addressed messages and two prayers, one every 30 s: the budget is shared.
+        val first = listOf(ChatChannel.PUBLIC, ChatChannel.PUBLIC, ChatChannel.PRAY, ChatChannel.PUBLIC, ChatChannel.PRAY, ChatChannel.PUBLIC).map { channel ->
+            say(steve, channel).also { clock.advance(java.time.Duration.ofSeconds(30)) }
+        }
+        assertEquals(List(6) { Urgency.IMMEDIATE }, first)
+
+        assertEquals(Urgency.SOON, say(steve, ChatChannel.PRAY), "the 7th within 10 minutes waits")
+        val throttled = services.traces.decisions.last()
+        assertEquals(listOf("throttled", "Steve"), listOf(throttled.decision, throttled.subject))
+        assertTrue(throttled.reason!!.startsWith("prayer: fake 0.92"), throttled.reason)
+        assertTrue(throttled.reason!!.endsWith("; Steve already woke the Narrator 6 times within 10 minutes: it waits like a salient event"), throttled.reason)
+        assertEquals(Urgency.SOON, say(steve, ChatChannel.PUBLIC))
+        assertEquals(Urgency.IMMEDIATE, say(alex, ChatChannel.PUBLIC), "another player has their own budget")
+
+        clock.advance(java.time.Duration.ofSeconds(420)) // 10 minutes after the first message
+        assertEquals(Urgency.IMMEDIATE, say(steve, ChatChannel.PUBLIC), "the first wake-up left the window")
+        assertEquals(Urgency.SOON, say(steve, ChatChannel.PUBLIC), "the second has not yet")
+    }
+
+    @Test
+    fun `while the budget of turns is spent, salient events are throttled, and a player's throttled message says so`() = runTest {
+        val budget = TurnBudget { 1 }
+        val salience = Salience(services, ActivityDigest(clock), posted::add, budget)
+        salience.handle(this, envelope(PlayerDied(steve, here, "minecraft:fall", null, null, null, 3, false, false)))
+        assertEquals("soon", services.traces.decisions.last().decision, "budget left")
+
+        budget.started(clock.millis())
+        val death = envelope(PlayerDied(alex, here, "minecraft:lava", null, null, null, 3, false, false))
+        salience.handle(this, death)
+        assertEquals(Urgency.SOON, (posted.last() as DirectorSignal.Event).urgency, "still posted: it waits for a turn")
+        val decision = services.traces.decisions.last()
+        assertEquals(listOf("throttled", "Alex", death.id), listOf(decision.decision, decision.subject, decision.eventId))
+        assertEquals("death; the budget of 1 turn per hour is spent: it waits for a turn to leave the hour", decision.reason)
+
+        reflexes.chat = { FakeReflexes.verdict(0.92) }
+        salience.handle(this, envelope(ChatMessage(alex, ChatChannel.PUBLIC, "narrateur ?", emptyList())))
+        testScheduler.advanceUntilIdle()
+        assertEquals(Urgency.IMMEDIATE, (posted.last() as DirectorSignal.Event).urgency, "addressed chat still wakes the Director")
+        assertEquals("immediate", services.traces.decisions.last().decision)
+    }
+
+    @Test
     fun `every event feeds the digest, salient or not`() = runTest {
         val digest = ActivityDigest(clock)
         val salience = Salience(services, digest, posted::add)

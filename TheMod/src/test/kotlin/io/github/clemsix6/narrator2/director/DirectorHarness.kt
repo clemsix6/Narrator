@@ -80,6 +80,7 @@ class DirectorHarness(
     dir: Path,
     mode: OperatorChannelMode = OperatorChannelMode.SYSTEM_MESSAGE,
     heartbeatMinutes: List<Int> = listOf(3, 3),
+    turnsPerHour: Int = NarratorConfig().director.turnsPerHour,
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -111,7 +112,7 @@ class DirectorHarness(
     init {
         val defaults = testConfig(fake.baseUrl)
         val config: NarratorConfig = defaults.copy(
-            director = defaults.director.copy(heartbeatMinutes = heartbeatMinutes, operatorChannel = mode.id),
+            director = defaults.director.copy(heartbeatMinutes = heartbeatMinutes, operatorChannel = mode.id, turnsPerHour = turnsPerHour),
         )
         client = ClaudeClient(config, TEST_API_KEY)
         base = TestServices(

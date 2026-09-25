@@ -7,16 +7,19 @@ import io.github.clemsix6.narrator2.event.GameEvent
 import io.github.clemsix6.narrator2.event.PlayerDied
 import io.github.clemsix6.narrator2.event.Teleported
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.reflex.HeartbeatVerdict
+import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
 import io.github.clemsix6.narrator2.testing.SampleEvents.here
 import io.github.clemsix6.narrator2.testing.SampleEvents.steve
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import org.junit.jupiter.api.Test
 import kotlin.random.Random
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Grouping and heartbeats, in plain milliseconds. */
+/** Grouping, the budget of turns and heartbeats, in plain milliseconds. */
 class WakeSchedulerTest {
     private val debounce = 1_500L
     private var ids = 1L
@@ -64,12 +67,61 @@ class WakeSchedulerTest {
     }
 
     @Test
-    fun `chat between players waits for company, 45 s at most`() {
-        assertEquals(45_000, wakeAt(between(0)))
-        assertEquals(45_000, wakeAt(between(0), between(1_000), between(2_000)))
-        assertEquals(6_000, wakeAt(between(0), between(1_000), between(2_000), between(3_000)), "the 4th message counts as salient")
-        assertEquals(12_000, wakeAt(between(0), between(1_000), between(2_000), between(3_000), between(5_000), between(9_000)))
-        assertEquals(13_000, wakeAt(between(0), between(1_000), between(2_000), between(3_000), between(6_000), between(11_000)))
+    fun `chat between players never wakes the Director, however much of it waits`() {
+        assertNull(wakeAt(between(0)))
+        assertNull(wakeAt(*(0 until 50).map { between(it * 1_000L) }.toTypedArray()), "it waits for the next heartbeat")
+        assertEquals(3_000, wakeAt(between(0), death(0)), "it goes with the next wake-up")
+    }
+
+    @Test
+    fun `once the budget of turns is spent, only addressed chat, prayers and whispers wake the Director`() {
+        assertNull(WakeScheduler.wakeAt(listOf(death(0)), debounce, throttled = true))
+        assertNull(WakeScheduler.wakeAt(listOf(Item.of(DirectorSignal.TaskDone(1, Role.ANALYST, TaskRecord.Status.DONE, "done", 0))), debounce, throttled = true))
+        assertEquals(1_500, WakeScheduler.wakeAt(listOf(death(0), addressed(0)), debounce, throttled = true))
+        assertEquals(1_500, WakeScheduler.wakeAt(listOf(Item.of(DirectorSignal.OperatorWhisper("Clement", "Be nice.", 0))), debounce, throttled = true))
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(death(0)), debounce, throttled = false))
+    }
+
+    @Test
+    fun `the budget counts the turns started within the last hour`() {
+        var perHour = 3
+        val budget = TurnBudget { perHour }
+        budget.started(0)
+        budget.started(1_000)
+        assertFalse(budget.spent(2_000))
+        budget.started(2_000)
+        assertTrue(budget.spent(2_000))
+        assertEquals("the budget of 3 turns per hour is spent", budget.describe())
+        assertTrue(budget.spent(3_599_999), "the first turn is still within the hour")
+        assertFalse(budget.spent(3_600_000), "the first turn left the hour")
+        assertEquals(2, budget.used(3_600_000))
+        perHour = 2
+        assertTrue(budget.spent(3_600_000), "the setting is read each time")
+    }
+
+    @Test
+    fun `without a classifier a heartbeat is worth the salient items waiting, not the activity`() {
+        val heuristic = HeartbeatVerdict(1.0, null, HeuristicReflexes.SOURCE, 0)
+        assertEquals(WakeScheduler.HeartbeatWorth(0.0, "worth 0.00 by 0 salient items waiting"), WakeScheduler.heartbeatWorth(heuristic, emptyList()))
+        assertEquals(0.25, WakeScheduler.heartbeatWorth(heuristic, listOf(teleport(0))).value)
+        assertEquals(
+            WakeScheduler.HeartbeatWorth(0.5, "worth 0.50 by 2 salient items waiting"),
+            WakeScheduler.heartbeatWorth(heuristic, listOf(teleport(0), teleport(1_000))),
+        )
+        assertEquals(0.375, WakeScheduler.heartbeatWorth(heuristic, listOf(between(0), between(1), between(2))).value, "3 chat lines between players")
+        assertEquals(0.5, WakeScheduler.heartbeatWorth(heuristic, listOf(between(0), between(1), between(2), between(3))).value, "4 of them wake it")
+        assertEquals(1.0, WakeScheduler.heartbeatWorth(null, listOf(death(0), teleport(0))).value, "capped at 1; no verdict: what waits alone")
+        assertEquals(0.0, WakeScheduler.heartbeatWorth(heuristic, listOf(teleport(0).copy(failures = Item.DEMOTED))).value, "demoted items count for nothing")
+    }
+
+    @Test
+    fun `a classifier's verdict counts, never below what waits`() {
+        val jev = HeartbeatVerdict(0.31, "comedy", "jev-1.13.0", 40)
+        assertEquals(WakeScheduler.HeartbeatWorth(0.31, "worth 0.31 by jev-1.13.0"), WakeScheduler.heartbeatWorth(jev, listOf(teleport(0))))
+        assertEquals(
+            WakeScheduler.HeartbeatWorth(0.5, "worth 0.50 by 2 salient items waiting (jev-1.13.0 said 0.31)"),
+            WakeScheduler.heartbeatWorth(jev, listOf(teleport(0), teleport(1))),
+        )
     }
 
     @Test
