@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos
 import net.minecraft.core.SectionPos
 import net.minecraft.world.RandomizableContainer
 import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.block.entity.BaseContainerBlockEntity
 import net.minecraft.world.level.block.entity.BlockEntity
@@ -150,7 +151,7 @@ object AreaScan {
     fun entities(reader: WorldReader, center: Vec3, radius: Double, except: Entity?): List<EntityGroup> {
         val box = AABB.ofSize(center, radius * 2, radius * 2, radius * 2)
         val found = reader.level.getEntities(except, box) { it.isAlive && it.position().distanceToSqr(center) <= radius * radius }
-        return found.filter { it is net.minecraft.world.entity.LivingEntity }
+        return found.filter { it is LivingEntity }
             .groupBy { it.typeId }
             .map { (type, list) ->
                 val sorted = list.sortedBy { it.position().distanceToSqr(center) }
