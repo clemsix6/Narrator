@@ -52,32 +52,27 @@ import java.util.concurrent.atomic.AtomicReference
 class CommandGameTests {
 
     /**
-     * Without an LLMGW key, the Director is disabled: pause, resume and whispers are refused, and nothing
+     * In this batch the Director is disabled: no LLMGW key, or `director.enabled` false once
+     * `NarratorGameTests` has reloaded its fake gateway's key (the active Director runs in
+     * `DirectorEndToEndTests`, in a batch of its own). Pause, resume and whispers are refused, and nothing
      * is posted to it (a pause would outlast the missing key, a resume would wake it the moment a key
-     * arrives). Only game masters reach `/narrator`. With a key in force (`NarratorGameTests` reloads one
-     * for its own fake gateway), this test does nothing: a resume would wake the Director against that
-     * gateway. The posting itself is covered by `DirectorCommandsTest`.
+     * arrives). Only game masters reach `/narrator`. The posting itself is covered by `DirectorCommandsTest`.
      */
     @GameTest
     fun pauseResumeAndWhisperNeedADirectorThatCanHear(helper: GameTestHelper) {
         val runtime = helper.narrator()
-        if (runtime.director.status().state != DirectorState.DISABLED) {
-            helper.succeed()
-            return
-        }
+        helper.assertValueEqual(DirectorState.DISABLED, runtime.director.status().state, "the Director of the default batch")
         CommandPlayer(helper).use { operator ->
             operator.run("narrator pause", op = true)
             operator.run("narrator resume", op = true)
             operator.run("narrator whisper Be nicer to Bartok.", op = true)
-            helper.assertEquals(
-                listOf(
-                    "[Narrator] the Director is disabled (no LLMGW key): nothing to pause.",
-                    "[Narrator] the Director is disabled (no LLMGW key): nothing to resume.",
-                    "[Narrator] the Director is disabled (no LLMGW key): nobody would read this instruction.",
-                ),
-                operator.output.lines.toList(),
-                "replies",
-            )
+            val replies = operator.output.lines.toList()
+            val tails = listOf(": nothing to pause.", ": nothing to resume.", ": nobody would read this instruction.")
+            helper.assertValueEqual(3, replies.size, "replies: $replies")
+            replies.zip(tails).forEach { (reply, tail) ->
+                // The reason is "no LLMGW key", or "director.enabled is false" once the reload test has run.
+                helper.assertTrue(reply.startsWith("[Narrator] the Director is disabled (") && reply.endsWith(tail), "reply: $reply")
+            }
             operator.output.lines.clear()
             operator.run("narrator chaos", op = true)
             helper.assertEquals("[Narrator] chaos ${runtime.settings.get().config.chaos} of 5", operator.output.lines.firstOrNull(), "chaos")

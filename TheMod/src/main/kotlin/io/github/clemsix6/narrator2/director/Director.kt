@@ -230,6 +230,8 @@ class Director(
         disabledReason()?.let { reason ->
             val dropped = inbox.discard { true }
             if (dropped.isNotEmpty()) log.debug { "${dropped.size} signals dropped: the Director is disabled ($reason)" }
+            // A resume that reached a disabled Director has nothing to resume: a key that arrives later must not wake it for nothing.
+            resumeWake = false
             publish(DirectorState.DISABLED, null, reason)
             inbox.await(null)
             return

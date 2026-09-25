@@ -60,6 +60,14 @@ class SchemaDocTest {
         ).forEach { view -> assertTrue("\n$view(id, ts, " in doc, "$view starts with id, ts") }
     }
 
+    /** M2 review, finding 15: the Narrator's lines are told by `speaker`, never by a player name a player could take. */
+    @Test
+    fun `it tells the Narrator's lines by their speaker`() {
+        assertTrue("\nchat_log(id, ts, channel, speaker, player, recipients[], text) — " in doc, doc)
+        assertTrue("speaker narrator or operator, player NULL" in doc)
+        assertFalse("NARRATOR" in doc)
+    }
+
     @Test
     fun `it never mentions a hidden table`() {
         Journal.HIDDEN_FROM_MODEL.forEach { table -> assertFalse(table in doc.lowercase(), table) }

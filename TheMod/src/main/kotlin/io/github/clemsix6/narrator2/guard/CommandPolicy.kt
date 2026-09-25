@@ -11,8 +11,8 @@ import java.util.IdentityHashMap
  * source that will run it); then every command it would run is checked, behind `execute … run` and
  * `return run` too:
  * 1. against the forbidden roots: the built-in list [FORBIDDEN], written here, plus [extra]
- *    (`safety.extraForbiddenCommands`), which can only add roots. A few `execute` subcommands are
- *    forbidden as well ([FORBIDDEN_EXECUTE]);
+ *    (`safety.extraForbiddenCommands`), which can only add roots. A few branches of other commands are
+ *    forbidden as well ([FORBIDDEN_BRANCHES]: `execute store`, `random roll`…);
  * 2. against the reviewed ones: only the commands of [ALLOWED], plus [extraAllowed]
  *    (`safety.extraAllowedCommands`), may run. A command nobody reviewed for the Narrator (another mod's,
  *    or one a new version adds) is refused by default: the owner's server runs mods whose commands were
@@ -158,31 +158,36 @@ class CommandPolicy(
             // Speech and displays outside the speech tools; `tellraw` and `dialog` can also make a click
             // run a command. Boss bars come with challenges (M4).
             forbid(Reason.SPEECH, "say", "tellraw", "tell", "msg", "w", "me", "teammsg", "tm", "title", "dialog", "bossbar", "pray")
-            // What a tool with its own limits already does.
+            // What a tool with its own limits already does. Particles and sounds would go without the
+            // tools' caps: `particle … 2000000000 … force` brings down every client in sight.
             forbid(Reason.TOOL, "weather", instead = "use the set_weather tool")
             forbid(Reason.TOOL, "time", instead = "use the set_time tool")
             forbid(Reason.TOOL, "locate", instead = "use the locate tool")
+            forbid(Reason.TOOL, "particle", instead = "use the particles tool")
+            forbid(Reason.TOOL, "playsound", instead = "use the play_sound tool")
         }
 
         /**
          * The commands reviewed for the Narrator and allowed: `run_command`'s last resort for what the
-         * typed tools do not cover (scores, sounds, particles, waypoints, `execute if …` probes), and
+         * typed tools do not cover (scores, waypoints, `execute if …` probes, `random value`), and
          * harmless reads. Every other command of the server is forbidden or refused as unreviewed.
          */
         val ALLOWED: Set<String> = setOf(
-            "execute", "return", "scoreboard", "trigger", "playsound", "stopsound", "particle", "waypoint",
+            "execute", "return", "scoreboard", "trigger", "stopsound", "waypoint",
             "random", "compute", "stopwatch", "swing", "help", "list", "version",
         )
 
-        /** Forbidden subcommands of `execute`, by path under it. */
-        val FORBIDDEN_EXECUTE: Map<List<String>, Forbidden> = mapOf(
+        /** Forbidden branches of other commands, by their path from the root (`execute store`). */
+        val FORBIDDEN_BRANCHES: Map<List<String>, Forbidden> = mapOf(
             // Writes a command's result into blocks, entities, storage, scores or boss bars.
-            listOf("store") to Forbidden(Reason.BLOCKS, "run the command without store"),
+            listOf("execute", "store") to Forbidden(Reason.BLOCKS, "run the command without store"),
             // Summons a creature, outside the spawn tool's rules.
-            listOf("summon") to Forbidden(Reason.ENTITIES, "use the spawn tool"),
+            listOf("execute", "summon") to Forbidden(Reason.ENTITIES, "use the spawn tool"),
             // Runs a function.
-            listOf("if", "function") to Forbidden(Reason.CODE),
-            listOf("unless", "function") to Forbidden(Reason.CODE),
+            listOf("execute", "if", "function") to Forbidden(Reason.CODE),
+            listOf("execute", "unless", "function") to Forbidden(Reason.CODE),
+            // Tells every player the roll, outside the speech tools; `random value` answers the source alone.
+            listOf("random", "roll") to Forbidden(Reason.SPEECH, "use random value (its result reaches you alone)"),
         )
 
         private val EXTRA = Forbidden(Reason.ADMIN)
@@ -197,10 +202,9 @@ class CommandPolicy(
         private fun <S> owners(root: CommandNode<S>, extras: Set<String>): Map<CommandNode<S>, String> {
             val owners = IdentityHashMap<CommandNode<S>, String>()
             for (name in FORBIDDEN.keys + extras) root.getChild(name)?.let { collect(it, name, owners) }
-            val execute = root.getChild("execute")
-            for (path in FORBIDDEN_EXECUTE.keys) {
-                val node = path.fold(execute) { node, child -> node?.getChild(child) } ?: continue
-                collect(node, (listOf("execute") + path).joinToString(" "), owners)
+            for (path in FORBIDDEN_BRANCHES.keys) {
+                val node = path.fold<String, CommandNode<S>?>(root) { node, child -> node?.getChild(child) } ?: continue
+                collect(node, path.joinToString(" "), owners)
             }
             return owners
         }
@@ -219,8 +223,7 @@ class CommandPolicy(
         }
 
         private fun message(owner: String, extras: Set<String>): String {
-            val path = owner.split(' ')
-            val forbidden = if (path.size > 1) FORBIDDEN_EXECUTE.getValue(path.drop(1)) else FORBIDDEN[owner] ?: EXTRA
+            val forbidden = FORBIDDEN_BRANCHES[owner.split(' ')] ?: FORBIDDEN[owner] ?: EXTRA
             val why = if (owner !in FORBIDDEN && owner in extras) "the operators forbid it (safety.extraForbiddenCommands)" else forbidden.reason.text
             return "`$owner` is forbidden: $why" + (forbidden.instead?.let { "; $it instead." } ?: ".")
         }

@@ -431,9 +431,10 @@ object ObserverHooks {
     }
 
     /**
-     * A command typed by a player, valid or not (an attempt is a fact). Its text is withheld for the
-     * roots of `observer.redactedCommands` (passwords) and for private messages, whose text only goes
-     * to a [ChatChannel.WHISPER] message, never shown to the model.
+     * A command typed by a player, valid or not (an attempt is a fact). Its text is kept only for the
+     * vanilla commands that carry no private message, anywhere in the line ([CommandPrivacy]); the
+     * text of a vanilla private message only goes to a [ChatChannel.WHISPER] message, never shown to
+     * the model.
      */
     @JvmStatic
     fun onCommand(player: ServerPlayer, command: String) = on("command") { parts ->
@@ -441,11 +442,11 @@ object ObserverHooks {
         val line = command.trim().removePrefix("/")
         val root = line.substringBefore(' ').lowercase()
         if (root.isEmpty()) return@on
-        val bare = root.substringAfter(':')
-        val privateMessage = bare in CommandIssued.PRIVATE_MESSAGE_COMMANDS
-        val hidden = privateMessage || bare in parts.state.config.redactedCommands
-        parts.state.publish(CommandIssued(player.ref(), player.pos(), root, if (hidden) null else line))
-        if (privateMessage) whisper(player, line)?.let { parts.state.publish(it) }
+        val config = parts.state.config
+        val withheld = (config.privateMessageCommands + config.redactedCommands).mapTo(HashSet(), CommandPrivacy::bare)
+        val text = CommandPrivacy.text(line, withheld) { player.level().server.commands.dispatcher.parse(line, player.createCommandSourceStack()) }
+        parts.state.publish(CommandIssued(player.ref(), player.pos(), root, text))
+        if (CommandPrivacy.bare(root) in CommandIssued.PRIVATE_MESSAGE_COMMANDS) whisper(player, line)?.let { parts.state.publish(it) }
     }
 
     /**

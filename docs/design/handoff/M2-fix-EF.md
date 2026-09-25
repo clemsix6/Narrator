@@ -67,6 +67,7 @@ Ajouts, sauf mention. **Pour la fusion avec le lot I**, qui possède `Director.k
 | `command/TraceCommands.kt` | `whyPlayer` lit aussi la dernière mort ; `TraceText.death` ; un cas `throttled` dans `waiting` |
 | `guard/GuardsImpl.kt` | hors de `onDeath` : `explain` (appelée par `onDeath`), trois constantes, et le niveau de `guard allowed` dans `hostile` (décision du constat 18) |
 | tests | `DirectorHarness` (paramètre `turnsPerHour`), `DirectorScenariosTest` (le test du moment calme reposait sur la règle des 45 s : il utilise maintenant une mort, même propriété), `ConfigValidationTest` ; `fabric.mod.json` du mod de test (une ligne) |
+| `gametest/DirectorEndToEndTests.kt` (T22) | `calls >= 3` devient `calls >= 2` à l'étape `status` : le tour du salut fait 2 appels, le 3ᵉ venait d'un événement hérité des lots précédents. **L'ordre des lots de GameTests est aléatoire** (regroupement par environnement dans une table de hachage) : quand le lot `director` passe en premier, il n'y a que 2 appels et le test échouait, avec ou sans ce lot. Vu 2 fois sur 5 lancements |
 
 Nouveaux fichiers : `guard/DeathReport.kt`, tests `director/WakeBudgetScenariosTest.kt`, `director/ShowOnServerTest.kt`, `guard/DeathReportTest.kt`, GameTests `DeathTraceGameTests.kt`.
 
@@ -88,7 +89,7 @@ Nouveaux fichiers : `guard/DeathReport.kt`, tests `director/WakeBudgetScenariosT
 
 ## Vérifications
 
-- `gradlew build` (tests unitaires et GameTests) après fusion de `main` : voir le rapport final.
+- `gradlew build` après fusion de `main` (lot CD et T22 compris) : tests unitaires et **145 GameTests** verts ; `runGameTest` relancé 3 fois de plus, dont une fois avec le lot `director` en premier : vert.
 - Tests ajoutés, tous en temps virtuel pour le Directeur :
   - `WakeSchedulerTest` : chat entre joueurs jamais réveillant, budget (seuls les immédiats réveillent), `TurnBudget` sur l'heure glissante et relu à chaque fois, valeur du battement avec l'heuristique et avec Jev ;
   - `SalienceTest` : 6 réveils immédiats par joueur sur 10 min, prières et chat ensemble, autre joueur indépendant, fenêtre glissante ; décision `throttled` d'un événement saillant sous budget épuisé ;
