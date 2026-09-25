@@ -81,6 +81,18 @@ loom {
     }
 }
 
+// The dev server gets the LLMGW key from ../.secrets/llmgw.key unless NARRATOR_LLMGW_KEY is already set.
+// It is read when the task runs and passed through the environment only: never on a command line, in a
+// generated run configuration or in a log.
+tasks.matching { it.name == "runServer" }.configureEach {
+    val keyFile = layout.projectDirectory.file("../.secrets/llmgw.key").asFile
+    doFirst {
+        if (System.getenv("NARRATOR_LLMGW_KEY").isNullOrBlank() && keyFile.isFile) {
+            (this as JavaExec).environment("NARRATOR_LLMGW_KEY", keyFile.readText().trim())
+        }
+    }
+}
+
 // In-game tests (Fabric GameTest). `src/gametest` is a separate test mod; `runGameTest` runs it on a
 // headless GameTest server in build/run/gameTest, and `check` depends on it.
 // Must come after the "server" run above: the gameTest run inherits its JVM arguments and TEMP.
