@@ -68,6 +68,9 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - **Aucun appel réel à Claude ni à Jev dans les tests automatisés** : ils utilisent le faux serveur Anthropic des tests.
 - Une tâche n'est finie que si le build et les tests passent. Le rapport indique ce qui a été vérifié et comment.
 
+## EULA de Minecraft
+**Ne jamais créer ni modifier un `eula.txt` avec `eula=true`**, où que ce soit : `TheServer/`, spikes, dossiers temporaires. Accepter l'EULA revient au propriétaire seul, et il ne l'a pas encore fait. Pour tester en jeu, utilise les GameTests (`runGameTest`), qui n'ont pas besoin de l'EULA. Si un vrai serveur dédié est indispensable, arrête-toi et demande-le dans ton rapport.
+
 ## Git
 - Dépôt local sur la branche `main`, sans remote : **ne jamais pousser**.
 - Commite chaque étape validée, avec un message court en anglais à l'impératif et le trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
