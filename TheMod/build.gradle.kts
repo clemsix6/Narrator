@@ -83,16 +83,30 @@ loom {
     }
 }
 
-// The dev server gets the LLMGW key from ../.secrets/llmgw.key unless NARRATOR_LLMGW_KEY is already set.
-// It is read when the task runs and passed through the environment only: never on a command line, in a
+// The LLMGW key file, `.secrets/llmgw.key` at the root of the checkout. A git worktree has no `.secrets/`
+// (it is not versioned): its key is the main checkout's, found through `git rev-parse --git-common-dir`.
+// Only the file's path is handled here; the key itself is read when a task runs.
+val llmgwKeyFile: File by lazy {
+    val local = layout.projectDirectory.file("../.secrets/llmgw.key").asFile
+    if (local.isFile) return@lazy local
+    val commonDir = runCatching {
+        providers.exec {
+            workingDir = layout.projectDirectory.asFile
+            commandLine("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+            isIgnoreExitValue = true
+        }.standardOutput.asText.get().trim()
+    }.getOrDefault("")
+    commonDir.takeIf { it.isNotEmpty() }?.let { File(it).parentFile.resolve(".secrets/llmgw.key") }?.takeIf { it.isFile } ?: local
+}
+
+// The LLMGW key: NARRATOR_LLMGW_KEY when Gradle has it, else llmgwKeyFile. The server runs (runServer,
+// runLiveGameTest) get it when they start, through the environment only: never on a command line, in a
 // generated run configuration or in a log.
+fun llmgwKey(): String? = System.getenv("NARRATOR_LLMGW_KEY")?.trim()?.ifEmpty { null }
+    ?: llmgwKeyFile.takeIf { it.isFile }?.readText()?.trim()?.ifEmpty { null }
+
 tasks.matching { it.name == "runServer" }.configureEach {
-    val keyFile = layout.projectDirectory.file("../.secrets/llmgw.key").asFile
-    doFirst {
-        if (System.getenv("NARRATOR_LLMGW_KEY").isNullOrBlank() && keyFile.isFile) {
-            (this as JavaExec).environment("NARRATOR_LLMGW_KEY", keyFile.readText().trim())
-        }
-    }
+    doFirst { llmgwKey()?.let { (this as JavaExec).environment("NARRATOR_LLMGW_KEY", it) } }
 }
 
 // In-game tests (Fabric GameTest). `src/gametest` is a separate test mod; `runGameTest` runs it on a
@@ -127,6 +141,33 @@ val cleanGameTestRun = tasks.register<Delete>("cleanGameTestRun") {
 }
 tasks.matching { it.name == "runGameTest" }.configureEach { dependsOn(cleanGameTestRun) }
 
+// The M2 acceptance against the owner's real LLMGW server (T22): a GameTest server that runs only the
+// in-game live tests (`LiveDirectorGameTests`, filtered by id), with the real key and the SSH tunnel on
+// localhost:8088. Never part of `build` or `check`; costs real tokens. `-Pnarrator2.live.dry` runs the
+// same scenario without a key (the Director stays asleep), to check the scenario itself for free.
+loom.runs.register("liveGameTest") {
+    inherit(loom.runs.getByName("gameTest"))
+    // No IDE run configuration: it would write the run's environment, hence the key, into a file.
+    generateRunConfig = false
+    runDirectory = layout.buildDirectory.dir("run/liveGameTest")
+    // Replaces the inherited empty key. Loom applies a run's variables when its task starts (after doFirst),
+    // so the key goes in as a provider: read only when the run's variables are needed, never logged.
+    val dry = providers.gradleProperty("narrator2.live.dry").isPresent
+    environmentVars.put("NARRATOR_LLMGW_KEY", providers.provider { if (dry) "" else llmgwKey().orEmpty() })
+    systemProperties.put("fabric-api.gametest.filter", "narrator2-gametest:live_*")
+    systemProperties.put("fabric-api.gametest.report-file", layout.buildDirectory.file("reports/liveGameTest/TEST-live.xml").get().asFile.absolutePath)
+    systemProperties.put("narrator2.live", "true")
+}
+val cleanLiveGameTestRun = tasks.register<Delete>("cleanLiveGameTestRun") {
+    delete(layout.buildDirectory.dir("run/liveGameTest"))
+}
+tasks.matching { it.name == "runLiveGameTest" }.configureEach { dependsOn(cleanLiveGameTestRun) }
+tasks.register("liveGameTest") {
+    description = "Runs the M2 acceptance scenario on a GameTest server against the real LLMGW server (SSH tunnel on localhost:8088)."
+    group = "verification"
+    dependsOn("runLiveGameTest")
+}
+
 // The in-game tests reuse the fake Anthropic server of the unit tests.
 sourceSets.named("gametest") {
     compileClasspath += sourceSets.test.get().output
@@ -152,15 +193,15 @@ tasks.test {
 }
 
 // Tests against the owner's real LLMGW server, through the SSH tunnel (see CLAUDE.md). Never part of
-// `test`, `build` or `check`. The key comes from NARRATOR_LLMGW_KEY or ../.secrets/llmgw.key, read by
-// the tests themselves: only the file's path is passed here.
+// `test`, `build` or `check`. The key comes from NARRATOR_LLMGW_KEY or .secrets/llmgw.key (llmgwKeyFile,
+// the main checkout's from a worktree), read by the tests themselves: only the file's path is passed here.
 tasks.register<Test>("liveTest") {
     description = "Runs the live tests against the real LLMGW server (needs the SSH tunnel on localhost:8088)."
     group = "verification"
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform { includeTags("live") }
-    systemProperty("narrator2.live.keyFile", layout.projectDirectory.file("../.secrets/llmgw.key").asFile.absolutePath)
+    doFirst { systemProperty("narrator2.live.keyFile", llmgwKeyFile.absolutePath) }
     testLogging { showStandardStreams = true }
     outputs.upToDateWhen { false }
 }

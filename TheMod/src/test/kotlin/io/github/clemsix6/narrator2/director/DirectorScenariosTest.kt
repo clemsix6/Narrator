@@ -589,6 +589,31 @@ class DirectorScenariosTest {
     }
 
     @Test
+    fun `a resume posted to a disabled Director does not wake it once a key arrives`() = harness().use { h ->
+        h.online("Bartok")
+        val config = h.services.settings.get().config
+        val withoutKey = testSettings(config, null)
+        h.director.post(DirectorSignal.SettingsChanged(h.services.settings.swap(withoutKey), withoutKey))
+        h.runCurrent()
+        h.director.post(DirectorSignal.Pause)
+        h.director.post(DirectorSignal.Resume)
+        h.runCurrent()
+        assertEquals(DirectorState.DISABLED, h.director.status().state)
+
+        val withKey = testSettings(config, ClaudeClient(config, TEST_API_KEY))
+        try {
+            h.director.post(DirectorSignal.SettingsChanged(h.services.settings.swap(withKey), withKey))
+            h.runCurrent()
+            h.advance(60_000)
+            assertEquals(DirectorState.IDLE, h.director.status().state)
+            assertEquals(0, h.fake.requests.size, "no empty resume turn once the key arrives")
+            assertTrue(h.endedTurns().isEmpty())
+        } finally {
+            withKey.close()
+        }
+    }
+
+    @Test
     fun `a chapter close asked by an operator happens at a quiet moment, with a summary`() = harness().use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
