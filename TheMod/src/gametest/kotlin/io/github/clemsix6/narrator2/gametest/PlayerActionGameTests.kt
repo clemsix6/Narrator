@@ -1,8 +1,10 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.guard.AttributeKey
+import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
+import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.tool.Caller
@@ -186,6 +188,93 @@ class PlayerActionGameTests {
         }
     }
 
+    /**
+     * The end of the Narrator's levitation leaves the player high in the air (M2 review, finding 1): the
+     * guard covers the effect and 30 s more; when it runs out, the fall is cushioned and covered longer
+     * still, so a fall after the effect's own guard is still the Narrator's.
+     */
+    @GameTest
+    fun theEndOfALevitationCushionsTheFallAndStaysTheNarrators(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val guards = guards(helper)
+        bob.makeVulnerable()
+        GuardGameTests.setPlayTime(bob.live, GuardGameTests.PLAY_TIME)
+        GuardGameTests.equip(bob.live)
+        val result = run(helper, ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "levitation", seconds = 1))
+        helper.assertTrue(result.text.startsWith("ok: ${bob.name} gets levitation I for 1 s"), result.text)
+        val effectGuard = guards.death.armedFor(bob.live, Peril.FALL)
+        helper.assertTrue(effectGuard >= GuardGameTests.PLAY_TIME + (1 + 30) * 20, "armed for a fall, for the effect and 30 s more: $effectGuard")
+        helper.assertEquals(0L, guards.death.armedFor(bob.live, Peril.ANY), "for a fall only")
+
+        // A test player's connection does not tick them: their own ticks run the effect out.
+        repeat(40) { if (bob.live.hasEffect(MobEffects.LEVITATION)) bob.live.doTick() }
+        helper.assertFalse(bob.live.hasEffect(MobEffects.LEVITATION), "the levitation ran out")
+        helper.assertEquals(0.0, bob.live.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
+        val cushion = GuardStates.read(bob.live).modifiers.single { it.attribute == AttributeKey.FALL_DAMAGE_MULTIPLIER.id }
+        helper.assertFalse(cushion.harmful, "the cushion is a favor, in the ledger")
+        helper.assertTrue(cushion.expiresAt >= System.currentTimeMillis() + 29_000, "for 30 s at least")
+        val fallGuard = guards.death.armedFor(bob.live, Peril.FALL)
+        helper.assertTrue(fallGuard > effectGuard, "the guard of the fall outlasts the effect's: $fallGuard > $effectGuard")
+
+        // Past the effect's own guard: a fall is still the Narrator's, drowning is not.
+        GuardGameTests.setPlayTime(bob.live, effectGuard + 1)
+        helper.assertFalse(guards.death.attributed(bob.live, helper.level.damageSources().drown()), "drowning is not a fall")
+        GuardGameTests.kill(helper, bob.live, helper.level.damageSources().fall())
+        helper.assertTrue(bob.live.isDeadOrDying && DeathGuard.keepsInventory(bob.live), "the fall is the Narrator's")
+        helper.assertEquals(5, count(bob.live, Items.DIAMOND), "the inventory is kept")
+    }
+
+    /**
+     * A beneficial effect never cuts a vital one short (M2 review, finding 2): 30 s of fire resistance do
+     * not replace a potion of 8 minutes, even on a protected player; trading length for strength takes
+     * something away, so it is a punishment, under the death guard.
+     */
+    @GameTest
+    fun aBeneficialEffectNeverCutsAVitalOneShort(helper: GameTestHelper) = withTestPlayers(helper, 2) { (bob, alice) ->
+        val guards = guards(helper)
+        val tool = ApplyEffectTool()
+        bob.standAt(BlockPos(1, 1, 1))
+        alice.standAt(BlockPos(2, 1, 1))
+
+        bob.live.addEffect(MobEffectInstance(MobEffects.FIRE_RESISTANCE, 9_600, 0))
+        val shorter = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "fire_resistance", seconds = 30))
+        helper.assertEquals("Invalid arguments: ${bob.name} already has fire_resistance I for 8m", shorter.text, "refused")
+        helper.assertEquals(9_600, bob.live.getEffect(MobEffects.FIRE_RESISTANCE)?.duration, "the potion is untouched")
+        val longer = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "fire_resistance", seconds = 900))
+        helper.assertEquals(ToolStatus.OK, longer.status, longer.text)
+        helper.assertEquals(18_000, bob.live.getEffect(MobEffects.FIRE_RESISTANCE)?.duration, "a longer one is a gift")
+        helper.assertEquals(null, GuardStates.read(bob.live).episode, "no punishment")
+
+        bob.live.addEffect(MobEffectInstance(MobEffects.RESISTANCE, 9_600, 0))
+        val otherTurn = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "resistance", seconds = 30, level = 2), OTHER_TURN)
+        helper.assertEquals(ToolStatus.OK, otherTurn.status, "nothing runs yet against Bob: ${otherTurn.text}")
+        helper.assertTrue(
+            otherTurn.text.startsWith("ok: ${bob.name} (in place of resistance I for 8m: a punishment) gets resistance II for 30 s"),
+            otherTurn.text,
+        )
+        helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment is open")
+        helper.assertTrue(
+            guards.death.armedFor(bob.live, Peril.ANY) >= DeathGuard.playTime(bob.live) + (30 + 30) * 20,
+            "the death guard covers the loss until the shorter effect has ended, and 30 s more",
+        )
+        bob.live.addEffect(MobEffectInstance(MobEffects.WATER_BREATHING, 9_600, 0))
+        val piledOn = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "water_breathing", seconds = 30, level = 2))
+        helper.assertTrue(piledOn.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), piledOn.text)
+        helper.assertEquals(9_600, bob.live.getEffect(MobEffects.WATER_BREATHING)?.duration, "untouched")
+
+        guards.setProtected(alice.uuid, alice.name, true)
+        try {
+            alice.live.addEffect(MobEffectInstance(MobEffects.FIRE_RESISTANCE, 9_600, 0))
+            alice.live.addEffect(MobEffectInstance(MobEffects.WATER_BREATHING, 9_600, 0))
+            val cut = run(helper, tool, ApplyEffectArgs(listOf(alice.name), "fire_resistance", seconds = 30))
+            helper.assertEquals("Invalid arguments: ${alice.name} already has fire_resistance I for 8m", cut.text, "refused for a protected player")
+            val traded = run(helper, tool, ApplyEffectArgs(listOf(alice.name), "water_breathing", seconds = 30, level = 2))
+            helper.assertTrue(traded.text.startsWith("DENIED (${Rules.PROTECTED}): "), traded.text)
+            helper.assertEquals(9_600 to 9_600, alice.live.getEffect(MobEffects.FIRE_RESISTANCE)?.duration to alice.live.getEffect(MobEffects.WATER_BREATHING)?.duration, "untouched")
+        } finally {
+            guards.setProtected(alice.uuid, alice.name, false)
+        }
+    }
+
     /** `all_narrator` lifts the Narrator's effects only; taking a beneficial effect away is a punishment like any other. */
     @GameTest
     fun removeEffectLiftsTheNarratorsAndTakingAGiftIsAPunishment(helper: GameTestHelper) = withPlayer(helper) { bob ->
@@ -206,7 +295,7 @@ class PlayerActionGameTests {
 
         val sameTurn = run(helper, tool, RemoveEffectArgs(listOf(bob.name), "fire_resistance"))
         helper.assertEquals("ok: removed fire_resistance I from ${bob.name}", sameTurn.text, "result")
-        helper.assertTrue(guards(helper).death.isArmed(bob.live), "armed: in lava, this would kill")
+        helper.assertTrue(guards(helper).death.armedFor(bob.live, Peril.FIRE) > DeathGuard.playTime(bob.live), "armed for fire: in lava, this would kill")
 
         val none = run(helper, tool, RemoveEffectArgs(listOf(bob.name), "glowing"))
         helper.assertEquals("Invalid arguments: ${bob.name} does not have glowing; ${bob.name} has no effect", none.text, "nothing to remove")
@@ -235,6 +324,8 @@ class PlayerActionGameTests {
         val heavy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 0.5, seconds = caps.harmfulSeconds + 10))
         helper.assertEquals(ToolStatus.INVALID, heavy.status, heavy.text)
         helper.assertTrue(heavy.text.contains("in ${bob.name}'s disfavor: at chaos ") && heavy.text.contains("at most ${caps.harmfulSeconds} s"), heavy.text)
+        val springy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 3.0, seconds = caps.harmfulSeconds + 10))
+        helper.assertTrue(springy.text.contains("in ${bob.name}'s disfavor"), "above 0.6, every jump hurts: ${springy.text}")
 
         val reset = ResetAttributeTool()
         val back = run(helper, reset, ResetAttributeArgs(bob.name, AttributeKey.SCALE))
@@ -249,6 +340,32 @@ class PlayerActionGameTests {
         helper.assertTrue(GuardStates.read(bob.live).modifiers.isEmpty(), "the ledger is empty")
         val nothing = run(helper, reset, ResetAttributeArgs(bob.name, AttributeKey.GRAVITY))
         helper.assertEquals("Invalid arguments: the Narrator did not change ${bob.name}'s gravity; its changes on ${bob.name}: none", nothing.text, "nothing")
+    }
+
+    /**
+     * Only a change in the player's disfavor arms the death guard, for what it can kill with (M2 review,
+     * finding 11); a jump strength above 0.6 is one of them (finding 10).
+     */
+    @GameTest
+    fun onlyAChangeInThePlayersDisfavorArmsTheGuard(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val guards = guards(helper)
+        val set = SetAttributeTool()
+        val fast = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.MOVEMENT_SPEED, multiply = 1.5, seconds = 900))
+        helper.assertEquals(ToolStatus.OK, fast.status, fast.text)
+        val springy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, add = 0.15, seconds = 60))
+        helper.assertTrue(springy.text.startsWith("ok: ${bob.name}'s jump_strength 0.42 → 0.57 for 60 s"), springy.text)
+        helper.assertFalse(guards.death.isArmed(bob.live), "a favor arms nothing")
+        helper.assertEquals(null, GuardStates.read(bob.live).episode, "and punishes nobody")
+
+        val bouncy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 3.0, seconds = 60))
+        helper.assertTrue(bouncy.text.startsWith("ok: ${bob.name}'s jump_strength 0.57 → 1.26 for 60 s"), bouncy.text)
+        helper.assertTrue(GuardStates.read(bob.live).modifiers.single { it.attribute == "jump_strength" }.harmful, "above 0.6, a punishment")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+        helper.assertTrue(
+            guards.death.armedFor(bob.live, Peril.FALL) >= DeathGuard.playTime(bob.live) + (60 + 30) * 20,
+            "armed for a fall, for the change and 30 s more",
+        )
+        helper.assertEquals(0L, guards.death.armedFor(bob.live, Peril.ANY), "for a fall only")
     }
 
     // ── Teleport ────────────────────────────────────────────────────────────────────────────────
@@ -334,6 +451,49 @@ class PlayerActionGameTests {
         }
     }
 
+    /** Near or far, a teleport arms the death guard 30 s, and a protected player is never moved (M2 review, finding 12). */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun anyTeleportArmsTheGuardAndNeverMovesAProtectedPlayer(helper: GameTestHelper) {
+        helper.setBlock(6, 1, 6, Blocks.STONE)
+        val spot = helper.absolutePos(BlockPos(6, 2, 6))
+        val bob = TestPlayer(helper)
+        val alice = TestPlayer(helper)
+        val guards = guards(helper)
+        guards.setProtected(alice.uuid, alice.name, true)
+        helper.runAfterDelay((ASYNC_MAX_TICKS - 1).toLong()) { guards.setProtected(alice.uuid, alice.name, false) }
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            helper.closingOnFailure(alice, ASYNC_MAX_TICKS) {
+                bob.standAt(BlockPos(1, 1, 1))
+                alice.standAt(BlockPos(2, 1, 1))
+                val start = alice.live.position()
+                val near = runAsync(helper, TeleportTool(), TeleportArgs(bob.name, x = spot.x, z = spot.z, y = spot.y))
+                val protected = runAsync(helper, TeleportTool(), TeleportArgs(alice.name, x = spot.x, z = spot.z, y = spot.y))
+                helper.startSequence()
+                    .thenAwait { helper.assertTrue(near.get() != null && protected.get() != null, "the teleports answer") }
+                    .thenExecute {
+                        helper.assertEquals(ToolStatus.OK, near.get()!!.status, near.get()!!.text)
+                        assertStandsAt(helper, bob.live, spot)
+                        helper.assertEquals(null, GuardStates.read(bob.live).episode, "a few blocks: no punishment")
+                        helper.assertTrue(
+                            guards.death.armedFor(bob.live, Peril.ANY) >= DeathGuard.playTime(bob.live) + 29 * 20,
+                            "but the death guard is armed 30 s",
+                        )
+
+                        helper.assertEquals(
+                            "DENIED (${Rules.PROTECTED}): ${alice.name} is protected by the operators; the Narrator never teleports them.",
+                            protected.get()!!.text,
+                            "a protected player",
+                        )
+                        helper.assertEquals(start, alice.live.position(), "Alice did not move")
+                        guards.setProtected(alice.uuid, alice.name, false)
+                        alice.close()
+                        bob.close()
+                    }
+                    .thenSucceed()
+            }
+        }
+    }
+
     // ── Launch ──────────────────────────────────────────────────────────────────────────────────
 
     @GameTest(maxTicks = 100)
@@ -372,11 +532,11 @@ class PlayerActionGameTests {
             helper, tool,
             GiveItemArgs(
                 bob.name, "diamond_sword", name = "§6Excalibur", lore = listOf("Forgée par le Narrateur"),
-                enchantments = listOf(EnchantmentSpec("sharpness", 7)), unbreakable = true,
+                enchantments = listOf(EnchantmentSpec("sharpness", 6)), unbreakable = true,
             ),
         )
         helper.assertEquals(
-            "ok: gave 1x diamond_sword \"Excalibur\" (sharpness 7, 1 line of lore, unbreakable) to ${bob.name}",
+            "ok: gave 1x diamond_sword \"Excalibur\" (sharpness 6, 1 line of lore, unbreakable) to ${bob.name}",
             result.text,
             "result",
         )
@@ -386,7 +546,7 @@ class PlayerActionGameTests {
         helper.assertFalse(name.style.applyTo(Style.EMPTY.withItalic(true)).isItalic, "the name is not italic")
         helper.assertEquals(listOf("Forgée par le Narrateur"), sword.get(DataComponents.LORE)!!.lines().map { it.string }, "lore")
         val sharpness = helper.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.SHARPNESS)
-        helper.assertEquals(7, sword.enchantments.getLevel(sharpness), "sharpness VII")
+        helper.assertEquals(6, sword.enchantments.getLevel(sharpness), "sharpness VI")
         helper.assertTrue(sword.has(DataComponents.UNBREAKABLE), "unbreakable")
         val mark = sword.get(DataComponents.CUSTOM_DATA)!!.copyTag().getCompoundOrEmpty(Speech.CUSTOM_DATA_KEY)
         helper.assertEquals("item" to CALLER.turnId, mark.getStringOr("kind", "") to mark.getLongOr("turn", -1), "marked as the Narrator's")
@@ -396,8 +556,8 @@ class PlayerActionGameTests {
         helper.assertEquals(1, book.get(DataComponents.STORED_ENCHANTMENTS)?.size(), "a book stores its enchantment")
         helper.assertTrue(book.enchantments.isEmpty, "and does not wear it")
 
-        run(helper, tool, GiveItemArgs(bob.name, "diamond", count = 3))
-        helper.assertFalse(find(bob.live, Items.DIAMOND).has(DataComponents.CUSTOM_DATA), "a plain gift stays plain, to stack with the player's own")
+        run(helper, tool, GiveItemArgs(bob.name, "iron_ingot", count = 3))
+        helper.assertFalse(find(bob.live, Items.IRON_INGOT).has(DataComponents.CUSTOM_DATA), "a plain gift stays plain, to stack with the player's own")
     }
 
     @GameTest
@@ -427,6 +587,42 @@ class PlayerActionGameTests {
         val more = run(helper, tool, GiveItemArgs(bob.name, "cookie"))
         helper.assertTrue(more.text.startsWith("DENIED (${GiftLimiter.RULE}): ${bob.name} got ${GiftLimiter.GIFTS_PER_HOUR} gifts in the last hour"), more.text)
         helper.assertEquals(GiftLimiter.GIFTS_PER_HOUR, count(bob.live, Items.COOKIE), "cookies")
+    }
+
+    /**
+     * No gift speeds progression up (M2 review, finding 13): resistance up to level III, enchantments one
+     * level past the game's maximum, and 4 points of precious items per player and per hour.
+     */
+    @GameTest
+    fun resistanceEnchantmentsAndPreciousItemsAreCapped(helper: GameTestHelper) = withTestPlayers(helper, 2) { (bob, alice) ->
+        bob.standAt(BlockPos(1, 1, 1))
+        alice.standAt(BlockPos(2, 1, 1))
+        val immune = run(helper, ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "resistance", seconds = 60, level = 4))
+        helper.assertTrue(immune.text.startsWith("Invalid arguments: resistance goes up to level 3: "), immune.text)
+        helper.assertFalse(bob.live.hasEffect(MobEffects.RESISTANCE), "no resistance IV")
+        helper.assertEquals(ToolStatus.OK, run(helper, ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "resistance", seconds = 60, level = 3)).status, "level III")
+
+        val tool = GiveItemTool(GiftLimiter(Clock.systemUTC()))
+        val sharp = run(helper, tool, GiveItemArgs(bob.name, "iron_sword", enchantments = listOf(EnchantmentSpec("sharpness", 7))))
+        helper.assertEquals("Invalid arguments: sharpness goes up to level 6, one past the game's own maximum (asked 7)", sharp.text, "sharpness VII")
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, GiveItemArgs(bob.name, "iron_sword", enchantments = listOf(EnchantmentSpec("sharpness", 6)))).status, "sharpness VI")
+
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, GiveItemArgs(bob.name, "diamond", count = 3)).status, "3 diamonds")
+        val more = run(helper, tool, GiveItemArgs(bob.name, "diamond", count = 2))
+        helper.assertTrue(
+            more.text.startsWith("DENIED (${GiftLimiter.PRECIOUS_RULE}): ${bob.name} got 3 of the 4 precious points a player may get in an hour, and 2x diamond is worth 2"),
+            more.text,
+        )
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, GiveItemArgs(bob.name, "diamond")).status, "a fourth diamond")
+        helper.assertEquals(ToolStatus.DENIED, run(helper, tool, GiveItemArgs(bob.name, "elytra")).status, "no elytra this hour")
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, GiveItemArgs(bob.name, "cookie")).status, "a cookie is no progression")
+        helper.assertEquals(4 to 0, count(bob.live, Items.DIAMOND) to count(bob.live, Items.ELYTRA), "what Bob got")
+
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, GiveItemArgs(alice.name, "elytra")).status, "a rare item")
+        for (item in listOf("diamond", "netherite_ingot", "diamond_pickaxe", "shulker_box", "totem_of_undying")) {
+            val result = run(helper, tool, GiveItemArgs(alice.name, item))
+            helper.assertTrue(result.text.startsWith("DENIED (${GiftLimiter.PRECIOUS_RULE}): "), "$item after an elytra: ${result.text}")
+        }
     }
 
     @GameTest

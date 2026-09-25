@@ -137,4 +137,32 @@ class PlayerActionToolsTest {
         assertEquals(Verdict.Allowed, limiter.take(bob), "the first gift left the hour")
         assertIs<Verdict.Denied>(limiter.take(bob), "full again until the second gift leaves the hour")
     }
+
+    @Test
+    fun `four points of precious items per player in any hour`() {
+        val clock = TestClock()
+        val limiter = GiftLimiter(clock)
+        val bob = PlayerRef(UUID.randomUUID(), "Bob")
+        assertEquals(Verdict.Allowed, limiter.take(bob, 3, "3x diamond"))
+        clock.advance(Duration.ofMinutes(10))
+        assertEquals(Verdict.Allowed, limiter.take(bob, 0, "1x cookie"), "an ordinary gift costs nothing")
+        clock.advance(Duration.ofMinutes(10))
+        val refused = limiter.take(bob, 4, "1x elytra")
+        assertIs<Verdict.Denied>(refused)
+        assertEquals(GiftLimiter.PRECIOUS_RULE, refused.rule)
+        assertEquals(
+            "Bob got 3 of the 4 precious points a player may get in an hour, and 1x elytra is worth 4; it is possible at 20:30:00 " +
+                "(in 40m). The Narrator slows progression down: a diamond or a golden apple is 1 point; netherite, diamond gear, elytra, " +
+                "totems, enchanted golden apples, beacons, shulker boxes and the like are 4.",
+            refused.message,
+        )
+        assertEquals(Verdict.Allowed, limiter.take(bob, 1, "1x diamond"), "one point is left")
+        assertIs<Verdict.Denied>(limiter.take(bob, 1, "1x diamond"), "none now")
+        val tooMuch = limiter.take(PlayerRef(UUID.randomUUID(), "Alice"), 8, "8x diamond")
+        assertIs<Verdict.Denied>(tooMuch)
+        assertTrue(tooMuch.message.startsWith("8x diamond is worth 8 precious points, more than the 4 a player may get in an hour."), tooMuch.message)
+
+        clock.advance(Duration.ofMinutes(40))
+        assertEquals(Verdict.Allowed, limiter.take(bob, 3, "3x diamond"), "the first three points left the hour")
+    }
 }

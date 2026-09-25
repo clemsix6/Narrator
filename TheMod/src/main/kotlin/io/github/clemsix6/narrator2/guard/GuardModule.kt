@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents
+import net.fabricmc.fabric.api.entity.event.v1.effect.ServerMobEffectEvents
 import net.fabricmc.fabric.api.event.Event
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
@@ -21,7 +22,8 @@ private val AFTER_ATTACHMENTS: Identifier = Identifier.fromNamespaceAndPath("nar
 
 /**
  * Registers the guards' hooks: the death guard (`ALLOW_DEATH`, `AFTER_DEATH`, which also saves every
- * death for the no-piling-on rule), the creature shield (`ALLOW_DAMAGE`), the ledgers on join and
+ * death for the no-piling-on rule), the creature shield (`ALLOW_DAMAGE`), the fall cushion at the end of
+ * the Narrator's levitation (`AFTER_REMOVE` of an effect), the ledgers on join and
  * respawn, the Narrator's creatures (entity load and unload, conversions and splits), the check once a
  * second of what is due, and the guards' persistent attachment types (guard state, creature expiry).
  * Once, at mod initialization; the handlers find the running server's guards through `NarratorRuntime.current`.
@@ -61,6 +63,10 @@ fun registerGuardHooks() {
             log.error("the creature shield failed for ${entity.plainTextName}; the damage goes on as the game decides", e)
             true
         }
+    }
+    // The end of the Narrator's levitation (run out, milk, removed) leaves a player in the air: their fall is cushioned.
+    ServerMobEffectEvents.AFTER_REMOVE.register { effect, entity, _ ->
+        if (entity is ServerPlayer) hook("effect_end") { running()?.onEffectEnded(entity, effect) }
     }
     // A creature of the Narrator's that converts or splits hands its mark down, before the new one enters the level.
     ServerLivingEntityEvents.MOB_CONVERSION.register { previous, converted, _ ->

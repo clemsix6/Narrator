@@ -10,7 +10,9 @@ import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
 import io.github.clemsix6.narrator2.guard.LedgerEffect
 import io.github.clemsix6.narrator2.guard.LedgerModifier
+import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.OpenEpisode
+import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
@@ -50,6 +52,7 @@ import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.effect.MobEffectInstance
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.level.GameType
+import net.minecraft.world.level.storage.LevelData
 import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.phys.Vec3
 import java.util.UUID
@@ -115,12 +118,155 @@ class GuardGameTests {
         helper.assertTrue(player.isDeadOrDying && DeathGuard.keepsInventory(player), "a protected death again: ${GuardStates.read(player)}")
     }
 
+    /**
+     * Beyond the quota, a death is refused once per episode (M2 review, finding 11): the next one of the
+     * same armed stretch goes on, the inventory kept, so an armed guard is never an immortality. A later
+     * episode has its own revival.
+     */
+    @GameTest
+    fun aSecondDeathOfTheSameEpisodeGoesOnWithTheInventory(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        equip(player)
+        guards.states.update(player) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+        guards.armDeathGuard(player.uuid, 60)
+
+        kill(helper, player)
+        helper.assertFalse(player.isDeadOrDying, "the first death beyond the quota is refused")
+        helper.assertValueEqual(1f, player.health, "kept at 1 health")
+        helper.assertTrue(GuardStates.read(player).revivedUntil >= PLAY_TIME + 60 * DeathGuard.TICKS_PER_SECOND, "no other revival in this stretch")
+
+        kill(helper, player)
+        helper.assertTrue(player.isDeadOrDying, "the second death of the episode goes on: no immortality")
+        helper.assertTrue(DeathGuard.keepsInventory(player), "the Narrator's death: the inventory is kept")
+        helper.assertValueEqual(listOf(PLAY_TIME - 1_000, PLAY_TIME), GuardStates.read(player).narratorKills, "counted, beyond the quota")
+        val respawned = respawn(helper, player)
+        helper.assertValueEqual(5, count(respawned, Items.DIAMOND), "the inventory comes back")
+
+        // Once the stretch is over, a new episode has its own revival.
+        vulnerable(respawned)
+        setPlayTime(respawned, PLAY_TIME + 60 * DeathGuard.TICKS_PER_SECOND + 1)
+        guards.armDeathGuard(respawned.uuid, 10)
+        kill(helper, respawned)
+        helper.assertFalse(respawned.isDeadOrDying, "refused again in a new episode")
+    }
+
+    /**
+     * The guard covers what the armed action can kill with, nothing else (M2 review, finding 11): once
+     * its fire resistance is taken away, a player dies of lava for the Narrator, not of drowning.
+     */
+    @GameTest
+    fun theGuardCoversOnlyWhatTheActionCanKillWith(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        val sources = helper.level.damageSources()
+        equip(player)
+        guards.armDeathGuard(player.uuid, 60, Peril.FIRE)
+        helper.assertTrue(guards.death.attributed(player, sources.lava()), "lava")
+        helper.assertTrue(guards.death.attributed(player, sources.onFire()), "burning")
+        helper.assertFalse(guards.death.attributed(player, sources.drown()), "not drowning")
+        helper.assertFalse(guards.death.attributed(player, sources.fall()), "not a fall")
+        helper.assertFalse(guards.death.attributed(player, sources.magic()), "not magic")
+
+        guards.armDeathGuard(player.uuid, 60, Peril.FALL)
+        helper.assertTrue(guards.death.attributed(player, sources.fall()), "a fall")
+        helper.assertTrue(guards.death.attributed(player, sources.fellOutOfWorld()), "the void, below the fall")
+        helper.assertFalse(guards.death.attributed(player, sources.drown()), "still not drowning")
+
+        kill(helper, player, sources.drown())
+        helper.assertTrue(player.isDeadOrDying, "drowned")
+        helper.assertFalse(DeathGuard.keepsInventory(player), "a death the actions could not cause is an ordinary one")
+        helper.assertValueEqual(0, count(player, Items.DIAMOND), "the inventory drops as usual")
+    }
+
+    /**
+     * Beyond the quota, a death in the void is refused too (M2 review, finding 3): the player is taken out
+     * of it to their respawn point, lands without fall damage, and the decision says so.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aDeathInTheVoidBeyondTheQuotaIsARescue(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val guards = guards(helper)
+        val bob = TestPlayer(helper)
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            bob.standAt(BlockPos(1, 1, 1))
+            bob.makeVulnerable()
+            setPlayTime(bob.live, PLAY_TIME)
+            equip(bob.live)
+            val home = helper.absolutePos(BlockPos(4, 1, 4))
+            bob.live.setRespawnPosition(ServerPlayer.RespawnConfig(LevelData.RespawnData.of(helper.level.dimension(), home, 0f, 0f), true), false)
+            guards.states.update(bob.live) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+            guards.armDeathGuard(bob.uuid, 30, Peril.FALL)
+            bob.live.teleportTo(bob.live.x, helper.level.minY - 70.0, bob.live.z)
+
+            kill(helper, bob.live, helper.level.damageSources().fellOutOfWorld())
+            helper.assertFalse(bob.live.isDeadOrDying, "the death in the void is refused")
+            helper.assertValueEqual(1f, bob.live.health, "kept at 1 health")
+            helper.assertTrue(bob.live.position().distanceTo(Vec3.atBottomCenterOf(home)) < 1.0, "back at the respawn point: ${bob.live.position()}, $home")
+            helper.assertValueEqual(0.0, bob.live.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
+            helper.assertFalse(DeathGuard.keepsInventory(bob.live), "no mark")
+            helper.assertValueEqual(5, count(bob.live, Items.DIAMOND), "the inventory is untouched")
+
+            val decisions = AtomicReference<Any>()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    runtime.journal.barrier()
+                    decisions.set(
+                        runtime.journal.read(5_000) { connection ->
+                            connection.prepareStatement(
+                                "SELECT decision, json_extract_string(detail, '\$.cause') FROM engine_decisions WHERE kind = 'death_guard' AND subject = ? ORDER BY id",
+                            ).use { statement ->
+                                statement.setString(1, bob.name)
+                                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    decisions.set("read failed: $e")
+                }
+            }
+            helper.startSequence()
+                .thenAwait { helper.assertValueEqual(listOf("prevented" to "minecraft:out_of_world"), decisions.get(), "decisions of ${bob.name}") }
+                .thenExecute { bob.close() }
+                .thenSucceed()
+        }
+    }
+
+    /**
+     * A kill by what one of the Narrator's creatures owns is the Narrator's, with no arming (M2 review,
+     * finding 9): the vex of its evoker carries no tag, its owner does.
+     */
+    @GameTest
+    fun aKillByTheVexOfTheNarratorsEvokerIsTheNarrators(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        equip(player)
+        val evoker = EntityTypes.EVOKER.create(helper.level, EntitySpawnReason.COMMAND)!!
+        evoker.snapTo(helper.absoluteVec(Vec3(3.5, 1.0, 3.5)))
+        guards.mobs.mark(evoker, System.currentTimeMillis() + 60_000, player.uuid, harmful = true)
+        val vex = EntityTypes.VEX.create(helper.level, EntitySpawnReason.COMMAND)!!
+        vex.snapTo(helper.absoluteVec(Vec3(3.5, 2.0, 3.5)))
+        vex.setOwner(evoker)
+        try {
+            helper.assertTrue(helper.level.addFreshEntity(evoker) && helper.level.addFreshEntity(vex), "added")
+            helper.assertFalse(NarratorMobs.isNarrators(vex), "the vex carries no tag")
+            helper.assertFalse(guards.death.isArmed(player), "nothing is armed")
+
+            kill(helper, player, helper.level.damageSources().mobAttack(vex))
+            helper.assertTrue(player.isDeadOrDying && DeathGuard.keepsInventory(player), "a kill by the vex is the Narrator's")
+            helper.assertValueEqual(5, count(respawn(helper, player), Items.DIAMOND), "and the inventory comes back")
+        } finally {
+            vex.discard()
+            evoker.discard()
+        }
+    }
+
     /** A spent arming and the kills older than a played hour are forgotten; an empty state leaves the player's file. */
     @GameTest
     fun aSpentDeathGuardIsForgotten(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = guards(helper)
         guards.states.update(player) {
-            it.copy(armedUntil = PLAY_TIME - 1, narratorKills = listOf(PLAY_TIME - DeathGuard.HOUR_TICKS - 1, PLAY_TIME - 10))
+            it.copy(
+                armedUntil = PLAY_TIME - 1, perils = mapOf(Peril.FALL.id to PLAY_TIME - 1), revivedUntil = PLAY_TIME - 1,
+                narratorKills = listOf(PLAY_TIME - DeathGuard.HOUR_TICKS - 1, PLAY_TIME - 10),
+            )
         }
         guards.death.tidy(player)
         helper.assertValueEqual(GuardState(narratorKills = listOf(PLAY_TIME - 10)), GuardStates.read(player), "only the recent kill stays")
@@ -293,6 +439,24 @@ class GuardGameTests {
         helper.assertValueEqual(0.5, back.getAttributeValue(Attributes.SCALE), "the ledger's own stays")
     }
 
+    /**
+     * The Narrator's modifier replaced by one of another operation (a punishment added, then the fall
+     * cushion multiplied): only the new one counts, and nothing is left once it is over. The game's own
+     * update kept both, and the punishment outlived the ledger.
+     */
+    @GameTest
+    fun aModifierReplacedByAnotherOperationLeavesNothingBehind(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        val now = System.currentTimeMillis()
+        val key = AttributeKey.FALL_DAMAGE_MULTIPLIER
+        guards.attributes.apply(player, key, 2.0, AttributeModifier.Operation.ADD_VALUE, now + 60_000, harmful = true, turnId = null)
+        helper.assertValueEqual(3.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "triple fall damage")
+        guards.attributes.apply(player, key, -1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL, now + 30_000, harmful = false, turnId = null)
+        helper.assertValueEqual(0.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage: the cushion replaced it")
+        guards.attributes.expire(player, now + 30_000)
+        helper.assertValueEqual(1.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "back to normal, nothing left behind")
+    }
+
     /** The confiscation is in the ledger in the same tick as the items leave, and they come back when due, components and all. */
     @GameTest
     fun aConfiscationIsWrittenWithTheRemovalAndGivenBackWhenDue(helper: GameTestHelper) = withPlayer(helper) { player ->
@@ -431,6 +595,9 @@ class GuardGameTests {
             armedUntil = 123_456,
             protectedDeath = true,
             narratorKills = listOf(100_000, 150_000),
+            lastDeathAt = 1_234,
+            perils = mapOf(Peril.FALL.id to 123_456, Peril.ANY.id to 100_000),
+            revivedUntil = 110_000,
         )
         val saved = GuardState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow()
         helper.assertValueEqual(state, GuardState.CODEC.parse(NbtOps.INSTANCE, saved).getOrThrow(), "round trip")
