@@ -37,6 +37,7 @@ object SchemaDoc {
     private const val HEADER =
         "DuckDB SQL, read-only, one SELECT per call; results are capped: aggregate rather than list. " +
             "Times are TIMESTAMPTZ in server time: ts > now() - INTERVAL 2 HOUR; ago(ts) says how long ago. " +
+            "Rows may share a ts: ORDER BY ts, id. " +
             "Players are matched by name, case-sensitive: player = 'Bartok' (macros ignore case). " +
             "Views and macros drop the minecraft: prefix (diamond_ore, overworld); tables keep it. " +
             "JSON: (detail ->> 'key') is text; keep the parentheses. " +
@@ -46,7 +47,7 @@ object SchemaDoc {
         "SELECT block, count(*) FROM mining WHERE player = 'Bartok' AND ore AND ts > now() - INTERVAL 1 DAY GROUP BY 1 ORDER BY 2 DESC",
         "SELECT * FROM hotspots('Mimosa', 'block_break', 32)",
         "SELECT victim, count(*) FROM kills WHERE player = 'Bartok' GROUP BY 1 ORDER BY 2 DESC",
-        "SELECT ago(ts), channel, player, text FROM chat_log ORDER BY ts DESC LIMIT 20",
+        "SELECT ago(ts), channel, player, text FROM chat_log ORDER BY ts DESC, id DESC LIMIT 20",
     )
 
     /** The description of the schema [connection] sees. Deterministic: same schema, same text. */

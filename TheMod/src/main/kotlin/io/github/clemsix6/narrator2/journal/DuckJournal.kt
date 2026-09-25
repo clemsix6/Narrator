@@ -19,6 +19,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.sql.Connection
+import java.sql.SQLException
 import java.time.Clock
 import java.time.Duration
 import java.util.Locale
@@ -52,7 +53,7 @@ internal class DuckJournal private constructor(
 ) : Journal {
     private val log = Log.journal
     private val ids: Map<IdKind, AtomicLong> = IdKind.entries.associateWith { AtomicLong(seeds.getValue(it)) }
-    private val writer = JournalWriter(db, clock, flushIntervalMs, queueCapacity, tuning, ::reportHealth, ::closeResources)
+    private val writer = JournalWriter(db, clock, flushIntervalMs, queueCapacity, tuning, ::reportHealth, ::closeResources, ::endReads)
     private val readers = LinkedBlockingQueue(db.readers)
     private val readThreads: ExecutorService = Executors.newFixedThreadPool(db.readers.size.coerceAtLeast(1)) { task ->
         Thread(task, "narrator2-sql-${READ_THREADS.incrementAndGet()}").apply { isDaemon = true }
@@ -104,6 +105,7 @@ internal class DuckJournal private constructor(
                 } catch (e: Throwable) {
                     result.completeExceptionally(e)
                 } finally {
+                    endQuery(connection)
                     readers.put(connection)
                 }
             }
@@ -115,6 +117,24 @@ internal class DuckJournal private constructor(
         } catch (_: TimeoutCancellationException) {
             result.cancel(false)
             throw JournalTimeoutException(timeoutMs)
+        }
+    }
+
+    /**
+     * Ends the last query of [connection] before it goes back to the pool. Results are streamed, and
+     * DuckDB keeps a query whose result was not read to the end, with its read transaction, open on its
+     * connection until that connection runs another statement: closing the `ResultSet` and its statement
+     * is not enough. Most reads stop early (`if (rows.next())`). While such a transaction lives, every
+     * later write that updated or deleted rows (a session that closes, a player's counters, a turn
+     * written again) keeps its checkpoint lock, and `CHECKPOINT` fails with "other write transactions
+     * active" until the connection serves again (T07). A trivial query read to the end ends it, in about
+     * 0.1 ms.
+     */
+    private fun endQuery(connection: Connection) {
+        try {
+            connection.createStatement().use { statement -> statement.executeQuery("SELECT 1").use { rows -> while (rows.next()) Unit } }
+        } catch (e: SQLException) {
+            log.debug { "could not end the last query of a read connection: ${e.message}" }
         }
     }
 
@@ -136,9 +156,9 @@ internal class DuckJournal private constructor(
     }
 
     /**
-     * Stops taking facts, writes what is queued, closes the open sessions (`server_stop`), checkpoints
-     * and closes the database, within [timeout]. The last quarter of [timeout] (2 s at most) is kept
-     * for the ending; what is still queued then is lost and counted in the log.
+     * Stops taking facts, writes what is queued, closes the open sessions (`server_stop`), ends the
+     * reads, checkpoints and closes the database, within [timeout]. The last quarter of [timeout] (2 s
+     * at most) is kept for the ending; what is still queued then is lost and counted in the log.
      */
     override fun close(timeout: Duration) {
         val deadline = System.nanoTime() + timeout.toNanos()
@@ -236,14 +256,31 @@ internal class DuckJournal private constructor(
         null
     }
 
-    /** Ends the reads, then closes the database. Once; on the writer thread, or on the closing one if the writer died. */
-    private fun closeResources() {
-        if (!resourcesClosed.compareAndSet(false, true)) return
+    /**
+     * Ends the reads: no new one starts, those running get [READS_GRACE_MS], then the read connections
+     * close, which interrupts a read still running and ends every query left open. The writer calls it
+     * before its last `CHECKPOINT`, which a query left open on a read connection would otherwise hold
+     * back (see [endQuery]). Idempotent.
+     */
+    private fun endReads() {
         closing = true
         readThreads.shutdown()
         if (!readThreads.awaitTermination(READS_GRACE_MS, TimeUnit.MILLISECONDS)) {
-            log.warn("closing: reads still running after $READS_GRACE_MS ms")
+            log.warn("closing: reads still running after $READS_GRACE_MS ms are interrupted")
         }
+        db.readers.forEach { connection ->
+            try {
+                connection.close()
+            } catch (e: SQLException) {
+                log.warn("closing a read connection failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Ends the reads, then closes the database. Once; on the writer thread, or on the closing one if the writer died. */
+    private fun closeResources() {
+        if (!resourcesClosed.compareAndSet(false, true)) return
+        endReads()
         db.close()
     }
 
