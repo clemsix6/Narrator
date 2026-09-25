@@ -55,6 +55,15 @@ Idées reprises telles quelles : jar serveur uniquement, validation des commande
 
 Tout vit dans le processus du serveur : un seul `.jar` à déposer dans `mods/`, une configuration, et c'est tout. Les données (Journal, mémoire, modules) vivent dans le dossier du monde, `world/narrator2/`.
 
+**Trois durées de vie** (détail : [design M1/M2](design/M1_M2.md) §2) :
+- **le mod** : les hooks Fabric, les commandes et les types de pièces jointes sont enregistrés une seule fois ;
+- **le serveur** (`NarratorRuntime`) : bus, Journal, Observateur, garde-fous, Directeur et assistants vivent de `SERVER_STARTED` à `SERVER_STOPPED` et ne sont jamais reconstruits ;
+- **les réglages** (config, prompts, textes affichés, clients Claude et Jev) : remplacés d'un bloc par `/narrator reload`.
+
+L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouveau et les appels à Claude sont annulés sans rien ajouter aux conversations ; à `SERVER_STOPPED`, une fois les joueurs déconnectés et leurs départs journalisés, le Journal est vidé (avec un délai maximal) puis la base fermée.
+
+**Ce qui doit rester cohérent avec le monde vit dans le monde** : l'index des blocs posés, les lieux visités, l'état des garde-fous (modificateurs d'attributs, confiscations, mort protégée) et l'échéance des créatures du Narrateur sont des pièces jointes Fabric persistantes, sauvées avec le tronçon ou le joueur. DuckDB garde l'historique ; il n'est jamais la source d'un état de jeu.
+
 ## 3. Stack technique
 
 | Brique | Choix | Pourquoi |
@@ -93,33 +102,36 @@ Plus des **événements dérivés**, calculés par l'échantillonneur de positio
 Les actions du Narrateur lui-même sont journalisées aussi : c'est la base de l'anti-répétition.
 
 ### 4.2 Stockage
-Base : `world/narrator2/narrator.duckdb`. Écritures par lots (tampon mémoire vidé toutes les 1–2 s via l'API *appender* de DuckDB) : aucun coût sur le thread du serveur.
+Base : `world/narrator2/narrator.duckdb`. Écritures par lots (tampon mémoire vidé toutes les secondes via l'API *appender* de DuckDB, sur un thread dédié) : aucun coût sur le thread du serveur. Le schéma complet (version 1) est dans le [design M1/M2](design/M1_M2.md) §5.3 :
 
 ```sql
-events     (id, ts, game_time, type, player, player_uuid, dim, x, y, z,
-            subject,  -- bloc, objet, entité, advancement, statistique…
-            amount,   -- quantité, dégâts, XP…
-            other,    -- outil, arme, tueur, victime…
-            detail JSON)
-positions  (ts, player, player_uuid, dim, x, y, z, biome, structure,
-            underground, light, health, food, vehicle)
-chat       (ts, player, player_uuid, kind, message)  -- kind : chat | whisper | narrator | system
-sessions   (player_uuid, joined_at, left_at, duration_s)
-narrator_actions (ts, tool, target, params JSON, reason, ref_kind, ref_id)
+events       (id, ts, game_time, type, player_uuid, player, session_id, dim, x, y, z,
+              subject,  -- bloc, objet, entité, advancement, statistique…
+              amount,   -- quantité, dégâts, XP…
+              other,    -- outil, arme, tueur, poste…
+              detail JSON)
+positions    (ts, player, dim, x, y, z, biome, structure, underground, lumière, vie, faim, véhicule, raison)
+chat         (id, ts, channel, player, recipients, text, turn_id, operator)
+             -- channel : public | pray | whisper | narrator | operator
+players, player_names, sessions, stat_totals, chat_signals
+conversations, turns, tasks, llm_calls, tool_calls, engine_decisions   -- traces (§12)
 ```
 
-Plus des **vues** lisibles pour le modèle (`mining`, `building`, `kills`, `deaths`, `trades`, `meals`, `crafts`…) et des **macros SQL** pour les questions fréquentes :
+Les grandes tables en ajout seul n'ont ni clé primaire ni index (les identifiants sont attribués par le code). Les actions du Narrateur ne sont plus une table à part : c'est la vue `narrator_actions` sur `tool_calls`.
+
+Plus des **vues** lisibles pour le modèle (`timeline`, `chat_log`, `narrator_actions`, `mining`, `building`, `deaths`, `kills`, `damage`, `trades`, `meals`, `crafts`, `advancements`, `visits`, `griefs`, `playtime`, `player_stats`) et des **macros SQL** pour les questions fréquentes :
 
 ```sql
 SELECT * FROM hotspots('Bartok', 'block_break', 32);   -- où mine-t-il le plus ?
 SELECT * FROM sleep_spots('Mimosa');                   -- où dort-elle ?
-SELECT * FROM kill_stats('clemsix6', INTERVAL 7 DAY);  -- que tue-t-il ?
+SELECT * FROM kill_stats('clemsix6', now() - INTERVAL 7 DAY);  -- que tue-t-il ?
+SELECT * FROM columns('events');                       -- colonnes et commentaires d'une table
 ```
 
-Volume attendu : quelques centaines de milliers de lignes par jour sur un serveur actif, compressées en colonnes. DuckDB agrège des dizaines de millions de lignes en moins d'une seconde.
+Volume attendu : 2 000 à 8 000 lignes par heure et par joueur actif, soit 40 à 160 Mo pour 500 heures-joueur. **Rien n'est supprimé** ; un `CHECKPOINT` suit chaque sauvegarde du monde, pour que les sauvegardes copient une base à jour. DuckDB agrège des dizaines de millions de lignes en moins d'une seconde.
 
 ### 4.3 Accès pour le Narrateur
-L'outil `sql` exécute une requête en **lecture seule** : seules les instructions `SELECT` sont acceptées, l'accès aux fichiers et au réseau est désactivé au niveau de DuckDB, avec délai maximal, nombre de lignes plafonné, et résultat compact (tableau tronqué, avec le nombre total de lignes). La description de l'outil contient le schéma et des exemples ; `sql_schema` le détaille à la demande.
+L'outil `sql` exécute une requête en **lecture seule** : une seule instruction `SELECT`, vérifiée avant exécution par `json_serialize_sql` (qui refuse tout le reste) ; `nextval` et `setval` refusées ; accès aux fichiers et au réseau coupé au niveau de DuckDB (`enable_external_access = false`) et configuration verrouillée ; délai maximal (`setQueryTimeout`), nombre de lignes plafonné, résultat compact (colonnes séparées par `|`, nombre total de lignes). La description de l'outil **est** le schéma, généré au démarrage depuis la base et ses commentaires, avec des exemples ; la macro `columns()` détaille une table à la demande. Les opérateurs ont `/narrator sql`.
 
 ## 5. L'Oracle : lire le monde
 
@@ -143,16 +155,18 @@ Calculer la distance entre deux joueurs ne demande pas d'assistant : c'est un ou
 ### 6.1 Des outils typés plutôt que des commandes
 Le Narrateur agit surtout par des outils typés, validés et journalisés — ils ne dépendent d'aucune syntaxe de commande :
 
-- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `bossbar`, `give_book` (une prophétie, un contrat, une amende…).
-- **Effets sur les joueurs** : `apply_effect`, `set_attribute` (temporaire), `teleport` (atterrissage sûr), `launch`, `give_item` / `take_item` (objets décrits en JSON : nom, lore, enchantements, incassable… convertis en composants 26.x par le code).
-- **Effets sur le monde** : `spawn` (mobs équipés, nommés, avec attributs), `world_effect` (explosion, éclair, feux d'artifice, météo, heure, particules).
+- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). La barre de boss arrive en M4, attachée aux défis.
+- **Effets sur les joueurs** : `apply_effect` / `remove_effect`, `set_attribute` / `reset_attribute` (temporaire), `teleport` (atterrissage sûr, même dimension en M2), `launch`, `give_item` / `take_item` (objets décrits en JSON : nom, lore, enchantements, incassable… convertis en composants 26.x par le code ; une confiscation est toujours temporaire).
+- **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time`.
 - **Commandes brutes** : `run_command`, en dernier recours. La commande est d'abord **analysée par le parseur Brigadier du serveur sans être exécutée** : si elle est invalide, le Narrateur reçoit l'erreur, sa position, et l'usage exact de la commande en 26.3. L'outil `command_help` renvoie l'arbre de syntaxe d'une commande. C'est ce qui manquait à la v1.
+
+La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retours, est dans le [design M1/M2](design/M1_M2.md) §9. Les schémas JSON sont générés depuis les classes d'arguments Kotlin et validés côté serveur ; on n'utilise pas `strict: true` (trop limité en nombre d'outils et en contraintes, et non vérifié à travers LLMGW).
 
 ### 6.2 L'arsenal des attributs
 Les attributs de 26.x offrent des châtiments et récompenses spectaculaires, visibles par tous les clients, sans une ligne de code : `scale` (joueur minuscule ou géant), `gravity` (gravité lunaire), `jump_strength`, `movement_speed`, `block_break_speed`, `safe_fall_distance`, `step_height`, `block_interaction_range`, `entity_interaction_range`, `max_health`, `attack_speed`, `knockback_resistance`, `oxygen_bonus`, `burning_time`… Chaque modification porte un identifiant et une durée : elle est retirée automatiquement, même après un redémarrage.
 
 ### 6.3 Garde-fous
-Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`…), puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, zones et joueurs protégés configurables, aucune destruction de base.
+Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets ou des entités, y compris derrière `execute … run`), puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables, aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10.
 
 ## 7. Le Cerveau
 
@@ -162,28 +176,24 @@ Le Directeur est l'agent principal : c'est lui qui parle aux joueurs et décide.
 1. Des événements arrivent dans sa boîte de réception : messages du chat, faits de jeu saillants, résultats d'assistants, échéances, battements réguliers.
 2. Il est réveillé (avec un court regroupement de ~1,5 s pour les rafales de chat) et reçoit un message contenant les nouveaux événements et un **rapport de situation**.
 3. Il enchaîne réflexion et appels d'outils jusqu'à la fin de son tour.
-4. **Pendant son tour, les nouveaux événements lui sont glissés avec chaque résultat d'outil** : s'il prépare un défi et qu'un joueur l'interpelle, il le voit à l'étape suivante, sans attendre la fin du tour.
+4. **Pendant son tour, les nouveaux événements lui sont glissés avec chaque résultat d'outil** : dans le message qui rend les `tool_result`, un bloc `<new_events>` placé **après** tous les résultats. S'il prépare un défi et qu'un joueur l'interpelle, il le voit à l'étape suivante, sans attendre la fin du tour.
 5. Tour fini : il se rendort jusqu'au prochain événement. Ne rien faire est une décision valable.
 
 Rien de long ne s'exécute dans la boucle du Directeur : pas d'attente, pas d'analyse lourde, pas d'écriture de code. Il délègue.
 
-Exemple de message reçu :
+Exemple de message reçu (généré par le code, donc en anglais ; horodatage relatif à `now` ; le chat est cité et échappé, jamais pris pour une consigne). En M3 et M4 s'y ajouteront faveur, défis, réminiscences et tics :
 
 ```
-<événements de="21:32:05" à="21:32:41">
-[21:32:07] CHAT Bartok : « narrateur t'es nul »
-[21:32:10] MORT Mimosa — tombée de sa canopée (y=218 → 64), bambouseraie
-[21:32:30] PROGRÈS clemsix6 — premier ancient debris (Nether, y=15)
-  ↳ réminiscence : il y a 12 jours, clemsix6 avait juré « la netherite avant dimanche »
-</événements>
-<situation heure="21:32:41" jour_mc="37, nuit">
-Joueurs : Bartok (grotte y=-58, ♥14, faveur −12) · Mimosa (réapparition, faveur +8) · clemsix6 (Nether, ♥20, faveur +2)
-Défis : #12 course « premier à trouver une ancient city » (Bartok vs clemsix6, reste 22 min)
-Châtiments : aucun · Modules : m-7 « creepers sous caféine » (reste 4 min)
-Cooldowns : châtiment Bartok disponible dans 6 min
-Tâches : T-31 (Forgeron) « vaches volantes » — compilation, essai 2/5
-Tes dernières interventions : 21:20 défi (#12) · 21:24 moquerie clemsix6 (registre : commentaire sportif) · 21:29 faveur Mimosa
-Tics à éviter : « pathétique », « quelle surprise »
+<events now="21:32:41" since="21:32:05">
+[-36s] CHAT Bartok (to you 0.92, hostile, provocation): "narrateur t'es nul"
+[-31s] DEATH Mimosa: fall 218→64 in bamboo_jungle (overworld -120 64 330), inventory dropped
+[-11s] ADVANCEMENT clemsix6: "Hidden in the Depths" (nether 40 15 -12)
+</events>
+<situation now="21:32:41" day="37" time="night" weather="clear">
+Bartok: overworld cave y=-58 dripstone_caves · hp 14/20 food 12 · online 1h12 · last 5m: mined 140 (3 diamond_ore y=-54..-51)
+Mimosa: overworld, respawning · protected from hostile actions until 21:37 (died)
+clemsix6: nether fortress y=72 · hp 20/20 · online 25m · last 5m: killed 12 blaze
+Tasks: T-13 analyst running 12s · Your last actions: -12m say→all · -8m apply_effect slowness→Bartok
 </situation>
 ```
 
@@ -196,7 +206,7 @@ Tics à éviter : « pathétique », « quelle surprise »
 | Entrée dans une structure ou un biome rare, trouvaille notable | Regroupé, réveil en quelques secondes |
 | Tout le reste (minage, construction, combats ordinaires…) | Résumé dans le **battement** périodique : « depuis 5 min, Bartok a miné 143 blocs dont 3 diamants à y=-54 » |
 
-Le battement a lieu toutes les 3 à 8 minutes (intervalle aléatoire) tant que des joueurs sont en ligne. C'est là que le Narrateur décide de lancer un défi ou de faire avancer un récit.
+Le battement a lieu 3 à 8 minutes (intervalle aléatoire) après la fin du dernier tour, tant que des joueurs sont en ligne. C'est là que le Narrateur décide de lancer un défi ou de faire avancer un récit. Les messages privés entre joueurs sont journalisés mais jamais transmis au Directeur. Le tableau complet de saillance est dans le [design M1/M2](design/M1_M2.md) §12.3.
 
 ### 7.3 Les assistants
 Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend immédiatement un numéro de tâche, l'assistant travaille en parallèle avec son propre contexte et ses propres outils, et son résultat revient comme un événement. `tasks` liste et annule les tâches en cours.
@@ -210,13 +220,14 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
-Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés.
+Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'Éclaireur arrive en M4 avec les mécaniques qui en ont besoin, les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
 
 ### 7.4 Chapitres et contexte
 - La conversation du Directeur est **append-only** : on n'édite jamais un tour passé, on ne change pas le prompt système ni la liste d'outils en cours de chapitre. C'est indispensable avec Opus 5.5 (sa réflexion est liée au préfixe exact de la conversation) et c'est ce qui rend le cache de prompt efficace.
 - Les informations changeantes (situation, rappels) sont **ajoutées** au nouveau message, jamais réinjectées dans un ancien.
-- Les consignes des administrateurs arrivent comme messages *système* en cours de conversation : autorité d'opérateur, sans casser le cache.
-- Au-delà de ~150k tokens, ou quand le serveur se vide, le chapitre se clôt et le suivant repart d'un briefing reconstruit depuis la mémoire (MEMOIRE.md §2 et §8). L'outillage, le prompt système et le briefing sont mis en cache : un tour ne paie que ses nouveaux tokens.
+- Les consignes des administrateurs et du moteur arrivent comme messages *système* en cours de conversation, placés juste après le message `user` de l'envoi : autorité d'opérateur, sans casser le cache. Repli réglable (`director.operatorChannel = user_tag`) : une balise `<operator>` ou `<engine>` à la fin du message `user`, que les joueurs ne peuvent pas imiter (`<` et `>` sont échappés dans leur texte). Une 400 qui refuse le rôle `system` déclenche ce repli automatiquement.
+- Un envoi n'entre dans l'historique qu'avec une réponse utilisable : un refus, une réponse tronquée ou une erreur ne laissent ni tour `assistant` vide ni message orphelin.
+- Au-delà de ~150k tokens (clôture au prochain moment calme ; 180k : clôture immédiate en fin de tour), ou quand le serveur est vide depuis 10 minutes, le chapitre se clôt par un **résumé factuel** écrit par le Directeur dans sa propre conversation (cache chaud), et le suivant repart d'un briefing reconstruit depuis le Journal et, en M3, la mémoire (MEMOIRE.md §2 et §8). Un test vérifie que le briefing contient l'état du monde, les joueurs et le chat récent. L'outillage, le prompt système et le briefing sont mis en cache : un tour ne paie que ses nouveaux tokens.
 
 ### 7.5 Latence
 Une réponse de chat coûte un appel au modèle, soit quelques secondes. Pour que l'attente fasse partie du jeu, le joueur qui a interpellé le Narrateur voit « ✎ le Narrateur réfléchit… » dans sa barre d'action. Leviers si c'est trop lent : baisser l'effort du Directeur (§14), utiliser le mode rapide d'Opus 5.5 si la passerelle le permet.
@@ -328,9 +339,9 @@ Mécanismes concrets contre la répétition et la dérive :
 Tout doit pouvoir s'expliquer après coup : pourquoi le Narrateur a dit ça, pourquoi il n'a rien fait, pourquoi ce module a planté. Trois niveaux de traces.
 
 ### 12.1 Les conversations avec Claude
-- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, rôle, modèle, effort, identifiant de requête, durée, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt, erreurs et tentatives.
-- **Le raisonnement** : les requêtes demandent `thinking.display: "summarized"`, qui renvoie un résumé lisible de la réflexion du modèle (Opus 5.5 ne renvoie jamais son raisonnement brut). Ces résumés sont journalisés avec le reste.
-- **Chaque conversation** (chapitre du Directeur, tâche d'un assistant, rêve) a sa transcription complète, append-only, dans `world/narrator2/logs/conversations/<date>/` : un `.jsonl` exact (pour rejouer ou analyser) et un `.md` lisible où l'on suit, dans l'ordre, les événements reçus, le résumé de réflexion, chaque appel d'outil avec ses arguments et son résultat, et ce qui a été dit aux joueurs.
+- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, tour, rôle, but (tour, résumé de chapitre, tâche), modèle, effort, identifiants de requête et de message, durée et temps jusqu'au premier token, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt et catégorie de refus, erreurs et tentatives. Les appels à Jev y figurent aussi (`provider = 'jev'`).
+- **Le raisonnement** : les requêtes demandent `thinking.display: "summarized"`, qui renvoie un résumé lisible de la réflexion du modèle (Opus 5.5 ne renvoie jamais son raisonnement brut). Ces résumés sont stockés dans `llm_calls.thinking` et dans les transcriptions.
+- **Chaque conversation** (chapitre du Directeur, tâche d'un assistant, rêve) a sa transcription complète, append-only, dans `world/narrator2/logs/conversations/<date>/` : un `.jsonl` exact (pour rejouer ou analyser) et un `.md` lisible où l'on suit, dans l'ordre, les événements reçus, le résumé de réflexion, chaque appel d'outil avec ses arguments et son résultat, et ce qui a été dit aux joueurs. Les envois non validés (refus, réponse tronquée, erreur) y apparaissent comme tels. Les tables `conversations`, `turns` et `tasks` relient chapitres, tours, tâches et transcriptions.
 
 ### 12.2 Les décisions du moteur
 Journalisées en base et dans le log du serveur, avec leur raison :
@@ -338,24 +349,27 @@ Journalisées en base et dans le log du serveur, avec leur raison :
 - actions bloquées (cooldown, plafond de sévérité, commande interdite, zone protégée) ;
 - cycle de vie des règles et modules (compilation et erreurs, déploiement, exceptions, dépassement de temps, désactivation automatique) ;
 - écritures en mémoire (qui a écrit quoi, depuis quelle conversation) et rapports de rêve ;
-- santé du Journal (événements par seconde, taille des lots, latence d'écriture).
+- santé du Journal (événements par seconde, taille des lots, latence d'écriture) ;
+- chapitres (ouverture, clôture, résumé), refus, blocages de budget et reprises, bascule du canal opérateur, commandes des opérateurs.
 
 ### 12.3 Le log du serveur
-Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[Forger#12]`, `[Journal]`, `[Forge]`, `[Memory]`, `[Safety]`, `[LLM]`), avec un niveau réglable par sous-système dans la configuration.
+Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[Tool]`, `[Guard]`, `[Journal]`, `[Observer]`, `[Sql]`, `[Jev]`, `[LLM]`, `[Worker]`, puis `[Forge]`, `[Memory]`…), avec un niveau réglable par sous-système dans la configuration.
 
 ### 12.4 Consulter
 ```
 /narrator trace [n]            # les n derniers tours du Directeur, résumés
-/narrator trace <tour|tâche>   # le détail d'un tour ou d'une tâche
-/narrator why                  # pourquoi la dernière action (raison + résumé de réflexion)
+/narrator trace turn <id>      # le détail d'un tour : événements, réflexion, outils, répliques
+/narrator trace task <id>      # le détail d'une tâche d'assistant
+/narrator why                  # pourquoi la dernière action (déclencheur + résumé de réflexion + actions)
+/narrator sql <requête>        # requête en lecture seule sur le Journal et les traces
 ```
-Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`…). Un tableau de bord web des traces viendra en M6.
+Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde au plus) puis lisent la base. Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`, `turns`…). Un tableau de bord web des traces viendra en M6.
 
 ## 13. Sécurité et administration
 
 - **Le chat est une entrée non fiable.** Les messages des joueurs sont balisés comme paroles de personnages ; le prompt traite les tentatives de manipulation comme un manque de respect (en jeu). Les vraies consignes n'arrivent que par le canal opérateur.
 - **Garde-fous du moteur** (§6.3) indépendants du modèle.
-- **Canaux de parole** (repris de la v1) : mention publique dans le chat ; `/narrateur <message>` pour parler au Narrateur en privé ; `/narrator whisper <consigne>`, réservé aux opérateurs, qui arrive au Directeur comme consigne système.
+- **Canaux de parole** (repris de la v1) : mention publique dans le chat ; `/pray <message>` pour parler au Narrateur en privé (le nom d'une commande est un littéral du code, donc anglais ; « prier le Narrateur-dieu » est dans le ton) ; `/narrator whisper <consigne>`, réservé aux opérateurs, qui arrive au Directeur comme consigne système.
 - **Commandes d'administration** :
 
 ```
@@ -364,6 +378,8 @@ Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`
 /narrator say <texte>            # faire parler le Narrateur
 /narrator whisper <consigne>     # consigne opérateur au Directeur
 /narrator protect <joueur> [on|off]
+/narrator chapter close          # clore le chapitre au prochain moment calme
+/narrator sql <requête>          # lecture seule
 /narrator rule list | remove <id>
 /narrator module list | unload <id> | unload-all
 /narrator challenge list | cancel <id>
@@ -389,14 +405,16 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
 
 ## 15. Configuration
 
-`config/narrator2/narrator2.json` (valeurs par défaut créées au premier lancement) et `config/narrator2/prompts/` (prompts modifiables, rechargés par `/narrator reload`).
+`config/narrator2/narrator2.json` (valeurs par défaut créées au premier lancement, jamais de clé dans le fichier) et `config/narrator2/prompts/` (surcharges des prompts du jar, rechargées par `/narrator reload`). Chaque section arrive avec son jalon ; valeurs et règles de validation de M1/M2 : [design M1/M2](design/M1_M2.md) §15.
 
 ```json
 {
   "gateway": { "baseUrl": "http://localhost:8088", "apiKeyEnv": "NARRATOR_LLMGW_KEY" },
-  "jev": { "enabled": true, "apiKeyEnv": "TYPESAFE_API_KEY", "model": "jev-1.13.0" },
+  "jev": { "enabled": true, "baseUrl": "https://api.typesafe.ai", "apiKeyEnv": "TYPESAFE_API_KEY", "model": "jev-1.13.0", "timeoutMs": 1500 },
   "language": "fr",
   "chaos": 3,
+  "journal": { "flushIntervalMs": 1000, "queueCapacity": 65536, "memoryLimitMb": 512, "threads": 2, "timeZone": "", "sqlTimeoutSeconds": 5, "warnSizeMb": 4096 },
+  "observer": { "redactedCommands": ["login", "l", "register", "reg", "changepassword"] },
   "roles": {
     "director":  { "model": "claude-opus-5-5", "effort": "medium" },
     "forger":    { "model": "claude-opus-5-5", "effort": "high" },
@@ -406,16 +424,18 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
     "chronicler":{ "model": "claude-opus-5-5", "effort": "low" },
     "dreamer":   { "model": "claude-opus-5-5", "effort": "high" }
   },
-  "director": { "heartbeatMinutes": [3, 8], "chapterTokenLimit": 150000, "chatDebounceMs": 1500 },
-  "workers": { "maxConcurrent": 3 },
-  "safety": {
-    "maxExplosionPower": 4, "maxSpawnPerAction": 12,
-    "protectedPlayers": [], "protectedZones": [],
-    "forbiddenCommands": ["stop", "op", "deop", "ban", "ban-ip", "pardon", "whitelist", "save-off", "kick"]
+  "director": {
+    "enabled": true, "heartbeatMinutes": [3, 8], "chatDebounceMs": 1500,
+    "chapterTokenLimit": 150000, "chapterHardLimit": 180000, "maxStepsPerTurn": 12,
+    "operatorChannel": "system_message", "emptyServerCloseMinutes": 10, "thinkingIndicator": true
   },
+  "workers": { "maxConcurrent": 3, "maxSteps": 15, "timeoutSeconds": 180 },
+  "safety": { "protectedPlayers": [], "extraForbiddenCommands": [] },
   "logging": { "transcripts": true, "levels": { "Director": "INFO", "LLM": "INFO", "Forge": "INFO" } }
 }
 ```
+
+Les plafonds (puissance d'explosion, invocations, durées, quota de morts…) ne sont plus des réglages séparés : ils découlent du niveau de chaos (tableau dans le design M1/M2 §10.4). La liste de base des commandes interdites est codée en dur ; `safety.extraForbiddenCommands` ne peut qu'en ajouter.
 
 ## 16. Feuille de route
 
@@ -429,6 +449,14 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
 | **M5 — Forge** | SDK, compilation Java à chaud, outils d'introspection, Forgeron, arsenal de départ | Il invente de nouvelles mécaniques |
 | **M6 — Finitions** | Scénariste, `inspire`, tics, évaluation du ton, tableau de bord web des traces | Il se renouvelle, et on voit tout |
 
+Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats, outils, garde-fous, tâches pour les agents) est dans [docs/design/M1_M2.md](design/M1_M2.md). Il tranche en outre, le 25/09/2026 :
+- **Un seul bus de faits** pour le Journal, la saillance, puis le moteur de mécaniques et les modules de la Forge (abonnés synchrones ou asynchrones à file bornée, désabonnement par propriétaire). L'interception d'actions du jeu (annuler des dégâts…) relève des crochets de la Forge, pas du bus.
+- **L'état qui doit rester cohérent avec le monde vit dans le monde** (pièces jointes Fabric), DuckDB ne garde que l'historique (§2).
+- **Outils** : 32 en M2, schémas générés depuis les arguments Kotlin, validés côté serveur, sans `strict: true` ; les outils sont figés par conversation et le modèle ne voit que ceux qui sont réellement branchés ; « ne rien faire » n'est pas un outil, `remind_me` programme un réveil.
+- **Garde-fous** : chaque règle du §17 a un composant qui l'applique ; les plafonds découlent du niveau de chaos ; le quota de morts se mesure en temps joué (stat vanilla `PLAY_TIME`) ; tant qu'aucun outil n'écrit de blocs (M2), la règle sur les constructions est garantie par l'absence d'API, la liste des commandes interdites et le blocage des explosions du Narrateur.
+- **Jev** : une requête de 9 questions par message de chat (tri et signaux de personnalité, stockés dès M2 pour M3), questions en anglais, repli heuristique alimenté par un fichier de mots français.
+- **Canal privé** : `/pray` ; **Analyste seul** en M2, Éclaireur en M4.
+
 ## 17. Décisions prises
 
 Tranché le 25/09/2026 :
@@ -436,10 +464,10 @@ Tranché le 25/09/2026 :
 1. **Serveur de dev** : Minecraft 26.3 vanilla avec Fabric API et le mod, sans autre mod. Le serveur de jeu ne migrera que lorsque ses autres mods (Farmer's Delight, Refurbished Furniture…) existeront en 26.3. Cette migration sort du périmètre du développement.
 2. **LLMGW** : le mod ne dépend pas du type de credentials ; il lui faut une URL et une clé projet. On recommande toujours une clé API Anthropic dans LLMGW (§14), mais le développement n'en dépend pas : les tests automatisés utilisent un faux serveur Anthropic.
 3. **Modèles** : Opus 5.5 pour tous les rôles, avec l'effort du §15. Le Directeur est en `medium`, pour la latence ; `high` se règle d'une ligne de configuration.
-4. **Chaos et interdits** : le chaos vaut 3 sur 5 par défaut. Le moteur applique ces règles, quel que soit le prompt :
+4. **Chaos et interdits** : le chaos vaut 3 sur 5 par défaut. Le moteur applique ces règles, quel que soit le prompt (composant par règle : [design M1/M2](design/M1_M2.md) §10) :
    - Les constructions des joueurs ne sont jamais détruites définitivement. Un bloc posé par un joueur ne peut être modifié que temporairement, et il est restauré automatiquement.
    - Un objet n'est jamais perdu définitivement : une confiscation est temporaire ou compensée, et sa restitution est tracée.
-   - Le Narrateur tue directement un joueur au plus une fois par heure de jeu (au chaos 3). Le joueur conserve alors son inventaire.
+   - Le Narrateur tue directement un joueur au plus une fois par heure de jeu (au chaos 3), l'heure se comptant en temps joué par ce joueur. Le joueur conserve alors son inventaire ; au-delà du quota, la mort est empêchée.
    - Le PvP n'est jamais forcé : un duel exige l'acceptation des deux joueurs. Les courses et les défis non violents n'en ont pas besoin.
    - Pas d'acharnement : un joueur mort dans les 5 dernières minutes, ou déjà en plein châtiment, n'est pas ciblé par un nouveau châtiment.
    - Les commandes d'administration sont interdites (§6.3).
