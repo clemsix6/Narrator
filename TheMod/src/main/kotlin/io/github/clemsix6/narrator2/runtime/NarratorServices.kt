@@ -1,0 +1,75 @@
+package io.github.clemsix6.narrator2.runtime
+
+import io.github.clemsix6.narrator2.agent.WorkersControl
+import io.github.clemsix6.narrator2.director.DirectorControl
+import io.github.clemsix6.narrator2.event.EventBus
+import io.github.clemsix6.narrator2.guard.Guards
+import io.github.clemsix6.narrator2.journal.Journal
+import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.reflex.Reflexes
+import io.github.clemsix6.narrator2.trace.TraceSink
+import io.github.clemsix6.narrator2.trace.Transcripts
+import kotlinx.coroutines.CoroutineScope
+import net.minecraft.server.MinecraftServer
+import java.nio.file.Path
+import java.time.Clock
+
+/** Life cycle of the Narrator on a server. */
+enum class Phase {
+    /** Components are being created. */
+    STARTING,
+
+    /** Everything runs. */
+    RUNNING,
+
+    /** The server is stopping: no new work (no wake-up, no task, no tool call); facts are still journaled. */
+    STOPPING,
+
+    /** Everything is closed. */
+    STOPPED,
+}
+
+/**
+ * What the Narrator's components use, from the server start to its stop. Implemented by
+ * `NarratorRuntime`; unit tests implement it with fakes. No component depends on the runtime class.
+ *
+ * Everything here lives as long as the server, except [settings], whose content `/narrator reload`
+ * replaces.
+ */
+interface NarratorServices {
+    val server: MinecraftServer
+
+    /** Background work (Director, workers, reflexes, reloads). Network calls switch to `Dispatchers.IO`. */
+    val scope: CoroutineScope
+
+    val phase: Phase
+
+    /** Wall clock of the engine; a fixed or stepped clock in tests. */
+    val clock: Clock
+
+    /** The world's Narrator folder, `world/narrator2/`: Journal, transcripts, small state files. */
+    val dataDir: Path
+
+    val settings: SettingsHolder
+
+    val bus: EventBus
+
+    val journal: Journal
+
+    /** Where traces go and where their ids come from: the [journal] in production, an in-memory sink in tests. */
+    val trace: TraceSink
+
+    /** Conversation transcripts, under [dataDir]. */
+    val transcripts: Transcripts
+
+    /** Live state of the players online. */
+    val players: PlayerStates
+
+    val guards: Guards
+
+    val reflexes: Reflexes
+
+    val director: DirectorControl
+
+    val workers: WorkersControl
+}
