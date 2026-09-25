@@ -108,14 +108,14 @@ class CommandToolGameTests {
     @GameTest
     fun anInvalidCommandGetsItsErrorWhereItIsAndTheExactSyntax(helper: GameTestHelper) {
         val tool = RunCommandTool()
-        val unknownParticle = run(helper, tool, "particle minecraft:hart ~ ~ ~")
-        helper.assertEquals(ToolStatus.INVALID, unknownParticle.status, unknownParticle.text)
+        val unknownBlock = run(helper, tool, "execute if block ~ ~ ~ minecraft:hart")
+        helper.assertEquals(ToolStatus.INVALID, unknownBlock.status, unknownBlock.text)
         helper.assertEquals(
-            "Invalid arguments: the command does not parse: Unknown particle: minecraft:hart\n" +
-                "at character 23: particle minecraft:hart<--[HERE]\n" +
+            "Invalid arguments: the command does not parse: Unknown block type 'minecraft:hart'\n" +
+                "at character 23: execute if block ~ ~ ~ <--[HERE]\n" +
                 "syntax:\n" +
-                "particle <name> [<pos>]",
-            unknownParticle.text,
+                "execute if block ~ ~ ~ <block> -> execute",
+            unknownBlock.text,
             "a wrong argument",
         )
         helper.assertEquals(
@@ -177,6 +177,10 @@ class CommandToolGameTests {
             "execute positioned $at run execute align xyz run clone ~ ~ ~ ~ ~ ~ ~ ~1 ~" to "clone",
             "execute store result score @s kills run list" to "execute store",
             "execute summon minecraft:zombie run list" to "execute summon",
+            // M2 review, finding 7: past the particles tool's caps, past play_sound's, and to every player's chat.
+            "execute as @a at @s run particle minecraft:heart ~ ~ ~ 0 0 0 1 2000000000 force" to "particle",
+            "execute at @a run playsound minecraft:entity.pig.ambient master @a" to "playsound",
+            "execute run random roll 1..6" to "random roll",
         )
         val wrong = refused.mapNotNull { (command, name) ->
             val result = run(helper, command)
@@ -219,7 +223,11 @@ class CommandToolGameTests {
         helper.assertTrue("execute as <targets> -> execute" in execute, "loops back to execute: $execute")
         helper.assertTrue("execute store (result|success)  (forbidden)" in execute, "a forbidden branch is marked: $execute")
         helper.assertTrue("execute if (block" in execute.joinToString("\n"), "if: $execute")
-        helper.assertEquals("execute as @a run particle <name> [<pos>]", help(helper, "execute as @a run particle").text, "behind execute … run")
+        helper.assertEquals(
+            listOf("execute as @a run random value <range> [<sequence>]", "execute as @a run random roll <range> [<sequence>]  (forbidden)"),
+            help(helper, "execute as @a run random").text.lines().take(2),
+            "behind execute … run, a forbidden branch marked",
+        )
         helper.assertEquals(
             "`list uuids` takes nothing more: it runs as is\n(\"extra\" is not part of the syntax: here is what can follow `list uuids`)",
             help(helper, "list uuids extra").text,
@@ -234,8 +242,11 @@ class CommandToolGameTests {
         val accepted = help(helper, "").text
         helper.assertTrue(accepted.startsWith("Commands run_command accepts ("), accepted)
         val names = accepted.substringAfter(": ").split(", ")
-        helper.assertTrue(names.containsAll(listOf("execute", "scoreboard", "playsound", "particle")), "accepted: $names")
-        helper.assertTrue(names.none { it in listOf("fill", "give", "tp", "say", "stop", "recipe") }, "no forbidden command: $names")
+        helper.assertTrue(names.containsAll(listOf("execute", "scoreboard", "stopsound", "random")), "accepted: $names")
+        helper.assertTrue(
+            names.none { it in listOf("fill", "give", "tp", "say", "stop", "recipe", "particle", "playsound") },
+            "no forbidden command: $names",
+        )
 
         val typo = help(helper, "scorebord")
         helper.assertEquals(ToolStatus.INVALID, typo.status, typo.text)
