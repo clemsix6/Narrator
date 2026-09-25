@@ -41,7 +41,9 @@ set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 @rem Java's NIO pipes create AF_UNIX sockets in %TEMP% and fail with "Unable to establish loopback
 @rem connection" when that path is not ASCII (e.g. a user profile named "Clément"). Gradle, its daemon
 @rem and the dev server all inherit this ASCII temp directory (set on the execute line below).
+@rem %PUBLIC% is set on every Windows install; fall back to its usual location when it is not.
 set NARRATOR_TMP=%PUBLIC%\narrator2-tmp
+if not defined PUBLIC set NARRATOR_TMP=C:\Users\Public\narrator2-tmp
 if not exist "%NARRATOR_TMP%" mkdir "%NARRATOR_TMP%"
 
 @rem Find java.exe

@@ -39,15 +39,16 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-// Loom's `include` is not transitive: nest every resolved library jar explicitly. Kotlin itself
-// (stdlib, reflect, coroutines) is provided at runtime by Fabric Language Kotlin, so it is skipped.
-fun isProvidedByKotlinMod(group: String, name: String) =
-    group.startsWith("org.jetbrains.kotlin") || (group == "org.jetbrains" && name == "annotations")
+// Loom's `include` is not transitive: nest every resolved library jar explicitly, except what the
+// server already provides at runtime: Kotlin itself (stdlib, reflect, coroutines) comes with Fabric
+// Language Kotlin, and SLF4J with Minecraft.
+fun isProvidedAtRuntime(group: String, name: String) =
+    group.startsWith("org.jetbrains.kotlin") || (group == "org.jetbrains" && name == "annotations") || group == "org.slf4j"
 
 afterEvaluate {
     bundled.resolvedConfiguration.resolvedArtifacts
         .map { it.moduleVersion.id }
-        .filterNot { isProvidedByKotlinMod(it.group, it.name) }
+        .filterNot { isProvidedAtRuntime(it.group, it.name) }
         .forEach { dependencies.add("include", "${it.group}:${it.name}:${it.version}") }
 }
 
@@ -94,10 +95,12 @@ fabricApi {
     }
 }
 
-// One JUnit XML report per run, listing every in-game test with its result.
+// One JUnit XML report per run, listing every in-game test with its result. The in-game tests read
+// their (fake) LLMGW key from the environment, like the mod does in production.
 loom.runs.named("gameTest") {
     val report = layout.buildDirectory.file("reports/gametest/TEST-gametest.xml").get().asFile
     systemProperties.put("fabric-api.gametest.report-file", report.absolutePath)
+    environmentVars.put("NARRATOR2_GAMETEST_KEY", "gametest-key-6f1c")
 }
 
 // Each in-game run starts from an empty world and config (Loom 1.18 only clears client test runs).
@@ -112,10 +115,9 @@ sourceSets.named("gametest") {
     runtimeClasspath += sourceSets.test.get().output
 }
 
-tasks.test {
-    useJUnitPlatform()
+tasks.withType<Test>().configureEach {
     // Minecraft's log4j configuration writes logs/ into the working directory: keep it under build/.
-    workingDir = layout.buildDirectory.dir("test-run").get().asFile
+    workingDir = layout.buildDirectory.dir("$name-run").get().asFile
     doFirst { workingDir.mkdirs() }
     asciiTempDir?.let {
         environment("TEMP", it.absolutePath)
@@ -125,6 +127,24 @@ tasks.test {
         events("passed", "skipped", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
+}
+
+tasks.test {
+    useJUnitPlatform { excludeTags("live") }
+}
+
+// Tests against the owner's real LLMGW server, through the SSH tunnel (see CLAUDE.md). Never part of
+// `test`, `build` or `check`. The key comes from NARRATOR_LLMGW_KEY or ../.secrets/llmgw.key, read by
+// the tests themselves: only the file's path is passed here.
+tasks.register<Test>("liveTest") {
+    description = "Runs the live tests against the real LLMGW server (needs the SSH tunnel on localhost:8088)."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("live") }
+    systemProperty("narrator2.live.keyFile", layout.projectDirectory.file("../.secrets/llmgw.key").asFile.absolutePath)
+    testLogging { showStandardStreams = true }
+    outputs.upToDateWhen { false }
 }
 
 tasks.processResources {
