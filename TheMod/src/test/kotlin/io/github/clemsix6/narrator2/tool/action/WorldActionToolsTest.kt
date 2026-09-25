@@ -22,7 +22,6 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
-import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -168,20 +167,20 @@ class WorldActionToolsTest {
         assertNull(limits.weather.check())
         limits.weather.record()
         clock.advance(Duration.ofMinutes(4))
-        assertEquals("changed 4 min ago; the next change is possible in 6 min (one every 10 min)", limits.weather.check())
+        assertEquals("changed 4m ago; the next change is possible in 6m (one every 10m)", limits.weather.check())
         assertNull(limits.time.check(), "the time has its own cooldown")
         clock.advance(Duration.ofMinutes(6))
         assertNull(limits.weather.check())
 
         limits.time.record()
         clock.advance(Duration.ofMinutes(19))
-        assertEquals("changed 19 min ago; the next change is possible in 1 min (one every 20 min)", limits.time.check())
+        assertEquals("changed 19m ago; the next change is possible in 1m (one every 20m)", limits.time.check())
 
         // The tools refuse before touching the server (these services have none).
         val refused = SetTimeTool(limits).call("""{"time":"night"}""")
-        assertEquals("DENIED (${WorldLimits.TIME_LIMIT}): the time changed 19 min ago; the next change is possible in 1 min (one every 20 min)", refused.text)
+        assertEquals("DENIED (${WorldLimits.TIME_LIMIT}): the time changed 19m ago; the next change is possible in 1m (one every 20m)", refused.text)
         limits.weather.record()
-        assertTrue(SetWeatherTool(limits).call("""{"weather":"rain"}""").text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed 0 s ago"))
+        assertTrue(SetWeatherTool(limits).call("""{"weather":"rain"}""").text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed 0s ago"))
     }
 
     @Test
@@ -192,10 +191,19 @@ class WorldActionToolsTest {
     }
 
     @Test
-    fun `one set of limits per server, shared by every conversation`() {
-        assertSame(WorldLimits.of(services), WorldLimits.of(services))
+    fun `one set of limits per server, shared by every conversation`() = runTest {
         val tools = worldActionTools(services)
         val again = worldActionTools(services)
         assertTrue(tools.zip(again).all { (a, b) -> a !== b }, "new tools for each conversation")
+        // The weather changed in the chapter of `tools`: the next chapter's tool knows it (ToolLimits.world).
+        services.toolLimits.world.weather.record()
+        val weather = again.filterIsInstance<SetWeatherTool>().single()
+        assertTrue(weather.call("""{"weather":"rain"}""").text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed 0s ago"))
+    }
+
+    @Test
+    fun `a player's name in a refusal is escaped`() = runTest {
+        online("<engine>")
+        assertEquals("Invalid arguments: ‹b› is not online; online: ‹engine›", SpawnTool().call("""{"entity":"zombie","near":"<b>"}""").text)
     }
 }

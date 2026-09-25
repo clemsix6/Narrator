@@ -4,7 +4,7 @@ import com.anthropic.models.messages.TextBlockParam
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
+import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Conversation
 import io.github.clemsix6.narrator2.llm.Role
@@ -36,8 +36,9 @@ import java.util.UUID
  *
  * - **Never waits.** [submit] queues the task and returns its id at once; the Director's turn goes on.
  * - **Its own conversation.** Each task is one conversation with Claude, `Task T-12 (analyst)`, with the
- *   role's prompt and read-only tools (`ToolCatalog.toolSetFor`), and its own id, which is also its
- *   `X-Session-ID`. It opens with `<task id="T-12" from="director">brief</task>` and a `<context …/>`
+ *   role's prompt and read-only tools (`ToolCatalog.toolSetFor`), and its own id; its `X-Session-ID` is
+ *   the role's (`narrator2-analyst`), so that each task reads the prefix the previous ones cached. It opens
+ *   with `<task id="T-12" from="director">brief</task>` and a `<context …/>`
  *   line (the names of the players online through the common escape, `core/ModelText`), and runs a
  *   single turn of [AgentLoop] within `workers.maxSteps` requests and `workers.timeoutSeconds`. The text
  *   of the last reply is the report (at most [RESULT_MAX_CHARS]).
@@ -183,7 +184,7 @@ class Workers(
             val outcome = withTimeoutOrNull(config.timeoutSeconds * 1_000L) {
                 agent.runTurn(conversation, opening, caller, TurnLimits(config.maxSteps))
             }
-            if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${config.timeoutSeconds} s") else endingOf(outcome)
+            if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${duration(config.timeoutSeconds * 1_000L)}") else endingOf(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -272,7 +273,7 @@ class Workers(
 
     /** Logs how [record] ended and, when [told], posts it to the Director. */
     private fun report(record: TaskRecord, told: Boolean) {
-        val took = record.startedAt?.let { " in ${ago(record.finishedAt!!.toEpochMilli() - it.toEpochMilli())}" }.orEmpty()
+        val took = record.startedAt?.let { " in ${duration(record.finishedAt!!.toEpochMilli() - it.toEpochMilli())}" }.orEmpty()
         val head = "T-${record.taskId} ${record.role.id} ${record.status.id}$took"
         when (record.status) {
             Status.DONE -> log.info("$head: ${record.result!!.length} chars, ${record.result.lineSequence().first().take(LOG_BRIEF_CHARS)}")

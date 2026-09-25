@@ -37,17 +37,17 @@ class DeathReportTest {
     @Test
     fun `the decision's sentence ties the death to what the Narrator did just before`() {
         assertEquals(
-            "minecraft:fall, not the Narrator's (guard ran out 12 s of play before), inventory dropped; " +
+            "minecraft:fall, not the Narrator's (guard ran out 12s of play before), inventory dropped; " +
                 "1 of 1 Narrator deaths left this played hour; " +
-                "the Narrator acted on Bartok in the last 60 s: apply_effect 40 s before (turn 42)",
+                "the Narrator acted on Bartok in the last 1m: apply_effect 40s before (turn 42)",
             report.reason(),
         )
-        assertEquals("armed for 5 s of play more", report.copy(armedUntil = 200_340).guard())
+        assertEquals("armed for 5s of play more", report.copy(armedUntil = 200_340).guard())
         assertEquals("not armed", report.copy(armedUntil = 0).guard())
         assertEquals("protected by the operators", report.copy(isProtected = true, deathsLeft = 0).quota())
-        assertEquals("no world action of the Narrator on Bartok in the last 60 s", report.copy(actions = emptyList()).actionsBefore())
+        assertEquals("no world action of the Narrator on Bartok in the last 1m", report.copy(actions = emptyList()).actionsBefore())
         assertEquals(
-            "the Narrator's actions in the last 60 s are unknown (the Journal is unavailable)",
+            "the Narrator's actions in the last 1m are unknown (the Journal is unavailable)",
             report.copy(actions = null, actionsUnknown = "the Journal is unavailable").actionsBefore(),
         )
     }
@@ -103,7 +103,7 @@ class DeathReportTest {
             listOf(
                 "[Narrator] why: Bartok's last death · 19:35:10, 1m ago",
                 "Cause: minecraft:fall · not the Narrator's · inventory dropped",
-                "Death guard: ran out 12 s of play before · 1 of 1 Narrator deaths left this played hour",
+                "Death guard: ran out 12s of play before · 1 of 1 Narrator deaths left this played hour",
                 "The Narrator acted on Bartok in the 60 s before:",
                 "  -40 s apply_effect (turn #42) ok: ok: levitation II on Bartok for 30 s",
                 "More: /narrator why turn 42",

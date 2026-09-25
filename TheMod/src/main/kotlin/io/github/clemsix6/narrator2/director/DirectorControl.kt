@@ -102,6 +102,9 @@ data class PendingReminder(val id: Long, val note: String, val at: Long)
  * @property inbox signals waiting in the inbox.
  * @property droppedSignals signals dropped because the inbox was full.
  * @property turnId the running turn, if any.
+ * @property turnsThisHour the turns started within the last hour, against [turnsPerHour]
+ *   (`director.turnsPerHour`, M2 review, finding 26): once they are all used, only addressed chat,
+ *   prayers and whispers wake the Director.
  */
 data class DirectorStatus(
     val state: DirectorState,
@@ -115,13 +118,18 @@ data class DirectorStatus(
     val turnId: Long?,
     val operatorChannel: OperatorChannelMode,
     val reminders: List<PendingReminder>,
+    val turnsThisHour: Int,
+    val turnsPerHour: Int,
 )
 
 /** How tools and commands talk to the Director. Implemented by the Director; faked in tests. */
 interface DirectorControl {
     /**
-     * Puts [signal] in the inbox. Any thread; never blocks. When the inbox is full, the oldest
-     * [Urgency.NEXT] events are dropped (and counted), never addressed chat nor control signals.
+     * Puts [signal] in the inbox. Any thread; never blocks. The inbox is bounded in every state (M2 review,
+     * finding 22): when it is full, the least pressing and oldest item goes, counted by kind and told to the
+     * model at the next wake-up: an [Urgency.NEXT] event first, then a [Urgency.SOON] event that is not
+     * chat, then chat (addressed chat and prayers too, as a last resort), then a task result, a reminder
+     * or a whisper. Control signals are never dropped.
      */
     fun post(signal: DirectorSignal)
 

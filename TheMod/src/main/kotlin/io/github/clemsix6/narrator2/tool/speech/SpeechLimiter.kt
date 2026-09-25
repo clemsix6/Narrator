@@ -1,12 +1,13 @@
 package io.github.clemsix6.narrator2.tool.speech
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.Verdict
-import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.TurnCounter
 import java.time.Clock
 import java.util.UUID
-import java.util.WeakHashMap
 
 /**
  * The anti-spam limits of the speech tools (M1_M2 §9.1), enforced whatever the model asks:
@@ -17,13 +18,12 @@ import java.util.WeakHashMap
  * - `play_sound`: [SOUNDS_PER_MINUTE] sounds per sliding minute.
  *
  * What is allowed is counted at once: a tool asks just before it acts. A refusal counts nothing.
- * One limiter per server ([of]), so a new chapter (new tools) does not reset the counts. In memory
- * only: a restart starts afresh. Any thread.
+ * The server's own is `ToolLimits.speech`, so a new chapter (new tools) does not reset the counts. In
+ * memory only: a restart starts afresh. Any thread.
  */
 class SpeechLimiter(private val clock: Clock) {
     private val lines = Window(LINES_PER_MINUTE)
-    private var turn: Pair<String, Long?>? = null
-    private var linesThisTurn = 0
+    private val linesThisTurn = TurnCounter(LINES_PER_TURN)
     private val sounds = Window(SOUNDS_PER_MINUTE)
     private val titles = Cooldown(TITLE_COOLDOWN_MS)
     private val actionbars = Cooldown(ACTIONBAR_COOLDOWN_MS)
@@ -33,12 +33,7 @@ class SpeechLimiter(private val clock: Clock) {
     @Synchronized
     fun line(caller: Caller): Verdict {
         val now = clock.millis()
-        val key = caller.conversationId to caller.turnId
-        if (key != turn) {
-            turn = key
-            linesThisTurn = 0
-        }
-        if (linesThisTurn >= LINES_PER_TURN) {
+        if (linesThisTurn.full(caller)) {
             return Verdict.Denied(
                 RULE,
                 "$LINES_PER_TURN lines already this turn, the most a turn may say; " +
@@ -47,10 +42,10 @@ class SpeechLimiter(private val clock: Clock) {
         }
         val wait = lines.waitMs(now)
         if (wait > 0) {
-            return Verdict.Denied(RULE, "$LINES_PER_MINUTE lines already in the last minute; the next is possible in ${describe(wait)}")
+            return Verdict.Denied(RULE, "$LINES_PER_MINUTE lines already in the last minute; the next is possible in ${ToolText.wait(wait)}")
         }
         lines.add(now)
-        linesThisTurn++
+        linesThisTurn.take(caller)
         return Verdict.Allowed
     }
 
@@ -60,7 +55,7 @@ class SpeechLimiter(private val clock: Clock) {
         val now = clock.millis()
         val wait = sounds.waitMs(now)
         if (wait > 0) {
-            return Verdict.Denied(RULE, "$SOUNDS_PER_MINUTE sounds already in the last minute; the next is possible in ${describe(wait)}")
+            return Verdict.Denied(RULE, "$SOUNDS_PER_MINUTE sounds already in the last minute; the next is possible in ${ToolText.wait(wait)}")
         }
         sounds.add(now)
         return Verdict.Allowed
@@ -88,8 +83,8 @@ class SpeechLimiter(private val clock: Clock) {
 
     /** A player whose cooldown runs: the last one was [agoMs] ago, the next is possible in [leftMs]. */
     data class Waiting(val player: PlayerRef, val agoMs: Long, val leftMs: Long) {
-        /** e.g. `Bob got one 12 s ago (next in 18 s)`. */
-        fun describe(): String = "${player.name} got one ${SpeechLimiter.describe(agoMs)} ago (next in ${SpeechLimiter.describe(leftMs)})"
+        /** e.g. `Bob got one 12s ago (next in 18s)`. */
+        fun describe(): String = "${ModelText.name(player.name)} got one ${ToolText.duration(agoMs)} ago (next in ${ToolText.wait(leftMs)})"
     }
 
     /** At most [max] uses in any minute. */
@@ -128,21 +123,5 @@ class SpeechLimiter(private val clock: Clock) {
         const val ACTIONBAR_COOLDOWN_MS = 5_000L
         const val BOOK_COOLDOWN_MS = 5 * 60_000L
         private const val MINUTE_MS = 60_000L
-
-        private val byServer = WeakHashMap<NarratorServices, SpeechLimiter>()
-
-        /** The limiter of the server [services] belong to: the same for every conversation, dropped with the server. */
-        @Synchronized
-        fun of(services: NarratorServices): SpeechLimiter = byServer.getOrPut(services) { SpeechLimiter(services.clock) }
-
-        /** A duration for the model, rounded up to the second: `18 s`, `3 min 10 s`. */
-        fun describe(ms: Long): String {
-            val seconds = (ms + 999) / 1_000
-            return when {
-                seconds < 60 -> "$seconds s"
-                seconds % 60 == 0L -> "${seconds / 60} min"
-                else -> "${seconds / 60} min ${seconds % 60} s"
-            }
-        }
     }
 }

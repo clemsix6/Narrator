@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.tool.Range
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -59,7 +60,7 @@ class RemindMeTool : NarratorTool<RemindMeArgs>(
         }
         val at = ctx.clock.millis() + args.inSeconds * 1_000L
         return director.scheduleReminder(args.inSeconds, note, ctx.caller).fold(
-            onSuccess = { id -> ToolResult.ok("ok: reminder R-$id at ${clockTime(ctx.clock, at)} (in ${describe(args.inSeconds)})") },
+            onSuccess = { id -> ToolResult.ok("ok: reminder R-$id at ${clockTime(ctx.clock, at)} (in ${ToolText.duration(args.inSeconds * 1_000L)})") },
             onFailure = { ToolResult.failed("no reminder set: ${it.message}") },
         )
     }
@@ -69,12 +70,5 @@ class RemindMeTool : NarratorTool<RemindMeArgs>(
 
         /** The rule of the pending reminders' cap, in `DENIED (reminder_limit): …`. */
         const val LIMIT_RULE = "reminder_limit"
-
-        /** `45s`, `10m`, `12m30s`. */
-        private fun describe(seconds: Int): String = when {
-            seconds < 60 -> "${seconds}s"
-            seconds % 60 == 0 -> "${seconds / 60}m"
-            else -> "${seconds / 60}m${seconds % 60}s"
-        }
     }
 }

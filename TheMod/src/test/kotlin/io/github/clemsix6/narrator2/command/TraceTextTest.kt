@@ -33,7 +33,7 @@ class TraceTextTest {
     private fun colorOf(line: Component): TextColor? = (line.siblings.lastOrNull() ?: line).style.color
 
     private fun idle(state: DirectorState = DirectorState.IDLE, reason: String? = null) =
-        DirectorStatus(state, null, reason, 3, TraceDataset.CHAPTER, 61_000, 0, 0, null, OperatorChannelMode.SYSTEM_MESSAGE, emptyList())
+        DirectorStatus(state, null, reason, 3, TraceDataset.CHAPTER, 61_000, 0, 0, null, OperatorChannelMode.SYSTEM_MESSAGE, emptyList(), 0, 30)
 
     @Test
     fun `trace lists the last turns in one line each`() {

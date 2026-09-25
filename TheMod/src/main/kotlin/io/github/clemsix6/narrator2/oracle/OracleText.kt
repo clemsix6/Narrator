@@ -1,33 +1,22 @@
 package io.github.clemsix6.narrator2.oracle
 
 import io.github.clemsix6.narrator2.core.ModelText
+import io.github.clemsix6.narrator2.tool.ToolText
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * How the Oracle writes what it reads, for the model: English, compact, ids without `minecraft:`,
- * dimensions `overworld`, `nether`, `end` (M1_M2 §12.6). Pure: no game object, usable from any thread.
+ * How the Oracle writes what it reads, for the model: English, compact, ids without `minecraft:`
+ * (M1_M2 §12.6). Durations, levels and dimensions are written as everywhere else (`tool/ToolText`). Pure:
+ * no game object, usable from any thread.
  */
 object OracleText {
     private const val VANILLA = "minecraft:"
 
     /** An id without the `minecraft:` namespace: `minecraft:diamond_ore` → `diamond_ore`; other namespaces stay. */
     fun bare(id: String): String = id.removePrefix(VANILLA)
-
-    /** A dimension's short name: `overworld`, `nether`, `end`, or the bare id of another dimension. */
-    fun dimension(id: String): String = when (id) {
-        "minecraft:the_nether" -> "nether"
-        "minecraft:the_end" -> "end"
-        else -> bare(id)
-    }
-
-    /** The full id of a dimension written by the model: `nether`, `the_nether`, `minecraft:the_nether`… */
-    fun dimensionId(name: String): String = when (val lower = name.trim().lowercase()) {
-        "overworld", "nether", "end" -> if (lower == "overworld") "minecraft:overworld" else "minecraft:the_$lower"
-        else -> if (':' in lower) lower else VANILLA + lower
-    }
 
     /** `x y z`. */
     fun coords(x: Int, y: Int, z: Int): String = "$x $y $z"
@@ -67,23 +56,8 @@ object OracleText {
         return if (vertical == null) head else "$head, $vertical"
     }
 
-    /**
-     * A duration as the Director's messages write it (`EventFormatter.ago`, T18): `40s`, `4m05s`, `25m`,
-     * `1h12m`; and `3d4h` from a day on. Rounded to the second.
-     */
-    fun duration(ms: Long): String {
-        val seconds = (ms.coerceAtLeast(0) + 500) / 1000
-        return when {
-            seconds < 60 -> "${seconds}s"
-            seconds < 600 && seconds % 60 != 0L -> "${seconds / 60}m%02ds".format(Locale.ROOT, seconds % 60)
-            seconds < 3600 -> "${seconds / 60}m"
-            seconds < 86_400 -> "${seconds / 3600}h%02dm".format(Locale.ROOT, (seconds % 3600) / 60)
-            else -> "${seconds / 86_400}d${(seconds % 86_400) / 3600}h"
-        }
-    }
-
-    /** How long ago, as `[-12m]` in the event lists: `[-40s]`, `[-3h05m]`. */
-    fun ago(ms: Long): String = "[-${duration(ms)}]"
+    /** How long ago, as `[-12m]` in the event lists: `[-40s]`, `[-3h05m]` ([ToolText.duration]). */
+    fun ago(ms: Long): String = "[-${ToolText.duration(ms)}]"
 
     /** Health or another float: `14`, `13.5`. */
     fun number(value: Float): String {
@@ -100,9 +74,6 @@ object OracleText {
         return if (metres >= 1000) "%.1f km".format(Locale.ROOT, metres / 1000.0) else "$metres m"
     }
 
-    /** Roman numerals for effect and enchantment levels 1-10; beyond, digits. */
-    fun level(level: Int): String = if (level in 1..ROMAN.size) ROMAN[level - 1] else level.toString()
-
     /** A string cut to [max] characters, with `…` when cut. */
     fun cut(text: String, max: Int): String = if (text.length <= max) text else text.take(max - 1) + "…"
 
@@ -115,5 +86,4 @@ object OracleText {
 
     private const val VERTICAL_NOTE = 3
     private val COMPASS = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-    private val ROMAN = listOf("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 }

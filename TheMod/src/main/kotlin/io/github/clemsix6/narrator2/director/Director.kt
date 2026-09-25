@@ -10,7 +10,7 @@ import io.github.clemsix6.narrator2.agent.TurnLimits
 import io.github.clemsix6.narrator2.agent.TurnOutcome
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
+import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
@@ -212,6 +212,8 @@ class Director(
             turnId = runningTurn,
             operatorChannel = agent.channelMode(config.channelMode),
             reminders = pendingReminders(),
+            turnsThisHour = budget.used(clock.millis()),
+            turnsPerHour = config.turnsPerHour,
         )
     }
 
@@ -229,7 +231,7 @@ class Director(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        log.error("the Director's loop failed; it goes on in ${ago(ERROR_PAUSE_MS)}", e)
+                        log.error("the Director's loop failed; it goes on in ${duration(ERROR_PAUSE_MS)}", e)
                         delay(ERROR_PAUSE_MS)
                     }
                 }
@@ -420,7 +422,7 @@ class Director(
                 val delay = retryDelay(summaryStep++)
                 summaryRetryAt = now + delay
                 silence = silence ?: Silence(now, "the gateway failed: ${(error as? GatewayError.Transient)?.kind ?: error.description}")
-                "in ${ago(delay)}"
+                "in ${duration(delay)}"
             }
         }
         decisions.record(
@@ -459,7 +461,7 @@ class Director(
         silence = silence ?: Silence(now, "your previous chapter closed on an error (${reason.id})")
         decisions.record(
             log, DecisionRecord.Kind.BACKOFF, "backed off", subject = "chapter",
-            reason = "a chapter closed on an error (${reason.id}: $why); the next one opens in ${ago(delay)}", level = Log.Level.WARN,
+            reason = "a chapter closed on an error (${reason.id}: $why); the next one opens in ${duration(delay)}", level = Log.Level.WARN,
         )
     }
 
@@ -724,7 +726,7 @@ class Director(
             retryNote = note
             notBefore = clock.millis() + RETRY_DELAY_MS
             decisions.record(
-                log, DecisionRecord.Kind.REFUSAL, "refused", subject = "turn $id", reason = "${what(outcome)}; the events wait ${ago(RETRY_DELAY_MS)}",
+                log, DecisionRecord.Kind.REFUSAL, "refused", subject = "turn $id", reason = "${what(outcome)}; the events wait ${duration(RETRY_DELAY_MS)}",
                 eventId = triggerEvents.firstOrNull(), conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
             )
             putBack(sent, failed = true, sentSkipped)
@@ -741,7 +743,7 @@ class Director(
                     backoffUntil = now + delay
                     silence = silence ?: Silence(now, "the gateway failed: ${error.kind}")
                     decisions.record(
-                        log, DecisionRecord.Kind.BACKOFF, "backed off", subject = "turn $id", reason = "${error.description}; next try in ${ago(delay)}",
+                        log, DecisionRecord.Kind.BACKOFF, "backed off", subject = "turn $id", reason = "${error.description}; next try in ${duration(delay)}",
                         conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
                     )
                     TurnRecord.Outcome.FAILED
@@ -915,7 +917,7 @@ class Director(
     /** The Narrator has been unable to act since [since], because [why]. */
     private data class Silence(val since: Long, val why: String) {
         fun note(now: Long) =
-            "You could not act for ${ago(now - since)} ($why). The events below include what is still waiting; " +
+            "You could not act for ${duration(now - since)} ($why). The events below include what is still waiting; " +
                 "answer what still matters now, do not try to catch up on everything."
     }
 

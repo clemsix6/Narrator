@@ -326,12 +326,20 @@ class GuardGapGameTests {
             helper.assertTrue(player.startRiding(strider, true, true), "the player rides the strider")
             val mobs = NarratorMobs(guards.items)
             mobs.onLoad(strider)
+            helper.assertValueEqual(listOf("1 minecraft:strider" to expiresAt), mobs.activeOn(player.uuid).map { it.what to it.until }, "before its time")
             helper.assertValueEqual(0, mobs.expire(expiresAt), "due, but ridden")
+            // What the situation and inspect_player tell: its real end, not its own time, already gone.
+            helper.assertValueEqual(
+                listOf("1 minecraft:strider, ridden past its time" to expiresAt + NarratorMobs.MAX_OVERTIME_MS),
+                mobs.activeOn(player.uuid).map { it.what to it.until },
+                "kept under its rider",
+            )
             helper.assertValueEqual(0, mobs.expire(expiresAt + NarratorMobs.MAX_OVERTIME_MS - 1_000), "still ridden, within 10 minutes")
             helper.assertTrue(!strider.isRemoved && player.vehicle === strider, "the strider stays under its rider")
 
             helper.assertValueEqual(1, mobs.expire(expiresAt + NarratorMobs.MAX_OVERTIME_MS), "10 minutes past its time, it goes")
             helper.assertTrue(strider.isRemoved && player.vehicle == null, "the strider is gone, the player off it")
+            helper.assertValueEqual(emptyList(), mobs.activeOn(player.uuid), "gone")
             helper.assertTrue(
                 helper.level.getBlockState(player.blockPosition().below()).`is`(Blocks.STONE) && player.y == rim.y.toDouble(),
                 "set down on the rim, not in the lava: ${player.position()}",

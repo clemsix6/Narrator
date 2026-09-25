@@ -74,6 +74,42 @@ class ServerThreadTest {
     }
 
     @Test
+    fun `without waiting, a block runs at once on the loop's thread, later from another`() {
+        val loop = TestLoop()
+        val ran = mutableListOf<Thread>()
+        loop.thread = Thread.currentThread()
+        assertTrue(loop.runOnServerThread { ran += Thread.currentThread() })
+        assertEquals(listOf(Thread.currentThread()), ran, "at once, not behind the task in progress")
+
+        loop.thread = Thread {}
+        assertTrue(loop.runOnServerThread { ran += Thread.currentThread() }, "queued")
+        assertEquals(1, ran.size, "not run on the caller's thread")
+        val server = Thread { loop.runQueuedTasks() }
+        server.start()
+        server.join()
+        assertEquals(listOf(Thread.currentThread(), server), ran)
+    }
+
+    @Test
+    fun `without waiting, a stopped server drops the block instead of looping or running it elsewhere`() {
+        val loop = TestLoop(running = false)
+        val ran = AtomicBoolean(false)
+
+        // The death guard's old way (M2-fix-EF, limits): off the server thread, queue the same call again. A
+        // stopped server runs a task on the caller's thread at once, so it called itself for ever (5 times here).
+        fun oldArm(depth: Int): Int {
+            if (loop.isSameThread || depth == 5) return depth
+            var reached = depth
+            loop.execute { reached = oldArm(depth + 1) }
+            return reached
+        }
+        assertEquals(5, oldArm(0), "the old way never ends")
+
+        assertFalse(loop.runOnServerThread { ran.set(true) }, "dropped")
+        assertFalse(ran.get(), "never run on the caller's thread")
+    }
+
+    @Test
     fun `a timeout is an ordinary exception, and the late block is skipped`() {
         val loop = TestLoop()
         val ran = AtomicBoolean(false)

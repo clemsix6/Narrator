@@ -1,8 +1,10 @@
 package io.github.clemsix6.narrator2.guard
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolText
 import java.time.Clock
 
 /**
@@ -25,7 +27,7 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
      */
     fun check(target: PlayerRef, caller: Caller, episodes: Episodes, diedAt: Long? = null): Verdict {
         val now = clock.millis()
-        val name = target.name
+        val name = ModelText.name(target.name)
         val live = players.get(target.uuid)
         if (live != null && live.health <= 0f) {
             return Verdict.Denied(Rules.NO_PILE_ON, "$name is dead; no hostile action against them until $NO_PILE_ON_MINUTES minutes after their death.")
@@ -35,14 +37,14 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
             val end = died + NO_PILE_ON_MS
             return Verdict.Denied(
                 Rules.NO_PILE_ON,
-                "$name died ${span(now - died)} ago; hostile actions against them are refused until ${at(end)} (in ${span(end - now)}).",
+                "$name died ${ToolText.duration(now - died)} ago; hostile actions against them are refused until ${at(end)} (in ${ToolText.wait(end - now)}).",
             )
         }
         val episode = episodes.active(target.uuid)
         if (episode != null && (caller.turnId == null || episode.turnId != caller.turnId)) {
             return Verdict.Denied(
                 Rules.ALREADY_PUNISHED,
-                "$name is already being punished (an earlier punishment runs until ${at(episode.until)}, in ${span(episode.until - now)}); one punishment at a time.",
+                "$name is already being punished (an earlier punishment runs until ${at(episode.until)}, in ${ToolText.wait(episode.until - now)}); one punishment at a time.",
             )
         }
         if (episode == null) {
@@ -51,7 +53,7 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
                 val next = recent[recent.size - MAX_PUNISHMENTS_PER_HOUR] + Episodes.WINDOW_MS
                 return Verdict.Denied(
                     FAIR_SHARE,
-                    "$name was punished ${recent.size} times in the last hour; the next punishment against them is allowed at ${at(next)} (in ${span(next - now)}). Mind the other players, or reward this one.",
+                    "$name was punished ${recent.size} times in the last hour; the next punishment against them is allowed at ${at(next)} (in ${ToolText.wait(next - now)}). Mind the other players, or reward this one.",
                 )
             }
         }
@@ -72,17 +74,5 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
 
         /** [NO_PILE_ON_MINUTES] in milliseconds. */
         const val NO_PILE_ON_MS = NO_PILE_ON_MINUTES * 60_000L
-
-        /** A duration for the model: `45s`, `3m`, `4m30s`, `1h05m`; rounded up to the second. */
-        internal fun span(ms: Long): String {
-            val seconds = (maxOf(ms, 0L) + 999) / 1_000
-            return when {
-                seconds < 60 -> "${seconds}s"
-                seconds < 3_600 -> if (seconds % 60 == 0L) "${seconds / 60}m" else "${seconds / 60}m${two(seconds % 60)}s"
-                else -> "${seconds / 3_600}h${two((seconds % 3_600) / 60)}m"
-            }
-        }
-
-        private fun two(value: Long): String = value.toString().padStart(2, '0')
     }
 }

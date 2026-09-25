@@ -2,6 +2,8 @@ package io.github.clemsix6.narrator2.oracle
 
 import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.observer.id
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.shownName
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerPlayer
@@ -25,7 +27,7 @@ class PlayerReport(private val player: ServerPlayer) {
 
     /** `Bartok · survival · hp 14/20 · food 12 (saturation 3.2) · xp level 23 · armor 15 · online 1h12`. */
     fun header(onlineMs: Long?, idle: Boolean): String = buildList {
-        add(player.plainTextName)
+        add(player.shownName)
         add(player.gameMode().serializedName)
         if (player.isDeadOrDying) {
             add("dead")
@@ -36,7 +38,7 @@ class PlayerReport(private val player: ServerPlayer) {
         }
         add("xp level ${player.experienceLevel}")
         add("armor ${player.armorValue}")
-        onlineMs?.let { add("online ${OracleText.duration(it)}") }
+        onlineMs?.let { add("online ${ToolText.duration(it)}") }
         if (idle) add("idle")
     }.joinToString(" · ")
 
@@ -47,7 +49,7 @@ class PlayerReport(private val player: ServerPlayer) {
     fun position(): List<String> {
         val snapshot = PlayerSnapshot.capture(player, reader)
         val where = buildList {
-            add("${OracleText.dimension(snapshot.dimension)} ${OracleText.coords(snapshot.x, snapshot.y, snapshot.z)}")
+            add("${ToolText.dimension(snapshot.dimension)} ${OracleText.coords(snapshot.x, snapshot.y, snapshot.z)}")
             add("biome ${OracleText.bare(snapshot.biome)}")
             add(snapshot.shelter())
             snapshot.depth?.let { add(if (it > 0) "surface y=${snapshot.y + it}" else "at the surface") }
@@ -100,7 +102,7 @@ class PlayerReport(private val player: ServerPlayer) {
         .sortedBy { it.distanceToSqr(player) }
         .map { other ->
             val offset = other.blockPosition().subtract(feet)
-            "${other.plainTextName} ${OracleText.relative(offset.x, offset.y, offset.z)}"
+            "${other.shownName} ${OracleText.relative(offset.x, offset.y, offset.z)}"
         }
 
     private fun danger(mobs: List<EntityGroup>): List<String> = buildList {
@@ -147,7 +149,7 @@ class PlayerReport(private val player: ServerPlayer) {
         val active = player.activeEffects.sortedBy { it.effect.registeredName }.map { describe(it) }
         val yours = mine.map { effect ->
             val left = effect.until - now
-            val end = if (left > 0) "ends in ${OracleText.duration(left)}" else "overdue"
+            val end = if (left > 0) "ends in ${ToolText.duration(left)}" else "overdue"
             "${effect.what} (${effect.kind}, $end${if (effect.harmful) ", punishment" else ""})"
         }
         return listOf(
@@ -157,7 +159,7 @@ class PlayerReport(private val player: ServerPlayer) {
     }
 
     private fun describe(effect: MobEffectInstance): String {
-        val level = if (effect.amplifier > 0) " ${OracleText.level(effect.amplifier + 1)}" else ""
+        val level = if (effect.amplifier > 0) " ${ToolText.roman(effect.amplifier + 1)}" else ""
         val time = if (effect.isInfiniteDuration) "infinite" else (effect.duration / TICKS_PER_SECOND).let { "%d:%02d".format(it / 60, it % 60) }
         return "${OracleText.bare(effect.effect.registeredName)}$level $time"
     }
@@ -183,7 +185,7 @@ class PlayerReport(private val player: ServerPlayer) {
         fun describe(stack: ItemStack): String {
             val count = if (stack.count > 1) "${stack.count} " else ""
             val name = stack.customName?.let { " " + OracleText.quote(it.string, 32) }.orEmpty()
-            val enchantments = stack.enchantments.entrySet().map { "${OracleText.bare(it.key.registeredName)} ${OracleText.level(it.intValue)}" }
+            val enchantments = stack.enchantments.entrySet().map { "${OracleText.bare(it.key.registeredName)} ${ToolText.roman(it.intValue)}" }
             val wear = if (stack.isDamageableItem && stack.maxDamage > 0) listOf("${(stack.maxDamage - stack.damageValue) * 100 / stack.maxDamage}%") else emptyList()
             val details = listOf(enchantments.joinToString(), wear.joinToString()).filter { it.isNotEmpty() }
             return "$count${OracleText.bare(stack.id)}$name" + if (details.isEmpty()) "" else " (${details.joinToString("; ")})"

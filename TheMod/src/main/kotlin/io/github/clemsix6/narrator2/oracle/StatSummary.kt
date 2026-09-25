@@ -1,5 +1,7 @@
 package io.github.clemsix6.narrator2.oracle
 
+import io.github.clemsix6.narrator2.tool.ToolText
+
 /**
  * Vanilla stats as the model reads them. A stat's full name is the game's (`Stat.getName()`, also the
  * key of `stat_totals`): `minecraft.mined:minecraft.stone`, `minecraft.custom:minecraft.deaths`. The
@@ -39,8 +41,8 @@ object StatSummary {
 
         val lines = ArrayList<String>()
         val deaths = custom("deaths")
-        val lastDeath = if (deaths == 0L) "never died" else "deaths $deaths (last ${OracleText.duration(custom("time_since_death") * MS_PER_TICK)} of play ago)"
-        lines += "play time ${OracleText.duration(custom("play_time") * MS_PER_TICK)} · $lastDeath"
+        val lastDeath = if (deaths == 0L) "never died" else "deaths $deaths (last ${ToolText.duration(custom("time_since_death") * MS_PER_TICK)} of play ago)"
+        lines += "play time ${ToolText.duration(custom("play_time") * MS_PER_TICK)} · $lastDeath"
 
         val killedByPlayers = values["minecraft.killed_by:minecraft.player"] ?: 0L
         lines += "kills: ${custom("mob_kills")} mobs, ${custom("player_kills")} players · killed by players $killedByPlayers times"

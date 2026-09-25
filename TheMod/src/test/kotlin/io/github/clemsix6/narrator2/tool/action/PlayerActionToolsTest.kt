@@ -22,6 +22,7 @@ import java.time.Duration
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -91,6 +92,24 @@ class PlayerActionToolsTest {
             "Invalid arguments: Alice cannot be teleported to themselves",
             TeleportTool().call("""{"player":"Alice","to_player":"ALICE"}""").text,
         )
+    }
+
+    @Test
+    fun `a player's name is escaped in a refusal`() = runTest {
+        online("<engine>")
+        assertEquals(
+            "Invalid arguments: ‹x› is not online; online: ‹engine›",
+            ApplyEffectTool().call("""{"players":["<engine>","<x>"],"effect":"speed","seconds":10}""").text,
+        )
+    }
+
+    @Test
+    fun `the gifts of every conversation count against the server's limiter`() {
+        val first = playerActionTools(services).filterIsInstance<GiveItemTool>().single()
+        val next = playerActionTools(services).filterIsInstance<GiveItemTool>().single()
+        assertTrue(first !== next, "new tools for each conversation")
+        assertSame(services.toolLimits.gifts, first.limiter)
+        assertSame(services.toolLimits.gifts, next.limiter)
     }
 
     @Test

@@ -1,8 +1,8 @@
 package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.core.ModelText
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.dim
+import io.github.clemsix6.narrator2.tool.ToolText.duration
+import io.github.clemsix6.narrator2.tool.ToolText.dimension
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
@@ -75,7 +75,7 @@ class SituationReport(private val services: NarratorServices, private val digest
 
     private fun player(live: LivePlayer, now: Long): String {
         val parts = mutableListOf<String>()
-        val place = StringBuilder(dim(live.pos.dim))
+        val place = StringBuilder(dimension(live.pos.dim))
         if (live.gameMode != "survival") place.append(" ${live.gameMode}")
         if (live.health <= 0f) {
             place.append(", dead")
@@ -88,7 +88,7 @@ class SituationReport(private val services: NarratorServices, private val digest
         }
         parts += place.toString()
         if (live.health > 0f) parts += "hp ${number(live.health.toDouble())}/${number(live.maxHealth.toDouble())} food ${live.food}"
-        parts += "online ${ago(now - live.joinedAt)}" + if (live.idle) ", idle" else ""
+        parts += "online ${duration(now - live.joinedAt)}" + if (live.idle) ", idle" else ""
         if (services.guards.isProtected(live.ref.uuid)) parts += "protected from every hostile action (operators)"
         live.lastDeathAt?.let { died ->
             val until = died + NO_PILE_ON_MS
@@ -114,7 +114,7 @@ class SituationReport(private val services: NarratorServices, private val digest
         if (open.isEmpty()) return "none"
         return open.joinToString(", ") { task ->
             val state = when (task.status) {
-                TaskRecord.Status.RUNNING -> "running ${ago(now - (task.startedAt ?: task.createdAt).toEpochMilli())}"
+                TaskRecord.Status.RUNNING -> "running ${duration(now - (task.startedAt ?: task.createdAt).toEpochMilli())}"
                 else -> task.status.id
             }
             "T-${task.taskId} ${task.role.id} $state"
@@ -128,7 +128,7 @@ class SituationReport(private val services: NarratorServices, private val digest
 
     private fun actions(actions: List<DirectorAction>, now: Long): String =
         if (actions.isEmpty()) "none" else actions.joinToString(" · ") { action ->
-            "-${ago(now - action.at)} ${action.tool}" + if (action.targets.isEmpty()) "" else "→${action.targets.joinToString(",") { ModelText.name(it) }}"
+            "-${duration(now - action.at)} ${action.tool}" + if (action.targets.isEmpty()) "" else "→${action.targets.joinToString(",") { ModelText.name(it) }}"
         }
 
     companion object {

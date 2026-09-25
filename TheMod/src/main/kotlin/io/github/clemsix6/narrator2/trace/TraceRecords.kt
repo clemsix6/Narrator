@@ -280,7 +280,7 @@ data class TurnRecord(
  * One conversation with Claude: a Director chapter or a worker's task. Row of `conversations`,
  * inserted when it opens and updated when it ends.
  *
- * @property conversationId also the `X-Session-ID` header.
+ * @property conversationId the conversation's id (`Conversation.id`, also in the `X-Narrator-Conversation` header).
  * @property chapter Director chapters, numbered from 1.
  * @property taskId worker conversations.
  * @property summary chapter summary (Director) or task result (workers).

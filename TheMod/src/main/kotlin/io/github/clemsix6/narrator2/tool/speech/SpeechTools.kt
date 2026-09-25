@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.tool.speech
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
@@ -15,6 +16,8 @@ import io.github.clemsix6.narrator2.tool.Range
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.notOnline
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.minecraft.core.registries.BuiltInRegistries
@@ -32,8 +35,8 @@ import net.minecraft.world.item.ItemStack
 
 /**
  * Speech and staging tools (M1_M2 §9.1): `say`, `show_title`, `actionbar`, `play_sound`, `give_book`.
- * `ToolCatalog` builds the family once per conversation; the [SpeechLimiter] is the server's, shared
- * by every conversation.
+ * `ToolCatalog` builds the family once per conversation; the [SpeechLimiter] is the server's
+ * (`ToolLimits.speech`), shared by every conversation.
  *
  * Every text the players see is cleaned by [Speech.clean] and shown as a literal component, with the
  * Narrator's prefix and color from `UiTexts`. Every text line (not the sounds) is journaled as a
@@ -42,7 +45,7 @@ import net.minecraft.world.item.ItemStack
  * books are recorded with their kind first: `[title] …`, `[actionbar] …`, `[book "…"] …`.
  */
 fun speechTools(services: NarratorServices): List<NarratorTool<*>> {
-    val limiter = SpeechLimiter.of(services)
+    val limiter = services.toolLimits.speech
     return listOf(SayTool(limiter), ShowTitleTool(limiter), ActionbarTool(limiter), PlaySoundTool(limiter), GiveBookTool(limiter))
 }
 
@@ -320,9 +323,9 @@ class GiveBookTool(private val limiter: SpeechLimiter) : NarratorTool<GiveBookAr
             val player = server.playerList.getPlayer(split.allowed.single().uuid) ?: return@onServer null
             ctx.spoke(record, listOf(player.ref()))
             give(player, Speech.book(ctx.settings.ui, title, pages, ctx.caller.turnId))
-        } ?: return ToolResult.failed("${args.to} left the game")
+        } ?: return ToolResult.failed("${ModelText.name(args.to)} left the game")
         val who = split.allowed.single()
-        val where = if (dropped) "dropped at ${who.name}'s feet (inventory full)" else "given to ${who.name}"
+        val where = if (dropped) "dropped at ${ModelText.name(who.name)}'s feet (inventory full)" else "given to ${ModelText.name(who.name)}"
         return ToolResult.ok("ok: book \"$title\" $where, ${pages.size} pages", listOf(who))
     }
 
@@ -358,12 +361,8 @@ private fun audience(ctx: ToolContext, names: List<String>?): Audience {
     val online = ctx.players.online
     if (names == null) return Audience(null, if (online.isEmpty()) ToolResult.failed("nobody is online") else null)
     val found = names.map { it to ctx.players.byName(it) }
-    val missing = found.filter { it.second == null }.map { it.first }.distinct()
-    if (missing.isNotEmpty()) {
-        val who = if (missing.size == 1) "${missing.single()} is not online" else "${missing.joinToString()} are not online"
-        val present = online.joinToString { it.ref.name }.ifEmpty { "nobody" }
-        return Audience(null, ToolResult.invalid("$who; online: $present"))
-    }
+    val missing = found.filter { it.second == null }.map { it.first }
+    if (missing.isNotEmpty()) return Audience(null, ctx.notOnline(missing))
     return Audience(found.mapNotNull { it.second?.ref }.distinctBy { it.uuid }, null)
 }
 
@@ -392,7 +391,7 @@ private fun ToolContext.spoke(text: String, recipients: List<PlayerRef>?) {
     services.bus.publish(NarratorSpoke(NarratorChannel.NARRATOR, text, recipients, caller.turnId, operator = null))
 }
 
-private fun names(players: List<PlayerRef>): String = players.joinToString { it.name }
+private fun names(players: List<PlayerRef>): String = ToolText.names(players)
 
 /** Why nobody got a call's text or sound: everyone it named left the game between the checks and the delivery. */
 private fun nobodyLeft(audience: Audience): String =
@@ -404,14 +403,14 @@ private fun whom(shown: List<PlayerRef>, audience: Audience, split: SpeechLimite
 
 /** The refusal when every player addressed must wait for [what]. */
 private fun waitDenied(what: String, cooldownMs: Long, split: SpeechLimiter.Split): ToolResult =
-    ToolResult.denied(SpeechLimiter.RULE, "one $what per player every ${SpeechLimiter.describe(cooldownMs)}: ${split.waiting.joinToString("; ") { it.describe() }}")
+    ToolResult.denied(SpeechLimiter.RULE, "one $what per player every ${ToolText.duration(cooldownMs)}: ${split.waiting.joinToString("; ") { it.describe() }}")
 
 /** What an allowed call did not do, for the players who must wait; empty when nobody waits. */
 private fun skipped(what: String, cooldownMs: Long, split: SpeechLimiter.Split): String =
     if (split.waiting.isEmpty()) {
         ""
     } else {
-        "; skipped (one $what per player every ${SpeechLimiter.describe(cooldownMs)}): ${split.waiting.joinToString("; ") { it.describe() }}"
+        "; skipped (one $what per player every ${ToolText.duration(cooldownMs)}): ${split.waiting.joinToString("; ") { it.describe() }}"
     }
 
 /** The problem of a text that is empty once cleaned. */

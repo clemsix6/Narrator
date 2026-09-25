@@ -54,7 +54,7 @@ interface Guards {
     /**
      * Deaths of [target] in the next [seconds] of their play time are attributed to the Narrator (any
      * action that can kill arms it, before acting). On the server thread; from another thread, it is
-     * queued there. Nothing happens for a player offline.
+     * queued there, and dropped once the server has stopped. Nothing happens for a player offline.
      */
     fun armDeathGuard(target: UUID, seconds: Int)
 

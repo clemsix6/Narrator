@@ -6,6 +6,7 @@ import com.mojang.brigadier.context.ContextChain
 import com.mojang.brigadier.context.ParsedCommandNode
 import com.mojang.brigadier.tree.LiteralCommandNode
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.guard.CommandPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -16,6 +17,8 @@ import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.TurnCounter
+import io.github.clemsix6.narrator2.tool.notOnline
 import io.github.clemsix6.narrator2.tool.speech.closestIds
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
@@ -36,15 +39,15 @@ import net.minecraft.world.phys.Vec3
 
 /**
  * Command tools (M1_M2 §9.5, §10.6): `run_command`, the last resort for what no typed tool does, and
- * `command_help`, the syntax of a command. `ToolCatalog` builds the family once per conversation.
+ * `command_help`, the syntax of a command. `ToolCatalog` builds the family once per conversation; the
+ * count of commands per turn is the server's (`ToolLimits.commands`).
  *
  * Both work on the server's own dispatcher, with the source `run_command` runs with ([NarratorCommands.source]):
  * what the model is told about a command's syntax is what this very server parses, never a memory of
  * an older version. A command is parsed, then checked by `CommandPolicy` (behind `execute … run` too),
  * then checked for syntax, and only then run.
  */
-@Suppress("UNUSED_PARAMETER") // every family has this signature
-fun commandTools(services: NarratorServices): List<NarratorTool<*>> = listOf(RunCommandTool(), CommandHelpTool())
+fun commandTools(services: NarratorServices): List<NarratorTool<*>> = listOf(RunCommandTool(services.toolLimits.commands), CommandHelpTool())
 
 // ── run_command ─────────────────────────────────────────────────────────────────────────────────
 
@@ -62,7 +65,7 @@ data class RunCommandArgs(
     val asPlayer: String? = null,
 )
 
-class RunCommandTool : NarratorTool<RunCommandArgs>(
+class RunCommandTool(private val perTurn: TurnCounter) : NarratorTool<RunCommandArgs>(
     name = "run_command",
     description = "Last resort: runs a Minecraft 26.3 server command, for what no other tool does (scoreboard, waypoint, " +
         "execute if … probes). The command is parsed by this server first and runs only if it is valid; " +
@@ -74,18 +77,15 @@ class RunCommandTool : NarratorTool<RunCommandArgs>(
     args = RunCommandArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    private var turn: Pair<String, Long?>? = null
-    private var ranThisTurn = 0
-
     override suspend fun run(ctx: ToolContext, args: RunCommandArgs): ToolResult {
         val text = Commands.trimOptionalPrefix(args.command.trim())
         if (text.isEmpty()) return ToolResult.invalid("command is empty")
         val anchor = args.asPlayer?.let { name ->
-            ctx.players.byName(name)?.ref ?: return ToolResult.invalid("$name is not online; online: ${online(ctx)}")
+            ctx.players.byName(name)?.ref ?: return ctx.notOnline(name)
         }
         return ctx.onServer { server ->
             val player = anchor?.let {
-                server.playerList.getPlayer(it.uuid) ?: return@onServer ToolResult.invalid("${it.name} is not online; online: ${online(ctx)}")
+                server.playerList.getPlayer(it.uuid) ?: return@onServer ctx.notOnline(it.name)
             }
             val capture = CapturingSource()
             val runs = mutableListOf<Run>()
@@ -109,21 +109,12 @@ class RunCommandTool : NarratorTool<RunCommandArgs>(
     }
 
     /** One more command in [caller]'s turn: null when allowed (and counted), else the refusal. */
-    @Synchronized
     private fun take(caller: Caller): Verdict.Denied? {
-        val key = caller.conversationId to caller.turnId
-        if (key != turn) {
-            turn = key
-            ranThisTurn = 0
-        }
-        if (ranThisTurn >= COMMANDS_PER_TURN) {
-            return Verdict.Denied(
-                LIMIT_RULE,
-                "$COMMANDS_PER_TURN commands already ran this turn, the most a turn may run; do the rest next turn, or with the typed tools",
-            )
-        }
-        ranThisTurn++
-        return null
+        if (perTurn.take(caller)) return null
+        return Verdict.Denied(
+            LIMIT_RULE,
+            "${perTurn.max} commands already ran this turn, the most a turn may run; do the rest next turn, or with the typed tools",
+        )
     }
 
     /** A `guard denied` decision, like the guards' own refusals, so that `/narrator why` shows it. */
@@ -142,9 +133,12 @@ class RunCommandTool : NarratorTool<RunCommandArgs>(
     /** One run of the command: once, or once per entity of an `execute as …` fork. */
     private class Run(val success: Boolean, val result: Int)
 
-    /** What the model gets back: how the runs went, then the lines the command sent. */
+    /**
+     * What the model gets back: how the runs went, then the lines the command sent, escaped
+     * (`core/ModelText`): they may hold names the players chose (`list`, a scoreboard).
+     */
     private fun outcome(runs: List<Run>, lines: List<String>): ToolResult {
-        val output = if (lines.isEmpty()) "; it sent no output" else "\n" + capped(lines, MAX_OUTPUT_LINES).joinToString("\n")
+        val output = if (lines.isEmpty()) "; it sent no output" else "\n" + capped(lines.map(ModelText::lines), MAX_OUTPUT_LINES).joinToString("\n")
         val succeeded = runs.filter { it.success }
         return when {
             runs.isEmpty() -> ToolResult.ok("ok: ran for nothing (its selectors matched no entity)$output")
@@ -306,6 +300,3 @@ internal object NarratorCommands {
 /** At most [max] of [lines], then how many were left out. */
 private fun capped(lines: List<String>, max: Int): List<String> =
     if (lines.size <= max) lines else lines.take(max) + "… (+${lines.size - max} lines)"
-
-/** The names of the players online, for an error message. */
-private fun online(ctx: ToolContext): String = ctx.players.online.joinToString { it.ref.name }.ifEmpty { "nobody" }

@@ -1,7 +1,7 @@
 package io.github.clemsix6.narrator2.tool.task
 
 import io.github.clemsix6.narrator2.agent.Workers
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
+import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -145,11 +145,11 @@ class TasksTool : NarratorTool<TasksArgs>(
 
         private fun line(task: TaskRecord, now: Long): String {
             val head = "T-${task.taskId} ${task.role.id}"
-            val took = task.startedAt?.let { start -> task.finishedAt?.let { ", in ${ago(it.toEpochMilli() - start.toEpochMilli())}" } }.orEmpty()
-            val ended = task.finishedAt?.let { "${ago(now - it.toEpochMilli())} ago$took" }
+            val took = task.startedAt?.let { start -> task.finishedAt?.let { ", in ${duration(it.toEpochMilli() - start.toEpochMilli())}" } }.orEmpty()
+            val ended = task.finishedAt?.let { "${duration(now - it.toEpochMilli())} ago$took" }
             return when (task.status) {
-                Status.QUEUED -> "$head queued for ${ago(now - task.createdAt.toEpochMilli())}: ${quote(task.brief, EXCERPT_MAX)}"
-                Status.RUNNING -> "$head running for ${ago(now - (task.startedAt ?: task.createdAt).toEpochMilli())}: ${quote(task.brief, EXCERPT_MAX)}"
+                Status.QUEUED -> "$head queued for ${duration(now - task.createdAt.toEpochMilli())}: ${quote(task.brief, EXCERPT_MAX)}"
+                Status.RUNNING -> "$head running for ${duration(now - (task.startedAt ?: task.createdAt).toEpochMilli())}: ${quote(task.brief, EXCERPT_MAX)}"
                 Status.DONE -> "$head done $ended: ${quote(task.result.orEmpty(), EXCERPT_MAX)}"
                 Status.FAILED -> "$head failed $ended: ${quote(task.error.orEmpty(), EXCERPT_MAX)}"
                 Status.TIMEOUT -> "$head timed out $ended"

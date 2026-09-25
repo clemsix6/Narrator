@@ -96,7 +96,7 @@ class BriefingTest {
             "Bartok: overworld -120 -58 330 · dripstone_caves · cave, 41 below surface · in mineshaft · hp 14/20 food 12 · " +
                 "online 1h00m · last 5m: mined 140 (3 diamond_ore y=-54..-51)\n",
         )
-        assertContains(text, "Mimosa: nether 40 72 -12 · dripstone_caves · open · hp 14/20 food 12 · online 1h00m, idle\n")
+        assertContains(text, "Mimosa: the_nether 40 72 -12 · dripstone_caves · open · hp 14/20 food 12 · online 1h00m, idle\n")
         // The chat with its text, prayers and the Narrator's lines included; never a private message.
         assertContains(text, "<recent_chat>\n[-20m] Bartok: \"narrateur, t'es nul\"\n[-19m] Mimosa (prayer): \"rends-moi mes diamants\"\n")
         assertContains(text, "[-17m] NARRATOR→all: \"Bartok, ta pioche pleure.\"\n")
@@ -162,7 +162,7 @@ class BriefingTest {
         assertContains(text, "<recent_chat>\n(unavailable: the Journal is unavailable: it failed to open)\n")
         assertContains(text, "<your_recent_actions>\n(unavailable: the Journal is unavailable: it failed to open)\n")
         assertContains(text, "<world day=\"37\" time=\"night\" clock=\"20:00\" weather=\"rain\"/>")
-        assertContains(text, "Mimosa: nether 40 72 -12")
+        assertContains(text, "Mimosa: the_nether 40 72 -12")
     }
 
     // ── §18.2 (3) ───────────────────────────────────────────────────────────────────────────────────

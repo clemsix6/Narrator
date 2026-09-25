@@ -132,7 +132,7 @@ data class ToolResult(val status: ToolStatus, val text: String, val targets: Lis
 /**
  * Who calls a tool.
  *
- * @property conversationId also the `X-Session-ID` of the conversation.
+ * @property conversationId the conversation's id (`Conversation.id`).
  * @property turnId the Director turn, for the Director.
  * @property taskId the task, for a worker.
  */

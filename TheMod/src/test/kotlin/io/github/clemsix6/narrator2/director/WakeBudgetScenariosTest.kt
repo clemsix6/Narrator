@@ -116,6 +116,7 @@ class WakeBudgetScenariosTest {
         val held = h.died("Bartok", "minecraft:fall")
         h.advance(240_000)
         assertEquals(2, h.startedTurns(), "a salient event no longer wakes the Director")
+        assertEquals(2 to 2, h.director.status().let { it.turnsThisHour to it.turnsPerHour }, "/narrator status shows the budget spent")
         val throttled = h.decisions(DecisionRecord.Kind.SALIENCE, "throttled")
         assertEquals(
             "death; the budget of 2 turns per hour is spent: it waits for a turn to leave the hour",
@@ -134,6 +135,7 @@ class WakeBudgetScenariosTest {
         // Once the first two turns have left the hour (they started 3 s and 6 s in), a salient event wakes the Director again.
         h.advance(start + 3_607_000 - h.clock.millis())
         assertEquals(3, h.startedTurns(), "nothing woke the Director meanwhile")
+        assertEquals(1, h.director.status().turnsThisHour, "the first two turns left the hour")
         h.died("Mimosa", "minecraft:drown")
         h.advance(3_000)
         h.awaitTurns(4)

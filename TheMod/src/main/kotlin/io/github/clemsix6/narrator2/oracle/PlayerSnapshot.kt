@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.observer.dimensionId
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.observer.typeId
+import io.github.clemsix6.narrator2.tool.ToolText
 import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerPlayer
 
@@ -40,7 +41,7 @@ data class PlayerSnapshot(
      * hp 14/20 food 12`; the game mode is named unless it is survival.
      */
     fun describe(): String = buildList {
-        add("${OracleText.dimension(dimension)} ${OracleText.coords(x, y, z)}")
+        add("${ToolText.dimension(dimension)} ${OracleText.coords(x, y, z)}")
         add(OracleText.bare(biome))
         add(shelter())
         structure?.let { add("in ${OracleText.bare(it)}") }

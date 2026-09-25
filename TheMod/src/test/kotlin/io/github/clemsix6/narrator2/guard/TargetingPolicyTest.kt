@@ -151,12 +151,12 @@ class TargetingPolicyTest {
     }
 
     @Test
-    fun `durations for the model`() {
-        assertEquals("1s", TargetingPolicy.span(1))
-        assertEquals("45s", TargetingPolicy.span(45_000))
-        assertEquals("3m", TargetingPolicy.span(180_000))
-        assertEquals("4m30s", TargetingPolicy.span(270_000))
-        assertEquals("1h05m", TargetingPolicy.span(3_900_000))
-        assertEquals("0s", TargetingPolicy.span(-5))
+    fun `a refusal names the player through the common escape, and waits are rounded up`() {
+        val engine = PlayerRef(UUID(0, 3), "<engine>")
+        online(engine, lastDeathAt = now() - 1_500)
+        assertEquals(
+            "‹engine› died 2s ago; hostile actions against them are refused until 19:34:58 (in 4m59s).",
+            denied(policy.check(engine, turn(1), episodes), Rules.NO_PILE_ON).message,
+        )
     }
 }

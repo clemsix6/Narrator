@@ -14,6 +14,22 @@ class ServerThreadTimeoutException(timeoutMs: Long) :
 class ServerStoppedException : IllegalStateException("the server is stopped: the task was not run")
 
 /**
+ * Runs [block] on the server thread without waiting for it: at once when already there, else as a task
+ * of the server. The block never runs on another thread: once the server has stopped, Minecraft runs a
+ * submitted task on the caller's thread, and the block is dropped then (never submitted again, which would
+ * loop for ever). Returns false when it was dropped. For what may be lost with a stopped server.
+ */
+fun BlockableEventLoop<*>.runOnServerThread(block: () -> Unit): Boolean {
+    if (isSameThread) {
+        block()
+        return true
+    }
+    var dropped = false
+    execute { if (isSameThread) block() else dropped = true }
+    return !dropped
+}
+
+/**
  * Runs [block] on the server thread and suspends until it completes. Anything that touches the
  * world must go through here: Minecraft's game state is single-threaded.
  *

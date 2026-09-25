@@ -2,8 +2,8 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
-import io.github.clemsix6.narrator2.director.EventFormatter.Companion.dim
+import io.github.clemsix6.narrator2.tool.ToolText.duration
+import io.github.clemsix6.narrator2.tool.ToolText.dimension
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
@@ -201,7 +201,7 @@ class Briefing(
         val lines = live.map { player ->
             val place = byUuid[player.ref.uuid]?.describe() ?: sampled(player)
             val recent = activity(player.ref.uuid)?.let { " · last ${SituationReport.RECENT_MINUTES}m: ${ModelText.escape(it)}" }.orEmpty()
-            "${who(player.ref)}: $place · online ${ago(now - player.joinedAt)}${if (player.idle) ", idle" else ""}$recent"
+            "${who(player.ref)}: $place · online ${duration(now - player.joinedAt)}${if (player.idle) ", idle" else ""}$recent"
         } + captured.filter { it.ref.uuid !in known }.map { "${who(it.ref)}: ${it.describe()}" }
         val notes = snapshot.exceptionOrNull()?.let { listOf("(live positions unavailable: ${reason(it)}; these are the last sampled ones)") }.orEmpty()
         if (lines.isEmpty()) return notes + "(nobody is online)"
@@ -211,7 +211,7 @@ class Briefing(
 
     /** `overworld 12 -58 40 · dripstone_caves · underground · hp 14/20 food 12`, from the position sampler. */
     private fun sampled(player: LivePlayer): String = buildList {
-        add("${dim(player.pos.dim)} ${player.pos.x} ${player.pos.y} ${player.pos.z}")
+        add("${dimension(player.pos.dim)} ${player.pos.x} ${player.pos.y} ${player.pos.z}")
         player.biome?.let { add(id(it)) }
         if (player.underground) add("underground")
         player.structure?.let { add("in ${id(it)}") }
@@ -229,8 +229,8 @@ class Briefing(
                 "GROUP BY player_uuid ORDER BY 3 DESC LIMIT ${limits.recentPlayers + online.size}",
             Instant.ofEpochMilli(now - WINDOW_MS),
         ) {
-            val played = getObject(4)?.let { " played ${ago(getLong(4) * 1_000)}" }.orEmpty()
-            getString(1) to "${ModelText.name(getString(2).orEmpty())}: last seen ${ago(now - getLong(3))} ago${if (played.isEmpty()) "" else ",$played"}"
+            val played = getObject(4)?.let { " played ${duration(getLong(4) * 1_000)}" }.orEmpty()
+            getString(1) to "${ModelText.name(getString(2).orEmpty())}: last seen ${duration(now - getLong(3))} ago${if (played.isEmpty()) "" else ",$played"}"
         }
         return rows.filter { it.first !in online }.take(limits.recentPlayers).map { it.second }
     }
@@ -254,7 +254,7 @@ class Briefing(
                 "operator" -> "NARRATOR (through an operator)→${addressees(names(4))}"
                 else -> ModelText.name(getString(3).orEmpty())
             }
-            "[-${ago(now - getLong(1))}] $speaker: ${quote(getString(5))}"
+            "[-${duration(now - getLong(1))}] $speaker: ${quote(getString(5))}"
         }
         var chars = 0
         return newestFirst.takeWhile { line -> (chars + line.length + 1 <= limits.chatChars).also { if (it) chars += line.length + 1 } }.reversed()
@@ -274,7 +274,7 @@ class Briefing(
         val targets = names(3)
         val result = getString(4)?.lineSequence()?.firstOrNull { it.isNotBlank() }?.let { ": ${text(it, RESULT_MAX)}" }.orEmpty()
         val to = if (targets.isEmpty()) "" else "→${ModelText.escape(cut(targets.joinToString(","), TARGETS_MAX))}"
-        "[-${ago(now - getLong(1))}] ${getString(2)}$to$result"
+        "[-${duration(now - getLong(1))}] ${getString(2)}$to$result"
     }.reversed()
 
     // ── Engine state ────────────────────────────────────────────────────────────────────────────────
@@ -302,7 +302,7 @@ class Briefing(
             line("Deaths you may still cause") { list(online.map { "${who(it.ref)} ${services.guards.deathsLeft(it.ref.uuid)}" }, ONLINE_MAX) },
             line("Tasks") {
                 val open = services.workers.list().filter { !it.status.finished }.map { task ->
-                    val state = if (task.status == TaskRecord.Status.RUNNING) "running ${ago(now - (task.startedAt ?: task.createdAt).toEpochMilli())}" else task.status.id
+                    val state = if (task.status == TaskRecord.Status.RUNNING) "running ${duration(now - (task.startedAt ?: task.createdAt).toEpochMilli())}" else task.status.id
                     "T-${task.taskId} ${task.role.id} $state"
                 }
                 list(open, TASKS_MAX)

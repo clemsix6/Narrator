@@ -4,7 +4,6 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.testing.TestClock
-import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -12,8 +11,6 @@ import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertNotSame
-import kotlin.test.assertSame
 
 /** The anti-spam limits of the speech tools (M1_M2 §9.1), on a clock that only moves when told. */
 class SpeechLimiterTest {
@@ -44,9 +41,9 @@ class SpeechLimiterTest {
         clock.advance(Duration.ofSeconds(20))
         repeat(4) { assertEquals(Verdict.Allowed, limiter.line(turn(2))) }
 
-        assertContains(denied(limiter.line(turn(3))), "8 lines already in the last minute; the next is possible in 40 s")
+        assertContains(denied(limiter.line(turn(3))), "8 lines already in the last minute; the next is possible in 40s")
         clock.advance(Duration.ofSeconds(39))
-        assertContains(denied(limiter.line(turn(3))), "the next is possible in 1 s")
+        assertContains(denied(limiter.line(turn(3))), "the next is possible in 1s")
         clock.advance(Duration.ofSeconds(1))
         repeat(4) { assertEquals(Verdict.Allowed, limiter.line(turn(3)), "the first four lines are a minute old") }
         denied(limiter.line(turn(4)))
@@ -76,7 +73,7 @@ class SpeechLimiterTest {
             clock.advance(Duration.ofSeconds(1))
         }
 
-        assertContains(denied(limiter.sound()), "10 sounds already in the last minute; the next is possible in 50 s")
+        assertContains(denied(limiter.sound()), "10 sounds already in the last minute; the next is possible in 50s")
         clock.advance(Duration.ofSeconds(50))
         assertEquals(Verdict.Allowed, limiter.sound())
     }
@@ -89,7 +86,7 @@ class SpeechLimiterTest {
         val split = limiter.titles(listOf(bob, alice))
         assertEquals(listOf(alice), split.allowed, "another player is not held back")
         assertEquals(listOf(SpeechLimiter.Waiting(bob, agoMs = 12_000, leftMs = 18_000)), split.waiting)
-        assertEquals("Bob got one 12 s ago (next in 18 s)", split.waiting.single().describe())
+        assertEquals("Bob got one 12s ago (next in 18s)", split.waiting.single().describe())
 
         clock.advance(Duration.ofSeconds(18))
         assertEquals(listOf(bob), limiter.titles(listOf(bob)).allowed, "30 s later")
@@ -120,25 +117,15 @@ class SpeechLimiterTest {
         clock.advance(Duration.ofSeconds(130))
 
         val waiting = limiter.books(listOf(bob)).waiting.single()
-        assertEquals("Bob got one 2 min 10 s ago (next in 2 min 50 s)", waiting.describe())
+        assertEquals("Bob got one 2m10s ago (next in 2m50s)", waiting.describe())
         clock.advance(Duration.ofSeconds(170))
         assertEquals(listOf(bob), limiter.books(listOf(bob)).allowed)
     }
 
     @Test
-    fun `durations are rounded up to the second`() {
-        assertEquals("1 s", SpeechLimiter.describe(1))
-        assertEquals("18 s", SpeechLimiter.describe(17_001))
-        assertEquals("1 min", SpeechLimiter.describe(60_000))
-        assertEquals("5 min", SpeechLimiter.describe(300_000))
-        assertEquals("3 min 10 s", SpeechLimiter.describe(189_500))
-    }
-
-    @Test
-    fun `one limiter per server, shared by its conversations`() {
-        val services = TestServices()
-
-        assertSame(SpeechLimiter.of(services), SpeechLimiter.of(services))
-        assertNotSame(SpeechLimiter.of(services), SpeechLimiter.of(TestServices()))
+    fun `a wait is rounded up to the second, and a name is escaped`() {
+        val engine = PlayerRef(UUID.randomUUID(), "<engine>")
+        assertEquals("‹engine› got one 12s ago (next in 18s)", SpeechLimiter.Waiting(engine, agoMs = 12_400, leftMs = 17_001).describe())
+        assertEquals("Bob got one 0s ago (next in 1s)", SpeechLimiter.Waiting(bob, agoMs = 1, leftMs = 1).describe())
     }
 }

@@ -1,6 +1,8 @@
 package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
+import io.github.clemsix6.narrator2.core.runOnServerThread
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -70,7 +72,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         val name = target.plainTextName
         val verdict = when {
             protection.isProtected(target.uuid, name) ->
-                Verdict.Denied(Rules.PROTECTED, "$name is protected by the operators; the Narrator does nothing hostile to them.")
+                Verdict.Denied(Rules.PROTECTED, "${ModelText.name(name)} is protected by the operators; the Narrator does nothing hostile to them.")
             !caps().hostileAllowed ->
                 Verdict.Denied(Rules.CHAOS_0, "the chaos level is 0: no hostile action against any player.")
             else -> targeting.check(target.ref(), caller, episodes, diedAt = states.of(target).lastDeathAt)
@@ -100,11 +102,9 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     override fun armDeathGuard(target: UUID, seconds: Int, peril: Peril) {
         val server = services.server
-        if (!server.isSameThread) {
-            server.execute { armDeathGuard(target, seconds, peril) }
-            return
-        }
-        server.playerList.getPlayer(target)?.let { death.arm(it, seconds, peril) }
+        // From another thread, queued on the server's; dropped once the server has stopped, when nobody can die.
+        val armed = server.runOnServerThread { server.playerList.getPlayer(target)?.let { death.arm(it, seconds, peril) } }
+        if (!armed) log.debug { "death guard of $target not armed: the server has stopped" }
     }
 
     /**

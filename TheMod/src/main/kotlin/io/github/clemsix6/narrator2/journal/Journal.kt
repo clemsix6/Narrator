@@ -18,10 +18,14 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Id sequences of the Journal. Each is seeded at `max(id) + 1` of its table when the Journal opens.
+ * Id sequences of the Journal. When the Journal opens, each starts past both the largest id of its table
+ * and what `world/narrator2/narrator.ids` reserved (`IdReservations`): an id is handed out only once the
+ * file covers it, so that an id already quoted (in a tool result, a log, a transcript) is never handed out
+ * again after a crash that lost its row. A clean close leaves no gap; a crash skips one block at most. A
+ * Journal in memory reserves nothing and starts at `max(id) + 1`; [DisabledJournal] at the current time.
  *
  * [EVENT] ids are handed out by the [EventBus] (seeded once with [Journal.nextIdSeed]) and shared by
- * `events`, `chat` and `private_messages`.
+ * `events`, `chat` and `private_messages`; the Journal reserves them as they are published.
  */
 enum class IdKind { EVENT, SESSION, TURN, TASK, LLM_CALL, TOOL_CALL, DECISION }
 

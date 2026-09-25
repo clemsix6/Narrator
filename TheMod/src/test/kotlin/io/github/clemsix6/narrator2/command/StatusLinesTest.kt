@@ -39,7 +39,7 @@ class StatusLinesTest {
         assertEquals("[Narrator] status", lines[0])
         assertEquals("Phase: running · settings: loaded", lines[1])
         assertEquals("Key: missing (environment variable NARRATOR_LLMGW_KEY)", lines[3])
-        assertEquals("Director: idle · inbox 0 · reminders none", lines[4])
+        assertEquals("Director: idle · turns this hour 0 of 30 (30 left) · inbox 0 · reminders none", lines[4])
         assertEquals("Chapter: none open · operator channel system_message", lines[5])
         assertEquals("Tasks: none running", lines[6])
         assertEquals("Journal: unavailable (unit test) · 0 lost", lines[7])
@@ -60,7 +60,7 @@ class StatusLinesTest {
             override fun status() = DirectorStatus(
                 state = DirectorState.WAITING, until = now + 4_000, reason = null, chapter = 3, conversationId = "director-aaaa",
                 contextTokens = 61_234, inbox = 3, droppedSignals = 1, turnId = 42, operatorChannel = OperatorChannelMode.USER_TAG,
-                reminders = listOf(PendingReminder(3, "check Bob's village", now + 600_000)),
+                reminders = listOf(PendingReminder(3, "check Bob's village", now + 600_000)), turnsThisHour = 12, turnsPerHour = 30,
             )
         }
         val workers = object : WorkersControl {
@@ -75,10 +75,24 @@ class StatusLinesTest {
         }
         val settings = testSettings(NarratorConfig(chaos = 4, jev = JevConfig(enabled = false)))
         val lines = lines(TestServices(clock = clock, settings = settings, players = players, guards = guards, director = director, workers = workers))
-        assertEquals("Director: waiting until 19:30:04 · turn #42 running · inbox 3 (1 dropped) · reminders R-3 19:40:00", lines[4])
+        assertEquals(
+            "Director: waiting until 19:30:04 · turn #42 running · turns this hour 12 of 30 (18 left) · inbox 3 (1 dropped) · reminders R-3 19:40:00",
+            lines[4],
+        )
         assertEquals("Chapter: #3 · context 61k tokens · operator channel user_tag", lines[5])
         assertEquals("Tasks: T-13 analyst running 12 s, T-14 analyst queued", lines[6])
         assertEquals("Reflexes: heuristic (Jev is disabled in the configuration)", lines[8])
         assertEquals("Guards: chaos 4 · creatures 0 of 24 · protected online: Mimosa", lines[9])
+    }
+
+    @Test
+    fun `a spent budget of turns says who may still wake the Director`() {
+        val director = object : io.github.clemsix6.narrator2.director.DirectorControl by FakeDirector(clock) {
+            override fun status() = FakeDirector(clock).status().copy(turnsThisHour = 31, turnsPerHour = 30)
+        }
+        assertEquals(
+            "Director: idle · turns this hour 31 of 30 (none left: only addressed chat, prayers and whispers wake it) · inbox 0 · reminders none",
+            lines(TestServices(clock = clock, director = director))[4],
+        )
     }
 }

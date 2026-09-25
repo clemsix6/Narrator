@@ -15,6 +15,7 @@ import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolEnv
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -74,7 +75,7 @@ class SqlTool(directorSeconds: Int) : NarratorTool<SqlArgs>(
             is SqlOutcome.Rejected -> ToolResult.invalid(outcome.reason)
             // DuckDB's errors are the query's fault (a column, a type): the model fixes it. A Journal down is not.
             is SqlOutcome.Failed -> if (journal.available) ToolResult.invalid(outcome.message) else ToolResult.failed(outcome.message)
-            is SqlOutcome.TimedOut -> ToolResult.timeout("the query did not finish within ${outcome.seconds} s: aggregate, filter or add LIMIT")
+            is SqlOutcome.TimedOut -> ToolResult.timeout("the query did not finish within ${ToolText.duration(outcome.seconds * 1_000L)}: aggregate, filter or add LIMIT")
         }
     }
 

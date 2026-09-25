@@ -101,6 +101,24 @@ class SpeechToolsTest {
     }
 
     @Test
+    fun `the speech tools of every conversation share the server's limits`() = runTest {
+        online("<engine>")
+        val engine = services.players.byName("<engine>")!!.ref
+        // Lines and a title given in an earlier chapter, through the server's limiter (ToolLimits.speech).
+        repeat(SpeechLimiter.LINES_PER_TURN) { services.toolLimits.speech.line(caller) }
+        services.toolLimits.speech.titles(listOf(engine))
+        val tools = speechTools(services)
+
+        val say = tools.filterIsInstance<SayTool>().single().call("""{"text":"Encore un mot."}""")
+        assertEquals("DENIED (speech_limit): 4 lines already this turn", say.text.substringBefore(", the most"))
+        assertResult(
+            ToolStatus.DENIED,
+            "DENIED (speech_limit): one title per player every 30s: ‹engine› got one 0s ago (next in 30s)",
+            tools.filterIsInstance<ShowTitleTool>().single().call("""{"title":"Encore ?"}"""),
+        )
+    }
+
+    @Test
     fun `a title, a line above the hotbar or a book everyone waits for is denied`() = runTest {
         online("Alice")
         val alice = services.players.byName("Alice")!!.ref
@@ -110,17 +128,17 @@ class SpeechToolsTest {
 
         assertResult(
             ToolStatus.DENIED,
-            "DENIED (speech_limit): one title per player every 30 s: Alice got one 0 s ago (next in 30 s)",
+            "DENIED (speech_limit): one title per player every 30s: Alice got one 0s ago (next in 30s)",
             ShowTitleTool(limiter).call("""{"title":"Encore ?"}"""),
         )
         assertResult(
             ToolStatus.DENIED,
-            "DENIED (speech_limit): one line above the hotbar per player every 5 s: Alice got one 0 s ago (next in 5 s)",
+            "DENIED (speech_limit): one line above the hotbar per player every 5s: Alice got one 0s ago (next in 5s)",
             ActionbarTool(limiter).call("""{"text":"Psst.","to":["Alice"]}"""),
         )
         assertResult(
             ToolStatus.DENIED,
-            "DENIED (speech_limit): one book per player every 5 min: Alice got one 0 s ago (next in 5 min)",
+            "DENIED (speech_limit): one book per player every 5m: Alice got one 0s ago (next in 5m)",
             GiveBookTool(limiter).call("""{"to":"alice","title":"Amende","pages":["Payez."]}"""),
         )
     }

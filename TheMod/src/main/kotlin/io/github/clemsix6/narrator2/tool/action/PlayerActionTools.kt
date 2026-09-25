@@ -8,7 +8,6 @@ import io.github.clemsix6.narrator2.guard.EffectLedger
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.Rules
-import io.github.clemsix6.narrator2.guard.TargetingPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -17,9 +16,22 @@ import io.github.clemsix6.narrator2.tool.Items
 import io.github.clemsix6.narrator2.tool.MaxLen
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.Range
+import io.github.clemsix6.narrator2.tool.Refusal
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.ToolText.duration
+import io.github.clemsix6.narrator2.tool.ToolText.number
+import io.github.clemsix6.narrator2.tool.ToolText.roman
+import io.github.clemsix6.narrator2.tool.answer
+import io.github.clemsix6.narrator2.tool.at
+import io.github.clemsix6.narrator2.tool.chaos
+import io.github.clemsix6.narrator2.tool.live
+import io.github.clemsix6.narrator2.tool.online
+import io.github.clemsix6.narrator2.tool.punish
+import io.github.clemsix6.narrator2.tool.refuse
+import io.github.clemsix6.narrator2.tool.shownName
 import io.github.clemsix6.narrator2.tool.speech.Speech
 import io.github.clemsix6.narrator2.tool.speech.closestIds
 import kotlinx.serialization.SerialName
@@ -38,9 +50,7 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.phys.Vec3
 import java.time.Clock
-import java.util.Locale
 import java.util.UUID
-import java.util.WeakHashMap
 import java.util.concurrent.CompletableFuture
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -49,7 +59,7 @@ import kotlin.math.sin
 /**
  * Actions on players (M1_M2 §9.3): `apply_effect`, `remove_effect`, `set_attribute`, `reset_attribute`,
  * `teleport`, `launch`, `give_item`, `take_item`. `ToolCatalog` builds the family once per conversation;
- * the [GiftLimiter] is the server's, shared by every conversation.
+ * the [GiftLimiter] is the server's (`ToolLimits.gifts`), shared by every conversation.
  *
  * Every tool follows the guards' order (`handoff/T09a.md`): arguments and the caps of the chaos level
  * first, then `Guards.hostile` for a hostile action (protection, chaos 0, no piling on, one punishment at
@@ -69,7 +79,7 @@ fun playerActionTools(services: NarratorServices): List<NarratorTool<*>> = listO
     ResetAttributeTool(),
     TeleportTool(),
     LaunchTool(),
-    GiveItemTool(GiftLimiter.of(services)),
+    GiveItemTool(services.toolLimits.gifts),
     TakeItemTool(),
 )
 
@@ -160,17 +170,17 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
                     }
                     if (instant) {
                         effect.value().applyInstantaneousEffect(player.level(), null, null, player, args.level - 1, 1.0)
-                        "${ref.name} (health ${health(player)})"
+                        "${ref.shownName} (health ${health(player)})"
                     } else {
                         ctx.guards.effects.apply(player, effect, args.level, args.seconds, args.particles, ctx.caller.turnId)
-                        ref.name + replaced
+                        ref.shownName + replaced
                     }
                 }
             }
         }
         report(outcomes) { done ->
             val names = done.joinToString { it.done!! }
-            if (instant) "ok: $shown on $names" else "ok: $names ${if (done.size == 1) "gets" else "get"} $shown for ${args.seconds} s (until ${ctx.at(until)})"
+            if (instant) "ok: $shown on $names" else "ok: $names ${if (done.size == 1) "gets" else "get"} $shown for ${duration(args.seconds * 1_000L)} (until ${ctx.at(until)})"
         }
     }
 }
@@ -295,20 +305,20 @@ class RemoveEffectTool : NarratorTool<RemoveEffectArgs>(
                         benefits.mapNotNull { Effects.perilOf(it) }.distinct().forEach { ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS, it) }
                     }
                     if (only == null) ctx.guards.effects.removeAll(player) else ctx.guards.effects.remove(player, only)
-                    "${shown.joinToString()} from ${ref.name}"
+                    "${shown.joinToString()} from ${ref.shownName}"
                 }
             }
         }
         val acted = outcomes.filter { it.refusal != null || it.done!!.isNotEmpty() }
         if (acted.isEmpty()) {
-            val whom = targets.joinToString { it.name }
+            val whom = ToolText.names(targets)
             return@answer if (only == null) {
                 ToolResult.ok("ok: nothing to remove: the Narrator has no effect on $whom", targets)
             } else {
                 ToolResult.invalid("$whom ${if (targets.size == 1) "does" else "do"} not have ${shortId(only)}; ${ctx.effectsOf(targets)}")
             }
         }
-        val untouched = outcomes.filter { it.refusal == null && it.done!!.isEmpty() }.map { it.ref.name }
+        val untouched = outcomes.filter { it.refusal == null && it.done!!.isEmpty() }.map { it.ref.shownName }
         report(acted) { done ->
             "ok: removed ${done.joinToString("; ") { it.done!! }}" + (if (untouched.isEmpty()) "" else "; nothing on ${untouched.joinToString()}")
         }
@@ -319,7 +329,7 @@ class RemoveEffectTool : NarratorTool<RemoveEffectArgs>(
         players.joinToString("; ") { ref ->
             val effects = server.playerList.getPlayer(ref.uuid)?.activeEffects.orEmpty()
                 .map { "${shortId(it.effect)} ${roman(it.amplifier + 1)}" }
-            "${ref.name} has ${effects.joinToString().ifEmpty { "no effect" }}"
+            "${ref.shownName} has ${effects.joinToString().ifEmpty { "no effect" }}"
         }
     }
 
@@ -353,9 +363,9 @@ private fun ToolContext.replacing(player: ServerPlayer, ref: PlayerRef, effect: 
     val stronger = level - 1 > had.amplifier
     val shorter = had.isInfiniteDuration || ticks < had.duration
     val weaker = level - 1 < had.amplifier
-    val lasting = if (had.isInfiniteDuration) "with no end" else "for ${TargetingPolicy.span(had.duration * 1_000L / TICKS_PER_SECOND)}"
+    val lasting = if (had.isInfiniteDuration) "with no end" else "for ${ToolText.duration(had.duration * 1_000L / TICKS_PER_SECOND)}"
     val what = "${shortId(effect)} ${roman(had.amplifier + 1)} $lasting"
-    if (!longer && !stronger) refuse(ToolResult.invalid("${ref.name} already has $what"))
+    if (!longer && !stronger) refuse(ToolResult.invalid("${ref.shownName} already has $what"))
     if (!shorter && !weaker) return ""
     punish(player, clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L)
     Effects.perilOf(effect)?.let { guards.armDeathGuard(player.uuid, seconds + REMOVAL_GUARD_SECONDS, it) }
@@ -416,7 +426,7 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
             val harmful = key.harmful(before, after)
             val maxSeconds = if (harmful) caps.harmfulSeconds else Caps.BENEFICIAL_SECONDS
             if ((!harmful || caps.hostileAllowed) && args.seconds > maxSeconds) {
-                refuse(ToolResult.invalid("this change of ${key.id} is in ${ref.name}'s disfavor: at chaos ${ctx.chaos} it lasts at most $maxSeconds s (asked ${args.seconds} s)"))
+                refuse(ToolResult.invalid("this change of ${key.id} is in ${ref.shownName}'s disfavor: at chaos ${ctx.chaos} it lasts at most $maxSeconds s (asked ${args.seconds} s)"))
             }
             val until = ctx.clock.millis() + args.seconds * 1_000L
             // Only a change in the player's disfavor arms the death guard (M2 review, finding 11), for
@@ -428,7 +438,7 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
                 player.requireAlive()
             }
             val value = ledger.apply(player, key, amount, operation, until, harmful, ctx.caller.turnId)
-            ToolResult.ok("ok: ${ref.name}'s ${key.id} ${number(current)} → ${number(value)} for ${args.seconds} s (until ${ctx.at(until)})", listOf(ref))
+            ToolResult.ok("ok: ${ref.shownName}'s ${key.id} ${number(current)} → ${number(value)} for ${duration(args.seconds * 1_000L)} (until ${ctx.at(until)})", listOf(ref))
         }
     }
 }
@@ -460,10 +470,10 @@ class ResetAttributeTool : NarratorTool<ResetAttributeArgs>(
             val changes = ledger.on(player).filter { args.attribute == null || it.attribute == args.attribute.id }
             if (changes.isEmpty()) {
                 if (args.attribute == null) {
-                    return@onServer ToolResult.ok("ok: nothing to put back: the Narrator changed none of ${ref.name}'s attributes", listOf(ref))
+                    return@onServer ToolResult.ok("ok: nothing to put back: the Narrator changed none of ${ref.shownName}'s attributes", listOf(ref))
                 }
                 val all = ledger.on(player).joinToString { AttributeLedger.describe(it) }.ifEmpty { "none" }
-                refuse(ToolResult.invalid("the Narrator did not change ${ref.name}'s ${args.attribute.id}; its changes on ${ref.name}: $all"))
+                refuse(ToolResult.invalid("the Narrator did not change ${ref.shownName}'s ${args.attribute.id}; its changes on ${ref.shownName}: $all"))
             }
             val favors = changes.filter { !it.harmful }
             if (favors.isNotEmpty()) {
@@ -475,7 +485,7 @@ class ResetAttributeTool : NarratorTool<ResetAttributeArgs>(
                 ledger.reset(player, key)
                 "${key.id} ${number(before)} → ${number(ledger.value(player, key))}"
             }
-            ToolResult.ok("ok: put back ${ref.name}'s ${back.joinToString()}", listOf(ref))
+            ToolResult.ok("ok: put back ${ref.shownName}'s ${back.joinToString()}", listOf(ref))
         }
     }
 }
@@ -524,20 +534,20 @@ class TeleportTool : NarratorTool<TeleportArgs>(
     override suspend fun run(ctx: ToolContext, args: TeleportArgs): ToolResult = answer {
         val ref = ctx.online(args.player)
         val toRef = args.toPlayer?.let { ctx.online(it) }
-        if (toRef?.uuid == ref.uuid) refuse(ToolResult.invalid("${ref.name} cannot be teleported to themselves"))
+        if (toRef?.uuid == ref.uuid) refuse(ToolResult.invalid("${ref.shownName} cannot be teleported to themselves"))
         val caps = ctx.guards.caps()
         val destination = ctx.onServer { server ->
             val player = server.live(ref)
             player.requireAlive()
             // Near or far, a protected player stays where they are (M2 review, finding 12).
             if (ctx.guards.isProtected(ref.uuid)) {
-                refuse(ToolResult.denied(Rules.PROTECTED, "${ref.name} is protected by the operators; the Narrator never teleports them."))
+                refuse(ToolResult.denied(Rules.PROTECTED, "${ref.shownName} is protected by the operators; the Narrator never teleports them."))
             }
             val level = player.level()
             val (x, z, fromY) = if (toRef != null) {
                 val other = server.live(toRef)
                 if (other.level().dimension() != level.dimension()) {
-                    refuse(ToolResult.invalid("${toRef.name} is in ${dimension(other.level())} and ${ref.name} in ${dimension(level)}; a teleport stays in the player's own dimension"))
+                    refuse(ToolResult.invalid("${toRef.shownName} is in ${dimension(other.level())} and ${ref.shownName} in ${dimension(level)}; a teleport stays in the player's own dimension"))
                 }
                 Triple(other.blockX, other.blockZ, other.blockY)
             } else {
@@ -553,15 +563,15 @@ class TeleportTool : NarratorTool<TeleportArgs>(
                 if (!caps.hostileAllowed || ctx.guards.isProtected(ref.uuid)) ctx.punish(player, ctx.clock.millis())
                 if (far > caps.teleportBlocks) refuse(tooFar(ctx, far, caps))
             }
-            Destination(level, x, z, fromY, toRef?.name, Teleports.requestLoad(level, x, z))
+            Destination(level, x, z, fromY, toRef?.shownName, Teleports.requestLoad(level, x, z))
         }
         if (!Teleports.awaitLoaded(destination.loading)) {
-            refuse(ToolResult.failed("the destination x ${destination.x}, z ${destination.z} did not load within ${Teleports.LOAD_TIMEOUT_MS / 1_000} s; nothing happened"))
+            refuse(ToolResult.failed("the destination x ${destination.x}, z ${destination.z} did not load within ${duration(Teleports.LOAD_TIMEOUT_MS)}; nothing happened"))
         }
         ctx.onServer { server ->
             val player = server.live(ref)
             player.requireAlive()
-            if (player.level() !== destination.level) refuse(ToolResult.failed("${ref.name} changed dimension meanwhile; nothing happened"))
+            if (player.level() !== destination.level) refuse(ToolResult.failed("${ref.shownName} changed dimension meanwhile; nothing happened"))
             val spot = Teleports.landing(destination.level, player, destination.x, destination.z, destination.fromY)
                 ?: refuse(
                     ToolResult.failed(
@@ -576,10 +586,10 @@ class TeleportTool : NarratorTool<TeleportArgs>(
             }
             // The landing is safe, what is around it may not be (M2 review, finding 12).
             ctx.guards.armDeathGuard(player.uuid, TELEPORT_GUARD_SECONDS, Peril.ANY)
-            if (!Teleports.move(player, spot)) refuse(ToolResult.failed("the game refused to move ${ref.name}"))
+            if (!Teleports.move(player, spot)) refuse(ToolResult.failed("the game refused to move ${ref.shownName}"))
             val near = destination.near?.let { " next to $it" } ?: ""
             ToolResult.ok(
-                "ok: ${ref.name} teleported$near, ${number(distance)} blocks away, to x ${number(spot.x)}, y ${number(spot.y)}, z ${number(spot.z)}",
+                "ok: ${ref.shownName} teleported$near, ${number(distance)} blocks away, to x ${number(spot.x)}, y ${number(spot.y)}, z ${number(spot.z)}",
                 listOf(ref),
             )
         }
@@ -650,7 +660,7 @@ class LaunchTool : NarratorTool<LaunchArgs>(
             // Sent to the player's own client at the next entity tracking tick: only that client moves them.
             player.syncVelocity = true
             ToolResult.ok(
-                "ok: ${ref.name} launched ${args.direction.name.lowercase()} at strength ${number(args.strength)}; no fall damage until ${ctx.at(until)}",
+                "ok: ${ref.shownName} launched ${args.direction.name.lowercase()} at strength ${number(args.strength)}; no fall damage until ${ctx.at(until)}",
                 listOf(ref),
             )
         }
@@ -710,7 +720,7 @@ data class GiveItemArgs(
     val unbreakable: Boolean = false,
 )
 
-class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs>(
+class GiveItemTool(internal val limiter: GiftLimiter) : NarratorTool<GiveItemArgs>(
     name = "give_item",
     description = "Gives an item to a player, possibly named, described, enchanted or unbreakable: a reward, a gag, a " +
         "cursed trinket. It goes into their inventory, or at their feet when it is full. Operator items, unbreakable " +
@@ -732,7 +742,7 @@ class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs
             val points = ItemSpecs.preciousness(spec.item) * spec.count
             limiter.take(ref, points, "${spec.count}x ${shortId(spec.item)}").let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
             val dropped = give(player, ItemSpecs.build(spec, ctx.caller.turnId))
-            val where = if (dropped) "dropped at ${ref.name}'s feet (inventory full)" else "to ${ref.name}"
+            val where = if (dropped) "dropped at ${ref.shownName}'s feet (inventory full)" else "to ${ref.shownName}"
             ToolResult.ok("ok: gave ${ItemSpecs.describe(spec)} $where", listOf(ref))
         }
     }
@@ -761,8 +771,8 @@ class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs
  * `give_item`'s limits, whatever the model asks: [GIFTS_PER_HOUR] gifts per player in any hour, and
  * [PRECIOUS_POINTS_PER_HOUR] points of precious items ([ItemSpecs.preciousness]): the Narrator slows
  * progression down (M2 review, finding 13). A gift is counted when it is allowed; a refusal counts
- * nothing. One limiter per server ([of]), so a new chapter does not reset the counts; in memory only.
- * Any thread.
+ * nothing. The server's own is `ToolLimits.gifts`, so a new chapter does not reset the counts; in memory
+ * only. Any thread.
  */
 class GiftLimiter(private val clock: Clock) {
     private val gifts = HashMap<UUID, ArrayDeque<Long>>()
@@ -782,8 +792,8 @@ class GiftLimiter(private val clock: Clock) {
             val next = times.first() + HOUR_MS
             return Verdict.Denied(
                 RULE,
-                "${player.name} got $GIFTS_PER_HOUR gifts in the last hour, the most a player may get; the next is possible at " +
-                    "${clockTime(clock, next)} (in ${TargetingPolicy.span(next - now)})",
+                "${player.shownName} got $GIFTS_PER_HOUR gifts in the last hour, the most a player may get; the next is possible at " +
+                    "${clockTime(clock, next)} (in ${ToolText.wait(next - now)})",
             )
         }
         val spent = lastHour(precious, player, now)
@@ -793,8 +803,8 @@ class GiftLimiter(private val clock: Clock) {
             } else {
                 // The points leave the hour oldest first: enough have left once this one has.
                 val next = spent[spent.size + points - PRECIOUS_POINTS_PER_HOUR - 1] + HOUR_MS
-                "${player.name} got ${spent.size} of the $PRECIOUS_POINTS_PER_HOUR precious points a player may get in an hour, and " +
-                    "$what is worth $points; it is possible at ${clockTime(clock, next)} (in ${TargetingPolicy.span(next - now)})"
+                "${player.shownName} got ${spent.size} of the $PRECIOUS_POINTS_PER_HOUR precious points a player may get in an hour, and " +
+                    "$what is worth $points; it is possible at ${clockTime(clock, next)} (in ${ToolText.wait(next - now)})"
             }
             return Verdict.Denied(
                 PRECIOUS_RULE,
@@ -825,12 +835,6 @@ class GiftLimiter(private val clock: Clock) {
         const val PRECIOUS_POINTS_PER_HOUR = 4
 
         private const val HOUR_MS = 3_600_000L
-
-        private val byServer = WeakHashMap<NarratorServices, GiftLimiter>()
-
-        /** The limiter of the server [services] belong to: the same for every conversation, dropped with the server. */
-        @Synchronized
-        fun of(services: NarratorServices): GiftLimiter = byServer.getOrPut(services) { GiftLimiter(services.clock) }
     }
 }
 
@@ -882,17 +886,17 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
             val player = server.live(ref)
             val inventory = player.inventory
             val has = (0 until inventory.containerSize).map { inventory.getItem(it) }.filter { !it.isEmpty && match(it) }.sumOf { it.count }
-            if (has == 0) refuse(ToolResult.invalid("${ref.name} has no $raw"))
+            if (has == 0) refuse(ToolResult.invalid("${ref.shownName} has no $raw"))
             val returnAt = ctx.clock.millis() + args.minutes * 60_000L
             ctx.punish(player, returnAt)
             // Taking the elytra of a gliding player, the blocks of one bridging over lava, the armor of one
             // at war with a horde, can kill in any way.
             ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS, Peril.ANY)
             val taken = ctx.guards.items.confiscate(player, match, args.count, returnAt, reason, ctx.caller.turnId)
-                ?: refuse(ToolResult.invalid("${ref.name} has no $raw"))
+                ?: refuse(ToolResult.invalid("${ref.shownName} has no $raw"))
             val all = if (has <= args.count) " (all they had)" else ""
             ToolResult.ok(
-                "ok: took ${taken.what}$all from ${ref.name} until ${ctx.at(returnAt)} (in ${TargetingPolicy.span(returnAt - ctx.clock.millis())}); " +
+                "ok: took ${taken.what}$all from ${ref.shownName} until ${ctx.at(returnAt)} (in ${ToolText.duration(returnAt - ctx.clock.millis())}); " +
                     "confiscation ${taken.id}",
                 listOf(ref),
             )
@@ -907,55 +911,9 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
 
 // ── Shared ──────────────────────────────────────────────────────────────────────────────────────
 
-/** Stops a tool's checks with [result] as its answer, from anywhere, the server thread included. Caught by [answer]. */
-internal class Refusal(val result: ToolResult) : RuntimeException(result.text, null, false, false)
-
-/** Stops the tool with [result] as its answer. */
-internal fun refuse(result: ToolResult): Nothing = throw Refusal(result)
-
-/** Runs a tool's [block]; a [refuse] on the way becomes the answer. */
-internal inline fun answer(block: () -> ToolResult): ToolResult = try {
-    block()
-} catch (e: Refusal) {
-    e.result
-}
-
-/** The online players named [names], ignoring case and repeats; refuses with who is online otherwise. Any thread. */
-private fun ToolContext.online(names: List<String>): List<PlayerRef> {
-    val found = names.map { it to players.byName(it) }
-    val missing = found.filter { it.second == null }.map { it.first }.distinct()
-    if (missing.isNotEmpty()) {
-        val who = if (missing.size == 1) "${missing.single()} is not online" else "${missing.joinToString()} are not online"
-        refuse(ToolResult.invalid("$who; online: ${players.online.joinToString { it.ref.name }.ifEmpty { "nobody" }}"))
-    }
-    return found.mapNotNull { it.second?.ref }.distinctBy { it.uuid }
-}
-
-private fun ToolContext.online(name: String): PlayerRef = online(listOf(name)).single()
-
-/** The chaos level in force. */
-private val ToolContext.chaos: Int get() = settings.config.chaos
-
-/** [epochMs] as a time of day, `21:41:10`. */
-private fun ToolContext.at(epochMs: Long): String = clockTime(clock, epochMs)
-
-/**
- * A hostile action against [player] until [until] (epoch milliseconds): the guards check it (protection,
- * chaos 0, no piling on, one punishment at a time, fairness) and open or extend the turn's punishment.
- * Refuses with the verdict. Server thread.
- */
-private fun ToolContext.punish(player: ServerPlayer, until: Long) {
-    val verdict = guards.hostile(player, caller, until)
-    if (verdict is Verdict.Denied) refuse(ToolResult.denied(verdict))
-}
-
-/** The live player of [ref]; refuses when they left. Server thread. */
-private fun MinecraftServer.live(ref: PlayerRef): ServerPlayer =
-    playerList.getPlayer(ref.uuid) ?: refuse(ToolResult.failed("${ref.name} left the game"))
-
 /** Refuses when the player is dead, on the respawn screen: what they get now would be lost. */
 private fun ServerPlayer.requireAlive() {
-    if (isDeadOrDying) refuse(ToolResult.failed("$plainTextName is dead (on the respawn screen); try again once they respawn"))
+    if (isDeadOrDying) refuse(ToolResult.failed("$shownName is dead (on the respawn screen); try again once they respawn"))
 }
 
 /** What a tool did to one of several players: [done] says it, or [refusal] why not. */
@@ -983,14 +941,8 @@ private fun report(outcomes: List<Outcome>, summary: (List<Outcome>) -> String):
     return ToolResult.ok(summary(done) + others, done.map { it.ref })
 }
 
-/** `II` for level 2. */
-private fun roman(level: Int): String = listOf("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X").getOrElse(level - 1) { level.toString() }
-
-/** [value] without a useless fraction: `3`, `0.5`, `12.25`. */
-private fun number(value: Double): String = "%.2f".format(Locale.ROOT, value).trimEnd('0').trimEnd('.')
-
 /** `14/20`. */
 private fun health(player: ServerPlayer): String = "${number(player.health.toDouble())}/${number(player.maxHealth.toDouble())}"
 
 /** `the_nether`, `overworld`. */
-private fun dimension(level: ServerLevel): String = shortId(level.dimension().identifier())
+private fun dimension(level: ServerLevel): String = ToolText.dimension(level.dimension().identifier().toString())

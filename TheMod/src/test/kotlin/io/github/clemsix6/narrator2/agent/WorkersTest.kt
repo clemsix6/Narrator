@@ -172,7 +172,7 @@ class WorkersTest {
             scheduler.runCurrent()
         }
 
-        fun requestsOf(id: Long): List<RecordedRequest> = fake.requests.filter { it.header("X-Session-ID") == task(id).conversationId }
+        fun requestsOf(id: Long): List<RecordedRequest> = fake.requests.filter { it.conversation == task(id).conversationId }
 
         /** Runs [tool] with [input] as the Director would, through the real `ToolRunner`. */
         fun <A : Any> call(tool: NarratorTool<A>, input: String): JsonNode {
@@ -238,7 +238,7 @@ class WorkersTest {
 
         assertNotEquals(sessions[0], sessions[1])
         assertTrue(sessions.all { it.startsWith("analyst-") }, "$sessions")
-        assertEquals(listOf(3, 1), sessions.map { session -> fake.requests.count { it.header("X-Session-ID") == session } })
+        assertEquals(listOf(3, 1), sessions.map { session -> fake.requests.count { it.conversation == session } })
         val opening = rig.requestsOf(first).first().json.path("messages")[0].path("content")[0].path("text").asText()
         assertEquals(
             "<task id=\"T-1\" from=\"director\">\nWhere does Bartok mine these days? Coordinates please.\n</task>\n" +
@@ -294,7 +294,7 @@ class WorkersTest {
         holds[0].release()
         rig.await("T-3 at Claude") { holds[2].awaitReached(0) }
         assertEquals(listOf(Status.DONE, Status.RUNNING, Status.RUNNING, Status.QUEUED), ids.map { rig.task(it).status })
-        assertEquals(rig.session(ids[2]), fake.requests[2].header("X-Session-ID"), "the first in line starts first")
+        assertEquals(rig.session(ids[2]), fake.requests[2].conversation, "the first in line starts first")
 
         holds[1].release()
         rig.awaitStatus(ids[3], Status.DONE)
@@ -323,11 +323,11 @@ class WorkersTest {
         rig.awaitStatus(slow, Status.TIMEOUT)
 
         with(rig.task(slow)) {
-            assertEquals("no report within 180 s", error)
+            assertEquals("no report within 3m", error)
             assertNull(result)
             assertEquals(START.plusSeconds(180), finishedAt)
         }
-        assertEquals(DirectorSignal.TaskDone(slow, Role.ANALYST, Status.TIMEOUT, "no report within 180 s", START.plusSeconds(180).toEpochMilli()), rig.done().first())
+        assertEquals(DirectorSignal.TaskDone(slow, Role.ANALYST, Status.TIMEOUT, "no report within 3m", START.plusSeconds(180).toEpochMilli()), rig.done().first())
         rig.awaitSettled(slow)
         assertEquals(ConversationRecord.EndReason.TIMEOUT, rig.traces.latestConversation(rig.session(slow))!!.endReason)
         hold.release()

@@ -77,7 +77,7 @@ class PlayerActionGameTests {
     fun anEffectIsAppliedThenReplacedByAWeakerOne(helper: GameTestHelper) = withPlayer(helper) { bob ->
         val tool = ApplyEffectTool()
         val first = run(helper, tool, ApplyEffectArgs(listOf(bob.name.uppercase()), "slowness", seconds = 60, level = 2))
-        helper.assertTrue(first.text.startsWith("ok: ${bob.name} gets slowness II for 60 s (until "), first.text)
+        helper.assertTrue(first.text.startsWith("ok: ${bob.name} gets slowness II for 1m (until "), first.text)
         val slowness = bob.live.getEffect(MobEffects.SLOWNESS)!!
         helper.assertEquals(1 to 1_200, slowness.amplifier to slowness.duration, "level II for 60 s")
         val entry = GuardStates.read(bob.live).effects.single()
@@ -158,7 +158,7 @@ class PlayerActionGameTests {
             val result = run(helper, ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name, alice.name), "weakness", seconds = 20))
 
             helper.assertEquals(ToolStatus.OK, result.status, result.text)
-            helper.assertTrue(result.text.startsWith("ok: ${bob.name} gets weakness I for 20 s (until "), result.text)
+            helper.assertTrue(result.text.startsWith("ok: ${bob.name} gets weakness I for 20s (until "), result.text)
             helper.assertTrue(result.text.contains("; not for the others: DENIED (${Rules.PROTECTED}): ${alice.name} is protected"), result.text)
             helper.assertTrue(bob.live.hasEffect(MobEffects.WEAKNESS), "Bob is weakened")
             helper.assertFalse(alice.live.hasEffect(MobEffects.WEAKNESS), "Alice is spared")
@@ -200,7 +200,7 @@ class PlayerActionGameTests {
         GuardGameTests.setPlayTime(bob.live, GuardGameTests.PLAY_TIME)
         GuardGameTests.equip(bob.live)
         val result = run(helper, ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "levitation", seconds = 1))
-        helper.assertTrue(result.text.startsWith("ok: ${bob.name} gets levitation I for 1 s"), result.text)
+        helper.assertTrue(result.text.startsWith("ok: ${bob.name} gets levitation I for 1s"), result.text)
         val effectGuard = guards.death.armedFor(bob.live, Peril.FALL)
         helper.assertTrue(effectGuard >= GuardGameTests.PLAY_TIME + (1 + 30) * 20, "armed for a fall, for the effect and 30 s more: $effectGuard")
         helper.assertEquals(0L, guards.death.armedFor(bob.live, Peril.ANY), "for a fall only")
@@ -248,7 +248,7 @@ class PlayerActionGameTests {
         val otherTurn = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "resistance", seconds = 30, level = 2), OTHER_TURN)
         helper.assertEquals(ToolStatus.OK, otherTurn.status, "nothing runs yet against Bob: ${otherTurn.text}")
         helper.assertTrue(
-            otherTurn.text.startsWith("ok: ${bob.name} (in place of resistance I for 8m: a punishment) gets resistance II for 30 s"),
+            otherTurn.text.startsWith("ok: ${bob.name} (in place of resistance I for 8m: a punishment) gets resistance II for 30s"),
             otherTurn.text,
         )
         helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment is open")
@@ -312,14 +312,14 @@ class PlayerActionGameTests {
         helper.assertEquals("Invalid arguments: scale must stay between 0.25 and 3 (would be 10)", giant.text, "out of bounds")
 
         val tiny = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.SCALE, multiply = 0.5, seconds = 60))
-        helper.assertTrue(tiny.text.startsWith("ok: ${bob.name}'s scale 1 → 0.5 for 60 s (until "), tiny.text)
+        helper.assertTrue(tiny.text.startsWith("ok: ${bob.name}'s scale 1 → 0.5 for 1m (until "), tiny.text)
         helper.assertEquals(0.5, bob.live.getAttributeValue(Attributes.SCALE), "half size")
         helper.assertTrue(GuardStates.read(bob.live).modifiers.single().harmful, "a punishment")
         helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
 
         // In the player's favor: not a punishment, not capped by the chaos level.
         val fast = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.MOVEMENT_SPEED, multiply = 1.5, seconds = 900))
-        helper.assertTrue(fast.text.startsWith("ok: ${bob.name}'s movement_speed 0.1 → 0.15 for 900 s"), fast.text)
+        helper.assertTrue(fast.text.startsWith("ok: ${bob.name}'s movement_speed 0.1 → 0.15 for 15m"), fast.text)
         helper.assertFalse(GuardStates.read(bob.live).modifiers.first { it.attribute == "movement_speed" }.harmful, "a gift")
         val heavy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 0.5, seconds = caps.harmfulSeconds + 10))
         helper.assertEquals(ToolStatus.INVALID, heavy.status, heavy.text)
@@ -353,12 +353,12 @@ class PlayerActionGameTests {
         val fast = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.MOVEMENT_SPEED, multiply = 1.5, seconds = 900))
         helper.assertEquals(ToolStatus.OK, fast.status, fast.text)
         val springy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, add = 0.15, seconds = 60))
-        helper.assertTrue(springy.text.startsWith("ok: ${bob.name}'s jump_strength 0.42 → 0.57 for 60 s"), springy.text)
+        helper.assertTrue(springy.text.startsWith("ok: ${bob.name}'s jump_strength 0.42 → 0.57 for 1m"), springy.text)
         helper.assertFalse(guards.death.isArmed(bob.live), "a favor arms nothing")
         helper.assertEquals(null, GuardStates.read(bob.live).episode, "and punishes nobody")
 
         val bouncy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 3.0, seconds = 60))
-        helper.assertTrue(bouncy.text.startsWith("ok: ${bob.name}'s jump_strength 0.57 → 1.26 for 60 s"), bouncy.text)
+        helper.assertTrue(bouncy.text.startsWith("ok: ${bob.name}'s jump_strength 0.57 → 1.26 for 1m"), bouncy.text)
         helper.assertTrue(GuardStates.read(bob.live).modifiers.single { it.attribute == "jump_strength" }.harmful, "above 0.6, a punishment")
         helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
         helper.assertTrue(

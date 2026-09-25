@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsHolder
+import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.TraceSink
 import io.github.clemsix6.narrator2.trace.Transcripts
 import kotlinx.coroutines.CoroutineScope
@@ -60,6 +61,8 @@ class TestServices(
     override var phase: Phase = Phase.RUNNING
 
     override val settings = SettingsHolder(settings)
+
+    override val toolLimits = ToolLimits(clock)
 
     /** [trace] as the in-memory sink it is by default. */
     val traces: MemoryTraceSink get() = trace as MemoryTraceSink

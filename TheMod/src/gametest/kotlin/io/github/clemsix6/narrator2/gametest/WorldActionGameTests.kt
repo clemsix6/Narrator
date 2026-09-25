@@ -209,7 +209,7 @@ class WorldActionGameTests {
         }.single().text()
         val cows = summonedFor(helper, bob.uuid)
         helper.assertTrue(result.startsWith("ok: 2 minecraft:cow summoned around ${bob.name}"), result)
-        helper.assertTrue("thrown up at 1.5, exploding after 1 s (power 2, harmless)" in result, result)
+        helper.assertTrue("thrown up at 1.5, exploding after 1s (power 2, harmless)" in result, result)
         helper.assertEquals(2, cows.size, "cows")
         val startY = cows.map { it.y }
         helper.assertTrue(cows.all { it.deltaMovement.y == 1.5 }, "thrown up")
@@ -237,7 +237,7 @@ class WorldActionGameTests {
         guards.setProtected(bob.uuid, bob.name, on = true) // no hostile check: the blast spares him anyway
         val result = call(helper, SpawnTool(), SpawnArgs(entity = "pig", near = bob.name, distance = 2, explode = ExplodeSpec(afterSeconds = 1, power = 2.0)))
         val pig = summonedFor(helper, bob.uuid).single()
-        helper.assertTrue("exploding after 1 s (power 2)" in result.text, result.text)
+        helper.assertTrue("exploding after 1s (power 2)" in result.text, result.text)
         helper.startSequence()
             .thenWaitUntil { helper.assertTrue(pig.isRemoved, "the pig went off") }
             .thenExecute {
@@ -511,6 +511,14 @@ class WorldActionGameTests {
             helper.assertTrue(result.text.startsWith("ok: 12 heart particles around ${bob.name}; seen by "), result.text)
             val packet = bob.packets.filterIsInstance<ClientboundLevelParticlesPacket>().single()
             helper.assertEquals(12, packet.count(), "particles sent")
+            // A dimension in any form the model writes, the Oracle's `nether` included; always read back as the_nether.
+            for (dimension in listOf("nether", "the_nether", "minecraft:the_nether", "Nether")) {
+                val there = call(helper, ParticlesTool(), ParticlesArgs(x = 0, y = 64, z = 0, dimension = dimension, particle = ParticleKey.HEART))
+                helper.assertTrue(there.status != ToolStatus.INVALID && "x 0, y 64, z 0 in the_nether" in there.text, "$dimension: ${there.text}")
+            }
+            val unknown = call(helper, ParticlesTool(), ParticlesArgs(x = 0, y = 64, z = 0, dimension = "moon", particle = ParticleKey.HEART))
+            val listed = unknown.text.substringAfter("Invalid arguments: unknown dimension \"moon\"; dimensions: ").split(", ").toSet()
+            helper.assertTrue(listed.containsAll(setOf("overworld", "the_nether", "the_end")), "unknown: ${unknown.text}")
             // Every particle of the list is a simple one of 26.3, and every attribute of spawn exists.
             ParticleKey.entries.forEach { it.type() }
             val missing = MobAttributeKey.entries.filterNot { BuiltInRegistries.ATTRIBUTE.containsKey(Identifier.withDefaultNamespace(it.id)) }
@@ -552,7 +560,7 @@ class WorldActionGameTests {
             )
 
             val rain = call(helper, SetWeatherTool(limits), SetWeatherArgs(WeatherKind.RAIN, minutes = 5))
-            helper.assertTrue(rain.text.startsWith("ok: rain for 5 min (until "), rain.text)
+            helper.assertTrue(rain.text.startsWith("ok: rain for 5m (until "), rain.text)
             helper.assertTrue(weather.isRaining && !weather.isThundering && weather.rainTime == 6_000, "5 minutes of rain, no storm")
             val again = call(helper, SetWeatherTool(limits), SetWeatherArgs(WeatherKind.CLEAR))
             helper.assertTrue(again.text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed "), again.text)

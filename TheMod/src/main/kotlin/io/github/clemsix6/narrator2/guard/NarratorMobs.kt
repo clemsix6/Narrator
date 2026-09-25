@@ -74,8 +74,11 @@ class NarratorMobs(private val items: ItemLedger? = null) {
 
     private val loaded = ConcurrentHashMap<UUID, Loaded>()
 
-    /** The creatures kept past their time under a rider, with when their riders' landing may next be tried (epoch milliseconds). Server thread. */
-    private val overtime = HashMap<UUID, Long>()
+    /**
+     * The creatures kept past their time under a rider, with when their riders' landing may next be tried
+     * (epoch milliseconds). Written on the server thread, read by [activeOn] from any thread.
+     */
+    private val overtime = ConcurrentHashMap<UUID, Long>()
 
     /**
      * Makes [entity] one of the Narrator's creatures until [expiresAt] (epoch milliseconds), summoned
@@ -94,10 +97,17 @@ class NarratorMobs(private val items: ItemLedger? = null) {
     /** The Narrator's creatures loaded now. Any thread. */
     fun count(): Int = loaded.size
 
-    /** The Narrator's creatures loaded now that were summoned for [player], by type (`4 minecraft:zombie`). Any thread. */
+    /**
+     * The Narrator's creatures loaded now that were summoned for [player], by type (`4 minecraft:zombie`),
+     * with when they really go: a mount kept past its time under its rider stays until the rider gets off,
+     * [MAX_OVERTIME_MS] past its time at most (or until its rider can be set down), so it is told apart
+     * (`1 minecraft:strider, ridden past its time`) with that end, not its own time already gone. Any thread.
+     */
     fun activeOn(player: UUID): List<ActiveEffect> =
-        loaded.values.filter { it.mob.player == player }.groupBy { it.type }.map { (type, mobs) ->
-            ActiveEffect("mob", "${mobs.size} $type", mobs.maxOf { it.mob.expiresAt }, mobs.any { it.mob.harmful })
+        loaded.values.filter { it.mob.player == player }.groupBy { it.type to overtime.containsKey(it.entity.uuid) }.map { (key, mobs) ->
+            val (type, kept) = key
+            val until = mobs.maxOf { mob -> if (kept) maxOf(mob.mob.expiresAt + MAX_OVERTIME_MS, overtime[mob.entity.uuid] ?: 0L) else mob.mob.expiresAt }
+            ActiveEffect("mob", "${mobs.size} $type" + if (kept) ", ridden past its time" else "", until, mobs.any { it.mob.harmful })
         }
 
     /** An entity was loaded (spawned, or its chunk loaded): registered when it is one of the Narrator's. Server thread. */

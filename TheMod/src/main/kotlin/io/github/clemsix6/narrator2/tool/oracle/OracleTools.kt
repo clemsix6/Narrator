@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.tool.oracle
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.mixin.observer.StatsCounterAccessor
 import io.github.clemsix6.narrator2.observer.id
@@ -34,6 +35,10 @@ import io.github.clemsix6.narrator2.tool.Range
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.notOnline
+import io.github.clemsix6.narrator2.tool.onlineNames
+import io.github.clemsix6.narrator2.tool.shownName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -108,14 +113,14 @@ class ListPlayersTool : NarratorTool<NoArgs>(
  * surface · hp 14/20 food 12 · online 1h12 · last 5m: mined 140 · nearest Mimosa 230 m NE`.
  */
 internal fun listLine(player: PlayerSnapshot, all: List<PlayerSnapshot>, onlineMs: Long?, idle: Boolean, activity: String?): String {
-    val parts = mutableListOf("${player.ref.name}: ${player.describe()}")
-    onlineMs?.let { parts += "online ${OracleText.duration(it)}" }
+    val parts = mutableListOf("${player.ref.shownName}: ${player.describe()}")
+    onlineMs?.let { parts += "online ${ToolText.duration(it)}" }
     if (idle) parts += "idle"
     activity?.let { parts += "last 5m: $it" }
     val nearest = all.filter { it !== player }.mapNotNull { other -> player.distanceTo(other)?.let { other to it } }.minByOrNull { it.second }
     if (nearest != null) {
         val (other, _) = nearest
-        parts += "nearest ${other.ref.name} ${OracleText.relative(other.x - player.x, other.y - player.y, other.z - player.z)}"
+        parts += "nearest ${other.ref.shownName} ${OracleText.relative(other.x - player.x, other.y - player.y, other.z - player.z)}"
     } else if (all.size > 1) {
         parts += "alone in this dimension"
     }
@@ -214,7 +219,7 @@ internal suspend fun recentFacts(journal: Journal, uuid: UUID, now: Long): List<
                     buildList<String> {
                         while (rs.next()) {
                             val what = listOfNotNull(rs.getString(3), rs.getString(4)).joinToString(" → ") { OracleText.bare(it) }
-                            val where = rs.getString(5)?.let { " (${OracleText.dimension(it)} ${rs.getInt(6)} ${rs.getInt(7)} ${rs.getInt(8)})" }.orEmpty()
+                            val where = rs.getString(5)?.let { " (${ToolText.dimension(it)} ${rs.getInt(6)} ${rs.getInt(7)} ${rs.getInt(8)})" }.orEmpty()
                             add("${OracleText.ago(now - rs.getLong(1))} ${rs.getString(2)} $what$where".replace("  ", " "))
                         }
                     }
@@ -250,7 +255,7 @@ data class ScanAreaArgs(
     @Doc("Centre x (with y and z), instead of a player.") @Range(-30_000_000.0, 30_000_000.0) val x: Int? = null,
     @Doc("Centre y.") @Range(-2048.0, 2048.0) val y: Int? = null,
     @Doc("Centre z.") @Range(-30_000_000.0, 30_000_000.0) val z: Int? = null,
-    @Doc("Dimension of x, y, z: overworld (the default), nether or end.") @MaxLen(40) val dimension: String? = null,
+    @Doc("Dimension of x, y, z: overworld (the default), the_nether or the_end.") @MaxLen(40) val dimension: String? = null,
     @Doc("Radius in blocks.") @Range(4.0, 48.0) val radius: Int = 24,
 ) {
     init {
@@ -404,7 +409,7 @@ class ScanAreaTool : NarratorTool<ScanAreaArgs>(
         fun respawnPoints(server: MinecraftServer, level: ServerLevel): Map<BlockPos, List<String>> =
             server.playerList.players.mapNotNull { player ->
                 val data = player.respawnConfig?.respawnData() ?: return@mapNotNull null
-                if (data.dimension() != level.dimension()) null else data.pos() to player.plainTextName
+                if (data.dimension() != level.dimension()) null else data.pos() to player.shownName
             }.groupBy({ it.first }, { it.second })
     }
 }
@@ -445,7 +450,7 @@ private fun nothingLoaded(center: Center, radius: Int): ToolResult =
 
 /** Names of [placers]: online players first, then the server's name cache. Server thread. */
 private fun placerNames(ctx: ToolContext, server: MinecraftServer, placers: Set<UUID>): Map<UUID, String> = placers.associateWith { uuid ->
-    ctx.players.get(uuid)?.ref?.name ?: server.services().nameToIdCache().get(uuid).map { it.name() }.orElse("an unknown player")
+    ctx.players.get(uuid)?.ref?.shownName ?: server.services().nameToIdCache().get(uuid).map { ModelText.name(it.name()) }.orElse("an unknown player")
 }
 
 // ── area_info ────────────────────────────────────────────────────────────────────────────────────────
@@ -456,7 +461,7 @@ data class AreaInfoArgs(
     @Doc("Centre x (with y and z), instead of a player.") @Range(-30_000_000.0, 30_000_000.0) val x: Int? = null,
     @Doc("Centre y.") @Range(-2048.0, 2048.0) val y: Int? = null,
     @Doc("Centre z.") @Range(-30_000_000.0, 30_000_000.0) val z: Int? = null,
-    @Doc("Dimension of x, y, z: overworld (the default), nether or end.") @MaxLen(40) val dimension: String? = null,
+    @Doc("Dimension of x, y, z: overworld (the default), the_nether or the_end.") @MaxLen(40) val dimension: String? = null,
     @Doc("Radius in blocks.") @Range(4.0, 32.0) val radius: Int = 16,
 ) {
     init {
@@ -551,7 +556,7 @@ class AreaInfoTool : NarratorTool<AreaInfoArgs>(
             "biomes: ${read.biomes.joinToString()}",
             "at the centre: ${read.centre}",
             "blocks: " + (if (blocks.isEmpty()) "none" else blocks) + "; open space ${OracleText.percent(open.toLong(), all.toLong())}",
-            "creatures: $creatures" + if (players.isEmpty()) "" else "; players: ${players.joinToString()}",
+            "creatures: $creatures" + if (players.isEmpty()) "" else "; players: ${players.joinToString { ModelText.name(it) }}",
             "structures: $structures",
             "player blocks: $placedText",
         ).joinToString("\n")
@@ -615,7 +620,7 @@ class LocateTool : NarratorTool<LocateArgs>(
             server.playerList.getPlayer(live.ref.uuid)?.let { it.level() to it.blockPosition() }
         } ?: return ctx.notOnline(args.player)
         val (level, pos) = origin
-        val from = "${live.ref.name} (${OracleText.dimension(level.dimension().identifier().toString())} ${OracleText.coords(pos.x, pos.y, pos.z)})"
+        val from = "${live.ref.shownName} (${ToolText.dimension(level.dimension().identifier().toString())} ${OracleText.coords(pos.x, pos.y, pos.z)})"
         val result = when (args.kind) {
             LocateKind.STRUCTURE -> locateStructure(ctx, cost, level, pos, from, args)
             LocateKind.BIOME -> locateBiome(cost, level, pos, from, args)
@@ -632,7 +637,7 @@ class LocateTool : NarratorTool<LocateArgs>(
         val search = cost.server(ctx) { server ->
             if (!server.worldGenSettings.options().generateStructures()) null else StructureSearch(level, target.holders, origin, args.radius)
         } ?: return Result.success("structures are not generated in this world")
-        if (search.impossible) return Result.success("${target.label} does not generate in ${OracleText.dimension(level.dimension().identifier().toString())}")
+        if (search.impossible) return Result.success("${target.label} does not generate in ${ToolText.dimension(level.dimension().identifier().toString())}")
         val deadline = System.nanoTime() + SEARCH_BUDGET_NANOS
         while (!cost.server(ctx) { search.advance(SLICE_NANOS) }) {
             if (System.nanoTime() > deadline) {
@@ -719,7 +724,7 @@ class PlayerStatsTool : NarratorTool<PlayerStatsArgs>(
         val (who, values) = if (live != null) {
             val values = cost.server(ctx) { server -> server.playerList.getPlayer(live.ref.uuid)?.let { liveStats(it) } }
                 ?: return ctx.notOnline(args.player)
-            "${live.ref.name} (online; live counters)" to values
+            "${live.ref.shownName} (online; live counters)" to values
         } else {
             storedStats(ctx.services.journal, args.player, ctx.clock.millis()).getOrElse { e ->
                 return if (e is IllegalArgumentException) {
@@ -771,7 +776,7 @@ LIMIT 1
                     statement.queryTimeout = (JOURNAL_TIMEOUT_MS / 1000).toInt()
                     repeat(3) { statement.setString(it + 1, name) }
                     statement.executeQuery().use { rs ->
-                        if (!rs.next()) throw IllegalArgumentException("no player named $name has ever played here")
+                        if (!rs.next()) throw IllegalArgumentException("no player named ${ModelText.name(name)} has ever played here")
                         StoredPlayer(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getInt(4))
                     }
                 }
@@ -784,7 +789,7 @@ LIMIT 1
                         values
                     }
                 }
-                val who = "${player.name} (offline, last seen ${OracleText.duration(now - player.lastSeen)} ago, " +
+                val who = "${ModelText.name(player.name)} (offline, last seen ${ToolText.duration(now - player.lastSeen)} ago, " +
                     "${player.sessions} session${if (player.sessions == 1) "" else "s"}; totals at their last departure)"
                 who to stats
             }
@@ -804,21 +809,21 @@ private class Center(val level: ServerLevel, val pos: BlockPos, val label: Strin
         fun resolve(ctx: ToolContext, server: MinecraftServer, player: String?, x: Int?, y: Int?, z: Int?, dimension: String?): Result<Center> {
             if (player != null) {
                 val live = ctx.players.byName(player)?.let { server.playerList.getPlayer(it.ref.uuid) }
-                    ?: return Result.failure(IllegalArgumentException("$player is not online; online: ${ctx.onlineNames()}"))
+                    ?: return Result.failure(IllegalArgumentException("${ModelText.name(player)} is not online; online: ${ctx.onlineNames()}"))
                 val pos = live.blockPosition()
-                val label = "${live.plainTextName} (${OracleText.dimension(live.level().dimension().identifier().toString())} ${OracleText.coords(pos.x, pos.y, pos.z)})"
+                val label = "${live.shownName} (${ToolText.dimension(live.level().dimension().identifier().toString())} ${OracleText.coords(pos.x, pos.y, pos.z)})"
                 return Result.success(Center(live.level(), pos, label, live))
             }
-            val id = OracleText.dimensionId(dimension ?: "overworld")
+            val id = ToolText.dimensionId(dimension ?: "overworld")
             val key = Identifier.tryParse(id)?.let { ResourceKey.create(Registries.DIMENSION, it) }
             val level = key?.let { server.getLevel(it) }
                 ?: return Result.failure(
                     IllegalArgumentException(
-                        "unknown dimension \"$dimension\"; dimensions: " + server.allLevels.joinToString { OracleText.dimension(it.dimension().identifier().toString()) },
+                        "unknown dimension \"$dimension\"; dimensions: " + server.allLevels.joinToString { ToolText.dimension(it.dimension().identifier().toString()) },
                     ),
                 )
             val pos = BlockPos(x!!, y!!, z!!)
-            return Result.success(Center(level, pos, "${OracleText.dimension(id)} ${OracleText.coords(pos.x, pos.y, pos.z)}", null))
+            return Result.success(Center(level, pos, "${ToolText.dimension(id)} ${OracleText.coords(pos.x, pos.y, pos.z)}", null))
         }
     }
 }
@@ -829,10 +834,6 @@ private fun requireCenter(player: String?, x: Int?, y: Int?, z: Int?) {
     require(point.all { it == null } || point.none { it == null }) { "give x, y and z together" }
     require((player == null) != (x == null)) { "give either player, or x, y and z" }
 }
-
-private fun ToolContext.onlineNames(): String = players.online.joinToString { it.ref.name }.ifEmpty { "nobody" }
-
-private fun ToolContext.notOnline(name: String): ToolResult = ToolResult.invalid("$name is not online; online: ${onlineNames()}")
 
 /**
  * Time one Oracle call spends on the server thread and off it, logged at its end: the server thread's

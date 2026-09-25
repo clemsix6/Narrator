@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.EffectLedger
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.TargetingPolicy
+import io.github.clemsix6.narrator2.tool.ToolText
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
 import net.minecraft.commands.arguments.EntityArgument
@@ -114,7 +115,7 @@ object GuardCommands {
             add(detailLine("Protected: ${if (guards.isProtected(player.uuid)) "yes, the Narrator does nothing hostile to them" else "no"}"))
             val died = runtime.players.get(player.uuid)?.lastDeathAt
             if (died != null && now - died < NO_PILE_ON_MS) {
-                add(detailLine("Died ${TargetingPolicy.span(now - died)} ago: no hostile action until ${time(died + NO_PILE_ON_MS, zone)}"))
+                add(detailLine("Died ${ToolText.duration(now - died)} ago: no hostile action until ${time(died + NO_PILE_ON_MS, zone)}"))
             }
             val episode = state.episode?.takeIf { it.until > now }
             add(
@@ -138,13 +139,13 @@ object GuardCommands {
             val recent = DeathGuard.recentKills(state.narratorKills, play)
             val cap = caps.narratorKillsPerHour
             val next = recent.minOrNull()?.takeIf { recent.size >= cap && cap > 0 }?.let { first ->
-                "; the next is allowed in ${TargetingPolicy.span((first + DeathGuard.HOUR_TICKS - play) * MS_PER_TICK)} of play"
+                "; the next is allowed in ${ToolText.wait((first + DeathGuard.HOUR_TICKS - play) * MS_PER_TICK)} of play"
             }.orEmpty()
             add(detailLine("Deaths caused by the Narrator in the last played hour: ${recent.size} of $cap$next"))
             add(
                 detailLine(
                     if (state.armedUntil > play) {
-                        "Death guard: armed for ${TargetingPolicy.span((state.armedUntil - play) * MS_PER_TICK)} of play"
+                        "Death guard: armed for ${ToolText.wait((state.armedUntil - play) * MS_PER_TICK)} of play"
                     } else {
                         "Death guard: not armed"
                     },
@@ -161,7 +162,7 @@ object GuardCommands {
         listOfNotNull(harmful?.let { if (it) "harmful" else "beneficial" }, turnId?.let { "turn #$it" }).joinToString("") { " · $it" }
 
     /** `1m12s left`, or `due`. */
-    private fun left(until: Long, now: Long): String = if (until <= now) "due" else "${TargetingPolicy.span(until - now)} left"
+    private fun left(until: Long, now: Long): String = if (until <= now) "due" else "${ToolText.wait(until - now)} left"
 
     private fun time(epochMs: Long, zone: ZoneId): String = TIME.format(Instant.ofEpochMilli(epochMs).atZone(zone))
 
