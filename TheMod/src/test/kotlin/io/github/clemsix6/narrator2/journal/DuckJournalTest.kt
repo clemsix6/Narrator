@@ -39,6 +39,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -446,5 +447,22 @@ class DuckJournalTest {
         assertTrue(health.available)
         assertNull(health.lastError)
         assertEquals(0L, health.droppedEvents)
+    }
+
+    /** On a server, the Journal opens before the Observer: its hook time must still be reported (T07). */
+    @Test
+    fun `the health report tells the time of an Observer started after the Journal`() {
+        val observer = AtomicReference<Long?>(null)
+        JournalFixture(tuning = JournalTuning(healthIntervalMs = 0), hookNanos = { observer.get() }).use { journal ->
+            LogCapture().use { logs ->
+                observer.set(3_000_000)
+                journal.publish(broke(steve))
+                journal.sync()
+                journal.sync()
+                assertContains(logs.text, "Observer hooks ")
+                val details = journal.rows("SELECT detail::VARCHAR FROM engine_decisions WHERE kind = 'journal_health'") { getString(1) }
+                assertTrue(details.any { "hook_ms_per_minute" in it }, "hook time in the decision: $details")
+            }
+        }
     }
 }
