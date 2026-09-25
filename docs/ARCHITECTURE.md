@@ -341,7 +341,7 @@ Journalisées en base et dans le log du serveur, avec leur raison :
 - santé du Journal (événements par seconde, taille des lots, latence d'écriture).
 
 ### 12.3 Le log du serveur
-Des lignes courtes, préfixées par sous-système (`[Directeur]`, `[Forgeron#12]`, `[Journal]`, `[Forge]`, `[Mémoire]`, `[Garde-fou]`, `[LLM]`), avec un niveau réglable par sous-système dans la configuration.
+Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[Forger#12]`, `[Journal]`, `[Forge]`, `[Memory]`, `[Safety]`, `[LLM]`), avec un niveau réglable par sous-système dans la configuration.
 
 ### 12.4 Consulter
 ```
@@ -376,6 +376,7 @@ Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`
 ## 14. Claude via LLMGW
 
 - Le mod utilise le **SDK Java officiel d'Anthropic** avec l'URL de LLMGW et une **clé projet LLMGW**. C'est l'API Messages standard : LLMGW gère les comptes, les budgets et le suivi de consommation.
+- **On accède au serveur LLMGW existant du propriétaire par un tunnel SSH sur son réseau local ; on n'installe jamais LLMGW en local** (voir `CLAUDE.md` et `docs/research/LLMGW.md`).
 - **Modèles** : Opus 5.5 pour le Directeur, configurable **par rôle** (modèle et effort).
 - **Effort** : le Directeur démarre à `medium`. Sur Opus 5.5, `medium` dépasse le `high` d'Opus 5 et répond plus vite ; `high` reste disponible dans la configuration. Le Forgeron et le Rêveur travaillent en `high` : ils sont asynchrones, la latence n'y coûte rien.
 - **Contraintes d'Opus 5.5 prises en compte** : réflexion toujours active (l'effort est le seul réglage), pas de `tool_choice` forcé, historique append-only, gestion du `stop_reason: refusal`.
@@ -392,18 +393,18 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
 
 ```json
 {
-  "gateway": { "baseUrl": "https://llmgw.example.com", "apiKeyEnv": "NARRATOR_LLMGW_KEY" },
+  "gateway": { "baseUrl": "http://localhost:8088", "apiKeyEnv": "NARRATOR_LLMGW_KEY" },
   "jev": { "enabled": true, "apiKeyEnv": "TYPESAFE_API_KEY", "model": "jev-1.13.0" },
   "language": "fr",
   "chaos": 3,
   "roles": {
     "director":  { "model": "claude-opus-5-5", "effort": "medium" },
-    "forgeron":  { "model": "claude-opus-5-5", "effort": "high" },
-    "analyste":  { "model": "claude-opus-5-5", "effort": "low" },
-    "eclaireur": { "model": "claude-opus-5-5", "effort": "low" },
-    "scenariste":{ "model": "claude-opus-5-5", "effort": "medium" },
-    "chroniqueur":{ "model": "claude-opus-5-5", "effort": "low" },
-    "reveur":    { "model": "claude-opus-5-5", "effort": "high" }
+    "forger":    { "model": "claude-opus-5-5", "effort": "high" },
+    "analyst":   { "model": "claude-opus-5-5", "effort": "low" },
+    "scout":     { "model": "claude-opus-5-5", "effort": "low" },
+    "storyteller":{ "model": "claude-opus-5-5", "effort": "medium" },
+    "chronicler":{ "model": "claude-opus-5-5", "effort": "low" },
+    "dreamer":   { "model": "claude-opus-5-5", "effort": "high" }
   },
   "director": { "heartbeatMinutes": [3, 8], "chapterTokenLimit": 150000, "chatDebounceMs": 1500 },
   "workers": { "maxConcurrent": 3 },
@@ -412,7 +413,7 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
     "protectedPlayers": [], "protectedZones": [],
     "forbiddenCommands": ["stop", "op", "deop", "ban", "ban-ip", "pardon", "whitelist", "save-off", "kick"]
   },
-  "logging": { "transcripts": true, "levels": { "Directeur": "INFO", "LLM": "INFO", "Forge": "INFO" } }
+  "logging": { "transcripts": true, "levels": { "Director": "INFO", "LLM": "INFO", "Forge": "INFO" } }
 }
 ```
 
