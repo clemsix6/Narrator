@@ -47,7 +47,7 @@ object SchemaDoc {
         "SELECT block, count(*) FROM mining WHERE player = 'Bartok' AND ore AND ts > now() - INTERVAL 1 DAY GROUP BY 1 ORDER BY 2 DESC",
         "SELECT * FROM hotspots('Mimosa', 'block_break', 32)",
         "SELECT victim, count(*) FROM kills WHERE player = 'Bartok' GROUP BY 1 ORDER BY 2 DESC",
-        "SELECT ago(ts), channel, player, text FROM chat_log ORDER BY ts DESC, id DESC LIMIT 20",
+        "SELECT ago(ts), speaker, player, text FROM chat_log ORDER BY ts DESC, id DESC LIMIT 20",
     )
 
     /** The description of the schema [connection] sees. Deterministic: same schema, same text. */

@@ -19,7 +19,8 @@
       "io.github.clemsix6.narrator2.gametest.WorldActionGameTests",
       "io.github.clemsix6.narrator2.gametest.CommandToolGameTests",
       "io.github.clemsix6.narrator2.gametest.CommandGameTests",
-      "io.github.clemsix6.narrator2.gametest.DirectorEndToEndTests"
+      "io.github.clemsix6.narrator2.gametest.DirectorEndToEndTests",
+      "io.github.clemsix6.narrator2.gametest.LiveDirectorGameTests"
     ]
   },
   "depends": {
