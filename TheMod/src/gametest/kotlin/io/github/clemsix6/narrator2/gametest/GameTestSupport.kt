@@ -1,11 +1,33 @@
 package io.github.clemsix6.narrator2.gametest
 
+import com.mojang.authlib.GameProfile
 import io.github.clemsix6.narrator2.NarratorRuntime
+import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.observer.ref
+import io.netty.channel.ChannelFutureListener
+import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.commands.CommandSource
+import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestAssertException
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.gametest.framework.GameTestSequence
+import net.minecraft.network.Connection
 import net.minecraft.network.chat.Component
+import net.minecraft.network.protocol.Packet
+import net.minecraft.network.protocol.PacketFlow
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket
+import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket
+import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
+import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
+import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket
+import net.minecraft.network.protocol.game.ClientboundSoundPacket
+import net.minecraft.network.protocol.game.ClientboundSystemChatPacket
+import net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket
+import net.minecraft.server.level.ClientInformation
+import net.minecraft.server.level.ServerPlayer
+import net.minecraft.server.network.CommonListenerCookie
+import net.minecraft.world.level.GameType
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 /*
@@ -65,6 +87,96 @@ fun <T : AutoCloseable, R> GameTestHelper.closingOnFailure(resource: T, maxTicks
         resource.close()
         throw e
     }
+}
+
+/**
+ * A player with a unique name, who joins for one test and records the packets the server sends them
+ * that [keep] picks (by default: chat, sounds, titles, motion and teleports; not the chunks). Mock players
+ * are all called `test-mock-player`, and the tools address players by name. The player joins as a
+ * real one does (`placeNewPlayer`: the join events, `PlayerStates`), at the level's spawn, in the
+ * default game mode; [close] removes them.
+ *
+ * @param prefix start of the name, 3 characters at most (the name is 16 characters at most).
+ */
+class TestPlayer(
+    private val helper: GameTestHelper,
+    prefix: String = "tp_",
+    keep: (Packet<*>) -> Boolean = ::isOfInterest,
+) : AutoCloseable {
+    val name = prefix + UUID.randomUUID().toString().replace("-", "").take(16 - prefix.length)
+    private val connection = PacketRecordingConnection(keep)
+    val player: ServerPlayer
+
+    init {
+        require(prefix.length <= 3) { "a prefix of 3 characters at most" }
+        val server = helper.level.server
+        val profile = GameProfile(UUID.randomUUID(), name)
+        player = ServerPlayer(server, helper.level, profile, ClientInformation.createDefault())
+        EmbeddedChannel(connection)
+        server.playerList.placeNewPlayer(connection, player, CommonListenerCookie.createInitial(profile, false))
+        forget()
+    }
+
+    val uuid: UUID get() = player.uuid
+    val ref: PlayerRef get() = player.ref()
+    val packets: List<Packet<*>> get() = connection.recorded
+
+    /** The live player object: a new one after a respawn. */
+    val live: ServerPlayer get() = helper.level.server.playerList.getPlayer(uuid) ?: player
+
+    /** Forgets what was received so far (the "joined the game" lines, for instance). */
+    fun forget() = connection.recorded.clear()
+
+    /** The chat lines received (not the lines above the hotbar). */
+    fun chat(): List<ClientboundSystemChatPacket> = packets.filterIsInstance<ClientboundSystemChatPacket>().filterNot { it.overlay() }
+
+    /** Moves the player to [pos], relative to the test, standing at the bottom center of the block. */
+    fun standAt(pos: BlockPos) {
+        val at = helper.absolutePos(pos)
+        live.teleportTo(at.x + 0.5, at.y.toDouble(), at.z + 0.5)
+    }
+
+    /** Survival, and the client has loaded: the only kind of player that takes damage (`handoff/T05.md`). */
+    fun makeVulnerable() {
+        live.setGameMode(GameType.SURVIVAL)
+        live.connection.handleAcceptPlayerLoad(ServerboundPlayerLoadedPacket())
+    }
+
+    override fun close() {
+        val players = helper.level.server.playerList
+        players.getPlayer(uuid)?.let { players.remove(it) }
+    }
+
+    private companion object {
+        /** The packets tests look at; chunks and the like would only fill the memory. */
+        fun isOfInterest(packet: Packet<*>): Boolean =
+            packet is ClientboundSystemChatPacket || packet is ClientboundSoundPacket || packet is ClientboundSetTitlesAnimationPacket ||
+                packet is ClientboundSetSubtitleTextPacket || packet is ClientboundSetTitleTextPacket ||
+                packet is ClientboundSetEntityMotionPacket || packet is ClientboundPlayerPositionPacket
+    }
+}
+
+/** A connection that keeps the packets [keep] picks, and sends everything on as usual. */
+private class PacketRecordingConnection(private val keep: (Packet<*>) -> Boolean) : Connection(PacketFlow.SERVERBOUND) {
+    val recorded = CopyOnWriteArrayList<Packet<*>>()
+
+    override fun send(packet: Packet<*>, listener: ChannelFutureListener?, flush: Boolean) {
+        if (keep(packet)) recorded += packet
+        super.send(packet, listener, flush)
+    }
+}
+
+/** Runs [test] with [count] new [TestPlayer]s, removed however it ends; the test succeeds when [test] returns. */
+fun withTestPlayers(helper: GameTestHelper, count: Int, test: (List<TestPlayer>) -> Unit) {
+    val players = mutableListOf<TestPlayer>()
+    try {
+        repeat(count) { players += TestPlayer(helper) }
+        players.forEach { it.forget() } // each one got the next ones' "joined the game"
+        test(players)
+    } finally {
+        players.forEach { it.close() }
+    }
+    helper.succeed()
 }
 
 /** A command source that records what commands send back, to run `/narrator …` in a test. */
