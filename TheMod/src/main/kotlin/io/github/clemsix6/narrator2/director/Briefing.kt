@@ -1,11 +1,13 @@
 package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.dim
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
+import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -46,7 +48,15 @@ import java.util.UUID
  *
  * Each section has a fixed budget: the whole stays within [MAX_CHARS] (about 10,000 tokens at 3.5
  * characters per token), whatever the history. Reads from the Journal come after a barrier, so the
- * facts of the last second are in; they run side by side, each within [READ_TIMEOUT_MS].
+ * facts of the last second are in; they run side by side, each within [READ_TIMEOUT_MS]. After a first
+ * message too long for the model's context, the briefing is sent again in its reduced form: the last
+ * summarized chapter only, and a few lines of chat, actions and past players.
+ *
+ * The three places of `<previous_chapters>` go to chapters **with a summary** (M2 review, finding 28):
+ * chapters closed without one (an error, a crash) never push the last summaries, and their promises,
+ * out of the briefing. The newest of them are still named, one line each, after the summaries.
+ *
+ * Player names and whatever players wrote go through the common escape (`core/ModelText`).
  *
  * @param world the world and the players online, read on the server thread.
  * @param activity one line on what a player did in the last [SituationReport.RECENT_MINUTES] minutes, or null.
@@ -72,6 +82,7 @@ class Briefing(
      * @param reminders the reminders waiting.
      * @param closed the chapters closed since the server started, newest last: they complete the Journal's
      *   rows, which may lag behind or be unavailable.
+     * @param reduced the reduced form, after a first message that did not fit in the context.
      */
     suspend fun render(
         number: Int,
@@ -80,19 +91,21 @@ class Briefing(
         chatBefore: Long,
         reminders: List<PendingReminder>,
         closed: List<ConversationRecord>,
+        reduced: Boolean = false,
     ): String = coroutineScope {
         if (services.journal.available) {
             withTimeoutOrNull(BARRIER_TIMEOUT_MS) { services.journal.barrier() } ?: log.warn("briefing: the Journal barrier timed out, the last facts may be missing")
         }
+        val limits = if (reduced) Limits.REDUCED else Limits.FULL
         val snapshot = async { attempt("world") { world() } }
         val chapters = async { attempt("previous chapters") { storedChapters(conversationId) } }
-        val recent = async { attempt("recent players") { recentPlayers(now) } }
-        val chat = async { attempt("recent chat") { chat(now, chatBefore) } }
-        val actions = async { attempt("recent actions") { actions(now) } }
+        val recent = async { attempt("recent players") { recentPlayers(now, limits) } }
+        val chat = async { attempt("recent chat") { chat(now, chatBefore, limits) } }
+        val actions = async { attempt("recent actions") { actions(now, limits) } }
         val captured = snapshot.await()
         buildString {
-            append("<briefing chapter=\"$number\" now=\"${stamp.format(Instant.ofEpochMilli(now))}\">\n")
-            section("previous_chapters", previousChapters(chapters.await(), closed, now))
+            append("<briefing chapter=\"$number\" now=\"${stamp.format(Instant.ofEpochMilli(now))}\"${if (reduced) " reduced=\"true\"" else ""}>\n")
+            section("previous_chapters", previousChapters(chapters.await(), closed, now, limits))
             append(worldLine(captured)).append('\n')
             section("players_online", playersOnline(captured, now))
             section("players_recent window=\"24h\"", recent.await().fold({ it.ifEmpty { listOf("(no other player in the last 24 hours)") } }, ::unavailableLines))
@@ -114,34 +127,47 @@ class Briefing(
         }
     }
 
-    private suspend fun storedChapters(current: String): List<PastChapter> = query(
-        "SELECT conversation_id, chapter, epoch_ms(started_at), epoch_ms(ended_at), end_reason, summary FROM conversations " +
-            "WHERE role = 'director' AND conversation_id <> ? ORDER BY started_at DESC LIMIT $PREVIOUS_CHAPTERS",
-        current,
-    ) {
-        PastChapter(getString(1), getObject(2)?.let { getInt(2) }, getLong(3), getObject(4)?.let { getLong(4) }, getString(5), getString(6))
+    /** The last [PREVIOUS_CHAPTERS] chapters with a summary, and as many of the last without one. */
+    private suspend fun storedChapters(current: String): List<PastChapter> {
+        val columns = "conversation_id, chapter, epoch_ms(started_at), epoch_ms(ended_at), end_reason, summary"
+        val director = "FROM conversations WHERE role = 'director' AND conversation_id <> ?"
+        return query(
+            "(SELECT $columns $director AND coalesce(trim(summary), '') <> '' ORDER BY started_at DESC LIMIT $PREVIOUS_CHAPTERS) UNION ALL " +
+                "(SELECT $columns $director AND coalesce(trim(summary), '') = '' ORDER BY started_at DESC LIMIT $PREVIOUS_CHAPTERS)",
+            current,
+            current,
+        ) {
+            PastChapter(getString(1), getObject(2)?.let { getInt(2) }, getLong(3), getObject(4)?.let { getLong(4) }, getString(5), getString(6))
+        }
     }
 
-    private fun previousChapters(stored: Result<List<PastChapter>>, closed: List<ConversationRecord>, now: Long): List<String> {
+    /**
+     * The last summarized chapters ([Limits.chapters] places), oldest first, then the chapters closed
+     * without a summary since the last of them, one line each ([PREVIOUS_CHAPTERS] at most).
+     */
+    private fun previousChapters(stored: Result<List<PastChapter>>, closed: List<ConversationRecord>, now: Long, limits: Limits): List<String> {
         val byId = LinkedHashMap<String, PastChapter>()
         stored.getOrNull()?.forEach { byId[it.id] = it }
         closed.forEach { byId[it.conversationId] = PastChapter.of(it) }
-        val chapters = byId.values.sortedBy { it.startedAt }.takeLast(PREVIOUS_CHAPTERS)
+        val all = byId.values.sortedBy { it.startedAt }
+        val summarized = all.filter { !it.summary.isNullOrBlank() }.takeLast(limits.chapters)
+        val lastSummarized = summarized.lastOrNull()?.startedAt ?: Long.MIN_VALUE
+        val unsummarized = all.filter { it.summary.isNullOrBlank() && it.startedAt > lastSummarized }.takeLast(PREVIOUS_CHAPTERS)
         val lines = mutableListOf<String>()
-        stored.exceptionOrNull()?.let { lines += "(${if (chapters.isEmpty()) "" else "older chapters "}unavailable: ${reason(it)})" }
-        if (chapters.isEmpty() && stored.isSuccess) lines += "(no previous chapter)"
-        chapters.forEach { chapter ->
-            val head = "#${chapter.number ?: "?"} ${span(chapter.startedAt, chapter.endedAt, now)} (${chapter.reason ?: "unfinished"})"
-            val summary = chapter.summary?.takeIf { it.isNotBlank() }
-            if (summary == null) {
-                lines += "$head: no summary; the recent chat and actions below cover what it said and did last"
-            } else {
-                lines += "$head:"
-                lines += text(summary, SUMMARY_MAX).lines().filter { it.isNotBlank() }
-            }
+        val empty = summarized.isEmpty() && unsummarized.isEmpty()
+        stored.exceptionOrNull()?.let { lines += "(${if (empty) "" else "older chapters "}unavailable: ${reason(it)})" }
+        if (empty && stored.isSuccess) lines += "(no previous chapter)"
+        summarized.forEach { chapter ->
+            lines += "${head(chapter, now)}:"
+            lines += text(chapter.summary.orEmpty(), SUMMARY_MAX).lines().filter { it.isNotBlank() }
         }
+        unsummarized.forEach { chapter -> lines += "${head(chapter, now)}: no summary; the recent chat and actions below cover what it said and did last" }
         return lines
     }
+
+    /** `#12 19:00–20:30 (token_limit)`. */
+    private fun head(chapter: PastChapter, now: Long): String =
+        "#${chapter.number ?: "?"} ${span(chapter.startedAt, chapter.endedAt, now)} (${chapter.reason ?: "unfinished"})"
 
     /** `20:02–21:38`, with the date when it is not today's. */
     private fun span(start: Long, end: Long?, now: Long): String {
@@ -174,9 +200,9 @@ class Briefing(
         val known = live.map { it.ref.uuid }.toSet()
         val lines = live.map { player ->
             val place = byUuid[player.ref.uuid]?.describe() ?: sampled(player)
-            val recent = activity(player.ref.uuid)?.let { " · last ${SituationReport.RECENT_MINUTES}m: $it" }.orEmpty()
-            "${player.ref.name}: $place · online ${ago(now - player.joinedAt)}${if (player.idle) ", idle" else ""}$recent"
-        } + captured.filter { it.ref.uuid !in known }.map { "${it.ref.name}: ${it.describe()}" }
+            val recent = activity(player.ref.uuid)?.let { " · last ${SituationReport.RECENT_MINUTES}m: ${ModelText.escape(it)}" }.orEmpty()
+            "${who(player.ref)}: $place · online ${ago(now - player.joinedAt)}${if (player.idle) ", idle" else ""}$recent"
+        } + captured.filter { it.ref.uuid !in known }.map { "${who(it.ref)}: ${it.describe()}" }
         val notes = snapshot.exceptionOrNull()?.let { listOf("(live positions unavailable: ${reason(it)}; these are the last sampled ones)") }.orEmpty()
         if (lines.isEmpty()) return notes + "(nobody is online)"
         return notes + lines.take(ONLINE_MAX).map { cut(it, PLAYER_LINE_MAX) } +
@@ -195,18 +221,18 @@ class Briefing(
     }.joinToString(" · ")
 
     /** Players seen in the last 24 hours who are not online: `Mimosa: last seen 3h05m ago, played 1h40m`. */
-    private suspend fun recentPlayers(now: Long): List<String> {
+    private suspend fun recentPlayers(now: Long, limits: Limits): List<String> {
         val online = services.players.online.map { it.ref.uuid.toString() }.toSet()
         val rows = query(
             "SELECT CAST(player_uuid AS VARCHAR), arg_max(player, joined_at), epoch_ms(max(coalesce(left_at, joined_at))), " +
                 "arg_max(duration_s, joined_at) FROM sessions WHERE coalesce(left_at, joined_at) >= ? " +
-                "GROUP BY player_uuid ORDER BY 3 DESC LIMIT ${RECENT_PLAYERS + online.size}",
+                "GROUP BY player_uuid ORDER BY 3 DESC LIMIT ${limits.recentPlayers + online.size}",
             Instant.ofEpochMilli(now - WINDOW_MS),
         ) {
             val played = getObject(4)?.let { " played ${ago(getLong(4) * 1_000)}" }.orEmpty()
-            getString(1) to "${getString(2)}: last seen ${ago(now - getLong(3))} ago${if (played.isEmpty()) "" else ",$played"}"
+            getString(1) to "${ModelText.name(getString(2).orEmpty())}: last seen ${ago(now - getLong(3))} ago${if (played.isEmpty()) "" else ",$played"}"
         }
-        return rows.filter { it.first !in online }.take(RECENT_PLAYERS).map { it.second }
+        return rows.filter { it.first !in online }.take(limits.recentPlayers).map { it.second }
     }
 
     // ── Chat and actions ────────────────────────────────────────────────────────────────────────────
@@ -216,38 +242,39 @@ class Briefing(
      * Narrator's lines, each with its whole text (the Narrator rereads its own lines not to repeat
      * itself). At most [CHAT_LINES] lines and [CHAT_MAX_CHARS] characters. Private messages are not in `chat_log`.
      */
-    private suspend fun chat(now: Long, before: Long): List<String> {
+    private suspend fun chat(now: Long, before: Long, limits: Limits): List<String> {
         val newestFirst = query(
-            "SELECT epoch_ms(ts), channel, player, recipients, text FROM chat_log WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT $CHAT_LINES",
+            "SELECT epoch_ms(ts), channel, player, recipients, text FROM chat_log WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ${limits.chatLines}",
             Instant.ofEpochMilli(now - WINDOW_MS),
             Instant.ofEpochMilli(before),
         ) {
             val speaker = when (getString(2)) {
-                "pray" -> "${getString(3)} (prayer)"
+                "pray" -> "${ModelText.name(getString(3).orEmpty())} (prayer)"
                 "narrator" -> "NARRATOR→${addressees(names(4))}"
                 "operator" -> "NARRATOR (through an operator)→${addressees(names(4))}"
-                else -> getString(3)
+                else -> ModelText.name(getString(3).orEmpty())
             }
             "[-${ago(now - getLong(1))}] $speaker: ${quote(getString(5))}"
         }
         var chars = 0
-        return newestFirst.takeWhile { line -> (chars + line.length + 1 <= CHAT_MAX_CHARS).also { if (it) chars += line.length + 1 } }.reversed()
+        return newestFirst.takeWhile { line -> (chars + line.length + 1 <= limits.chatChars).also { if (it) chars += line.length + 1 } }.reversed()
     }
 
     /** `all`, `Bartok`, `Bartok,Mimosa`, `Bartok,Mimosa +3`. */
     private fun addressees(names: List<String>): String = when {
         names.isEmpty() -> "all"
-        names.size <= 2 -> names.joinToString(",")
-        else -> names.take(2).joinToString(",") + " +${names.size - 2}"
+        names.size <= 2 -> names.joinToString(",") { ModelText.name(it) }
+        else -> names.take(2).joinToString(",") { ModelText.name(it) } + " +${names.size - 2}"
     }
 
     /** The Narrator's last speech and world tool calls that took effect (or may have), oldest first. */
-    private suspend fun actions(now: Long): List<String> = query(
-        "SELECT epoch_ms(ts), tool, targets, result FROM narrator_actions WHERE status IN ('ok', 'unknown') ORDER BY ts DESC LIMIT $ACTIONS",
+    private suspend fun actions(now: Long, limits: Limits): List<String> = query(
+        "SELECT epoch_ms(ts), tool, targets, result FROM narrator_actions WHERE status IN ('ok', 'unknown') ORDER BY ts DESC LIMIT ${limits.actions}",
     ) {
         val targets = names(3)
         val result = getString(4)?.lineSequence()?.firstOrNull { it.isNotBlank() }?.let { ": ${text(it, RESULT_MAX)}" }.orEmpty()
-        "[-${ago(now - getLong(1))}] ${getString(2)}${if (targets.isEmpty()) "" else "→${cut(targets.joinToString(","), TARGETS_MAX)}"}$result"
+        val to = if (targets.isEmpty()) "" else "→${ModelText.escape(cut(targets.joinToString(","), TARGETS_MAX))}"
+        "[-${ago(now - getLong(1))}] ${getString(2)}$to$result"
     }.reversed()
 
     // ── Engine state ────────────────────────────────────────────────────────────────────────────────
@@ -257,7 +284,7 @@ class Briefing(
         return listOf(
             line("Your active effects") {
                 val effects = online.flatMap { player ->
-                    services.guards.activeOn(player.ref.uuid).map { "${player.ref.name} ${it.what} (${it.kind}) until ${time(it.until)}" }
+                    services.guards.activeOn(player.ref.uuid).map { "${who(player.ref)} ${ModelText.escape(it.what)} (${it.kind}) until ${time(it.until)}" }
                 }
                 list(effects, EFFECTS_MAX)
             },
@@ -265,14 +292,14 @@ class Briefing(
                 val protected = online.mapNotNull { player ->
                     val died = player.lastDeathAt?.let { it + SituationReport.NO_PILE_ON_MS }?.takeIf { it > now }
                     when {
-                        services.guards.isProtected(player.ref.uuid) -> "${player.ref.name} from every hostile action (operators)"
-                        died != null -> "${player.ref.name} from hostile actions until ${time(died)} (died)"
+                        services.guards.isProtected(player.ref.uuid) -> "${who(player.ref)} from every hostile action (operators)"
+                        died != null -> "${who(player.ref)} from hostile actions until ${time(died)} (died)"
                         else -> null
                     }
                 }
                 list(protected, ONLINE_MAX)
             },
-            line("Deaths you may still cause") { list(online.map { "${it.ref.name} ${services.guards.deathsLeft(it.ref.uuid)}" }, ONLINE_MAX) },
+            line("Deaths you may still cause") { list(online.map { "${who(it.ref)} ${services.guards.deathsLeft(it.ref.uuid)}" }, ONLINE_MAX) },
             line("Tasks") {
                 val open = services.workers.list().filter { !it.status.finished }.map { task ->
                     val state = if (task.status == TaskRecord.Status.RUNNING) "running ${ago(now - (task.startedAt ?: task.createdAt).toEpochMilli())}" else task.status.id
@@ -366,17 +393,18 @@ class Briefing(
         private fun reason(error: Throwable): String = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
 
         /**
-         * Text written by the model or the engine, kept on its lines: control characters become spaces,
-         * `<` `>` become `‹` `›` (nothing inside the briefing can pass for a tag), cut to [max] characters.
+         * Text written by the model or the engine, kept on its lines ([ModelText.lines]): control
+         * characters become spaces, `<` `>` become `‹` `›` (nothing inside the briefing can pass for a
+         * tag), cut to [max] characters.
          */
-        fun text(value: String, max: Int): String {
-            val clean = value.map { c -> if (c.isISOControl() && c != '\n') ' ' else c }.joinToString("").replace('<', '‹').replace('>', '›')
-            return cut(clean, max)
-        }
+        fun text(value: String, max: Int): String = ModelText.cut(ModelText.lines(value), max)
 
-        private fun cut(value: String, max: Int): String {
-            if (value.codePointCount(0, value.length) <= max) return value
-            return value.substring(0, value.offsetByCodePoints(0, max - 1)) + "…"
-        }
+        private fun cut(value: String, max: Int): String = ModelText.cut(value, max)
+    }
+
+    /** What each section may hold: the full briefing, or its reduced form after a first message too long for the context. */
+    private enum class Limits(val chapters: Int, val recentPlayers: Int, val chatLines: Int, val chatChars: Int, val actions: Int) {
+        FULL(PREVIOUS_CHAPTERS, RECENT_PLAYERS, CHAT_LINES, CHAT_MAX_CHARS, ACTIONS),
+        REDUCED(1, 3, 10, 2_500, 5),
     }
 }

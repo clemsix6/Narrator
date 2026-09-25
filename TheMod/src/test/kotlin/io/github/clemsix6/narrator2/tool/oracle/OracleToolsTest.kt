@@ -145,6 +145,17 @@ class OracleToolsTest {
     }
 
     @Test
+    fun `a list_players line of two players more than 50,000 blocks apart gives their distance`() {
+        val bartok = snapshot("Bartok", x = -30_000, z = 20_000)
+        val mimosa = snapshot("Mimosa", x = 30_000, z = -30_000)
+
+        assertEquals(
+            "Bartok: overworld -30000 -58 20000 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · nearest Mimosa 78102 m NE",
+            listLine(bartok, listOf(bartok, mimosa), null, idle = false, activity = null),
+        )
+    }
+
+    @Test
     fun `located places and scan hits are written with where they are from the player`() {
         val origin = BlockPos(0, 64, 0)
         val from = "Bartok (overworld 0 64 0)"

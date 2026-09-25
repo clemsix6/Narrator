@@ -47,9 +47,14 @@ data class TurnLimits(val maxSteps: Int, val hardSteps: Int = maxSteps + 2) {
 interface TurnHooks {
     /**
      * Before each follow-up request: blocks placed after the tool results (e.g. the events that
-     * arrived meanwhile, `<new_events …>`), and notes.
+     * arrived meanwhile, `<new_events …>`), and notes. The reply to the previous request was usable and
+     * is committed.
+     *
+     * @param canAct whether the reply to that request may still run tools. False from the step limit
+     *   on ([TurnLimits]): the model can no longer act in this turn, so what it is told then would be
+     *   seen without any possible answer; the caller keeps it for its next turn instead.
      */
-    suspend fun afterTools(): Pending = Pending.EMPTY
+    suspend fun afterTools(canAct: Boolean): Pending = Pending.EMPTY
 
     /** After each reply, usable or not, with its measurements and its `llm_calls` row. */
     fun onReply(reply: Message, stats: CallStats, llmCallId: Long) {}
@@ -166,7 +171,8 @@ class AgentLoop(private val services: NarratorServices, private val executor: To
                                 results = runTools(uses, sent.llmCallId)
                                 notes = emptyList()
                             }
-                            val extra = hooks.afterTools()
+                            // The reply to the next request runs its tool calls only below the step limit.
+                            val extra = hooks.afterTools(canAct = calls + 1 < limits.maxSteps)
                             pending = Pending(results + extra.blocks, extra.notes + notes)
                         }
                     }

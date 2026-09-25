@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.agent
 
 import com.anthropic.models.messages.TextBlockParam
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
 import io.github.clemsix6.narrator2.journal.IdKind
@@ -37,10 +38,12 @@ import java.util.UUID
  * - **Its own conversation.** Each task is one conversation with Claude, `Task T-12 (analyst)`, with the
  *   role's prompt and read-only tools (`ToolCatalog.toolSetFor`), and its own id, which is also its
  *   `X-Session-ID`. It opens with `<task id="T-12" from="director">brief</task>` and a `<context …/>`
- *   line, and runs a single turn of [AgentLoop] within `workers.maxSteps` requests and
- *   `workers.timeoutSeconds`. The text of the last reply is the report (at most [RESULT_MAX_CHARS]).
+ *   line (the names of the players online through the common escape, `core/ModelText`), and runs a
+ *   single turn of [AgentLoop] within `workers.maxSteps` requests and `workers.timeoutSeconds`. The text
+ *   of the last reply is the report (at most [RESULT_MAX_CHARS]).
  * - **In parallel, then in line.** At most `workers.maxConcurrent` tasks run at once, each in its own
- *   coroutine of `services.scope`; the others wait, first come first served. Settings are read when used.
+ *   coroutine of `services.scope`; the others wait, first come first served, [MAX_QUEUED] at most (one
+ *   more is refused). Settings are read when used.
  * - **Back to the Director.** A task that ends posts a [DirectorSignal.TaskDone]: its report when done,
  *   else why it failed or timed out. A task the Director cancelled posts nothing (the `tasks` call
  *   already told it), nor does a task stopped by the server.
@@ -77,13 +80,18 @@ class Workers(
             return Result.failure(IllegalArgumentException("no ${role.id} can take a task: $why"))
         }
         val now = clock.instant()
-        val id = services.trace.nextId(IdKind.TASK)
-        synchronized(lock) {
+        val id = synchronized(lock) {
+            if (queue.size >= MAX_QUEUED) {
+                return Result.failure(
+                    IllegalStateException("$MAX_QUEUED tasks already wait for a worker: wait for one to start, or cancel one with tasks; ${summary()}"),
+                )
+            }
             forgetOldTasks(now)
-            val task = Task(TaskRecord(id, role, brief, Status.QUEUED, now, null, null, caller.turnId, null, null, null))
-            tasks[id] = task
+            val task = Task(TaskRecord(services.trace.nextId(IdKind.TASK), role, brief, Status.QUEUED, now, null, null, caller.turnId, null, null, null))
+            tasks[task.id] = task
             queue.addLast(task)
             services.trace.task(task.record)
+            task.id
         }
         log.info("T-$id ${role.id} queued by turn ${caller.turnId}: ${brief.take(LOG_BRIEF_CHARS)}")
         dispatch()
@@ -188,7 +196,7 @@ class Workers(
     private fun opening(task: Task): String {
         val zone = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: clock.zone
         val now = STAMP.withZone(zone).format(clock.instant())
-        val online = services.players.online.joinToString(", ") { it.ref.name }.ifEmpty { "none" }
+        val online = services.players.online.joinToString(", ") { ModelText.attribute(it.ref.name) }.ifEmpty { "none" }
         return "<task id=\"T-${task.id}\" from=\"director\">\n${task.record.brief}\n</task>\n<context now=\"$now\" players_online=\"$online\"/>"
     }
 
@@ -333,6 +341,9 @@ class Workers(
     companion object {
         /** Longest report given to the Director, in characters. */
         const val RESULT_MAX_CHARS = 3_000
+
+        /** Tasks waiting in line at most: beyond, [submit] refuses (M2 review, finding 28). */
+        const val MAX_QUEUED = 10
 
         /** How long an ended task stays in [list] (and the situation's durations). */
         const val KEEP_ENDED_MS = 30 * 60_000L

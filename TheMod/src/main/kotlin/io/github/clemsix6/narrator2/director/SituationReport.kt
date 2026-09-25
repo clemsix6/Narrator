@@ -1,10 +1,12 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.dim
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
+import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.trace.TaskRecord
@@ -44,7 +46,7 @@ data class DirectorAction(val at: Long, val tool: String, val targets: List<Stri
  * The `<situation>` block that ends every wake-up message (M1_M2 §12.6): the world, one line per player
  * online, the Narrator's active effects, the deaths it may still cause each player, its tasks and
  * reminders, and its last actions. Every section is written even when empty, so that the model never
- * mistakes a missing source for an empty one.
+ * mistakes a missing source for an empty one. Player names go through the common escape (`core/ModelText`).
  */
 class SituationReport(private val services: NarratorServices, private val digest: ActivityDigest, zone: ZoneId) {
     private val formatter = EventFormatter(zone)
@@ -92,20 +94,20 @@ class SituationReport(private val services: NarratorServices, private val digest
             val until = died + NO_PILE_ON_MS
             if (until > now) parts += "protected from hostile actions until ${hours.format(Instant.ofEpochMilli(until))} (died)"
         }
-        digest.recent(live.ref.uuid, RECENT_MINUTES)?.let { parts += "last ${RECENT_MINUTES}m: $it" }
-        return "${live.ref.name}: ${parts.joinToString(" · ")}"
+        digest.recent(live.ref.uuid, RECENT_MINUTES)?.let { parts += "last ${RECENT_MINUTES}m: ${ModelText.escape(it)}" }
+        return "${who(live.ref)}: ${parts.joinToString(" · ")}"
     }
 
     private fun effects(online: List<LivePlayer>): String {
         val effects = online.flatMap { live ->
-            services.guards.activeOn(live.ref.uuid).map { "${live.ref.name} ${it.what} until ${hours.format(Instant.ofEpochMilli(it.until))}" }
+            services.guards.activeOn(live.ref.uuid).map { "${who(live.ref)} ${ModelText.escape(it.what)} until ${hours.format(Instant.ofEpochMilli(it.until))}" }
         }
         return if (effects.isEmpty()) "none" else effects.joinToString(", ")
     }
 
     /** The death guard's quota left for each player online (`Guards.deathsLeft`): `Bartok 1, Mimosa 0`. */
     private fun deathsLeft(online: List<LivePlayer>): String =
-        if (online.isEmpty()) "none" else online.joinToString(", ") { "${it.ref.name} ${services.guards.deathsLeft(it.ref.uuid)}" }
+        if (online.isEmpty()) "none" else online.joinToString(", ") { "${who(it.ref)} ${services.guards.deathsLeft(it.ref.uuid)}" }
 
     private fun tasks(now: Long): String {
         val open = services.workers.list().filter { !it.status.finished }
@@ -126,7 +128,7 @@ class SituationReport(private val services: NarratorServices, private val digest
 
     private fun actions(actions: List<DirectorAction>, now: Long): String =
         if (actions.isEmpty()) "none" else actions.joinToString(" · ") { action ->
-            "-${ago(now - action.at)} ${action.tool}" + if (action.targets.isEmpty()) "" else "→${action.targets.joinToString(",")}"
+            "-${ago(now - action.at)} ${action.tool}" + if (action.targets.isEmpty()) "" else "→${action.targets.joinToString(",") { ModelText.name(it) }}"
         }
 
     companion object {

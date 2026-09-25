@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.llm
 import com.anthropic.models.messages.MessageParam
 import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ToolUnion
+import io.github.clemsix6.narrator2.config.RoleConfig
 import io.github.clemsix6.narrator2.tool.ToolSet
 import io.github.clemsix6.narrator2.trace.Transcripts
 import java.util.UUID
@@ -24,7 +25,8 @@ import java.util.UUID
  * [append] fails with an [IllegalStateException] instead of racing the reply. Committed messages are
  * transcribed as they are sent or received.
  *
- * @property role whose model, effort and timeouts the calls use.
+ * @property role whose model, effort and timeouts the calls use; the model and the effort are frozen by
+ *   the first committed exchange ([frozen]).
  * @property label human-readable name used in transcripts and logs.
  * @property toolSet the tools the engine runs for this conversation (`agent/AgentLoop`); null when
  *   the conversation only declares [tools] (a ping, a live check).
@@ -65,6 +67,19 @@ class Conversation private constructor(
     private val lock = Any()
     private val history = mutableListOf<MessageParam>() // guarded by lock
     private var inFlight = false // guarded by lock
+    private var pinned: RoleConfig? = null // guarded by lock: the role settings of the last call made while nothing was committed
+
+    /**
+     * [current] (the role's settings in force) with this conversation's own model and effort: those of
+     * the call that got its first committed exchange, frozen for the rest of its life. Opus binds its
+     * thinking to the conversation, and the prompt cache to the model: a `/narrator reload` that changes
+     * them applies to the next conversation (M2 review, finding 25). The other settings (tokens,
+     * timeouts) follow the reloads.
+     */
+    internal fun frozen(current: RoleConfig): RoleConfig = synchronized(lock) {
+        val pin = pinned?.takeIf { history.isNotEmpty() } ?: current.also { pinned = it }
+        current.copy(model = pin.model, effort = pin.effort)
+    }
 
     /** The committed history, a snapshot. */
     val messages: List<MessageParam>
