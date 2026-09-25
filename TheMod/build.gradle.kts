@@ -110,11 +110,15 @@ fabricApi {
 }
 
 // One JUnit XML report per run, listing every in-game test with its result. The in-game tests read
-// their (fake) LLMGW key from the environment, like the mod does in production.
+// their (fake) LLMGW key from the environment, like the mod does in production. The real keys are
+// blanked (an empty value is no key): the in-game tests never reach LLMGW or Jev, even on a machine
+// where NARRATOR_LLMGW_KEY or TYPESAFE_API_KEY is set.
 loom.runs.named("gameTest") {
     val report = layout.buildDirectory.file("reports/gametest/TEST-gametest.xml").get().asFile
     systemProperties.put("fabric-api.gametest.report-file", report.absolutePath)
     environmentVars.put("NARRATOR2_GAMETEST_KEY", "gametest-key-6f1c")
+    environmentVars.put("NARRATOR_LLMGW_KEY", "")
+    environmentVars.put("TYPESAFE_API_KEY", "")
 }
 
 // Each in-game run starts from an empty world and config (Loom 1.18 only clears client test runs).
