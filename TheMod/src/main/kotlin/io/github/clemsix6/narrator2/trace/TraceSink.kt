@@ -12,9 +12,10 @@ import io.github.clemsix6.narrator2.journal.IdKind
  */
 interface TraceSink {
     /**
-     * A new id of [kind], strictly greater than every id handed out before, restarts included. An id
-     * exists before its row is written, so a tool result can cite `turn 42` and a decision the event
-     * that caused it.
+     * A new id of [kind], strictly greater than every id handed out before, restarts included, even
+     * after a crash that lost the rows of the last ids: the Journal reserves ids on disk before handing
+     * them out (`journal/IdReservations`). An id exists before its row is written, so a tool result can
+     * cite `turn 42` and a decision the event that caused it.
      */
     fun nextId(kind: IdKind): Long
 
