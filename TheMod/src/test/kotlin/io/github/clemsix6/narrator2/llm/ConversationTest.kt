@@ -1,15 +1,31 @@
 package io.github.clemsix6.narrator2.llm
 
+import io.github.clemsix6.narrator2.testing.FakeAnthropic
+import io.github.clemsix6.narrator2.testing.Hold
+import io.github.clemsix6.narrator2.testing.client
+import io.github.clemsix6.narrator2.testing.reply
+import io.github.clemsix6.narrator2.testing.testConversation
+import io.github.clemsix6.narrator2.trace.Transcripts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.Test
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.name
+import kotlin.io.path.readText
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ConversationTest {
-    private fun conversation() = Conversation("director", "Test", system = emptyList())
+    @TempDir
+    lateinit var dir: Path
+
+    private fun conversation(transcripts: Transcripts? = null) = Conversation(Role.DIRECTOR, "Test", system = emptyList(), transcripts = transcripts)
 
     private fun Conversation.texts(): List<String> = messages.map { it.content().asString() }
 
@@ -26,52 +42,48 @@ class ConversationTest {
     }
 
     @Test
-    fun `ids are unique and start with the role`() {
-        val ids = List(100) { Conversation("forgeron", "Test", system = emptyList()).id }
+    fun `ids are unique and start with the role's id`() {
+        val ids = List(100) { Conversation(Role.FORGER, "Test", system = emptyList()).id }
         assertEquals(100, ids.toSet().size)
-        assertTrue(ids.all { it.startsWith("forgeron-") })
-        assertNotEquals(ids[0], ids[1])
+        assertTrue(ids.all { it.startsWith("forger-") })
     }
 
     @Test
-    fun `concurrent appends are all kept, each writer's in order`() {
-        val conversation = conversation()
-        val writers = 8
-        val perWriter = 500
-        val pool = Executors.newFixedThreadPool(writers)
-        val start = CountDownLatch(1)
-        val tasks = (0 until writers).map { writer ->
-            pool.submit {
-                start.await()
-                repeat(perWriter) { i -> conversation.appendUser("$writer-$i") }
+    fun `each message is transcribed as soon as it is appended`() {
+        val conversation = conversation(Transcripts(dir, enabled = true))
+        conversation.appendUser("first")
+        conversation.appendUser("second")
+
+        val file = Files.walk(dir).use { paths -> paths.filter { it.name == "${conversation.id}.jsonl" }.findFirst().orElseThrow() }
+        val text = file.readText()
+        assertContains(text, "\"first\"")
+        assertContains(text, "\"second\"")
+    }
+
+    @Test
+    fun `a conversation has a single writer while a call is in flight`() {
+        FakeAnthropic().use { fake ->
+            val hold = Hold()
+            fake.enqueue(reply { hold(hold); text("Done.") })
+            val conversation = testConversation()
+            fake.client().use { client ->
+                runBlocking {
+                    val first = async(Dispatchers.Default) { client.send(conversation) }
+                    assertTrue(withContext(Dispatchers.IO) { hold.awaitReached() })
+
+                    val secondSend = assertFailsWith<IllegalStateException> { client.send(conversation) }
+                    assertContains(secondSend.message.orEmpty(), "already in flight")
+                    val append = assertFailsWith<IllegalStateException> { conversation.appendUser("Too early.") }
+                    assertContains(append.message.orEmpty(), "in flight")
+
+                    hold.release()
+                    assertEquals("Done.", first.await().text)
+                }
             }
+            assertEquals(1, fake.requests.size, "the second send never reached the gateway")
+            assertEquals(2, conversation.size)
+            conversation.appendUser("Now it is my turn.")
+            assertEquals(3, conversation.size)
         }
-        start.countDown()
-        tasks.forEach { it.get(10, TimeUnit.SECONDS) }
-        pool.shutdown()
-
-        val texts = conversation.texts()
-        assertEquals(writers * perWriter, texts.size)
-        assertEquals(writers * perWriter, texts.toSet().size)
-        (0 until writers).forEach { writer ->
-            assertEquals((0 until perWriter).map { "$writer-$it" }, texts.filter { it.startsWith("$writer-") })
-        }
-    }
-
-    @Test
-    fun `reading while another thread appends always sees a consistent prefix`() {
-        val conversation = conversation()
-        val total = 5_000
-        val writer = Thread { repeat(total) { conversation.appendUser("m$it") } }
-        writer.start()
-        var lastSize = 0
-        while (writer.isAlive || lastSize < total) {
-            val texts = conversation.texts()
-            assertTrue(texts.size >= lastSize, "the history never shrinks")
-            assertEquals(List(texts.size) { "m$it" }, texts, "a snapshot is always a prefix of the history")
-            lastSize = texts.size
-        }
-        writer.join()
-        assertEquals(total, conversation.size)
     }
 }

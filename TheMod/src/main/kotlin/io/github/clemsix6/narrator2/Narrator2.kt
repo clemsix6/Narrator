@@ -7,8 +7,6 @@ import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
 
 object Narrator2 : ModInitializer {
-    const val MOD_ID = "narrator2"
-
     override fun onInitialize() {
         ServerLifecycleEvents.SERVER_STARTED.register { server -> NarratorRuntime.start(server) }
         ServerLifecycleEvents.SERVER_STOPPING.register { NarratorRuntime.stop() }

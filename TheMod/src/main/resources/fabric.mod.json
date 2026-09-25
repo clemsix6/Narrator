@@ -3,7 +3,7 @@
   "id": "narrator2",
   "version": "${version}",
   "name": "The Narrator 2",
-  "description": "Un narrateur-dieu sarcastique, propulsé par Claude, qui observe, commente et bouscule votre serveur.",
+  "description": "A sarcastic narrator-god, powered by Claude, who watches, comments on and shakes up your server.",
   "authors": ["clemsix6"],
   "license": "MIT",
   "environment": "*",

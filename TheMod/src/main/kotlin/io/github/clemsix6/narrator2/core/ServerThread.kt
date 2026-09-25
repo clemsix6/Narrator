@@ -1,20 +1,44 @@
 package io.github.clemsix6.narrator2.core
 
 import kotlinx.coroutines.future.await
-import kotlinx.coroutines.withTimeout
-import net.minecraft.server.MinecraftServer
+import net.minecraft.util.thread.BlockableEventLoop
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+
+/** The server thread did not run a task in time (overloaded or stuck). The task will not run later. */
+class ServerThreadTimeoutException(timeoutMs: Long) :
+    RuntimeException("the server thread did not run the task within $timeoutMs ms")
+
+/** The server has stopped running tasks, so the task was not run. */
+class ServerStoppedException : IllegalStateException("the server is stopped: the task was not run")
 
 /**
  * Runs [block] on the server thread and suspends until it completes. Anything that touches the
  * world must go through here: Minecraft's game state is single-threaded.
  *
- * `supplyAsync(block, server)` is exactly what `MinecraftServer.submit(Supplier)` does, but the game
- * jar is JSpecify null-marked, so `submit` would refuse a block that may return null.
+ * The block never runs on another thread: once the server has stopped, Minecraft runs submitted tasks
+ * on the caller's thread, and this fails with [ServerStoppedException] instead. If the server thread
+ * does not get to the block within [timeoutMs], this fails with [ServerThreadTimeoutException] and the
+ * block is skipped when its turn comes. Cancelling the caller skips it too.
  */
-suspend fun <T> MinecraftServer.onServerThread(timeoutMs: Long = 5_000, block: () -> T): T =
-    if (isSameThread) {
-        block()
-    } else {
-        withTimeout(timeoutMs) { CompletableFuture.supplyAsync(block, this@onServerThread).await() }
+suspend fun <T> BlockableEventLoop<*>.onServerThread(timeoutMs: Long = 5_000, block: () -> T): T {
+    if (isSameThread) return block()
+    val result = CompletableFuture<T>()
+    execute {
+        when {
+            result.isDone -> Unit // timed out or cancelled: too late to run
+            !isSameThread -> result.completeExceptionally(ServerStoppedException())
+            else -> try {
+                result.complete(block())
+            } catch (e: Throwable) {
+                result.completeExceptionally(e)
+            }
+        }
     }
+    return try {
+        result.orTimeout(timeoutMs, TimeUnit.MILLISECONDS).await()
+    } catch (e: TimeoutException) {
+        throw ServerThreadTimeoutException(timeoutMs)
+    }
+}

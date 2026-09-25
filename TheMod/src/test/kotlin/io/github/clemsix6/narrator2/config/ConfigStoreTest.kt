@@ -1,5 +1,9 @@
 package io.github.clemsix6.narrator2.config
 
+import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.testing.LogCapture
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -8,7 +12,7 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -19,62 +23,162 @@ class ConfigStoreTest {
     private val file: Path get() = dir.resolve(ConfigStore.FILE_NAME)
 
     @Test
-    fun `creates the file with every default on first run`() {
+    fun `creates the file with every default on first run, atomically`() {
         val config = ConfigStore.load(dir)
 
         assertEquals(NarratorConfig(), config)
-        assertTrue(Files.exists(file))
-        val written = file.readText()
-        listOf("\"baseUrl\"", "\"apiKeyEnv\": \"NARRATOR_LLMGW_KEY\"", "\"forgeron\"", "\"heartbeatMinutes\"", "\"forbiddenCommands\"")
-            .forEach { assertContains(written, it) }
+        val written = Json.parseToJsonElement(file.readText()).jsonObject
+        assertEquals(setOf("gateway", "roles", "logging"), written.keys, "only the settings in use")
+        assertEquals(Role.entries.map { it.id }.toSet(), written.getValue("roles").jsonObject.keys)
+        assertEquals(
+            setOf("baseUrl", "apiKeyEnv", "cacheTtl", "maxRetries", "retryInitialDelayMs", "retryMaxDelayMs"),
+            written.getValue("gateway").jsonObject.keys,
+            "no key in the file",
+        )
+        assertEquals(listOf(ConfigStore.FILE_NAME), Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() })
         assertEquals(config, ConfigStore.load(dir), "the written file loads back to the same configuration")
     }
 
     @Test
-    fun `unknown keys are ignored and missing or null values take their default`() {
+    fun `an existing file is read, never rewritten`() {
+        val text = """{ "gateway": { "baseUrl": "https://llmgw.example.com" }, "notInventedYet": 1 }"""
+        file.writeText(text)
+        val modified = Files.getLastModifiedTime(file)
+
+        assertEquals("https://llmgw.example.com", ConfigStore.load(dir).gateway.baseUrl)
+        assertEquals(text, file.readText())
+        assertEquals(modified, Files.getLastModifiedTime(file))
+    }
+
+    @Test
+    fun `missing or null settings take their default, key by key and role by role`() {
         file.writeText(
             """
             {
-              "gateway": { "baseUrl": "https://llmgw.example.com", "apiKey": null, "futureOption": 42 },
-              "chaos": 5,
-              "roles": { "director": { "effort": "high" } },
-              "notInventedYet": { "a": 1 }
+              "gateway": { "baseUrl": "https://llmgw.example.com", "maxRetries": null },
+              "roles": { "director": { "effort": "high" }, "forger": { "effort": "xhigh" } }
             }
             """.trimIndent(),
         )
 
         val config = ConfigStore.load(dir)
         assertEquals("https://llmgw.example.com", config.gateway.baseUrl)
-        assertEquals("", config.gateway.apiKey)
+        assertEquals(GatewayConfig().maxRetries, config.gateway.maxRetries)
         assertEquals("NARRATOR_LLMGW_KEY", config.gateway.apiKeyEnv)
-        assertEquals(5, config.chaos)
-        assertEquals(DirectorConfig(), config.director)
-        assertEquals(RoleConfig(effort = "high"), config.role("director"))
-        assertEquals(NarratorConfig.DEFAULT_ROLES.keys, config.roles.keys, "missing roles get their default")
-        assertEquals("high", config.role("forgeron").effort)
-
-        val rewritten = file.readText()
-        assertFalse("futureOption" in rewritten)
-        assertFalse("notInventedYet" in rewritten)
-        assertContains(rewritten, "\"heartbeatMinutes\"")
+        assertEquals(NarratorConfig.DEFAULT_ROLES.getValue(Role.DIRECTOR).copy(effort = "high"), config.role(Role.DIRECTOR))
+        val forger = config.role(Role.FORGER)
+        assertEquals("xhigh", forger.effort)
+        assertEquals(64_000, forger.maxTokens, "the forger keeps its own default budget")
+        assertEquals(1_200, forger.totalTimeoutSeconds, "and its own default timeout")
+        assertEquals(Role.entries.toSet(), config.roles.keys, "missing roles get their default")
+        assertEquals(NarratorConfig.DEFAULT_ROLES.getValue(Role.DREAMER), config.role(Role.DREAMER))
     }
 
     @Test
-    fun `an unknown role falls back to the director's settings`() {
-        file.writeText("""{ "roles": { "director": { "model": "claude-test", "effort": "low" } } }""")
-        assertEquals(RoleConfig(model = "claude-test", effort = "low"), ConfigStore.load(dir).role("nobody"))
+    fun `timeouts default per role`() {
+        val roles = NarratorConfig().roles
+        assertEquals(300, roles.getValue(Role.DIRECTOR).totalTimeoutSeconds)
+        assertEquals(1_200, roles.getValue(Role.FORGER).totalTimeoutSeconds)
+        assertEquals(1_200, roles.getValue(Role.DREAMER).totalTimeoutSeconds)
+        listOf(Role.ANALYST, Role.SCOUT, Role.STORYTELLER, Role.CHRONICLER).forEach {
+            assertEquals(600, roles.getValue(it).totalTimeoutSeconds, "$it")
+        }
+        assertTrue(roles.values.all { it.readTimeoutSeconds == 90L })
     }
 
     @Test
-    fun `a malformed file is left untouched and the error propagates`() {
-        file.writeText("{ not json")
-        assertFails { ConfigStore.load(dir) }
-        assertEquals("{ not json", file.readText())
+    fun `unknown settings are ignored with a warning, a leftover key with a specific one`() {
+        file.writeText("""{ "gateway": { "apiKey": "sk-leftover-5a5a", "futureOption": 42 }, "chaos": 5 }""")
+
+        val logs = LogCapture()
+        val config = logs.use { ConfigStore.load(dir) }
+        assertEquals(GatewayConfig(), config.gateway)
+        assertContains(logs.text, "unknown setting gateway.futureOption is ignored")
+        assertContains(logs.text, "unknown setting chaos is ignored")
+        assertContains(logs.text, "gateway.apiKey is ignored")
+        assertFalse("sk-leftover-5a5a" in logs.text)
     }
 
     @Test
-    fun `the key source is reported without the key`() {
-        assertEquals(ConfigStore.FILE_NAME, GatewayConfig(apiKey = "secret").apiKeySource())
-        assertEquals(null, GatewayConfig(apiKey = "", apiKeyEnv = "NARRATOR2_TEST_UNSET_VARIABLE").apiKeySource())
+    fun `an unknown role fails to load`() {
+        file.writeText("""{ "roles": { "blacksmith": { "effort": "high" } } }""")
+        val error = assertFailsWith<ConfigException> { ConfigStore.load(dir) }
+        assertContains(error.message.orEmpty(), "unknown role 'blacksmith'")
+        assertContains(error.message.orEmpty(), "director, analyst, scout, forger, storyteller, chronicler, dreamer")
+    }
+
+    @Test
+    fun `malformed JSON gives the file, line and column, never its content`() {
+        file.writeText("{\n  \"gateway\": { \"baseUrl\": \"http://secret-host-1:8088\" oops }\n}")
+        val error = assertFailsWith<ConfigException> { ConfigStore.load(dir) }
+
+        val message = error.message.orEmpty()
+        assertContains(message, file.toAbsolutePath().toString())
+        assertContains(message, "line 2, column")
+        assertFalse("secret-host-1" in message)
+        assertFalse("oops" in message)
+        assertEquals(null, error.cause)
+        assertEquals("{\n  \"gateway\": { \"baseUrl\": \"http://secret-host-1:8088\" oops }\n}", file.readText(), "left untouched")
+    }
+
+    @Test
+    fun `a value of the wrong type gives its path, never the value`() {
+        file.writeText("""{ "gateway": { "maxRetries": "secret-value-9" } }""")
+        val error = assertFailsWith<ConfigException> { ConfigStore.load(dir) }
+
+        assertContains(error.message.orEmpty(), "gateway.maxRetries")
+        assertFalse("secret-value-9" in error.message.orEmpty())
+    }
+
+    @Test
+    fun `values are validated on load`() {
+        file.writeText(
+            """
+            {
+              "gateway": { "baseUrl": "not a url", "cacheTtl": "10m", "maxRetries": -1 },
+              "roles": { "scout": { "effort": "turbo", "readTimeoutSeconds": 0, "totalTimeoutSeconds": -5, "maxTokens": 0 } }
+            }
+            """.trimIndent(),
+        )
+        val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
+
+        listOf(
+            "gateway.baseUrl must be an http:// or https:// URL",
+            "gateway.cacheTtl must be one of 5m, 1h",
+            "gateway.maxRetries must not be negative",
+            "roles.scout.effort must be one of low, medium, high, xhigh, max",
+            "roles.scout.readTimeoutSeconds must be positive",
+            "roles.scout.totalTimeoutSeconds must be positive",
+            "roles.scout.maxTokens must be positive",
+        ).forEach { assertContains(message, it) }
+        assertFalse("turbo" in message, "values are not echoed")
+    }
+
+    @Test
+    fun `the accepted efforts are the SDK's`() {
+        assertEquals(listOf("low", "medium", "high", "xhigh", "max"), NarratorConfig.EFFORTS)
+        assertEquals(listOf("5m", "1h"), NarratorConfig.CACHE_TTLS)
+    }
+
+    @Test
+    fun `plain http to another machine is accepted with a warning`() {
+        file.writeText("""{ "gateway": { "baseUrl": "http://192.168.1.20:8088" } }""")
+        val remote = LogCapture().use { logs -> ConfigStore.load(dir); logs.text }
+        assertContains(remote, "unencrypted (http://) to 192.168.1.20")
+
+        listOf("http://localhost:8088", "http://127.0.0.1:8088", "https://llmgw.example.com").forEach { url ->
+            file.writeText("""{ "gateway": { "baseUrl": "$url" } }""")
+            val local = LogCapture().use { logs -> ConfigStore.load(dir); logs.text }
+            assertFalse("unencrypted" in local, url)
+        }
+    }
+
+    @Test
+    fun `role ids are the English identifiers of the configuration`() {
+        assertEquals(
+            listOf("director", "analyst", "scout", "forger", "storyteller", "chronicler", "dreamer"),
+            Role.entries.map { it.id },
+        )
+        Role.entries.forEach { role -> assertEquals("\"${role.id}\"", Json.encodeToString(Role.serializer(), role)) }
     }
 }

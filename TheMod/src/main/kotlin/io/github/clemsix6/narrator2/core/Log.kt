@@ -38,17 +38,29 @@ class Log private constructor(val tag: String) {
 
         fun of(tag: String): Log = loggers.computeIfAbsent(tag) { Log(it) }
 
-        /** Applies `logging.levels` (subsystem tag → level name); unknown names are ignored. */
-        fun applyLevels(levels: Map<String, String>) {
-            loggers.values.forEach { it.level = Level.INFO }
-            levels.forEach { (tag, name) ->
-                val level = Level.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return@forEach
-                of(tag).level = level
-            }
-        }
-
+        // Every subsystem is declared here, so that a tag in `logging.levels` can be checked.
         val main = of("Narrator")
         val llm = of("LLM")
         val config = of("Config")
+        val command = of("Command")
+        val trace = of("Trace")
+
+        /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
+        fun applyLevels(levels: Map<String, String>) {
+            loggers.values.forEach { it.level = Level.INFO }
+            levels.forEach { (tag, name) ->
+                val log = loggers[tag]
+                val level = Level.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                when {
+                    log == null -> config.warn(
+                        "logging.levels: unknown subsystem '$tag' is ignored (known: ${loggers.keys.sorted().joinToString()})",
+                    )
+                    level == null -> config.warn(
+                        "logging.levels.$tag: unknown level '$name' is ignored (use ${Level.entries.joinToString()})",
+                    )
+                    else -> log.level = level
+                }
+            }
+        }
     }
 }

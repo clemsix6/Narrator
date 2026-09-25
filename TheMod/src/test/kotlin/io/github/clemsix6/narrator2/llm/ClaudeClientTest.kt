@@ -1,19 +1,18 @@
 package io.github.clemsix6.narrator2.llm
 
 import com.anthropic.core.jsonMapper
-import com.anthropic.errors.AnthropicServiceException
-import com.anthropic.errors.SseException
+import com.anthropic.errors.BadRequestException
 import com.anthropic.models.messages.MessageParam
-import com.anthropic.models.messages.RefusalStopDetails
 import com.anthropic.models.messages.StopReason
 import com.fasterxml.jackson.databind.JsonNode
+import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.config.RoleConfig
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
+import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.SAY_TOOL
 import io.github.clemsix6.narrator2.testing.TEST_API_KEY
-import io.github.clemsix6.narrator2.testing.httpError
-import io.github.clemsix6.narrator2.testing.narratorConfig
+import io.github.clemsix6.narrator2.testing.client
 import io.github.clemsix6.narrator2.testing.reply
-import io.github.clemsix6.narrator2.testing.streamError
 import io.github.clemsix6.narrator2.testing.testConversation
 import io.github.clemsix6.narrator2.testing.toolResult
 import io.github.clemsix6.narrator2.trace.Transcripts
@@ -22,15 +21,16 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.CsvSource
+import org.junit.jupiter.params.provider.EnumSource
 import org.junit.jupiter.params.provider.ValueSource
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.name
-import kotlin.io.path.readText
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ClaudeClientTest {
@@ -43,16 +43,16 @@ class ClaudeClientTest {
     @AfterEach
     fun closeFake() = fake.close()
 
-    private fun send(conversation: Conversation, maxRetries: Int = 0): Reply =
-        ClaudeClient(fake.narratorConfig(maxRetries), Transcripts(dir, enabled = true)).use { client ->
-            runBlocking { client.send(conversation) }
-        }
+    private fun send(conversation: Conversation, roles: Map<Role, RoleConfig> = emptyMap(), cacheTtl: String = "1h"): SendResult =
+        fake.client(roles = roles, cacheTtl = cacheTtl).use { client -> runBlocking { client.send(conversation) } }
 
-    private fun transcript(conversation: Conversation, extension: String): Path =
-        Files.walk(dir).use { paths -> paths.filter { it.name == "${conversation.id}.$extension" }.findFirst().orElseThrow() }
+    private fun transcriptLines(conversation: Conversation): List<JsonNode> {
+        val file = Files.walk(dir).use { paths -> paths.filter { it.name == "${conversation.id}.jsonl" }.findFirst().orElseThrow() }
+        return Files.readAllLines(file).map { mapper.readTree(it) }
+    }
 
     @Test
-    fun `sends model, effort, summarized adaptive thinking, automatic caching and the session header`() {
+    fun `sends model, effort, summarized adaptive thinking, a 1h cache marker, the session header and the key`() {
         fake.enqueue(reply { text("Pong.") })
         val conversation = testConversation(user = "Ping?")
         send(conversation)
@@ -71,6 +71,7 @@ class ClaudeClientTest {
         assertEquals("summarized", body.path("thinking").path("display").asText())
         assertEquals("medium", body.path("output_config").path("effort").asText())
         assertEquals("ephemeral", body.path("cache_control").path("type").asText())
+        assertEquals("1h", body.path("cache_control").path("ttl").asText())
         assertEquals("You are the Narrator.", body.path("system").path(0).path("text").asText())
         assertEquals("user", body.path("messages").path(0).path("role").asText())
         assertEquals("Ping?", body.path("messages").path(0).path("content").asText())
@@ -78,17 +79,30 @@ class ClaudeClientTest {
         assertTrue(body.path("tool_choice").isMissingNode, "tool_choice is never forced")
     }
 
-    @ParameterizedTest
-    @CsvSource("director, medium, 32000", "forgeron, high, 64000", "analyste, low, 32000", "unknown, medium, 32000")
-    fun `uses the model, effort and token budget of the conversation's role`(role: String, effort: String, maxTokens: Long) {
-        fake.enqueue(reply { text("ok") })
-        val reply = send(testConversation(role = role))
+    @Test
+    fun `the cache TTL comes from the configuration, and the gateway rejects 5m`() {
+        val conversation = testConversation()
+        val error = assertFailsWith<BadRequestException> { send(conversation, cacheTtl = "5m") }
 
+        assertEquals("5m", fake.requests.single().json.path("cache_control").path("ttl").asText())
+        assertContains(error.message.orEmpty(), "ttl='5m'")
+        assertEquals(1, conversation.size)
+    }
+
+    @ParameterizedTest
+    @EnumSource(Role::class)
+    fun `uses the model, effort and token budget of the conversation's role`(role: Role) {
+        fake.enqueue(reply { text("ok") })
+        val result = send(testConversation(role = role))
+
+        val expected = NarratorConfig.DEFAULT_ROLES.getValue(role)
         val body = fake.requests.single().json
-        assertEquals("claude-opus-5-5", body.path("model").asText())
-        assertEquals(effort, body.path("output_config").path("effort").asText())
-        assertEquals(maxTokens, body.path("max_tokens").asLong())
-        assertEquals(effort, reply.stats.effort)
+        assertEquals(expected.model, body.path("model").asText())
+        assertEquals(expected.effort, body.path("output_config").path("effort").asText())
+        assertEquals(expected.maxTokens, body.path("max_tokens").asLong())
+        assertEquals(expected.effort, result.stats.effort)
+        assertEquals(role, result.stats.role)
+        assertTrue(fake.requests.single().header("X-Session-ID")!!.startsWith("${role.id}-"))
     }
 
     @Test
@@ -115,29 +129,37 @@ class ClaudeClientTest {
             },
         )
         val conversation = testConversation(tools = listOf(SAY_TOOL))
-        val reply = send(conversation)
+        val result = assertIs<SendResult.Reply>(send(conversation))
 
-        val content = reply.message.content()
+        val content = result.message.content()
         assertEquals(3, content.size)
         val thinking = content[0].thinking().orElseThrow()
         assertEquals("The player is testing the line. Keep it short.", thinking.thinking())
         assertTrue(thinking.signature().isNotEmpty(), "the thinking signature is kept")
-        assertEquals("Pong, mortal.", reply.text)
-        val call = content[2].toolUse().orElseThrow()
+        assertEquals("Pong, mortal.", result.text)
+        val call = result.toolUses.single()
         assertEquals("say", call.name())
         assertEquals("Hello everyone", mapper.valueToTree<JsonNode>(call._input()).path("text").asText())
-        assertEquals(StopReason.TOOL_USE, reply.stopReason)
+        assertEquals(StopReason.TOOL_USE, result.stopReason)
 
-        with(reply.stats) {
+        with(result.stats) {
+            assertEquals(conversation.id, conversationId)
+            assertEquals(Role.DIRECTOR, role)
             assertEquals("claude-opus-5-5", model)
             assertEquals("medium", effort)
+            assertEquals(1, attempts)
+            assertTrue(requestId!!.startsWith("req_fake_"), "request id from the response header: $requestId")
+            assertTrue(messageId!!.startsWith("msg_fake_"), "message id: $messageId")
+            assertNotNull(timeToFirstTokenMs)
+            assertTrue(durationMs >= timeToFirstTokenMs)
             assertEquals(120, inputTokens)
             assertEquals(900, cacheReadTokens)
             assertEquals(60, cacheWriteTokens)
             assertEquals(45, outputTokens)
             assertEquals(1_080, contextTokens)
             assertEquals("tool_use", stopReason)
-            assertTrue(latencyMs >= 0)
+            assertEquals(null, refusalCategory)
+            assertEquals(null, error)
             assertContains(summary(), "input 120 (+900 cache read, 60 cache write) · output 45 · tool_use")
         }
         assertEquals(2, conversation.size)
@@ -152,7 +174,7 @@ class ClaudeClientTest {
         fake.enqueue(reply { text("Done.") })
         val conversation = testConversation(tools = listOf(SAY_TOOL))
 
-        ClaudeClient(fake.narratorConfig(), Transcripts(dir, enabled = true)).use { client ->
+        fake.client().use { client ->
             runBlocking {
                 client.send(conversation)
                 conversation.append(toolResult(toolUseId, "message sent"))
@@ -179,71 +201,81 @@ class ClaudeClientTest {
         assertEquals("tool_result", result.path("type").asText())
         assertEquals(toolUseId, result.path("tool_use_id").asText())
         assertEquals(4, conversation.size)
-    }
-
-    @Test
-    fun `a refusal is reported with its details`() {
-        fake.enqueue(reply { refusal(category = "cyber", explanation = "Not happening.") })
-        val reply = send(testConversation())
-
-        assertEquals(StopReason.REFUSAL, reply.stopReason)
-        assertEquals("refusal", reply.stats.stopReason)
-        val details = reply.message.stopDetails().orElseThrow()
-        assertEquals(RefusalStopDetails.Category.CYBER, details.category().orElseThrow())
-        assertEquals("Not happening.", details.explanation().orElseThrow())
-        assertEquals("", reply.text)
+        assertTrue(fake.rejections.isEmpty(), "strict mode accepted both requests: ${fake.rejections}")
     }
 
     @ParameterizedTest
-    @ValueSource(ints = [429, 500, 529])
-    fun `an HTTP error propagates, leaves the conversation unchanged and is transcribed`(status: Int) {
-        fake.enqueue(httpError(status))
+    @ValueSource(strings = ["end_turn", "pause_turn", "stop_sequence"])
+    fun `a usable reply is appended`(stopReason: String) {
+        fake.enqueue(reply { text("Fine."); stopReason(stopReason) })
         val conversation = testConversation()
 
-        val error = assertFailsWith<AnthropicServiceException> { send(conversation) }
-        assertEquals(status, error.statusCode())
-        assertEquals(1, fake.requests.size, "no retry with maxRetries = 0")
-        assertEquals(1, conversation.size, "the conversation is unchanged")
-
-        val lines = Files.readAllLines(transcript(conversation, "jsonl")).map { mapper.readTree(it) }
-        assertEquals(listOf("conversation", "message", "error"), lines.map { it.path("kind").asText() })
-        assertEquals(describeFailure(error), lines.last().path("data").path("description").asText())
-        assertContains(transcript(conversation, "md").readText(), "ERROR after")
+        val result = assertIs<SendResult.Reply>(send(conversation))
+        assertEquals(stopReason, result.stats.stopReason)
+        assertEquals(2, conversation.size)
     }
 
     @Test
-    fun `describes failures for operators`() {
-        fake.enqueue(httpError(401), httpError(529, message = "Overloaded, try later"))
-        val unauthorized = assertFailsWith<AnthropicServiceException> { send(testConversation()) }
-        assertEquals("key rejected by the gateway (HTTP 401)", describeFailure(unauthorized))
-        val overloaded = assertFailsWith<AnthropicServiceException> { send(testConversation()) }
-        assertContains(describeFailure(overloaded), "HTTP 529")
-        assertContains(describeFailure(overloaded), "Overloaded, try later")
+    fun `a refusal is not appended, and is reported and transcribed with its category`() {
+        fake.enqueue(reply { thinking("No."); refusal(category = "cyber", explanation = "Not happening.") })
+        val conversation = testConversation(transcripts = Transcripts(dir, enabled = true))
+
+        val result = assertIs<SendResult.Refused>(send(conversation))
+        assertEquals(StopReason.REFUSAL, result.stopReason)
+        assertEquals("cyber", result.category)
+        assertEquals("Not happening.", result.explanation)
+        assertEquals("refusal", result.stats.stopReason)
+        assertEquals("cyber", result.stats.refusalCategory)
+        assertEquals(1, conversation.size, "a refusal is not appended")
+
+        val response = transcriptLines(conversation).last { it.path("kind").asText() == "response" }.path("data")
+        assertEquals(false, response.path("narrator2_appended").asBoolean())
+        assertEquals("cyber", response.path("narrator2_stats").path("refusal_category").asText())
+        assertEquals("cyber", response.path("stop_details").path("category").asText())
     }
 
     @Test
-    fun `an overloaded gateway is retried`() {
-        fake.enqueue(httpError(529), reply { text("Finally.") })
-        val reply = send(testConversation(), maxRetries = 1)
+    fun `a tool call cut off by max_tokens is not appended`() {
+        fake.enqueue(
+            reply {
+                thinking("Let me answer.")
+                truncatedToolUse("say", """{"text": "Hello, every""")
+            },
+        )
+        val conversation = testConversation(tools = listOf(SAY_TOOL), transcripts = Transcripts(dir, enabled = true))
 
-        assertEquals("Finally.", reply.text)
-        assertEquals(2, fake.requests.size)
-        assertEquals("1", fake.requests[1].header("X-Stainless-Retry-Count"))
+        val result = assertIs<SendResult.Incomplete>(send(conversation))
+        assertEquals(StopReason.MAX_TOKENS, result.stopReason)
+        assertContains(result.reason, "tool call was cut off")
+        assertEquals(1, conversation.size, "the truncated call is not appended")
+        val response = transcriptLines(conversation).last().path("data")
+        assertEquals(false, response.path("narrator2_appended").asBoolean())
     }
 
     @Test
-    fun `an error event in the stream fails the call`() {
-        fake.enqueue(streamError("overloaded_error", "Overloaded mid-answer"))
+    fun `a reply cut off by max_tokens is not appended`() {
+        fake.enqueue(reply { text("Once upon a"); stopReason("max_tokens") })
         val conversation = testConversation()
 
-        val error = assertFailsWith<SseException> { send(conversation) }
-        assertContains(describeFailure(error), "error in the response stream")
+        val result = assertIs<SendResult.Incomplete>(send(conversation))
+        assertContains(result.reason, "max_tokens")
+        assertEquals("Once upon a", result.text)
         assertEquals(1, conversation.size)
     }
 
     @Test
-    fun `a request with nothing scripted fails loudly`() {
-        assertFailsWith<AnthropicServiceException> { send(testConversation()) }
-        assertEquals(1, fake.unscripted)
+    fun `logs the start and the end of each call`() {
+        fake.enqueue(reply { thinking("Hm."); text("Pong."); usage(input = 7, output = 3, cacheRead = 50) })
+        val conversation = testConversation()
+        val logs = LogCapture()
+        val result = logs.use { send(conversation) }
+
+        val start = logs.messages.single { "· call ·" in it }
+        listOf(conversation.id, "role director", "claude-opus-5-5", "effort medium", "1 messages").forEach { assertContains(start, it) }
+        val end = logs.messages.single { "first token" in it }
+        listOf(
+            conversation.id, "request ${result.stats.requestId}", "message ${result.stats.messageId}", "1 attempt",
+            "input 7 (+50 cache read, 0 cache write) · output 3 · end_turn",
+        ).forEach { assertContains(end, it) }
     }
 }

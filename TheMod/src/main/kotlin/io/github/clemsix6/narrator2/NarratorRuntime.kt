@@ -19,12 +19,13 @@ import java.nio.file.Path
 /**
  * Everything the Narrator runs while a server is up. Created when the server has started, closed
  * when it stops. Data lives in the world folder (`world/narrator2/`) so each world has its own
- * history and memory; configuration and prompts live in `config/narrator2/`.
+ * history and memory; configuration and prompt overrides live in `config/narrator2/`.
  */
 class NarratorRuntime private constructor(
     val server: MinecraftServer,
     val config: NarratorConfig,
     val prompts: Prompts,
+    apiKey: String?,
 ) : AutoCloseable {
     val dataDir: Path = server.getWorldPath(LevelResource.ROOT).resolve("narrator2").toAbsolutePath().normalize()
 
@@ -32,7 +33,7 @@ class NarratorRuntime private constructor(
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("narrator2"))
 
     val transcripts = Transcripts(dataDir.resolve("logs").resolve("conversations"), config.logging.transcripts)
-    val claude = ClaudeClient(config, transcripts)
+    val claude = ClaudeClient(config, apiKey)
 
     /** Cancels background work, including model calls still in flight. */
     override fun close() {
@@ -43,6 +44,7 @@ class NarratorRuntime private constructor(
     companion object {
         val configDir: Path = FabricLoader.getInstance().configDir.resolve("narrator2")
         val configFile: Path = configDir.resolve(ConfigStore.FILE_NAME)
+        val promptsDir: Path = configDir.resolve("prompts")
 
         @Volatile
         var current: NarratorRuntime? = null
@@ -69,30 +71,34 @@ class NarratorRuntime private constructor(
         }
 
         /**
-         * Starts a new instance from freshly loaded config and prompts, then closes the running one
-         * (cancelling its calls in flight). If loading fails, the running instance is kept and the
+         * Starts a new instance from freshly loaded config and prompts, then closes the running one, if
+         * any (cancelling its calls in flight). If loading fails, the running instance is kept and the
          * error propagates.
          */
         fun reload(server: MinecraftServer): NarratorRuntime {
             val fresh = create(server)
-            current?.close()
+            val previous = current
+            previous?.close()
             current = fresh
-            Log.main.info("configuration and prompts reloaded")
+            Log.main.info(if (previous != null) "configuration and prompts reloaded" else "started by /narrator reload")
             return fresh
         }
 
+        /** Where the LLMGW key comes from, for operators (never the key itself). */
+        fun keySource(config: NarratorConfig): String = "environment variable ${config.gateway.apiKeyEnv}"
+
+        /** What to do when there is no key. The environment is read when the server process starts. */
+        fun missingKeyHint(config: NarratorConfig): String =
+            "set the ${keySource(config)} and restart the server (the environment is read at startup)"
+
         private fun create(server: MinecraftServer): NarratorRuntime {
             val config = ConfigStore.load(configDir)
-            val prompts = Prompts.load(configDir.resolve("prompts"))
             Log.applyLevels(config.logging.levels)
-            val runtime = NarratorRuntime(server, config, prompts)
+            val prompts = Prompts.load(promptsDir)
+            val apiKey = System.getenv(config.gateway.apiKeyEnv)?.trim()?.ifEmpty { null }
+            val runtime = NarratorRuntime(server, config, prompts, apiKey)
             Log.main.info("ready · gateway ${config.gateway.baseUrl} · data in ${runtime.dataDir}")
-            if (!runtime.claude.isConfigured) {
-                Log.main.warn(
-                    "no LLMGW key: set gateway.apiKey in $configFile " +
-                        "or the environment variable ${config.gateway.apiKeyEnv}",
-                )
-            }
+            if (apiKey == null) Log.main.warn("no LLMGW key: ${missingKeyHint(config)}")
             return runtime
         }
     }
