@@ -30,8 +30,12 @@ import io.github.clemsix6.narrator2.tool.NoArgs
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolExecutor
+import io.github.clemsix6.narrator2.tool.TestTool
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolRunner
 import io.github.clemsix6.narrator2.tool.ToolSet
+import io.github.clemsix6.narrator2.tool.noArgsTool
+import io.github.clemsix6.narrator2.tool.of
 import io.github.clemsix6.narrator2.trace.CallStats
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
@@ -171,6 +175,29 @@ class AgentLoopTest {
         assertEquals(rows.map { it.messageId }, replies.map { it.first })
         assertEquals(rows.map { it.id }, replies.map { it.second })
         assertEquals(listOf(rows[0].id), executor.llmCallIds)
+    }
+
+    @Test
+    fun `with the real ToolRunner, each tool call row points to the llm_calls row of its reply`() {
+        val services = services()
+        val say = TestTool("say", NoArgs.serializer(), ToolEffect.SPEECH, body = { _, _ -> ToolResult.ok("ok: said") })
+        val tools = ToolSet.of(listOf(say, noArgsTool("look")))
+        fake.enqueue(reply { toolUse("say"); toolUse("look", """{"radius": 3}""") }, reply { text("Done.") })
+        val conversation = conversation(tools)
+
+        val outcome = AgentLoop(services, ToolRunner(services)).run(conversation, Pending.text("Go."))
+
+        assertEquals(TurnOutcome.Ended(calls = 2, toolCalls = 2, acted = true, finalText = "Done."), outcome)
+        assertEquals(listOf("look", "say"), fake.requests[0].json.path("tools").map { it.path("name").asText() })
+        val results = fake.requests[1].messages().last().path("content")
+        assertEquals("ok: said", results[0].path("content").asText())
+        assertTrue(results[0].path("is_error").isMissingNode)
+        assertTrue(results[1].path("is_error").asBoolean())
+        assertContains(results[1].path("content").asText(), "Invalid arguments: unknown argument \"radius\"")
+        val rows = services.traces.toolCalls
+        assertEquals(listOf("say", "look"), rows.map { it.tool })
+        assertTrue(rows.all { it.llmCallId == services.traces.llmCalls[0].id && it.turnId == 42L && it.conversationId == conversation.id })
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
     @Test
