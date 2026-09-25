@@ -154,7 +154,7 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
     }
 
     private suspend fun execute(conversation: Conversation, history: List<MessageParam>, pending: List<MessageParam>): Exchange {
-        val role = config.role(conversation.role)
+        val role = conversation.frozen(config.role(conversation.role))
         val messages = history + pending
         val params = params(conversation, role, messages)
         val call = CallContext(conversation, role)

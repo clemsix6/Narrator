@@ -62,7 +62,7 @@ class InboxTest {
     }
 
     @Test
-    fun `a full inbox drops the oldest next event, then the oldest salient event, never what someone waits for`() {
+    fun `a full inbox drops the oldest next event, then the oldest salient event, then chat, and counts them by kind`() {
         val inbox = Inbox(capacity = 3)
         val chat = chat()
         val death = death()
@@ -76,10 +76,34 @@ class InboxTest {
         val whisper = DirectorSignal.OperatorWhisper("Clement", "hi", 0)
         inbox.post(whisper)
         assertEquals(listOf(chat, task, whisper), inbox.items().map { it.signal })
-        val prayer = event(Urgency.IMMEDIATE, ChatMessage(steve, ChatChannel.PRAY, "pitié", emptyList()))
-        inbox.post(prayer)
-        assertEquals(listOf(chat, task, whisper, prayer), inbox.items().map { it.signal }, "over capacity rather than losing them")
-        assertEquals(2, inbox.dropped)
+        // Bounded whatever comes: a flood of prayers pushes out the oldest chat, never beyond the capacity.
+        val prayers = List(3) { event(Urgency.IMMEDIATE, ChatMessage(steve, ChatChannel.PRAY, "pitié $it", emptyList())) }
+        prayers.forEach(inbox::post)
+        assertEquals(listOf(task, whisper, prayers[2]), inbox.items().map { it.signal })
+        assertEquals(5, inbox.dropped)
+        assertEquals(mapOf("TELEPORT" to 1, "DEATH" to 1, "CHAT to you" to 1, "PRAY" to 2), inbox.takeOverflow())
+        assertTrue(inbox.takeOverflow().isEmpty(), "told once")
+        // Only task results, reminders and whispers left: the oldest goes.
+        val small = Inbox(capacity = 1)
+        small.post(task)
+        small.post(DirectorSignal.ReminderDue(1, "note", 0, 1))
+        assertEquals(mapOf("TASK" to 1), small.takeOverflow())
+        assertEquals(1, small.items().size)
+    }
+
+    @Test
+    fun `items put back never go beyond the capacity, and counts told by a failed request count again`() {
+        val inbox = Inbox(capacity = 2)
+        inbox.post(chat())
+        inbox.post(teleport())
+        val taken = inbox.takeAll()
+        inbox.post(death())
+        inbox.putBack(taken)
+        assertEquals(2, inbox.items().size)
+        assertEquals(mapOf("TELEPORT" to 1), inbox.takeOverflow())
+        inbox.restoreOverflow(mapOf("TELEPORT" to 1, "MINED" to 3))
+        inbox.post(teleport())
+        assertEquals(mapOf("TELEPORT" to 2, "MINED" to 3), inbox.takeOverflow())
     }
 
     @Test

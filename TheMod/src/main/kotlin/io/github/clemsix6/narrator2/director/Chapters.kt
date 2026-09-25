@@ -7,6 +7,7 @@ import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ToolResultBlockParam
 import com.anthropic.models.messages.ToolUseBlock
 import io.github.clemsix6.narrator2.agent.AgentLoop
+import io.github.clemsix6.narrator2.agent.GatewayError
 import io.github.clemsix6.narrator2.agent.OperatorNote
 import io.github.clemsix6.narrator2.agent.Pending
 import io.github.clemsix6.narrator2.agent.TurnHooks
@@ -69,19 +70,25 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  * Journal, never from the old conversation.
  *
  * - **Opening**, at the first wake-up without a chapter: the `director` prompt and the tools wired at
- *   that moment, frozen until the chapter closes. Its first message starts with the briefing ([briefing]),
- *   built again as long as nothing of the conversation was committed.
+ *   that moment, frozen until the chapter closes (the model and the effort too: `llm/Conversation`).
+ *   Its first message starts with the briefing ([briefing]), built again as long as nothing of the
+ *   conversation was committed. Chapter numbers go on from the Journal's last one; when it cannot be
+ *   read, it is read again at the next opening.
  * - **Limits**: the context of the last request reaching `director.chapterTokenLimit` marks the chapter
  *   for closing at the next quiet moment; reaching `director.chapterHardLimit` closes it at the end of
- *   the turn ([limit]). So do `/narrator chapter close` and a `/narrator reload` that changed the prompt
- *   or the operator channel ([reloadChange]), and a server empty for `director.emptyServerCloseMinutes`
- *   ([emptyServerCloseAt]).
+ *   the turn ([limit]). So do `/narrator chapter close` and a `/narrator reload` that changed the prompt,
+ *   the model, the effort or the operator channel ([reloadChange]), and a server empty for
+ *   `director.emptyServerCloseMinutes` ([emptyServerCloseAt]).
  * - **Closing with a summary** ([closeWithSummary]): one more request on the chapter's own conversation
  *   (its cache is warm: only the closing message is new), whose engine note is the `chapter_summary`
  *   prompt. The summary is factual, in the third person, never in the Narrator's voice (MEMOIRE.md §1.7);
  *   it goes to `conversations.summary`. Tool calls get `tools are disabled while the chapter closes` and
- *   the request goes again, twice at most. Without a usable answer, the chapter closes all the same,
- *   without a summary.
+ *   the request goes again, twice at most. The summary carries the promises and challenges into the next
+ *   chapters (M3), so a gateway failure worth waiting out (429, 529, 5xx, network, 402, a refused key)
+ *   does not lose it: the chapter stays open and closing ([isClosing]), and the Director asks again
+ *   later ([resumeSummary]) from where it stopped. Only a refusal, an empty or cut-off answer after its
+ *   repeats, or a request the gateway rejects close it without one. A chapter where nothing was
+ *   exchanged has nothing to summarize: it closes without a request.
  * - **Closing without a summary** ([close]): after the errors that leave the conversation unusable
  *   (refusals, a malformed request, a full context, an engine failure) and when the server stops.
  *
@@ -94,22 +101,41 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     private val decisions = Decisions(services.trace, services.clock)
     private val closer = AgentLoop(services, ToolsDisabled)
     private val hours = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT).withZone(services.clock.zone)
-    private var lastNumber: Int? = null
+
+    /** The last chapter number known: the Journal's, or the last one opened since. */
+    private var lastNumber = 0
+
+    /** The Journal's last chapter number was read; until then it is read at each opening. */
+    private var numberRead = false
     private var emptySince: Long? = null
 
-    /** The chapters closed since the server started, newest last: the briefing reads them when the Journal lags or fails. */
+    /**
+     * The chapters closed since the server started, oldest first: the last [Briefing.PREVIOUS_CHAPTERS]
+     * with a summary and as many without. The briefing reads them when the Journal lags or fails.
+     */
     private val closed = ArrayDeque<ConversationRecord>()
+
+    /** The closing of the open chapter, while it waits for its summary. */
+    private var closing: Closing? = null
 
     /** The open chapter; null between two chapters. */
     var current: Chapter? = null
         private set
 
+    /** True while the open chapter is closing and waits for its summary to be asked again ([resumeSummary]). */
+    val isClosing: Boolean get() = closing != null
+
     /** The open chapter, opened now when there is none. */
     suspend fun current(): Chapter = current ?: open()
 
     private suspend fun open(): Chapter {
-        val number = (lastNumber ?: previousNumber()) + 1
-        lastNumber = number
+        if (!numberRead) {
+            previousNumber()?.let {
+                lastNumber = maxOf(lastNumber, it)
+                numberRead = true
+            }
+        }
+        val number = ++lastNumber
         val env = ToolEnv(journalAvailable = services.journal.available, workerRoles = services.workers.roles)
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)
@@ -136,11 +162,12 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
      * begun. A first message that got no usable answer committed nothing: the next one gets a fresh briefing.
      *
      * @param chatBefore chat from this time on is told by the wake-up message itself (epoch milliseconds).
+     * @param reduced the briefing's smaller form ([Briefing.render]), after a first message too long for the context.
      */
-    suspend fun briefing(chapter: Chapter, now: Long, chatBefore: Long, reminders: List<PendingReminder>): String? {
+    suspend fun briefing(chapter: Chapter, now: Long, chatBefore: Long, reminders: List<PendingReminder>, reduced: Boolean = false): String? {
         if (chapter.conversation.size > 0) return null
         val text = try {
-            briefing.render(chapter.number, chapter.conversation.id, now, chatBefore, reminders, closed.toList())
+            briefing.render(chapter.number, chapter.conversation.id, now, chatBefore, reminders, closed.toList(), reduced)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -148,7 +175,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             log.error("the briefing of chapter ${chapter.number} failed", e)
             "<briefing chapter=\"${chapter.number}\">\n(unavailable: ${e.message ?: e.javaClass.simpleName})\n</briefing>"
         }
-        services.transcripts.note(chapter.conversation, "briefing of chapter ${chapter.number}: ${text.length} characters")
+        services.transcripts.note(chapter.conversation, "${if (reduced) "reduced " else ""}briefing of chapter ${chapter.number}: ${text.length} characters")
         return text
     }
 
@@ -164,14 +191,20 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     }
 
     /**
-     * Why the reload from [old] to [new] must close the open chapter (at a quiet moment): its prompt or
-     * the operator channel changed. Null when there is no chapter or nothing of the sort changed.
+     * Why the reload from [old] to [new] must close the open chapter (at a quiet moment): its prompt, the
+     * Director's model or effort, or the operator channel changed. The model and the effort stay those of
+     * the chapter's conversation until it closes (`llm/Conversation`): the change applies to the next
+     * chapter. Null when there is no chapter or nothing of the sort changed.
      */
     fun reloadChange(old: Settings, new: Settings): String? {
         val chapter = current ?: return null
         val prompt = chapter.conversation.system.joinToString("") { it.text() }
+        val was = old.config.role(Role.DIRECTOR)
+        val now = new.config.role(Role.DIRECTOR)
         val changes = buildList {
             if (prompt != new.prompts.get(Role.DIRECTOR.id)) add("the director prompt changed")
+            if (was.model != now.model) add("the director model went from ${was.model} to ${now.model}")
+            if (was.effort != now.effort) add("the director effort went from ${was.effort} to ${now.effort}")
             if (old.config.director.operatorChannel != new.config.director.operatorChannel) {
                 add("director.operatorChannel went from ${old.config.director.operatorChannel} to ${new.config.director.operatorChannel}")
             }
@@ -208,59 +241,84 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     /**
      * Closes the open chapter with its summary (the Director is `CLOSING`): asks the model for it on the
      * chapter's own conversation, starting with [carry] (the tool results its history waits for), then
-     * closes the chapter whatever the answer. A cancellation (the server stops) leaves the chapter open,
-     * for the Director to close it `shutdown`.
+     * closes the chapter. A chapter where nothing was exchanged closes at once, without a request.
+     *
+     * @return null once the chapter is closed, with or without a summary; the gateway's error when the
+     *   request failed on an error worth waiting out: the chapter stays open and closing, for
+     *   [resumeSummary] to ask again later. A cancellation (the server stops) leaves the chapter open,
+     *   for the Director to close it `shutdown`.
      */
-    suspend fun closeWithSummary(reason: EndReason, why: String, carry: List<ContentBlockParam> = emptyList()) {
-        val chapter = current ?: return
-        val conversation = chapter.conversation
-        services.transcripts.note(conversation, "chapter ${chapter.number} closing (${reason.id}): $why; asking for its summary")
-        val texts = mutableListOf<String>()
+    suspend fun closeWithSummary(reason: EndReason, why: String, carry: List<ContentBlockParam> = emptyList()): GatewayError? {
+        closing?.let { return ask(it) }
+        val chapter = current ?: return null
+        if (chapter.conversation.size == 0) {
+            // Nothing was committed: there is nothing to summarize, and a request would only make one up.
+            finish(chapter, reason, why, summary = null, outcome = "no summary: nothing was exchanged", problem = false, calls = 0)
+            return null
+        }
+        services.transcripts.note(chapter.conversation, "chapter ${chapter.number} closing (${reason.id}): $why; asking for its summary")
+        val end = ContentBlockParam.ofText("<chapter_end chapter=\"${chapter.number}\" now=\"${hours.format(services.clock.instant())}\"/>")
+        val opening = Pending(carry + end, listOf(OperatorNote.engine(services.settings.get().prompts.get(SUMMARY_PROMPT))))
+        return ask(Closing(chapter, reason, why, opening).also { closing = it })
+    }
+
+    /** Asks again for the summary of the chapter that is closing ([isClosing]); same result as [closeWithSummary]. */
+    suspend fun resumeSummary(): GatewayError? = closing?.let { ask(it) }
+
+    /** Sends the closing request of [attempt] (or its follow-up after a failure), and closes the chapter unless it must wait. */
+    private suspend fun ask(attempt: Closing): GatewayError? {
+        val chapter = attempt.chapter
         val hooks = object : TurnHooks {
-            override suspend fun afterTools(): Pending = Pending(emptyList(), listOf(OperatorNote.engine(REPEAT_NOTE)))
+            override suspend fun afterTools(canAct: Boolean): Pending = Pending(emptyList(), listOf(OperatorNote.engine(REPEAT_NOTE)))
 
             override fun onReply(reply: Message, stats: CallStats, llmCallId: Long) {
                 if (reply.stopReason().orElse(null) == StopReason.REFUSAL) return
                 val text = reply.content().mapNotNull { block -> block.text().map { it.text() }.orElse(null) }.joinToString("\n").trim()
-                if (text.isNotEmpty()) texts += text
+                if (text.isNotEmpty()) attempt.texts += text
             }
         }
-        val closing = ContentBlockParam.ofText("<chapter_end chapter=\"${chapter.number}\" now=\"${hours.format(services.clock.instant())}\"/>")
-        val opening = Pending(carry + closing, listOf(OperatorNote.engine(services.settings.get().prompts.get(SUMMARY_PROMPT))))
-        val caller = Caller(Role.DIRECTOR, conversation.id, turnId = null, taskId = null)
-        val outcome = closer.runTurn(conversation, opening, caller, SUMMARY_LIMITS, hooks, LlmCallRecord.Purpose.CHAPTER_SUMMARY)
+        val caller = Caller(Role.DIRECTOR, chapter.conversation.id, turnId = null, taskId = null)
+        val outcome = closer.runTurn(chapter.conversation, attempt.pending, caller, SUMMARY_LIMITS, hooks, LlmCallRecord.Purpose.CHAPTER_SUMMARY)
+        attempt.calls += outcome.calls
         if (outcome is TurnOutcome.Cancelled) throw CancellationException("the server is stopping while chapter ${chapter.number} closes")
-        // The longest answer is the summary: a reply that also called a tool may be followed by a mere acknowledgement.
-        val summary = texts.maxByOrNull { it.length }?.let { Briefing.text(it, Briefing.SUMMARY_MAX) }
-        val missing = if (summary != null) null else "no usable answer (${describe(outcome)})"
-        finish(chapter, reason, why, summary, missing, outcome.calls)
+        if (outcome is TurnOutcome.Failed && worthWaiting(outcome.error)) {
+            // The same request goes again later: its tool results first, as the history expects.
+            attempt.pending = outcome.pending
+            log.warn("chapter ${chapter.number}: the summary request failed (${outcome.error.description}); the chapter stays open until it gets through")
+            services.transcripts.note(chapter.conversation, "summary of chapter ${chapter.number} not received (${outcome.error.description}); asked again later")
+            return outcome.error
+        }
+        closing = null
+        val summary = attempt.summary()
+        val outcomeText = if (summary != null) "summary of ${summary.length} characters" else "no summary: no usable answer (${describe(outcome)})"
+        finish(chapter, attempt.reason, attempt.why, summary, outcomeText, problem = summary == null, calls = attempt.calls)
+        return null
     }
 
     /**
-     * Closes the open chapter now, without a summary, for [reason]: the next wake-up opens a new one.
-     * Its conversation is dropped whatever its state (it may end with unanswered tool calls).
+     * Closes the open chapter now, without asking for a summary, for [reason]: the next wake-up opens a
+     * new one. Its conversation is dropped whatever its state (it may end with unanswered tool calls). A
+     * closing that was waiting for its summary keeps what it already got, if anything.
      */
     fun close(reason: EndReason, why: String) {
         val chapter = current ?: return
-        finish(chapter, reason, why, summary = null, missing = null, calls = 0)
+        val summary = closing?.summary()
+        val calls = closing?.calls ?: 0
+        closing = null
+        finish(chapter, reason, why, summary, if (summary != null) "summary of ${summary.length} characters" else "no summary", problem = false, calls = calls)
     }
 
     /**
      * Ends [chapter]: its `conversations` row, a transcript note and a `chapter closed` decision.
      *
-     * @param missing why a summary that was asked for is missing; null when none was asked.
+     * @param outcome what became of the summary, for the transcript and the decision.
+     * @param problem a summary was asked for and none came: the decision is a warning.
      */
-    private fun finish(chapter: Chapter, reason: EndReason, why: String, summary: String?, missing: String?, calls: Int) {
+    private fun finish(chapter: Chapter, reason: EndReason, why: String, summary: String?, outcome: String, problem: Boolean, calls: Int) {
         current = null
         val record = chapter.record(services.clock.instant(), reason, summary)
         services.trace.conversation(record)
-        closed.addLast(record)
-        while (closed.size > Briefing.PREVIOUS_CHAPTERS) closed.removeFirst()
-        val outcome = when {
-            summary != null -> "summary of ${summary.length} characters"
-            missing != null -> "no summary: $missing"
-            else -> "no summary"
-        }
+        remember(record)
         services.transcripts.note(chapter.conversation, "chapter ${chapter.number} closed (${reason.id}): $why; $outcome")
         decisions.record(
             log, DecisionRecord.Kind.CHAPTER, "closed", subject = chapter.conversation.id,
@@ -269,13 +327,21 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
                 put("summary_chars", summary?.length ?: 0)
                 put("summary_calls", calls)
             },
-            level = if (reason in USUAL && missing == null) Log.Level.INFO else Log.Level.WARN,
+            level = if (reason in USUAL && !problem) Log.Level.INFO else Log.Level.WARN,
         )
         chapter.conversation.close()
     }
 
-    /** The number of the Director's last chapter in the Journal; 0 when there is none or it cannot be read. */
-    private suspend fun previousNumber(): Int = try {
+    /** Keeps [record] for the briefing: the last chapters with a summary, and as many without (their places are apart). */
+    private fun remember(record: ConversationRecord) {
+        closed.addLast(record)
+        for (summarized in listOf(true, false)) {
+            while (closed.count { it.hasSummary == summarized } > Briefing.PREVIOUS_CHAPTERS) closed.remove(closed.first { it.hasSummary == summarized })
+        }
+    }
+
+    /** The number of the Director's last chapter in the Journal (0 when there is none); null when it cannot be read. */
+    private suspend fun previousNumber(): Int? = try {
         services.journal.read(READ_TIMEOUT_MS) { connection ->
             connection.createStatement().use { statement ->
                 statement.queryTimeout = (READ_TIMEOUT_MS / 1_000).toInt()
@@ -284,9 +350,11 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
                 }
             }
         }
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
-        log.warn("the last chapter number cannot be read, chapters start from 1: ${e.message}")
-        0
+        log.warn("the last chapter number cannot be read (${e.message}); this chapter is numbered from the chapters of this run, and the Journal is read again at the next one")
+        null
     }
 
     /** Where the conversation's Markdown transcript is, relative to the data folder; null without transcripts. */
@@ -295,6 +363,15 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
         if (!transcripts.enabled) return null
         val file = transcripts.root.resolve(LocalDate.now().toString()).resolve("${conversation.id}.md")
         return if (file.startsWith(services.dataDir)) services.dataDir.relativize(file).toString().replace('\\', '/') else file.toString()
+    }
+
+    /** A chapter closing that waits for its summary: the request to send next, and the answers so far. */
+    private class Closing(val chapter: Chapter, val reason: EndReason, val why: String, var pending: Pending) {
+        val texts = mutableListOf<String>()
+        var calls = 0
+
+        /** The longest answer: a reply that also called a tool may be followed by a mere acknowledgement. */
+        fun summary(): String? = texts.maxByOrNull { it.length }?.let { Briefing.text(it, Briefing.SUMMARY_MAX) }
     }
 
     /** Answers every tool call of the closing requests with an error: the chapter is closing. */
@@ -320,6 +397,18 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
 
         /** The reasons a chapter closes in the normal course of play. */
         private val USUAL = setOf(EndReason.TOKEN_LIMIT, EndReason.QUIET_LIMIT, EndReason.SERVER_EMPTY, EndReason.RELOAD, EndReason.OPERATOR, EndReason.SHUTDOWN)
+
+        private val ConversationRecord.hasSummary: Boolean get() = !summary.isNullOrBlank()
+
+        /**
+         * Whether the summary request is worth sending again later after [error]: a transient failure
+         * (429, 529, 5xx, timeout, network), a spent budget (402), a refused or missing key. A request the
+         * gateway rejects (400) or that no longer fits the context would fail the same way again.
+         */
+        private fun worthWaiting(error: GatewayError): Boolean = when (error) {
+            is GatewayError.Transient, is GatewayError.Budget, GatewayError.Auth, is GatewayError.Unavailable -> true
+            is GatewayError.BadRequest, is GatewayError.SystemRoleRejected, GatewayError.ContextExceeded -> false
+        }
 
         private fun describe(outcome: TurnOutcome): String = when (outcome) {
             is TurnOutcome.Ended -> "an empty answer"

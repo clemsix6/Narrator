@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.agent.TurnHooks
 import io.github.clemsix6.narrator2.agent.TurnLimits
 import io.github.clemsix6.narrator2.agent.TurnOutcome
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
@@ -85,15 +86,22 @@ interface GameView {
  *   carried it was not committed. Each chapter keeps the ids of the events it committed ([Chapter.seen]).
  * - **Errors** (§12.9): a refused or cut-off answer is retried 30 s later with an engine note (at once
  *   during a turn); transient gateway failures back off (30 s, doubling up to 10 min); a spent budget
- *   or a refused key block the Director; a malformed request or a full context closes the chapter.
- *   While paused, backing off or blocked, addressed chat, prayers, task results, reminders and whispers
- *   are kept, the rest is left to the activity digest, and the next wake-up says how long the
- *   Narrator was silent and why.
+ *   or a refused key block the Director; a malformed request or a full context closes the chapter, and
+ *   the chapters that close on an error reopen after a backoff (30 s, doubling up to 15 min) until a
+ *   request gets through. A first message too long for the context goes again once with a reduced
+ *   briefing. While paused or blocked, addressed chat, prayers, task results, reminders and whispers
+ *   are kept, the rest is left to the activity digest; the inbox is bounded in every state and counts
+ *   what it drops ([Inbox]); the next wake-up says how long the Narrator was silent and why.
+ * - **Step limit.** Past the turn's step limit the model can no longer act: what arrives then stays in
+ *   the inbox, unseen, for the next turn ([TurnHooks.afterTools]).
  * - **Chapters** ([Chapters]): the conversation is cut into chapters of bounded context. A chapter
  *   closes (`CLOSING`) with a factual summary when its context reaches the limits, when nobody has been
  *   online for a while, at a quiet moment after `/narrator chapter close` or a reload that changed its
- *   prompt, and after a runaway turn; without one after the errors that break its conversation and when
- *   the server stops. The next chapter's first message starts with a [Briefing].
+ *   prompt, model, effort or channel, and after a runaway turn; without one after the errors that break
+ *   its conversation and when the server stops. A summary request that fails on the gateway is asked
+ *   again with a backoff (30 s, doubling up to 15 min) or when the block ends, the chapter staying open
+ *   and closing meanwhile: its promises must reach the next chapters. The next chapter's first message
+ *   starts with a [Briefing].
  *
  * @param toolSet the tools of a new chapter, given what is wired: `ToolCatalog.toolSetFor` in production.
  */
@@ -140,6 +148,16 @@ class Director(
     private var resumeWake = false
     private var backoffUntil: Long? = null
     private var backoffStep = 0
+
+    /** Chapters closed on an error since the last request that got through: the next one opens later each time. */
+    private var reopenStep = 0
+
+    /** When the summary of a chapter that is closing is asked again; null while blocked or when none waits. */
+    private var summaryRetryAt: Long? = null
+    private var summaryStep = 0
+
+    /** The open chapter's first message did not fit in the context: its briefing is reduced. */
+    private var reducedBriefing = false
     private var block: Block? = null
     private var silence: Silence? = null
     private var retryNote: String? = null
@@ -193,7 +211,8 @@ class Director(
         )
     }
 
-    override fun recentActivity(player: UUID, minutes: Int): String? = digest.recent(player, minutes)
+    /** Escaped ([ModelText.escape]): the line names the players who were killed. */
+    override fun recentActivity(player: UUID, minutes: Int): String? = digest.recent(player, minutes)?.let(ModelText::escape)
 
     // ── The loop ────────────────────────────────────────────────────────────────────────────────────
 
@@ -225,6 +244,7 @@ class Director(
         releaseReminders(now)
         disabledReason()?.let { reason ->
             val dropped = inbox.discard { true }
+            inbox.takeOverflow()
             if (dropped.isNotEmpty()) log.debug { "${dropped.size} signals dropped: the Director is disabled ($reason)" }
             publish(DirectorState.DISABLED, null, reason)
             inbox.await(null)
@@ -256,6 +276,17 @@ class Director(
             }
             backoffUntil = null
             resumeWake = resumeWake || carry.isNotEmpty()
+        }
+        if (chapters.isClosing) {
+            // A chapter waits for its summary: no turn runs, the inbox keeps what comes for the next chapter.
+            val at = summaryRetryAt ?: now
+            if (at <= now) {
+                resumeSummary()
+                return
+            }
+            publish(DirectorState.CLOSING, at, "chapter ${chapter?.number} waits to ask for its summary again")
+            inbox.await(listOfNotNull(at, nextReminderAt()).min() - now)
+            return
         }
         val config = services.settings.get().config.director
         val wakeAt = if (resumeWake) now else WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore)
@@ -335,8 +366,8 @@ class Director(
 
     /** Marks the open chapter to close at the next quiet moment; the first reason stays. */
     private fun markChapter(reason: ConversationRecord.EndReason, why: String) {
-        if (chapters.current == null) {
-            log.info("no chapter to close (${reason.id}: $why)")
+        if (chapters.current == null || chapters.isClosing) {
+            log.info("no chapter to close (${reason.id}: $why)${if (chapters.isClosing) ": the open one is already closing" else ""}")
             return
         }
         if (closeAtQuiet != null) return
@@ -347,10 +378,83 @@ class Director(
     /** Closes the open chapter with its summary (`CLOSING`); [carried] are the tool results its history waits for. */
     private suspend fun closeWithSummary(reason: ConversationRecord.EndReason, why: String, carried: List<ContentBlockParam> = carry) {
         publish(DirectorState.CLOSING, null, "chapter closing (${reason.id})")
-        chapters.closeWithSummary(reason, why, carried)
-        chapter = null
         carry = emptyList()
         closeAtQuiet = null
+        afterSummary(chapters.closeWithSummary(reason, why, carried))
+    }
+
+    /** Asks again for the summary of the chapter that is closing. */
+    private suspend fun resumeSummary() {
+        publish(DirectorState.CLOSING, null, "chapter ${chapter?.number} closing: asking for its summary again")
+        afterSummary(chapters.resumeSummary())
+    }
+
+    /**
+     * After a summary request: the chapter is closed ([error] is null), or the gateway failed and the
+     * chapter stays open and closing (M2 review, finding 23). The request goes again after a backoff
+     * (30 s, doubling up to [CHAPTER_RETRY_MAX_MS]), or once a spent budget resets or a reload fixes the key.
+     */
+    private fun afterSummary(error: GatewayError?) {
+        if (error == null) {
+            chapter = null
+            closeAtQuiet = null
+            reducedBriefing = false
+            summaryRetryAt = null
+            summaryStep = 0
+            return
+        }
+        val now = clock.millis()
+        val subject = "chapter ${chapter?.number}"
+        val next = when (error) {
+            is GatewayError.Budget, GatewayError.Auth, is GatewayError.Unavailable -> {
+                summaryRetryAt = null
+                "once the Director is no longer blocked (${blockOn(error, now)})"
+            }
+            else -> {
+                val delay = retryDelay(summaryStep++)
+                summaryRetryAt = now + delay
+                silence = silence ?: Silence(now, "the gateway failed: ${(error as? GatewayError.Transient)?.kind ?: error.description}")
+                "in ${ago(delay)}"
+            }
+        }
+        decisions.record(
+            log, DecisionRecord.Kind.BACKOFF, "backed off", subject = subject,
+            reason = "the summary request failed (${error.description}); the chapter stays open, its summary is asked again $next",
+            conversationId = chapter?.conversation?.id, level = Log.Level.WARN,
+        )
+    }
+
+    /**
+     * Blocks the Director on a spent budget (until it resets) or a refused or missing key (until a
+     * reload), telling the operators once; returns `until 21:34` or `until /narrator reload`, for the logs.
+     */
+    private fun blockOn(error: GatewayError, now: Long): String = when (error) {
+        is GatewayError.Budget -> {
+            val resetAt = error.resetAt?.toEpochMilli() ?: (now + BUDGET_UNKNOWN_RESET_MS)
+            val reset = hours.format(Instant.ofEpochMilli(resetAt))
+            blockUntil(resetAt + BUDGET_MARGIN_MS, "the LLMGW budget is spent until $reset", "LLMGW budget exceeded until $reset", now)
+            "until $reset"
+        }
+        else -> {
+            blockUntil(null, error.description, "the Narrator is blocked: ${error.description}; fix it, then /narrator reload", now)
+            "until /narrator reload"
+        }
+    }
+
+    /**
+     * A chapter closed on an error ([why]): the next one opens after a backoff, 30 s doubling up to
+     * [CHAPTER_RETRY_MAX_MS], until a request gets through (M2 review, finding 22). A request rejected
+     * every time thus costs a few chapters an hour, not one every 30 s.
+     */
+    private fun reopenLater(reason: ConversationRecord.EndReason, why: String) {
+        val now = clock.millis()
+        val delay = retryDelay(reopenStep++)
+        backoffUntil = maxOf(backoffUntil ?: now, now + delay)
+        silence = silence ?: Silence(now, "your previous chapter closed on an error (${reason.id})")
+        decisions.record(
+            log, DecisionRecord.Kind.BACKOFF, "backed off", subject = "chapter",
+            reason = "a chapter closed on an error (${reason.id}: $why); the next one opens in ${ago(delay)}", level = Log.Level.WARN,
+        )
     }
 
     /**
@@ -415,21 +519,22 @@ class Director(
         chapter = open
         val items = unseen(taken, open)
         if (items.isEmpty() && beat == null && !resumed && carry.isEmpty()) return
+        val skipped = inbox.takeOverflow()
         val now = clock.millis()
         val shown = beat ?: silence?.let { digest.takeWindow().takeIf { it.isNotEmpty() }?.let { lines -> Beat(lines, now - it.since, null) } }
         val text = buildString {
             val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
-            if (events.isNotEmpty()) append(formatter.events(events, now)).append('\n')
+            if (events.isNotEmpty() || skipped.isNotEmpty()) append(formatter.events(events, now, skipped)).append('\n')
             shown?.let { append(formatter.heartbeat(it.summary, it.windowMs, it.hint, now)).append('\n') }
             append(situation.render(now, worldTime(), pendingReminders(), recentActions()))
         }
         val notes = whispers(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
         // A new chapter's first message starts with its briefing, which tells the chat up to these events.
-        val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders())
+        val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders(), reducedBriefing)
         val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
         carry = emptyList()
         val trigger = triggerOf(items, beat, resumed)
-        Turn(scope, open, trigger, items, beat).run(opening)
+        Turn(scope, open, trigger, items, skipped, beat).run(opening)
         afterTurn()
     }
 
@@ -443,6 +548,7 @@ class Director(
         private val chapter: Chapter,
         private val trigger: TurnRecord.Trigger,
         private val openingItems: List<Item>,
+        openingSkipped: Map<String, Int>,
         private val beat: Beat?,
     ) {
         private val id = services.trace.nextId(IdKind.TURN)
@@ -458,13 +564,17 @@ class Director(
         /** The items of the last request sent: committed with a usable reply, back to the inbox otherwise. */
         private var sent: List<Item> = openingItems
 
+        /** The counts of dropped items told by the last request sent ([Inbox.takeOverflow]), counted again when it fails. */
+        private var sentSkipped: Map<String, Int> = openingSkipped
+
         /** [sent] was committed: the next request starts a new list. */
         private var sentCommitted = false
 
         private val hooks = object : TurnHooks {
-            override suspend fun afterTools(): Pending {
+            override suspend fun afterTools(canAct: Boolean): Pending {
                 commit(sent)
-                return inject()
+                // Past the step limit the model can no longer answer: what arrived waits for the next turn, unseen.
+                return inject(take = canAct)
             }
         }
 
@@ -487,7 +597,7 @@ class Director(
             } catch (e: Exception) {
                 log.error("turn $id failed in the engine; its chapter closes", e)
                 closeChapter(ConversationRecord.EndReason.INTERRUPTED, "the engine failed during turn $id: ${e.message ?: e.javaClass.simpleName}")
-                putBack(sent, failed = true)
+                putBack(sent, failed = true, sentSkipped)
                 outcome = TurnRecord.Outcome.FAILED
             } finally {
                 indicator.stop()
@@ -548,7 +658,7 @@ class Director(
                             conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
                         )
                         closeChapter(ConversationRecord.EndReason.REFUSAL, "${what(outcome)} twice during a turn")
-                        putBack(sent, failed = true)
+                        putBack(sent, failed = true, sentSkipped)
                         return result
                     }
                     is TurnOutcome.Failed -> return failed(outcome)
@@ -557,19 +667,25 @@ class Director(
             }
         }
 
-        /** The items that arrived since the last request, as a `<new_events>` block and operator notes. */
-        private suspend fun inject(): Pending {
+        /**
+         * The items that arrived since the last request, as a `<new_events>` block and operator notes; none
+         * when the model can no longer act in this turn ([take] false): they stay in the inbox, unseen.
+         */
+        private suspend fun inject(take: Boolean = true): Pending {
             applyControls()
             val now = clock.millis()
             releaseReminders(now)
-            val items = unseen(inbox.takeAll(), chapter)
+            val items = if (take) unseen(inbox.takeAll(), chapter) else emptyList()
+            if (!take) log.debug { "turn $id is past its step limit: ${inbox.items().size} items wait for the next turn" }
+            val skipped = if (items.isEmpty()) emptyMap() else inbox.takeOverflow()
             sent = if (sentCommitted) items else sent + items
+            sentSkipped = if (sentCommitted) skipped else merged(sentSkipped, skipped)
             sentCommitted = false
             if (items.isEmpty()) return Pending.EMPTY
             injected += items.mapNotNull { it.eventId }
             indicator.show(items.mapNotNull { it.waitingPlayer }, scope)
             val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
-            val blocks = if (events.isEmpty()) emptyList() else listOf(ContentBlockParam.ofText(formatter.newEvents(events, now)))
+            val blocks = if (events.isEmpty() && skipped.isEmpty()) emptyList() else listOf(ContentBlockParam.ofText(formatter.newEvents(events, now, skipped)))
             return Pending(blocks, whispers(items))
         }
 
@@ -583,6 +699,8 @@ class Director(
             retryNote = null
             notBefore = null
             backoffStep = 0
+            reopenStep = 0
+            reducedBriefing = false
         }
 
         /** A refused or cut-off answer to the wake-up message: its items come back in 30 s, with a note. */
@@ -593,7 +711,7 @@ class Director(
                 log, DecisionRecord.Kind.REFUSAL, "refused", subject = "turn $id", reason = "${what(outcome)}; the events wait ${ago(RETRY_DELAY_MS)}",
                 eventId = triggerEvents.firstOrNull(), conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
             )
-            putBack(sent, failed = true)
+            putBack(sent, failed = true, sentSkipped)
         }
 
         private fun failed(outcome: TurnOutcome.Failed): TurnRecord.Outcome {
@@ -614,11 +732,9 @@ class Director(
                 }
                 is GatewayError.Budget -> {
                     keepForLater(outcome.pending)
-                    val resetAt = error.resetAt?.toEpochMilli() ?: (now + BUDGET_UNKNOWN_RESET_MS)
-                    val reset = hours.format(Instant.ofEpochMilli(resetAt))
-                    blockUntil(resetAt + BUDGET_MARGIN_MS, "the LLMGW budget is spent until $reset", "LLMGW budget exceeded until $reset", now)
+                    val until = blockOn(error, now)
                     decisions.record(
-                        log, DecisionRecord.Kind.BUDGET, "blocked", subject = "turn $id", reason = "${error.description}; silent until $reset",
+                        log, DecisionRecord.Kind.BUDGET, "blocked", subject = "turn $id", reason = "${error.description}; silent $until",
                         conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
                     )
                     TurnRecord.Outcome.BUDGET
@@ -626,19 +742,26 @@ class Director(
                 is GatewayError.Auth, is GatewayError.Unavailable -> {
                     keepForLater(outcome.pending)
                     log.error("turn $id: ${error.description}; the Director is blocked until /narrator reload")
-                    blockUntil(null, error.description, "the Narrator is blocked: ${error.description}; fix it, then /narrator reload", now)
+                    blockOn(error, now)
                     TurnRecord.Outcome.FAILED
                 }
                 is GatewayError.BadRequest, is GatewayError.SystemRoleRejected -> {
                     log.error("turn $id: the gateway rejected the request (request ${outcome.requestId ?: "without id"}): ${error.description}")
                     closeChapter(ConversationRecord.EndReason.BAD_REQUEST, "the gateway rejected the request: ${error.description}")
-                    putBack(sent, failed = true)
-                    notBefore = now + RETRY_DELAY_MS
+                    putBack(sent, failed = true, sentSkipped)
                     TurnRecord.Outcome.FAILED
                 }
                 GatewayError.ContextExceeded -> {
+                    if (chapter.conversation.size == 0 && !reducedBriefing) {
+                        // The chapter's very first message: nothing is committed, so it goes again at once with a reduced briefing.
+                        reducedBriefing = true
+                        log.warn("turn $id: the first message of chapter ${chapter.number} does not fit in the context; it goes again with a reduced briefing")
+                        services.transcripts.note(chapter.conversation, "the first message does not fit in the context; sent again with a reduced briefing")
+                        putBack(sent, failed = false, sentSkipped)
+                        return TurnRecord.Outcome.FAILED
+                    }
                     closeChapter(ConversationRecord.EndReason.CONTEXT_EXCEEDED, error.description)
-                    putBack(sent, failed = false)
+                    putBack(sent, failed = false, sentSkipped)
                     TurnRecord.Outcome.FAILED
                 }
             }
@@ -647,14 +770,17 @@ class Director(
         /** Keeps the tool results of [pending] to send first next time, and its items for the next wake-up. */
         private fun keepForLater(pending: Pending) {
             carry = pending.blocks.filter { it.isToolResult() }
-            putBack(sent, failed = false)
+            putBack(sent, failed = false, sentSkipped)
         }
 
+        /** Closes the chapter on an error, without a summary: the next one opens after a backoff. */
         private fun closeChapter(reason: ConversationRecord.EndReason, why: String) {
             chapters.close(reason, why)
             this@Director.chapter = null
             carry = emptyList()
             closeAtQuiet = null
+            reducedBriefing = false
+            reopenLater(reason, why)
         }
 
         private fun record(outcome: TurnRecord.Outcome?, endedAt: Instant? = null) = TurnRecord(
@@ -699,9 +825,10 @@ class Director(
     /**
      * Puts [items] back at the head of the inbox, one failure more each when their request [failed]
      * for a reason that may be theirs; a chat line that failed twice, and anything that failed three
-     * times, is dropped instead.
+     * times, is dropped instead. [skipped], the counts of dropped items that request told, count again.
      */
-    private fun putBack(items: List<Item>, failed: Boolean) {
+    private fun putBack(items: List<Item>, failed: Boolean, skipped: Map<String, Int>) {
+        inbox.restoreOverflow(skipped)
         val back = if (failed) items.map { it.copy(failures = it.failures + 1) } else items
         val (dropped, kept) = back.partition { it.failures >= Item.DROPPED || (it.failures >= Item.DEMOTED && it.chat != null) }
         if (dropped.isNotEmpty()) {
@@ -790,6 +917,13 @@ class Director(
         const val BACKOFF_FIRST_MS = 30_000L
         const val BACKOFF_MAX_MS = 600_000L
 
+        /**
+         * First wait before a chapter reopens after closing on an error, or before a failed summary
+         * request goes again; it doubles up to [CHAPTER_RETRY_MAX_MS] (M2 review, findings 22 and 23).
+         */
+        const val CHAPTER_RETRY_FIRST_MS = 30_000L
+        const val CHAPTER_RETRY_MAX_MS = 15 * 60_000L
+
         /** A spent budget is retried this long after its reset time. */
         const val BUDGET_MARGIN_MS = 5_000L
 
@@ -814,6 +948,13 @@ class Director(
         private val ACTING = setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK)
         private const val HEARTBEAT = "heartbeat"
         private val NOTABLE_STATES = setOf(DirectorState.DISABLED, DirectorState.PAUSED, DirectorState.BACKOFF, DirectorState.BLOCKED, DirectorState.STOPPED)
+
+        /** The wait after [step] failures in a row: [CHAPTER_RETRY_FIRST_MS] doubling, at most [CHAPTER_RETRY_MAX_MS]. */
+        private fun retryDelay(step: Int): Long = (CHAPTER_RETRY_FIRST_MS shl step.coerceIn(0, 10)).coerceAtMost(CHAPTER_RETRY_MAX_MS)
+
+        /** [a] and [b] added kind by kind. */
+        private fun merged(a: Map<String, Int>, b: Map<String, Int>): Map<String, Int> =
+            if (b.isEmpty()) a else LinkedHashMap(a).apply { b.forEach { (kind, count) -> merge(kind, count, Int::plus) } }
 
         /** The operator whispers among [items], as notes. */
         private fun whispers(items: List<Item>): List<OperatorNote> =

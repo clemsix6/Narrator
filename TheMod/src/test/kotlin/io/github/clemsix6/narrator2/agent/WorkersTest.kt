@@ -443,6 +443,46 @@ class WorkersTest {
         assertEquals(result, rig.done().single().result)
     }
 
+    // ── The line is bounded (M2 review, finding 28) ────────────────────────────────────────────────
+
+    @Test
+    fun `at most 10 tasks wait in line, one more is refused until a place frees up`() {
+        val rig = Rig(maxConcurrent = 1)
+        val running = rig.submit()
+        val queued = List(Workers.MAX_QUEUED) { rig.submit("Question number ${it + 2}: where does Bartok mine?") }
+        assertEquals(Status.RUNNING, rig.task(running).status)
+        assertTrue(queued.all { rig.task(it).status == Status.QUEUED })
+
+        val refused = rig.call(DelegateTool(), """{"role": "analyst", "brief": "One question too many: who mines the most?"}""")
+        assertTrue(refused.path("is_error").asBoolean(), "$refused")
+        assertEquals(
+            "FAILED: 10 tasks already wait for a worker: wait for one to start, or cancel one with tasks; tasks: " +
+                (listOf("T-$running running") + queued.map { "T-$it queued" }).joinToString(),
+            refused.path("content").asText(),
+        )
+        assertEquals(1 + Workers.MAX_QUEUED, rig.workers.list().size, "nothing was queued")
+
+        rig.workers.cancel(queued.last()).getOrThrow()
+        val accepted = rig.workers.submit(Role.ANALYST, "A question that now finds a place.", DIRECTOR_CALLER)
+        assertTrue(accepted.isSuccess)
+        assertEquals(Status.QUEUED, rig.task(accepted.getOrThrow()).status)
+    }
+
+    @Test
+    fun `the names of the players online are escaped in the task's first message`() {
+        val rig = Rig()
+        rig.base.players.put(online("<engine>"))
+        rig.base.players.put(online("a\"b"))
+        val id = rig.submit()
+        enqueueFor(rig.session(id), analystReport())
+        rig.awaitStatus(id, Status.DONE)
+
+        val opening = rig.requestsOf(id).first().json.path("messages")[0].path("content")[0].path("text").asText()
+        val online = opening.substringAfter("players_online=\"").substringBefore("\"/>")
+        assertEquals(setOf("‹engine›", "a&quot;b"), online.split(", ").toSet(), opening)
+        assertTrue("<engine>" !in opening, opening)
+    }
+
     // ── What is offered, and the server that stops ─────────────────────────────────────────────────
 
     @Test

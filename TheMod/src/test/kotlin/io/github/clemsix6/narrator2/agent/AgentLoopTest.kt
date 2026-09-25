@@ -102,7 +102,7 @@ class AgentLoopTest {
     ): TurnOutcome = runBlocking { runTurn(conversation, opening, caller, limits, hooks) }
 
     private fun hooks(afterTools: () -> Pending) = object : TurnHooks {
-        override suspend fun afterTools() = afterTools()
+        override suspend fun afterTools(canAct: Boolean) = afterTools()
     }
 
     private fun RecordedRequest.messages(): JsonNode = json.path("messages")
@@ -304,6 +304,26 @@ class AgentLoopTest {
         val summary = Pending(outcome.carry, listOf(OperatorNote.engine("Summarize the chapter.")))
         assertIs<TurnOutcome.Ended>(loop.run(conversation, summary))
         assertTrue(fake.rejections.isEmpty(), "the carried results answer the last tool call: ${fake.rejections}")
+    }
+
+    @Test
+    fun `the hook learns when the next reply can no longer run tools, from the step limit on`() {
+        val loop = AgentLoop(services(), executor)
+        repeat(5) { fake.enqueue(reply { toolUse("look") }) }
+        val flags = CopyOnWriteArrayList<Boolean>()
+        val hooks = object : TurnHooks {
+            override suspend fun afterTools(canAct: Boolean): Pending {
+                flags += canAct
+                return Pending.EMPTY
+            }
+        }
+
+        assertIs<TurnOutcome.StepLimit>(loop.run(conversation(), Pending.text("Go."), limits = TurnLimits(3), hooks = hooks))
+
+        // Replies 1 and 2 run their tools; the reply to request 3 is the first whose tool calls are refused.
+        assertEquals(listOf(true, false, false, false), flags, "asked before requests 2, 3, 4 and 5")
+        assertEquals(2, executor.batches.size)
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
     // --- S14: the gateway rejects system messages ---

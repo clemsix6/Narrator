@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.oracle
 
+import io.github.clemsix6.narrator2.core.ModelText
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.roundToInt
@@ -43,8 +44,12 @@ object OracleText {
         return COMPASS[index]
     }
 
-    /** Straight-line distance, rounded to the metre (a block is a metre). */
-    fun distance(dx: Int, dy: Int, dz: Int): Int = sqrt((dx * dx + dy * dy + dz * dz).toDouble()).roundToInt()
+    /**
+     * Straight-line distance, rounded to the metre (a block is a metre). Computed in `Double`: the squares
+     * of two offsets beyond about 46,000 blocks overflow an `Int` (and gave `sqrt` a negative number).
+     */
+    fun distance(dx: Int, dy: Int, dz: Int): Int =
+        sqrt(dx.toDouble() * dx + dy.toDouble() * dy + dz.toDouble() * dz).roundToInt()
 
     /**
      * Where a point is seen from another: `12 m NE`, `12 m NE, 5 below`, `here`, `3 above`.
@@ -101,8 +106,12 @@ object OracleText {
     /** A string cut to [max] characters, with `…` when cut. */
     fun cut(text: String, max: Int): String = if (text.length <= max) text else text.take(max - 1) + "…"
 
-    /** Quoted text from a player or an item name: `"…"`, `"` escaped, one line. */
-    fun quote(text: String, max: Int = 60): String = "\"" + cut(text.replace('\n', ' ').replace("\"", "\\\""), max) + "\""
+    /**
+     * Quoted text from a player (an item's or a mob's custom name, a book, a sign), through the common
+     * escape of player text ([ModelText.quote]): `"…"`, `\` and `"` escaped, one line, `<` `>` as `‹` `›`,
+     * at most [max] characters.
+     */
+    fun quote(text: String, max: Int = 60): String = ModelText.quote(text, max)
 
     private const val VERTICAL_NOTE = 3
     private val COMPASS = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
