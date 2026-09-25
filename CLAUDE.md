@@ -72,6 +72,14 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 ## EULA de Minecraft
 Le propriétaire a donné son accord (25/09/2026) : on peut accepter l'EULA de Minecraft (`eula=true`) pour tout serveur de dev ou de test (`TheServer/`, spikes, dossiers temporaires), sans lui redemander. On lance donc `runServer` librement pour les tests manuels ou de bout en bout ; les GameTests restent le moyen privilégié pour les tests automatisés.
 
+## Travail en parallèle (worktrees)
+Pendant les vagues parallèles, chaque agent travaille dans son propre worktree git, sur sa propre branche.
+- Les dossiers non versionnés n'existent que dans le checkout principal : utilise `C:\Users\Clément\Desktop\Narrator2\.research\` et `C:\Users\Clément\Desktop\Narrator2\.secrets\` en chemins absolus.
+- Ne modifie que les fichiers que ta tâche possède (voir `docs/design/`). Un fichier partagé en ajout reçoit seulement ta ligne.
+- Avant de finir : `git merge main` dans ta branche, résous les éventuels conflits, relance `build` (tests unitaires et GameTests) jusqu'au vert, puis commite.
+- **Ne fusionne jamais toi-même dans `main`** : le superviseur s'en charge. Donne le nom de ta branche dans ton rapport.
+- Ferme les serveurs et démons que tu as lancés : `.\gradlew.bat --stop` à la fin si tu as utilisé Gradle.
+
 ## Git
 - Dépôt local sur la branche `main`, sans remote : **ne jamais pousser**.
 - Commite chaque étape validée, avec un message court en anglais à l'impératif et le trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
