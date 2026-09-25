@@ -17,10 +17,19 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * What the engine knows right now about a player online. Times are epoch milliseconds.
  *
+ * The position sampler (`PositionSampler`) refreshes the game mode, the position fields and the
+ * player's condition once a second, as read at that examination: [biome], [structure] and [underground]
+ * without the hysteresis of their events (`BiomeEntered`, `UndergroundChanged`). Joins, deaths and
+ * respawns update them at once.
+ *
  * @property gameMode e.g. `survival`.
- * @property structure structure the player is in, if any.
+ * @property biome biome id at the player's position; null until the first examination.
+ * @property structure structure the player is in, if any (looked up every 5 s and in each new chunk).
+ * @property underground no sky light and well below sea level (`SamplerRules.isUnderground`).
+ * @property vehicle entity type of the vehicle or mount, if any.
  * @property lastDeathAt last death this session, if any.
- * @property lastMoveAt last time the player moved or acted.
+ * @property lastMoveAt last time the player moved (2 blocks or more) or acted.
+ * @property idle no action and no move for 5 minutes (`IdleChanged`).
  */
 data class LivePlayer(
     val ref: PlayerRef,
@@ -45,8 +54,8 @@ data class LivePlayer(
  * The live state of the players online, read by the Director, the tools and the guards from any
  * thread, written on the server thread only.
  *
- * Joins, leaves, deaths and respawns come from the bus ([subscribe]); the position sampler (T05) writes
- * the position fields with [update] and refreshes [online] at most once a second.
+ * Joins, leaves, deaths and respawns come from the bus ([subscribe]); the position sampler writes the
+ * position fields with [update] and refreshes [online] once a second.
  */
 class PlayerStates {
     private val players = ConcurrentHashMap<UUID, LivePlayer>()
