@@ -2,7 +2,9 @@ package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.observer.dimensionId
 import io.github.clemsix6.narrator2.observer.id
+import io.github.clemsix6.narrator2.observer.typeId
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.buildJsonObject
@@ -15,7 +17,9 @@ import net.minecraft.network.chat.Component
 import net.minecraft.network.chat.MutableComponent
 import net.minecraft.network.chat.TextColor
 import net.minecraft.resources.RegistryOps
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.player.Inventory
 import net.minecraft.world.item.ItemStack
 import java.time.Clock
@@ -30,8 +34,10 @@ import java.util.concurrent.ConcurrentHashMap
  * never on the ground. What does not fit stays in the ledger and comes back once there is room (the
  * player is told once). A stack that no longer reads back (its item left the game) stays in the ledger
  * too, with an error in the log and a message to the operators: nothing is ever erased silently.
+ * What players entrusted to one of the Narrator's creatures comes back the same way when it expires
+ * ([recover]).
  *
- * Decisions `ledger confiscated`, `returned` and `unreadable`. Server thread only.
+ * Decisions `ledger confiscated`, `returned`, `unreadable`, `recovered` and `dropped`. Server thread only.
  */
 class ItemLedger(
     private val states: GuardStates,
@@ -90,13 +96,53 @@ class ItemLedger(
     fun held(player: ServerPlayer): List<Confiscation> = states.of(player).confiscations
 
     /**
+     * Hands back [stacks], which players had entrusted to [from], one of the Narrator's creatures that
+     * expired, so that nothing disappears with it. To [owner] when known (online): written in their
+     * ledger, due now, then given back like a confiscation (what does not fit waits there); decision
+     * `ledger recovered`, then `returned`. Otherwise dropped where the creature stood, never despawning;
+     * decision `ledger dropped`.
+     */
+    fun recover(stacks: List<ItemStack>, from: Entity, owner: ServerPlayer?) {
+        if (stacks.isEmpty()) return
+        val what = describe(stacks)
+        val creature = from.typeId
+        if (owner == null) {
+            drop(stacks, from)
+            decisions.record(
+                log, DecisionRecord.Kind.LEDGER, "dropped", creature,
+                reason = "$what entrusted by players to the Narrator's $creature, which expired with no owner online; dropped at " +
+                    "${from.blockPosition().toShortString()} in ${from.level().dimensionId}",
+                detail = buildJsonObject { put("items", what) },
+            )
+            return
+        }
+        val ops = ops(owner)
+        val now = clock.millis()
+        val id = decisions.record(
+            log, DecisionRecord.Kind.LEDGER, "recovered", owner.plainTextName,
+            reason = "$what entrusted to the Narrator's $creature, which expired",
+            detail = buildJsonObject {
+                put("items", what)
+                put("creature", creature)
+            },
+        )
+        val entry = Confiscation(id, stacks.map { encode(it, ops) }, what, now, now, "entrusted to $creature", null)
+        states.update(owner) { it.copy(confiscations = it.confiscations + entry) }
+        giveBack(owner, listOf(entry), "items.recovered")
+    }
+
+    /**
      * Gives back to [player] what is due at [now] (epoch milliseconds). Nothing happens while they are
      * dead: it comes back after the respawn. Once a second for the players online, and at each join and
      * respawn.
      */
     fun giveBack(player: ServerPlayer, now: Long) {
+        giveBack(player, states.of(player).confiscations.filter { it.returnAt <= now }, "items.returned")
+    }
+
+    /** Gives back [due] to [player], telling them with the UI text [key]. */
+    private fun giveBack(player: ServerPlayer, due: List<Confiscation>, key: String) {
         if (player.isDeadOrDying || player.isRemoved) return
-        val due = states.of(player).confiscations.filter { it.returnAt <= now }
         if (due.isEmpty()) return
         val ops = ops(player)
         val outcomes = due.map { confiscation ->
@@ -112,7 +158,7 @@ class ItemLedger(
         val given = outcomes.flatMap { it.given }
         if (given.isEmpty()) return
         player.containerMenu.broadcastChanges()
-        player.sendSystemMessage(narratorLine("items.returned", given))
+        player.sendSystemMessage(narratorLine(key, given))
         for (outcome in outcomes.filter { it.given.isNotEmpty() }) {
             decisions.record(
                 log, DecisionRecord.Kind.LEDGER, "returned", player.plainTextName,
@@ -214,6 +260,12 @@ class ItemLedger(
         /** `6x minecraft:diamond, 1x minecraft:iron_sword`. */
         fun describe(stacks: List<ItemStack>): String =
             stacks.groupBy { it.id }.map { (id, same) -> "${same.sumOf { it.count }}x $id" }.joinToString(", ")
+
+        /** Drops [stacks] where [at] stands, as items that never despawn: nothing is lost to the 5-minute clock. */
+        fun drop(stacks: List<ItemStack>, at: Entity) {
+            val level = at.level() as? ServerLevel ?: return
+            for (stack in stacks) at.spawnAtLocation(level, stack)?.setUnlimitedLifetime()
+        }
 
         private fun ops(player: ServerPlayer): RegistryOps<Tag> = player.registryAccess().createSerializationContext(NbtOps.INSTANCE)
 

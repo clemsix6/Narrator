@@ -12,6 +12,7 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.util.Util
 import net.minecraft.world.damagesource.DamageSource
+import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.gamerules.GameRules
 import java.time.Clock
 import java.time.Instant
@@ -45,8 +46,11 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     override val attributes = AttributeLedger(states, decisions, clock)
     override val effects = EffectLedger(states, clock)
     override val items = ItemLedger(states, decisions, clock) { services.settings.get().ui }
-    override val mobs = NarratorMobs()
-    override val commands = CommandPolicy { services.settings.get().config.safety.extraForbiddenCommands }
+    override val mobs = NarratorMobs(items)
+    override val commands = CommandPolicy(
+        extraAllowed = { services.settings.get().config.safety.extraAllowedCommands },
+        extra = { services.settings.get().config.safety.extraForbiddenCommands },
+    )
     override val spawns: SpawnPolicy get() = SpawnPolicy
 
     /** When [tick] last checked what is due, epoch milliseconds. Server thread. */
@@ -63,7 +67,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 Verdict.Denied(Rules.PROTECTED, "$name is protected by the operators; the Narrator does nothing hostile to them.")
             !caps().hostileAllowed ->
                 Verdict.Denied(Rules.CHAOS_0, "the chaos level is 0: no hostile action against any player.")
-            else -> targeting.check(target.ref(), caller, episodes)
+            else -> targeting.check(target.ref(), caller, episodes, diedAt = states.of(target).lastDeathAt)
         }
         if (verdict is Verdict.Denied) {
             decisions.record(
@@ -110,6 +114,23 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         }.sortedBy { it.until }
     }
 
+    override fun deathsLeft(player: UUID): Int {
+        if (isProtected(player)) return 0
+        // The kills older than a played hour leave the state within a second (DeathGuard.tidy).
+        return (caps().narratorKillsPerHour - states.snapshot(player).narratorKills.size).coerceAtLeast(0)
+    }
+
+    /**
+     * Whether the Narrator's creatures and explosions leave [player] alone now ([CreatureShield]):
+     * protected, dead, or died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago (the death is
+     * saved with the player: it holds across a reconnection). Server thread.
+     */
+    fun spares(player: Player): Boolean {
+        if (player.isDeadOrDying || protection.isProtected(player.uuid, player.plainTextName)) return true
+        val died = GuardStates.read(player).lastDeathAt ?: return false
+        return clock.millis() - died < TargetingPolicy.NO_PILE_ON_MS
+    }
+
     override fun setProtected(uuid: UUID, name: String, on: Boolean) {
         val changed = protection.set(uuid, name, on)
         decisions.record(
@@ -154,6 +175,12 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         states.forget(player.uuid)
     }
 
+    /** [player] died (no totem saved them), whatever killed them: the death is saved with them, and counted if the Narrator's. Server thread. */
+    fun onDeath(player: ServerPlayer, source: DamageSource) {
+        states.update(player) { it.copy(lastDeathAt = clock.millis()) }
+        death.afterDeath(player, source)
+    }
+
     /** End of a server tick: once a second of wall-clock time, [check] what is due. Server thread. */
     fun tick(server: MinecraftServer) {
         val now = clock.millis()
@@ -174,6 +201,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 items.giveBack(player, now)
                 death.tidy(player)
                 if ((states.of(player).episode?.until ?: Long.MAX_VALUE) <= now) states.update(player) { it.copy(episode = null) }
+                val died = states.of(player).lastDeathAt
+                if (died != null && now - died >= TargetingPolicy.NO_PILE_ON_MS) states.update(player) { it.copy(lastDeathAt = null) }
             } catch (e: Exception) {
                 log.error("the guards' check failed for ${player.plainTextName}", e)
             }

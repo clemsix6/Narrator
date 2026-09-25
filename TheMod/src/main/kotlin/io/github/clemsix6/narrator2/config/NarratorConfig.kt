@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.config
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.OutputConfig
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.guard.CommandPolicy
 import io.github.clemsix6.narrator2.llm.Role
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -186,6 +187,11 @@ data class SafetyConfig(
     val protectedPlayers: List<String> = emptyList(),
     /** Command roots `run_command` refuses, on top of the built-in list. It can only add roots. */
     val extraForbiddenCommands: List<String> = emptyList(),
+    /**
+     * Command roots `run_command` may run on top of the reviewed ones (`CommandPolicy.ALLOWED`): commands
+     * of other mods, refused until an operator has read them. Never one of the built-in forbidden roots.
+     */
+    val extraAllowedCommands: List<String> = emptyList(),
 )
 
 /** Jev (TypeSafe), the fast classifier behind the reflexes; a heuristic takes over without it. */
@@ -382,6 +388,13 @@ object ConfigStore {
             }
         }
         commandRoots("safety.extraForbiddenCommands", config.safety.extraForbiddenCommands)
+        commandRoots("safety.extraAllowedCommands", config.safety.extraAllowedCommands)
+        config.safety.extraAllowedCommands.forEachIndexed { index, root ->
+            when (root) {
+                in CommandPolicy.FORBIDDEN -> add("safety.extraAllowedCommands[$index]: $root is forbidden by the built-in list and cannot be allowed")
+                in config.safety.extraForbiddenCommands -> add("safety.extraAllowedCommands[$index]: $root is also in safety.extraForbiddenCommands")
+            }
+        }
 
         val jev = config.jev
         if (!isHttpUrl(jev.baseUrl)) add("jev.baseUrl must be an http:// or https:// URL with a host")

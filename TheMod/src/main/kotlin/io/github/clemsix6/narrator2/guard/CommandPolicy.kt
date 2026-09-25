@@ -9,20 +9,30 @@ import java.util.IdentityHashMap
 /**
  * What `run_command` may run (M1_M2 §10.6). The command is parsed first (by `run_command`, with the
  * source that will run it); then every command it would run is checked, behind `execute … run` and
- * `return run` too, against the forbidden roots: the built-in list [FORBIDDEN], written here, plus
- * [extra] (`safety.extraForbiddenCommands`, read at each check: `/narrator reload` may change it), which
- * can only add roots. A few `execute` subcommands are forbidden as well ([FORBIDDEN_EXECUTE]).
+ * `return run` too:
+ * 1. against the forbidden roots: the built-in list [FORBIDDEN], written here, plus [extra]
+ *    (`safety.extraForbiddenCommands`), which can only add roots. A few `execute` subcommands are
+ *    forbidden as well ([FORBIDDEN_EXECUTE]);
+ * 2. against the reviewed ones: only the commands of [ALLOWED], plus [extraAllowed]
+ *    (`safety.extraAllowedCommands`), may run. A command nobody reviewed for the Narrator (another mod's,
+ *    or one a new version adds) is refused by default: the owner's server runs mods whose commands were
+ *    never read.
+ * Both settings are read at each check: `/narrator reload` may change them. The forbidden list wins over
+ * the allowed ones.
  *
- * A command is caught three ways, so that neither an alias, a redirect nor a missing permission hides
- * it: by the first word of each command in the text (a command the source may not even see, like
- * `stop` at the gamemaster level, is refused rather than reported unknown), by every parsed node that
- * belongs to a forbidden command's tree, and by every redirect that lands in one (`tp` → `teleport`).
- * A root this list does not know (a new vanilla command, another mod's) is allowed: `run_command` is
- * the last resort for what the typed tools do not cover (`scoreboard`, `playsound`, `particle`,
- * `recipe`, `waypoint`, `execute if …` probes). `GuardPolicyGameTests` fails on any vanilla command
- * that is neither forbidden nor reviewed, so that a new one is a decision, not an accident.
+ * A forbidden command is caught three ways, so that neither an alias, a redirect nor a missing
+ * permission hides it: by the first word of each command in the text (a command the source may not even
+ * see, like `stop` at the gamemaster level, is refused rather than reported unknown), by every parsed
+ * node that belongs to a forbidden command's tree, and by every redirect that lands in one (`tp` →
+ * `teleport`). A command outside the allowed ones is caught by its first word, and by the command a
+ * redirect lands in. A word that is no command at all is left to `run_command`, which reports it unknown.
+ * `GuardPolicyGameTests` fails on any command of the server that is neither forbidden nor reviewed, so
+ * that a new vanilla one is a decision, not an accident.
  */
-class CommandPolicy(private val extra: () -> List<String>) {
+class CommandPolicy(
+    private val extraAllowed: () -> List<String> = { emptyList() },
+    private val extra: () -> List<String>,
+) {
     /**
      * Whether the parsed command may run. Valid or not: what was parsed is checked, so a forbidden command
      * is refused as such even when it is also malformed. Any thread (only the parse is read).
@@ -33,7 +43,7 @@ class CommandPolicy(private val extra: () -> List<String>) {
     internal fun <S> verdict(parse: ParseResults<S>): Verdict {
         val input = parse.reader.string
         val root = parse.context.rootNode
-        val extras = extras()
+        val extras = roots(extra)
         val owners = owners(root, extras)
         var context: CommandContextBuilder<S>? = parse.context
         while (context != null) {
@@ -44,10 +54,29 @@ class CommandPolicy(private val extra: () -> List<String>) {
             if (owner != null) return Verdict.Denied(Rules.FORBIDDEN_COMMAND, message(owner, extras))
             context = context.child
         }
-        return Verdict.Allowed
+        return unreviewed(parse, input, root)?.let { Verdict.Denied(Rules.FORBIDDEN_COMMAND, unreviewedMessage(it)) } ?: Verdict.Allowed
     }
 
-    private fun extras(): Set<String> = extra().map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+    /** The first command [parse] would run that is not among the allowed ones, if any. */
+    private fun <S> unreviewed(parse: ParseResults<S>, input: String, root: CommandNode<S>): String? {
+        val allowed = ALLOWED + roots(extraAllowed)
+        var commandOf: Map<CommandNode<S>, String>? = null
+        var context: CommandContextBuilder<S>? = parse.context
+        while (context != null) {
+            val command = when {
+                // A word that is no command runs nothing: run_command reports it unknown.
+                context.rootNode === root -> commandWord(input, context.range.start).takeIf { root.getChild(it) != null }
+                // A redirect into a command (`tp` → `teleport`, `execute as …` → `execute`).
+                root.getChild(context.rootNode.name) === context.rootNode -> context.rootNode.name
+                else -> (commandOf ?: commands(root).also { commandOf = it })[context.rootNode]
+            }
+            if (command != null && command !in allowed) return command
+            context = context.child
+        }
+        return null
+    }
+
+    private fun roots(setting: () -> List<String>): Set<String> = setting().map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
 
     /** Why a command is refused, and what to do instead. */
     enum class Reason(val text: String) {
@@ -114,8 +143,9 @@ class CommandPolicy(private val extra: () -> List<String>) {
             // No command writes blocks: nothing could restore them.
             forbid(Reason.BLOCKS, "fill", "fillbiome", "setblock", "clone", "place", "data")
             // Items and progress: inventories and containers (`item`, `loot`), gifts outside give_item's
-            // checks, enchantments, experience levels, advancements.
-            forbid(Reason.ITEMS, "clear", "item", "loot", "enchant", "xp", "experience", "advancement")
+            // checks, enchantments, experience levels, advancements, recipes (`recipe give @a *` unlocks
+            // every recipe for good, when the Narrator is there to slow progress down, not to hand it out).
+            forbid(Reason.ITEMS, "clear", "item", "loot", "enchant", "xp", "experience", "advancement", "recipe")
             forbid(Reason.ITEMS, "give", instead = "use the give_item tool")
             // Players and creatures, outside the protection, the no-piling-on rule, the ledgers and the
             // caps: killing, damaging, tags (`narrator2` marks the Narrator's creatures), teams (friendly
@@ -133,6 +163,16 @@ class CommandPolicy(private val extra: () -> List<String>) {
             forbid(Reason.TOOL, "time", instead = "use the set_time tool")
             forbid(Reason.TOOL, "locate", instead = "use the locate tool")
         }
+
+        /**
+         * The commands reviewed for the Narrator and allowed: `run_command`'s last resort for what the
+         * typed tools do not cover (scores, sounds, particles, waypoints, `execute if …` probes), and
+         * harmless reads. Every other command of the server is forbidden or refused as unreviewed.
+         */
+        val ALLOWED: Set<String> = setOf(
+            "execute", "return", "scoreboard", "trigger", "playsound", "stopsound", "particle", "waypoint",
+            "random", "compute", "stopwatch", "swing", "help", "list", "version",
+        )
 
         /** Forbidden subcommands of `execute`, by path under it. */
         val FORBIDDEN_EXECUTE: Map<List<String>, Forbidden> = mapOf(
@@ -165,6 +205,13 @@ class CommandPolicy(private val extra: () -> List<String>) {
             return owners
         }
 
+        /** Every node of every command's tree, with the command it belongs to: where a redirect lands. */
+        private fun <S> commands(root: CommandNode<S>): Map<CommandNode<S>, String> {
+            val commands = IdentityHashMap<CommandNode<S>, String>()
+            for (command in root.children) collect(command, command.name, commands)
+            return commands
+        }
+
         /** Adds [node] and its descendants (redirects are not followed: they lead to other commands). */
         private fun <S> collect(node: CommandNode<S>, name: String, owners: MutableMap<CommandNode<S>, String>) {
             if (owners.putIfAbsent(node, name) != null) return
@@ -177,5 +224,9 @@ class CommandPolicy(private val extra: () -> List<String>) {
             val why = if (owner !in FORBIDDEN && owner in extras) "the operators forbid it (safety.extraForbiddenCommands)" else forbidden.reason.text
             return "`$owner` is forbidden: $why" + (forbidden.instead?.let { "; $it instead." } ?: ".")
         }
+
+        private fun unreviewedMessage(command: String): String =
+            "`$command` is forbidden: only the commands reviewed for the Narrator run, and this one was not " +
+                "(the operators can allow it with safety.extraAllowedCommands); command_help with no command lists those run_command accepts."
     }
 }

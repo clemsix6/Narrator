@@ -62,6 +62,8 @@ class SituationReportTest {
         )
         guards.protectedPlayers += ref("clemsix6").uuid
         guards.active[ref("Bartok").uuid] = listOf(ActiveEffect("effect", "slowness II", now + 80_000, harmful = true))
+        // Chaos 3: one death per played hour; Mimosa's was spent, clemsix6 is protected.
+        guards.deaths[ref("Mimosa").uuid] = 0
         listOf(-54, -51, -52).forEach { y -> digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, y, 0), "minecraft:diamond_ore", null, false, true, null))) }
         repeat(2) { digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, -50, 0), "minecraft:stone", null, false, true, null))) }
         tasks += TaskRecord(13, Role.ANALYST, "where does Bartok mine?", TaskRecord.Status.RUNNING, Instant.ofEpochMilli(now - 15_000), Instant.ofEpochMilli(now - 12_000), null, 40, "analyst-1", null, null)
@@ -77,6 +79,7 @@ class SituationReportTest {
             Mimosa: overworld, dead · online 25m · protected from hostile actions until 21:36 (died)
             clemsix6: nether creative in fortress y=72 nether_wastes · hp 20/20 food 20 · online 5m, idle · protected from every hostile action (operators)
             Your active effects: Bartok slowness II until 21:34
+            Deaths you may still cause: Bartok 1, Mimosa 0, clemsix6 0
             Tasks: T-13 analyst running 12s, T-14 analyst queued · Reminders: R-3 at 21:40 "check Bob's village"
             Your last actions: -12m say · -8m apply_effect→Bartok
             </situation>
@@ -93,6 +96,7 @@ class SituationReportTest {
             World: unavailable (the server thread did not answer in time)
             No player online.
             Your active effects: none
+            Deaths you may still cause: none
             Tasks: none · Reminders: none
             Your last actions: none
             </situation>

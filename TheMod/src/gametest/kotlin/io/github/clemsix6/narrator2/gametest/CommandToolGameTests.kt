@@ -235,7 +235,7 @@ class CommandToolGameTests {
         helper.assertTrue(accepted.startsWith("Commands run_command accepts ("), accepted)
         val names = accepted.substringAfter(": ").split(", ")
         helper.assertTrue(names.containsAll(listOf("execute", "scoreboard", "playsound", "particle")), "accepted: $names")
-        helper.assertTrue(names.none { it in listOf("fill", "give", "tp", "say", "stop") }, "no forbidden command: $names")
+        helper.assertTrue(names.none { it in listOf("fill", "give", "tp", "say", "stop", "recipe") }, "no forbidden command: $names")
 
         val typo = help(helper, "scorebord")
         helper.assertEquals(ToolStatus.INVALID, typo.status, typo.text)

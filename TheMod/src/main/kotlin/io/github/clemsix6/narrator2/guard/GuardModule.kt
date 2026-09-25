@@ -20,10 +20,11 @@ private val log = Log.guard
 private val AFTER_ATTACHMENTS: Identifier = Identifier.fromNamespaceAndPath("narrator2", "guards_after_attachments")
 
 /**
- * Registers the guards' hooks: the death guard (`ALLOW_DEATH`, `AFTER_DEATH`), the ledgers on join and
- * respawn, the Narrator's creatures (entity load and unload), the check once a second of what is due,
- * and the guards' persistent attachment types (guard state, creature expiry). Once, at mod
- * initialization; the handlers find the running server's guards through `NarratorRuntime.current`.
+ * Registers the guards' hooks: the death guard (`ALLOW_DEATH`, `AFTER_DEATH`, which also saves every
+ * death for the no-piling-on rule), the creature shield (`ALLOW_DAMAGE`), the ledgers on join and
+ * respawn, the Narrator's creatures (entity load and unload, conversions and splits), the check once a
+ * second of what is due, and the guards' persistent attachment types (guard state, creature expiry).
+ * Once, at mod initialization; the handlers find the running server's guards through `NarratorRuntime.current`.
  *
  * Without a running Narrator (it failed to start), the keep-inventory mark still works: a marked player
  * keeps their inventory at respawn, and the mark never outlives it.
@@ -49,7 +50,21 @@ fun registerGuardHooks() {
         }
     }
     ServerLivingEntityEvents.AFTER_DEATH.register { entity, source ->
-        if (entity is ServerPlayer) hook("death") { running()?.death?.afterDeath(entity, source) }
+        if (entity is ServerPlayer) hook("death") { running()?.onDeath(entity, source) }
+    }
+    // The Narrator's creatures never hurt a player it may not act against (CreatureShield).
+    ServerLivingEntityEvents.ALLOW_DAMAGE.register { entity, source, _ ->
+        if (entity !is ServerPlayer) return@register true
+        try {
+            CreatureShield.allowsDamage(entity, source)
+        } catch (e: Exception) {
+            log.error("the creature shield failed for ${entity.plainTextName}; the damage goes on as the game decides", e)
+            true
+        }
+    }
+    // A creature of the Narrator's that converts or splits hands its mark down, before the new one enters the level.
+    ServerLivingEntityEvents.MOB_CONVERSION.register { previous, converted, _ ->
+        hook("conversion") { NarratorMobs.inherit(previous, converted) }
     }
     ServerPlayerEvents.JOIN.register { player ->
         hook("join") { running()?.onJoin(player) ?: DeathGuard.clearMarkWithoutGuards(player) }
