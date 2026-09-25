@@ -203,7 +203,8 @@ internal class DuckJournal private constructor(
         lastReport = Report(health.droppedEvents, hooks, now)
         val newLost = health.droppedEvents - previous.lost
         val minutes = (now - previous.at) / 60e9
-        val hookMsPerMinute = if (hooks != null && previous.hookNanos != null && minutes > 0) (hooks - previous.hookNanos) / 1e6 / minutes else null
+        // The Journal opens before the Observer, whose time then counts from zero: a missing baseline is 0.
+        val hookMsPerMinute = if (hooks != null && minutes > 0) (hooks - (previous.hookNanos ?: 0)) / 1e6 / minutes else null
         val reason = buildString {
             append("${health.rowsPerMinute} rows/min · ${health.queued} queued")
             append(" · last flush ${health.lastFlushMs} ms (${health.lastFlushRows} rows)")
