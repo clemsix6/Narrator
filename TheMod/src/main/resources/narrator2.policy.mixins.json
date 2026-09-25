@@ -2,7 +2,11 @@
   "required": true,
   "package": "io.github.clemsix6.narrator2.mixin.policy",
   "compatibilityLevel": "JAVA_25",
-  "mixins": [],
+  "mixins": [
+    "BreakDoorGoalGuardMixin",
+    "MobPickUpGuardMixin",
+    "ServerExplosionGuardMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
