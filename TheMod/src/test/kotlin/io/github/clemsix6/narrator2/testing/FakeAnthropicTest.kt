@@ -8,6 +8,7 @@ import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.MessageCreateParams
 import com.anthropic.models.messages.MessageParam
 import com.anthropic.models.messages.ToolChoiceAny
+import com.anthropic.models.messages.ToolResultBlockParam
 import com.anthropic.models.messages.ToolUseBlockParam
 import com.anthropic.core.JsonValue
 import org.junit.jupiter.api.AfterEach
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /** The fake's own behaviour: strict mode, per-session scripts, usage. Driven with the bare SDK. */
 class FakeAnthropicTest {
@@ -111,6 +113,64 @@ class FakeAnthropicTest {
             fake.enqueue(reply { text("Another session starts afresh.") })
             send(params(listOf(user("Hello")), session = "session-3"))
         })
+    }
+
+    private fun assistant(text: String) = MessageParam.builder().role(MessageParam.Role.ASSISTANT).content(text).build()
+
+    private fun system(text: String) = MessageParam.builder().role(MessageParam.Role.SYSTEM).content(text).build()
+
+    /** Sends [params] expecting a strict-mode 400; returns the latest rejection's message. */
+    private fun rejected(params: MessageCreateParams): String {
+        assertFailsWith<BadRequestException> { send(params) }
+        return fake.rejections.last()
+    }
+
+    @Test
+    fun `strict mode checks append-only against the last successful exchange, its reply included`() {
+        fake.enqueue(reply { text("First.") }, reply { refusal() }, reply { text("Second.") })
+        send(params(listOf(user("Hi"))))
+        send(params(listOf(user("Hi"), assistant("First."), user("Something refused"))))
+
+        assertEquals("Second.", send(params(listOf(user("Hi"), assistant("First."), user("Something else")))), "a refused request commits nothing")
+        val next = listOf(user("Hi"), assistant("First."), user("Something else"))
+        assertContains(rejected(params(next + user("More"))), "messages.3 must be the reply of the last successful exchange, unchanged")
+        assertContains(rejected(params(next + assistant("Second, edited.") + user("More"))), "messages.3 must be the reply of the last successful exchange")
+        assertContains(rejected(params(listOf(user("Hi"), assistant("Edited."), user("Something else")))), "messages.1 differs from the last successful exchange")
+        fake.enqueue(reply { text("Third.") })
+        assertEquals("Third.", send(params(next + assistant("Second.") + user("More"))))
+        assertEquals(3, fake.rejections.size)
+    }
+
+    @Test
+    fun `strict mode accepts a system message after a user message, last or before an assistant turn`() {
+        fake.enqueue(reply { text("Fine.") }, reply { text("Still fine.") })
+        assertEquals("Fine.", send(params(listOf(user("Hi"), system("Engine: be brief.")))))
+        assertEquals("Still fine.", send(params(listOf(user("Hi"), system("Engine: be brief."), assistant("Fine."), user("More")))))
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
+    @Test
+    fun `strict mode rejects a misplaced system message`() {
+        assertContains(rejected(params(listOf(system("Engine: first."), user("Hi")), session = "a")), "messages.0: a system message must follow a user message")
+        assertContains(
+            rejected(params(listOf(user("Hi"), system("Engine: note."), user("More")), session = "b")),
+            "messages.1: a system message must be the last message or be followed by an assistant message",
+        )
+        assertContains(
+            rejected(params(listOf(user("Hi"), system("One."), system("Two.")), session = "c")),
+            "messages.1: a system message must be the last message or be followed by an assistant message",
+        )
+    }
+
+    @Test
+    fun `strict mode rejects a tool_result after other content, and blank text`() {
+        val call = ContentBlockParam.ofToolUse(ToolUseBlockParam.builder().id("toolu_1").name("say").input(JsonValue.from(mapOf("text" to "Hi"))).build())
+        val assistant = MessageParam.builder().role(MessageParam.Role.ASSISTANT).contentOfBlockParams(listOf(call)).build()
+        val result = ContentBlockParam.ofToolResult(ToolResultBlockParam.builder().toolUseId("toolu_1").content("ok").build())
+        val late = MessageParam.builder().role(MessageParam.Role.USER).contentOfBlockParams(listOf(ContentBlockParam.ofText("Here:"), result)).build()
+        assertContains(rejected(params(listOf(user("Hi"), assistant, late), session = "a")), "messages.2.content.1: tool_result blocks must come first")
+
+        assertContains(rejected(params(listOf(user(" \n")), session = "b")), "messages.0: text content blocks must contain non-whitespace text")
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.llm
 
 import com.anthropic.core.jsonMapper
+import com.anthropic.errors.AnthropicServiceException
 import com.anthropic.errors.BadRequestException
 import com.anthropic.models.messages.MessageParam
 import com.anthropic.models.messages.StopReason
@@ -12,6 +13,7 @@ import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.SAY_TOOL
 import io.github.clemsix6.narrator2.testing.TEST_API_KEY
 import io.github.clemsix6.narrator2.testing.client
+import io.github.clemsix6.narrator2.testing.httpError
 import io.github.clemsix6.narrator2.testing.reply
 import io.github.clemsix6.narrator2.testing.testConversation
 import io.github.clemsix6.narrator2.testing.toolResult
@@ -288,6 +290,69 @@ class ClaudeClientTest {
         assertContains(result.reason, "max_tokens")
         assertEquals("Once upon a", result.text)
         assertEquals(1, conversation.size)
+    }
+
+    private fun userMessage(text: String) = MessageParam.builder().role(MessageParam.Role.USER).content(text).build()
+
+    private fun systemMessage(text: String) = MessageParam.builder().role(MessageParam.Role.SYSTEM).content(text).build()
+
+    @Test
+    fun `pending messages are sent after the history and join it with a usable reply`() {
+        fake.enqueue(reply { text("First.") }, reply { text("Second.") })
+        val conversation = testConversation(user = "Hi", transcripts = Transcripts(dir, enabled = true))
+        val pending = listOf(userMessage("<events>…</events>"), systemMessage("Engine: be brief."))
+
+        fake.client().use { client ->
+            runBlocking {
+                client.send(conversation)
+                assertIs<SendResult.Reply>(client.send(conversation, pending))
+            }
+        }
+
+        val sent = fake.requests[1].json.path("messages")
+        assertEquals(listOf("user", "assistant", "user", "system"), sent.map { it.path("role").asText() })
+        assertEquals(listOf("user", "assistant", "user", "system", "assistant"), conversation.messages.map { it.role().asString() })
+        assertEquals(pending, conversation.messages.subList(2, 4))
+        val kinds = transcriptLines(conversation).map { it.path("kind").asText() }
+        assertEquals(listOf("conversation", "message", "request", "response", "sent", "sent", "request", "response"), kinds)
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
+    @Test
+    fun `pending messages are not committed without a usable reply, and another request may follow`() {
+        fake.enqueue(reply { refusal() }, httpError(529, retryAfterMs = null), reply { text("Finally.") })
+        val conversation = testConversation(user = "Hi")
+
+        fake.client().use { client ->
+            runBlocking {
+                assertIs<SendResult.Refused>(client.send(conversation, listOf(userMessage("First try."))))
+                val failed = assertIs<Exchange.Failed>(client.exchange(conversation, listOf(userMessage("Second try."))))
+                assertEquals(529, (failed.error as AnthropicServiceException).statusCode())
+                assertContains(failed.stats.error.orEmpty(), "HTTP 529")
+                assertEquals(1, conversation.size, "nothing committed")
+                assertEquals("Finally.", client.send(conversation, listOf(userMessage("Third try."))).text)
+            }
+        }
+        assertEquals(3, conversation.size)
+        assertTrue(fake.rejections.isEmpty(), "each request starts from the committed history: ${fake.rejections}")
+    }
+
+    @Test
+    fun `an empty reply is never committed, and blank text is left out of a committed reply`() {
+        fake.enqueue(reply { }, reply { text(" "); text("Kept.") })
+        val conversation = testConversation(user = "Hi")
+
+        fake.client().use { client ->
+            runBlocking {
+                val empty = assertIs<SendResult.Incomplete>(client.send(conversation, listOf(userMessage("Anything?"))))
+                assertEquals(ClaudeClient.EMPTY_REPLY, empty.reason)
+                assertTrue(isEmptyReply(empty.message))
+                assertEquals(1, conversation.size)
+                assertIs<SendResult.Reply>(client.send(conversation, listOf(userMessage("Anything now?"))))
+            }
+        }
+        val committed = conversation.messages.last().content().asBlockParams()
+        assertEquals(listOf("Kept."), committed.map { it.asText().text() })
     }
 
     @Test
