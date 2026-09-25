@@ -13,12 +13,27 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.time.DateTimeException
+import java.time.ZoneId
 
 @Serializable
 data class NarratorConfig(
     val gateway: GatewayConfig = GatewayConfig(),
     /** Model, effort, token budget and timeouts of every role. */
     val roles: Map<Role, RoleConfig> = DEFAULT_ROLES,
+    /**
+     * Language of the texts players read (`ui/<language>.properties`: the Narrator's name, chat prefix,
+     * command replies). What the Narrator says follows its prompts.
+     */
+    val language: String = "fr",
+    /** How far the Narrator may go against players: 0 (no hostile action) to 5. Sets the engine's caps. */
+    val chaos: Int = 3,
+    val journal: JournalConfig = JournalConfig(),
+    val observer: ObserverConfig = ObserverConfig(),
+    val director: DirectorConfig = DirectorConfig(),
+    val workers: WorkersConfig = WorkersConfig(),
+    val safety: SafetyConfig = SafetyConfig(),
+    val jev: JevConfig = JevConfig(),
     val logging: LoggingConfig = LoggingConfig(),
 ) {
     /** Settings of [role]. A loaded configuration has every role: the loader fills in the missing ones. */
@@ -85,6 +100,109 @@ data class RoleConfig(
     val totalTimeoutSeconds: Long = 600,
 )
 
+/** The Journal (DuckDB, `world/narrator2/narrator.duckdb`). */
+@Serializable
+data class JournalConfig(
+    /** How often the writer commits what is queued. */
+    val flushIntervalMs: Long = 1_000,
+    /** Events waiting for the writer; beyond, new events are lost (and counted). */
+    val queueCapacity: Int = 65_536,
+    /** DuckDB's memory limit. */
+    val memoryLimitMb: Int = 512,
+    /** DuckDB's worker threads. */
+    val threads: Int = 2,
+    /** Time zone of the timestamps read back, e.g. `Europe/Paris`; empty for the server's zone. */
+    val timeZone: String = "",
+    /** Longest a `sql` query of the Director may run. */
+    val sqlTimeoutSeconds: Int = 5,
+    /** A warning is logged at startup when the database is larger. Nothing is ever deleted. */
+    val warnSizeMb: Long = 4_096,
+)
+
+/** The Observer, which turns what players do into events. */
+@Serializable
+data class ObserverConfig(
+    /** Command roots whose text is never journaled (passwords of login plugins). */
+    val redactedCommands: List<String> = listOf("login", "l", "register", "reg", "changepassword"),
+)
+
+/** How the Director passes operator and engine notes to the model (`director.operatorChannel`). */
+enum class OperatorChannelMode(val id: String) {
+    /** A `role: system` message right after the user message of the request. */
+    SYSTEM_MESSAGE("system_message"),
+
+    /** `<operator>` / `<engine>` tags at the end of the user message (fallback). */
+    USER_TAG("user_tag"),
+    ;
+
+    companion object {
+        fun of(id: String): OperatorChannelMode? = entries.firstOrNull { it.id == id }
+    }
+}
+
+/** The Director: when it wakes up and how long its chapters last. */
+@Serializable
+data class DirectorConfig(
+    /** False keeps the Director asleep; the Journal and the Observer still run. */
+    val enabled: Boolean = true,
+    /** A heartbeat wakes the Director at a random time in this range of minutes after its last turn: `[min, max]`. */
+    val heartbeatMinutes: List<Int> = listOf(3, 8),
+    /** Wait after the last chat message addressed to the Narrator before waking up, to catch the follow-ups. */
+    val chatDebounceMs: Long = 1_500,
+    /** Context size (tokens) from which a chapter closes at the next quiet moment. */
+    val chapterTokenLimit: Long = 150_000,
+    /** Context size (tokens) from which a chapter closes at the end of the turn. */
+    val chapterHardLimit: Long = 180_000,
+    /** Model requests per turn before its tool calls are refused. */
+    val maxStepsPerTurn: Int = 12,
+    /** `system_message` or `user_tag`, see [OperatorChannelMode]. */
+    val operatorChannel: String = OperatorChannelMode.SYSTEM_MESSAGE.id,
+    /** A chapter closes after this many minutes without any player online. */
+    val emptyServerCloseMinutes: Int = 10,
+    /** Shows "the Narrator is thinking" to the players waiting for an answer. */
+    val thinkingIndicator: Boolean = true,
+) {
+    /** [heartbeatMinutes] as a range; valid once the configuration is validated. */
+    val heartbeatRange: IntRange get() = heartbeatMinutes[0]..heartbeatMinutes[1]
+
+    /** [operatorChannel] as a mode; valid once the configuration is validated. */
+    val channelMode: OperatorChannelMode get() = OperatorChannelMode.of(operatorChannel) ?: error("invalid operatorChannel")
+}
+
+/** Workers: the assistants the Director delegates to (the Analyst in M2). */
+@Serializable
+data class WorkersConfig(
+    /** Tasks running at the same time; the others wait in line. */
+    val maxConcurrent: Int = 3,
+    /** Model requests per task. */
+    val maxSteps: Int = 15,
+    /** Longest a task may run. */
+    val timeoutSeconds: Int = 180,
+)
+
+/** Limits the engine enforces whatever the model asks. */
+@Serializable
+data class SafetyConfig(
+    /** Players the Narrator never acts against (merged with `/narrator protect`). */
+    val protectedPlayers: List<String> = emptyList(),
+    /** Command roots `run_command` refuses, on top of the built-in list. It can only add roots. */
+    val extraForbiddenCommands: List<String> = emptyList(),
+)
+
+/** Jev (TypeSafe), the fast classifier behind the reflexes; a heuristic takes over without it. */
+@Serializable
+data class JevConfig(
+    /** Jev is used when enabled and the environment variable [apiKeyEnv] is set. */
+    val enabled: Boolean = true,
+    val baseUrl: String = "https://api.typesafe.ai",
+    /** Environment variable holding the Jev key. The key itself never goes in this file. */
+    val apiKeyEnv: String = "TYPESAFE_API_KEY",
+    /** A versioned model id: thresholds are tuned for one version. */
+    val model: String = "jev-1.13.0",
+    /** Longest a Jev call may take, retries included; the heuristic answers after that. */
+    val timeoutMs: Long = 1_500,
+)
+
 @Serializable
 data class LoggingConfig(
     /** Writes full conversation transcripts (JSONL + Markdown) under world/narrator2/logs. */
@@ -114,6 +232,18 @@ object ConfigStore {
 
     /** Settings whose keys are free-form (a map), so unknown keys there are expected. */
     private val FREE_FORM = setOf("logging.levels")
+
+    /** Keys an operator may be tempted to add, which must never be read from the file → what they hold. */
+    private val SECRETS = mapOf("gateway.apiKey" to "the LLMGW key", "jev.apiKey" to "the Jev key")
+
+    /** A command root, as players type it after `/`. */
+    private val COMMAND_ROOT = Regex("[a-z0-9_.:-]+")
+
+    /** A Minecraft player name. */
+    private val PLAYER_NAME = Regex("[A-Za-z0-9_]{1,16}")
+
+    /** A language code, e.g. `fr` or `pt_BR`. */
+    private val LANGUAGE = Regex("[a-z]{2,3}(_[A-Z]{2})?")
 
     /**
      * Loads the configuration, creating the file with defaults on first run. Settings missing from the
@@ -159,9 +289,9 @@ object ConfigStore {
                 default == null && path == "roles" -> throw ConfigException(
                     "$file: unknown role '$key' in roles (known roles: ${Role.entries.joinToString { it.id }})",
                 )
-                keyPath == "gateway.apiKey" -> log.warn(
-                    "$file: gateway.apiKey is ignored, remove it from the file: the LLMGW key is read only " +
-                        "from the environment variable named by gateway.apiKeyEnv",
+                keyPath in SECRETS -> log.warn(
+                    "$file: $keyPath is ignored, remove it from the file: ${SECRETS.getValue(keyPath)} is read only " +
+                        "from the environment variable named by ${path}.apiKeyEnv",
                 )
                 default == null -> log.warn("$file: unknown setting $keyPath is ignored")
                 default is JsonObject && value is JsonObject -> merged[key] = merge(default, value, keyPath, file)
@@ -172,38 +302,122 @@ object ConfigStore {
     }
 
     private fun validate(config: NarratorConfig, file: Path) {
-        val gateway = config.gateway
-        val url = runCatching { URI(gateway.baseUrl) }.getOrNull()
-        val problems = buildList {
-            if (url == null || url.scheme !in setOf("http", "https") || url.host.isNullOrEmpty()) {
-                add("gateway.baseUrl must be an http:// or https:// URL with a host")
-            }
-            if (gateway.apiKeyEnv.isBlank()) add("gateway.apiKeyEnv must name an environment variable")
-            if (gateway.cacheTtl !in NarratorConfig.CACHE_TTLS) {
-                add("gateway.cacheTtl must be one of ${NarratorConfig.CACHE_TTLS.joinToString()}")
-            }
-            if (gateway.maxRetries < 0) add("gateway.maxRetries must not be negative")
-            if (gateway.retryInitialDelayMs <= 0) add("gateway.retryInitialDelayMs must be positive")
-            if (gateway.retryMaxDelayMs < gateway.retryInitialDelayMs) {
-                add("gateway.retryMaxDelayMs must be at least gateway.retryInitialDelayMs")
-            }
-            config.roles.forEach { (role, settings) ->
-                val prefix = "roles.${role.id}"
-                if (settings.model.isBlank()) add("$prefix.model must not be empty")
-                if (settings.effort !in NarratorConfig.EFFORTS) {
-                    add("$prefix.effort must be one of ${NarratorConfig.EFFORTS.joinToString()}")
-                }
-                if (settings.maxTokens <= 0) add("$prefix.maxTokens must be positive")
-                if (settings.readTimeoutSeconds <= 0) add("$prefix.readTimeoutSeconds must be positive")
-                if (settings.totalTimeoutSeconds <= 0) add("$prefix.totalTimeoutSeconds must be positive")
-            }
-        }
+        val problems = problems(config)
         if (problems.isNotEmpty()) {
             throw ConfigException("invalid configuration in $file:\n - ${problems.joinToString("\n - ")}")
         }
-        if (url!!.scheme == "http" && !isLoopback(url.host)) {
+        warnIfUnencrypted("gateway.baseUrl", config.gateway.baseUrl, "the LLMGW key")
+        if (config.jev.enabled) warnIfUnencrypted("jev.baseUrl", config.jev.baseUrl, "the Jev key")
+    }
+
+    /**
+     * Every invalid value of [config], one English sentence each, naming the setting and what it
+     * accepts. Values are never quoted: the file may hold secrets.
+     */
+    internal fun problems(config: NarratorConfig): List<String> = buildList {
+        val gateway = config.gateway
+        if (!isHttpUrl(gateway.baseUrl)) add("gateway.baseUrl must be an http:// or https:// URL with a host")
+        if (gateway.apiKeyEnv.isBlank()) add("gateway.apiKeyEnv must name an environment variable")
+        if (gateway.cacheTtl !in NarratorConfig.CACHE_TTLS) {
+            add("gateway.cacheTtl must be one of ${NarratorConfig.CACHE_TTLS.joinToString()}")
+        }
+        if (gateway.maxRetries < 0) add("gateway.maxRetries must not be negative")
+        if (gateway.retryInitialDelayMs <= 0) add("gateway.retryInitialDelayMs must be positive")
+        if (gateway.retryMaxDelayMs < gateway.retryInitialDelayMs) {
+            add("gateway.retryMaxDelayMs must be at least gateway.retryInitialDelayMs")
+        }
+        config.roles.forEach { (role, settings) ->
+            val prefix = "roles.${role.id}"
+            if (settings.model.isBlank()) add("$prefix.model must not be empty")
+            if (settings.effort !in NarratorConfig.EFFORTS) {
+                add("$prefix.effort must be one of ${NarratorConfig.EFFORTS.joinToString()}")
+            }
+            if (settings.maxTokens <= 0) add("$prefix.maxTokens must be positive")
+            if (settings.readTimeoutSeconds <= 0) add("$prefix.readTimeoutSeconds must be positive")
+            if (settings.totalTimeoutSeconds <= 0) add("$prefix.totalTimeoutSeconds must be positive")
+        }
+
+        if (!LANGUAGE.matches(config.language) || !UiTexts.isBundled(config.language)) {
+            add("language must be a language the mod ships texts for (ui/<language>.properties), such as fr")
+        }
+        range("chaos", config.chaos.toLong(), 0, 5)
+
+        val journal = config.journal
+        range("journal.flushIntervalMs", journal.flushIntervalMs, 200, 10_000)
+        range("journal.queueCapacity", journal.queueCapacity.toLong(), 1_024, 1_048_576)
+        range("journal.memoryLimitMb", journal.memoryLimitMb.toLong(), 64, 8_192)
+        range("journal.threads", journal.threads.toLong(), 1, 8)
+        if (journal.timeZone.isNotBlank() && !isZoneId(journal.timeZone)) {
+            add("journal.timeZone must be empty (the server's zone) or a time zone id such as Europe/Paris")
+        }
+        range("journal.sqlTimeoutSeconds", journal.sqlTimeoutSeconds.toLong(), 1, 60)
+        if (journal.warnSizeMb <= 0) add("journal.warnSizeMb must be positive")
+
+        commandRoots("observer.redactedCommands", config.observer.redactedCommands)
+
+        val director = config.director
+        val heartbeat = director.heartbeatMinutes
+        if (heartbeat.size != 2 || heartbeat[0] < 1 || heartbeat[0] > heartbeat[1] || heartbeat[1] > 60) {
+            add("director.heartbeatMinutes must be [min, max] with 1 <= min <= max <= 60")
+        }
+        range("director.chatDebounceMs", director.chatDebounceMs, 200, 10_000)
+        if (director.chapterTokenLimit < 20_000 || director.chapterTokenLimit > director.chapterHardLimit ||
+            director.chapterHardLimit > 900_000
+        ) {
+            add("director.chapterTokenLimit and chapterHardLimit must satisfy 20000 <= chapterTokenLimit <= chapterHardLimit <= 900000")
+        }
+        range("director.maxStepsPerTurn", director.maxStepsPerTurn.toLong(), 3, 30)
+        if (OperatorChannelMode.of(director.operatorChannel) == null) {
+            add("director.operatorChannel must be one of ${OperatorChannelMode.entries.joinToString { it.id }}")
+        }
+        range("director.emptyServerCloseMinutes", director.emptyServerCloseMinutes.toLong(), 1, 120)
+
+        val workers = config.workers
+        range("workers.maxConcurrent", workers.maxConcurrent.toLong(), 1, 8)
+        range("workers.maxSteps", workers.maxSteps.toLong(), 3, 40)
+        range("workers.timeoutSeconds", workers.timeoutSeconds.toLong(), 30, 1_800)
+
+        config.safety.protectedPlayers.forEachIndexed { index, name ->
+            if (!PLAYER_NAME.matches(name)) {
+                add("safety.protectedPlayers[$index] must be a player name (1 to 16 letters, digits or _)")
+            }
+        }
+        commandRoots("safety.extraForbiddenCommands", config.safety.extraForbiddenCommands)
+
+        val jev = config.jev
+        if (!isHttpUrl(jev.baseUrl)) add("jev.baseUrl must be an http:// or https:// URL with a host")
+        if (jev.apiKeyEnv.isBlank()) add("jev.apiKeyEnv must name an environment variable")
+        if (jev.model.isBlank()) add("jev.model must not be empty")
+        range("jev.timeoutMs", jev.timeoutMs, 300, 10_000)
+    }
+
+    private fun MutableList<String>.range(setting: String, value: Long, min: Long, max: Long) {
+        if (value !in min..max) add("$setting must be between $min and $max")
+    }
+
+    private fun MutableList<String>.commandRoots(setting: String, roots: List<String>) {
+        roots.forEachIndexed { index, root ->
+            if (!COMMAND_ROOT.matches(root)) add("$setting[$index] must be a command root in lowercase, without / or spaces")
+        }
+    }
+
+    private fun isHttpUrl(value: String): Boolean {
+        val url = runCatching { URI(value) }.getOrNull() ?: return false
+        return url.scheme in setOf("http", "https") && !url.host.isNullOrEmpty()
+    }
+
+    private fun isZoneId(value: String): Boolean = try {
+        ZoneId.of(value)
+        true
+    } catch (e: DateTimeException) {
+        false
+    }
+
+    private fun warnIfUnencrypted(setting: String, value: String, secret: String) {
+        val url = URI(value)
+        if (url.scheme == "http" && !isLoopback(url.host)) {
             log.warn(
-                "gateway.baseUrl sends the LLMGW key unencrypted (http://) to ${url.host}, which is not " +
+                "$setting sends $secret unencrypted (http://) to ${url.host}, which is not " +
                     "this machine: use https:// or an SSH tunnel to localhost",
             )
         }

@@ -28,7 +28,12 @@ class ConfigStoreTest {
 
         assertEquals(NarratorConfig(), config)
         val written = Json.parseToJsonElement(file.readText()).jsonObject
-        assertEquals(setOf("gateway", "roles", "logging"), written.keys, "only the settings in use")
+        assertEquals(
+            setOf("gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "safety", "jev", "logging"),
+            written.keys,
+            "only the settings in use",
+        )
+        assertEquals(setOf("enabled", "baseUrl", "apiKeyEnv", "model", "timeoutMs"), written.getValue("jev").jsonObject.keys, "no Jev key")
         assertEquals(Role.entries.map { it.id }.toSet(), written.getValue("roles").jsonObject.keys)
         assertEquals(
             setOf("baseUrl", "apiKeyEnv", "cacheTtl", "maxRetries", "retryInitialDelayMs", "retryMaxDelayMs"),
@@ -88,13 +93,13 @@ class ConfigStoreTest {
 
     @Test
     fun `unknown settings are ignored with a warning, a leftover key with a specific one`() {
-        file.writeText("""{ "gateway": { "apiKey": "sk-leftover-5a5a", "futureOption": 42 }, "chaos": 5 }""")
+        file.writeText("""{ "gateway": { "apiKey": "sk-leftover-5a5a", "futureOption": 42 }, "mood": 5 }""")
 
         val logs = LogCapture()
         val config = logs.use { ConfigStore.load(dir) }
         assertEquals(GatewayConfig(), config.gateway)
         assertContains(logs.text, "unknown setting gateway.futureOption is ignored")
-        assertContains(logs.text, "unknown setting chaos is ignored")
+        assertContains(logs.text, "unknown setting mood is ignored")
         assertContains(logs.text, "gateway.apiKey is ignored")
         assertFalse("sk-leftover-5a5a" in logs.text)
     }
