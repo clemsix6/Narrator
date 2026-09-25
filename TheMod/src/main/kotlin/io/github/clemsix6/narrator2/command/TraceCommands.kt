@@ -8,6 +8,8 @@ import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
+import io.github.clemsix6.narrator2.guard.DeathReport
+import io.github.clemsix6.narrator2.trace.DeathLine
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.MessageFate
 import io.github.clemsix6.narrator2.trace.ModelCall
@@ -103,9 +105,11 @@ object TraceCommands {
     private fun whyPlayer(source: CommandSourceStack, player: String): Int {
         val director = NarratorRuntime.current?.director?.status()
         return read(source, "why $player") { queries, text ->
-            val fate = queries.lastMessage(player) ?: return@read listOf(narratorLine("$player never wrote in the public chat nor prayed."))
-            val turn = fate.turn?.let { queries.turn(it.turnId) }
-            text.capped(text.fate(player, fate, turn, director))
+            val fate = queries.lastMessage(player)
+            val death = queries.lastDeath(player)
+            if (fate == null && death == null) return@read listOf(narratorLine("$player never wrote in the public chat nor prayed, and no death of theirs is known."))
+            val turn = fate?.turn?.let { queries.turn(it.turnId) }
+            fate?.let { text.capped(text.fate(player, it, turn, director)) }.orEmpty() + death?.let { text.capped(text.death(it)) }.orEmpty()
         }
     }
 
@@ -264,6 +268,41 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         return Report("why: $who's last message · ${time(message.ts)}, ${ago(message.ts)}", lines)
     }
 
+    /**
+     * `/narrator why <player>`, after the last message: the player's last death as the death guard
+     * explained it (M2 review, finding 18): cause and blame, the guard's arming and quota, and what the
+     * Narrator did to them just before. In red, a death not blamed on the Narrator that follows its actions.
+     */
+    fun death(line: DeathLine): Report {
+        val report = line.detail?.let(DeathReport::parse)
+            ?: return Report("why: ${line.player}'s last death · ${time(line.ts)}, ${ago(line.ts)}", listOf(Out(line.reason.orEmpty())))
+        val died = Instant.ofEpochMilli(report.at)
+        val actions = report.actions
+        val window = "${DeathReport.WINDOW_MS / 1_000} s"
+        val lines = buildList {
+            val blame = if (report.narrator) "caused by the Narrator" else "not the Narrator's"
+            val suspicious = !report.narrator && !actions.isNullOrEmpty()
+            add(Out("Cause: ${report.cause} · $blame · inventory ${if (report.keptInventory) "kept" else "dropped"}", if (suspicious) Look.FAILURE else Look.DETAIL))
+            add(Out("Death guard: ${report.guard()} · ${report.quota()}"))
+            when {
+                actions == null -> add(Out("The Narrator's actions of the $window before are unknown: ${report.actionsUnknown ?: "not read"}", Look.FAILURE))
+                actions.isEmpty() -> add(Out("No world action of the Narrator on ${report.player} in the $window before."))
+                else -> {
+                    add(Out("The Narrator acted on ${report.player} in the $window before:"))
+                    actions.forEach { action ->
+                        val turn = action.turnId?.let { " (turn #$it)" }.orEmpty()
+                        val result = action.result?.let { ": ${abbreviate(it, WHY_RESULT_CHARS)}" }.orEmpty()
+                        add(Out("  -${report.secondsBefore(action)} s ${action.tool}$turn ${action.status}$result", if (action.status == "ok") Look.DETAIL else Look.FAILURE))
+                    }
+                    actions.mapNotNull { it.turnId }.distinct().takeIf { it.isNotEmpty() }?.let { turns ->
+                        add(Out("More: ${turns.joinToString(" · ") { "/narrator why turn $it" }}"))
+                    }
+                }
+            }
+        }
+        return Report("why: ${report.player}'s last death · ${time(died)}, ${ago(died)}", lines)
+    }
+
     /** `/narrator usage [hours]`: model calls per provider and role. */
     fun usage(rows: List<Usage>, hours: Int): Report {
         val lines = rows.map { row ->
@@ -378,6 +417,8 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
             DirectorState.WAITING -> pending("a wake-up is scheduled${director.until?.let { " at ${time(Instant.ofEpochMilli(it))}" }.orEmpty()}.")
             else -> if (salience?.startsWith("next") == true) {
                 pending("it waits for the next wake-up (it does not wake the Director by itself).")
+            } else if (salience?.startsWith("throttled") == true) {
+                pending("it waits: the Narrator's wake-ups are throttled (see Salience).")
             } else {
                 pending("the Director is ${director.state.name.lowercase()}$reason.")
             }

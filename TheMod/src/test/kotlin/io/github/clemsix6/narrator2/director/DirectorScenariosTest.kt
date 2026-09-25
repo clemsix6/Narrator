@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.event.BlockBroken
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.event.ChatMessage
+import io.github.clemsix6.narrator2.event.PlayerDied
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
@@ -589,6 +590,31 @@ class DirectorScenariosTest {
     }
 
     @Test
+    fun `a resume posted to a disabled Director does not wake it once a key arrives`() = harness().use { h ->
+        h.online("Bartok")
+        val config = h.services.settings.get().config
+        val withoutKey = testSettings(config, null)
+        h.director.post(DirectorSignal.SettingsChanged(h.services.settings.swap(withoutKey), withoutKey))
+        h.runCurrent()
+        h.director.post(DirectorSignal.Pause)
+        h.director.post(DirectorSignal.Resume)
+        h.runCurrent()
+        assertEquals(DirectorState.DISABLED, h.director.status().state)
+
+        val withKey = testSettings(config, ClaudeClient(config, TEST_API_KEY))
+        try {
+            h.director.post(DirectorSignal.SettingsChanged(h.services.settings.swap(withKey), withKey))
+            h.runCurrent()
+            h.advance(60_000)
+            assertEquals(DirectorState.IDLE, h.director.status().state)
+            assertEquals(0, h.fake.requests.size, "no empty resume turn once the key arrives")
+            assertTrue(h.endedTurns().isEmpty())
+        } finally {
+            withKey.close()
+        }
+    }
+
+    @Test
     fun `a chapter close asked by an operator happens at a quiet moment, with a summary`() = harness().use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
@@ -629,11 +655,11 @@ class DirectorScenariosTest {
         h.advance(1_500)
         h.awaitTurns(1)
         h.director.post(DirectorSignal.CloseChapter(ConversationRecord.EndReason.OPERATOR))
-        h.advance(10_000)
-        h.chat("Bartok", "on parle entre nous", toNarrator = 0.1)
-        h.advance(20_000)
-        assertEquals(1, h.director.status().chapter, "not quiet: a chat between players waits for its wake-up")
-        h.advance(25_000)
+        h.advance(18_000)
+        h.publish(PlayerDied(DirectorHarness.ref("Bartok"), Pos("minecraft:overworld", 1, 2, 3), "minecraft:fall", null, null, null, 3, false, false))
+        h.advance(2_000)
+        assertEquals(1, h.director.status().chapter, "not quiet: a death waits for its wake-up, 1 s later")
+        h.advance(1_000)
         h.awaitTurns(2)
         assertEquals(h.sessionOf(0), h.sessionOf(1))
         h.advance(20_000)

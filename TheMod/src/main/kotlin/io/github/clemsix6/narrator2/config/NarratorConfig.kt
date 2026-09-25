@@ -122,8 +122,18 @@ data class JournalConfig(
 /** The Observer, which turns what players do into events. */
 @Serializable
 data class ObserverConfig(
-    /** Command roots whose text is never journaled (passwords of login plugins). */
-    val redactedCommands: List<String> = listOf("login", "l", "register", "reg", "changepassword"),
+    /**
+     * Command roots whose text is never journaled: passwords of login plugins, and `narrator` (the
+     * operators' instructions and queries stay out of the model's sight). Only the roots of
+     * `CommandIssued.TEXT_KEPT_ROOTS` ever keep their text; this list withholds more.
+     */
+    val redactedCommands: List<String> = listOf("login", "l", "register", "reg", "changepassword", "narrator"),
+    /**
+     * Commands that send a private message between players: the vanilla ones and those of common mods.
+     * A command line that runs one of them, even behind `execute … run` or through a redirect, keeps
+     * only its root.
+     */
+    val privateMessageCommands: List<String> = listOf("msg", "tell", "w", "teammsg", "tm", "r", "reply", "whisper", "pm", "dm", "mail"),
 )
 
 /** How the Director passes operator and engine notes to the model (`director.operatorChannel`). */
@@ -161,6 +171,8 @@ data class DirectorConfig(
     val emptyServerCloseMinutes: Int = 10,
     /** Shows "the Narrator is thinking" to the players waiting for an answer. */
     val thinkingIndicator: Boolean = true,
+    /** Turns per hour beyond which only addressed chat and prayers wake the Director: the cost's ceiling. */
+    val turnsPerHour: Int = 30,
 ) {
     /** [heartbeatMinutes] as a range; valid once the configuration is validated. */
     val heartbeatRange: IntRange get() = heartbeatMinutes[0]..heartbeatMinutes[1]
@@ -359,6 +371,7 @@ object ConfigStore {
         if (journal.warnSizeMb <= 0) add("journal.warnSizeMb must be positive")
 
         commandRoots("observer.redactedCommands", config.observer.redactedCommands)
+        commandRoots("observer.privateMessageCommands", config.observer.privateMessageCommands)
 
         val director = config.director
         val heartbeat = director.heartbeatMinutes
@@ -376,6 +389,7 @@ object ConfigStore {
             add("director.operatorChannel must be one of ${OperatorChannelMode.entries.joinToString { it.id }}")
         }
         range("director.emptyServerCloseMinutes", director.emptyServerCloseMinutes.toLong(), 1, 120)
+        range("director.turnsPerHour", director.turnsPerHour.toLong(), 1, 600)
 
         val workers = config.workers
         range("workers.maxConcurrent", workers.maxConcurrent.toLong(), 1, 8)

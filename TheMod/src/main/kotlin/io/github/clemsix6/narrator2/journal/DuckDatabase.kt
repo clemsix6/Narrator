@@ -99,6 +99,9 @@ class DuckDatabase private constructor(
         /** The schema version this code expects. */
         val SCHEMA_VERSION: Int get() = versionOf(MIGRATIONS.last())
 
+        /** At most this much query data spilled to disk, all queries together (DuckDB's `max_temp_directory_size`). */
+        const val MAX_TEMP_DIRECTORY_SIZE = "1GiB"
+
         private val log = Log.journal
 
         /** Opens (creating it if needed) the database at [file]. Fails if the file is unusable or a migration fails. */
@@ -119,6 +122,8 @@ class DuckDatabase private constructor(
                 setProperty("memory_limit", "${options.memoryLimitMb}MB")
                 setProperty("threads", options.threads.toString())
                 setProperty(DuckDBDriver.JDBC_STREAM_RESULTS, "true")
+                // Query data spilled to disk (`<db>.tmp/`) is bounded: a query never fills the disk the Journal needs (default: 90 % of it).
+                setProperty("max_temp_directory_size", MAX_TEMP_DIRECTORY_SIZE)
             }
             // Through the driver itself: DriverManager may not see a driver nested in the mod jar.
             val writer = DuckDBDriver().connect(url, properties) as DuckDBConnection

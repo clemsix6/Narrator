@@ -31,12 +31,17 @@ class ConfigValidationTest {
         assertEquals("fr", defaults.language)
         assertEquals(3, defaults.chaos)
         assertEquals(JournalConfig(1_000, 65_536, 512, 2, "", 5, 4_096), defaults.journal)
-        assertEquals(listOf("login", "l", "register", "reg", "changepassword"), defaults.observer.redactedCommands)
+        assertEquals(listOf("login", "l", "register", "reg", "changepassword", "narrator"), defaults.observer.redactedCommands)
+        assertEquals(
+            listOf("msg", "tell", "w", "teammsg", "tm", "r", "reply", "whisper", "pm", "dm", "mail"),
+            defaults.observer.privateMessageCommands,
+        )
         with(defaults.director) {
             assertEquals(3..8, heartbeatRange)
             assertEquals(OperatorChannelMode.SYSTEM_MESSAGE, channelMode)
             assertEquals(listOf(1_500L, 150_000L, 180_000L), listOf(chatDebounceMs, chapterTokenLimit, chapterHardLimit))
             assertEquals(listOf(12, 10), listOf(maxStepsPerTurn, emptyServerCloseMinutes))
+            assertEquals(30, turnsPerHour)
         }
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
         assertEquals(JevConfig(true, "https://api.typesafe.ai", "TYPESAFE_API_KEY", "jev-1.13.0", 1_500), defaults.jev)
@@ -60,6 +65,8 @@ class ConfigValidationTest {
             defaults.copy(observer = ObserverConfig(listOf("login", "/register"))) to
                 "observer.redactedCommands[1] must be a command root in lowercase",
             defaults.copy(observer = ObserverConfig(listOf("Login"))) to "observer.redactedCommands[0] must be a command root",
+            defaults.copy(observer = ObserverConfig(privateMessageCommands = listOf("msg", "R"))) to
+                "observer.privateMessageCommands[1] must be a command root in lowercase",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(8, 3))) to "director.heartbeatMinutes must be [min, max]",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(0, 3))) to "director.heartbeatMinutes must be [min, max]",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(3, 61))) to "director.heartbeatMinutes must be [min, max]",
@@ -71,6 +78,8 @@ class ConfigValidationTest {
             defaults.copy(director = DirectorConfig(maxStepsPerTurn = 2)) to "director.maxStepsPerTurn must be between 3 and 30",
             defaults.copy(director = DirectorConfig(operatorChannel = "tags")) to "director.operatorChannel must be one of system_message, user_tag",
             defaults.copy(director = DirectorConfig(emptyServerCloseMinutes = 0)) to "director.emptyServerCloseMinutes must be between 1 and 120",
+            defaults.copy(director = DirectorConfig(turnsPerHour = 0)) to "director.turnsPerHour must be between 1 and 600",
+            defaults.copy(director = DirectorConfig(turnsPerHour = 601)) to "director.turnsPerHour must be between 1 and 600",
             defaults.copy(workers = WorkersConfig(maxConcurrent = 9)) to "workers.maxConcurrent must be between 1 and 8",
             defaults.copy(workers = WorkersConfig(maxSteps = 41)) to "workers.maxSteps must be between 3 and 40",
             defaults.copy(workers = WorkersConfig(timeoutSeconds = 29)) to "workers.timeoutSeconds must be between 30 and 1800",
@@ -99,9 +108,9 @@ class ConfigValidationTest {
             defaults.copy(chaos = 5),
             defaults.copy(journal = JournalConfig(200, 1_024, 64, 1, "Europe/Paris", 1, 1)),
             defaults.copy(journal = JournalConfig(10_000, 1_048_576, 8_192, 8, "UTC", 60, 1)),
-            defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(1, 1), chatDebounceMs = 200, maxStepsPerTurn = 3)),
+            defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(1, 1), chatDebounceMs = 200, maxStepsPerTurn = 3, turnsPerHour = 1)),
             defaults.copy(director = DirectorConfig(chapterTokenLimit = 20_000, chapterHardLimit = 20_000, operatorChannel = "user_tag")),
-            defaults.copy(director = DirectorConfig(chapterTokenLimit = 900_000, chapterHardLimit = 900_000, emptyServerCloseMinutes = 120)),
+            defaults.copy(director = DirectorConfig(chapterTokenLimit = 900_000, chapterHardLimit = 900_000, emptyServerCloseMinutes = 120, turnsPerHour = 600)),
             defaults.copy(workers = WorkersConfig(1, 3, 30)),
             defaults.copy(workers = WorkersConfig(8, 40, 1_800)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
