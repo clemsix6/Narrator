@@ -98,8 +98,8 @@ Le coussin de chute (une multiplication) posé sur un `fall_damage_multiplier +2
 
 ## Pour les autres lots
 
-- **Lot B** : `armDeathGuard(uuid, seconds)` arme `ANY` ; `armDeathGuard(uuid, seconds, peril)` est disponible. La foudre (`lightning_bolt`) et les explosions (`explosion`, `player_explosion`) ne sont couvertes que par `ANY` ; si le lot B veut un péril plus précis, il faut l'ajouter à `Peril`. Pour une monture du Narrateur qui descend un joueur (constat 4), `DeathGuard.cushionFall(player, turnId)` pose le coussin et arme `FALL`. `GuardsImpl.death` le rend accessible.
-- **Lot EF** (constat 18) : l'état de la garde tient désormais dans `armedUntil`, `perils` (péril → échéance, en ticks joués) et `revivedUntil`. `DeathGuard.allowDeath` et `afterDeath` écrivent `prevented` et `counted` ; je n'ai pas touché `GuardsImpl.onDeath`. Une ligne ajoutée à ces décisions devra se fusionner avec ce fichier.
+- **Lot B** (fusionné) : `armDeathGuard(uuid, seconds)` arme `ANY` ; `armDeathGuard(uuid, seconds, peril)` est disponible. La foudre (`lightning_bolt`) et les explosions (`explosion`, `player_explosion`) ne sont couvertes que par `ANY` ; si le lot B veut un péril plus précis, il faut l'ajouter à `Peril`. Pour une monture du Narrateur qui descend un joueur (constat 4), `DeathGuard.cushionFall(player, turnId)` pose le coussin et arme `FALL`. `GuardsImpl.death` le rend accessible.
+- **Lot EF** (constat 18, fusionné) : l'état de la garde tient désormais dans `armedUntil`, `perils` (péril → échéance, en ticks joués) et `revivedUntil`. `DeathReport` pourrait montrer les périls armés et la réanimation déjà prise. `DeathGuard.allowDeath` et `afterDeath` écrivent `prevented` et `counted` ; je n'ai pas touché `GuardsImpl.onDeath`.
 - **Lot G** (`director.md`, `ToolText`) :
   - nouveaux refus que le prompt peut annoncer : `already has …` (un bienfait ne raccourcit pas un effet), `precious_limit`, résistance III, enchantement max + 1, téléportation d'un joueur protégé ;
   - un bienfait qui remplace un effet plus long ou plus fort est un châtiment ;
@@ -121,7 +121,9 @@ Le coussin de chute (une multiplication) posé sur un `fall_damage_multiplier +2
 
 ## Vérifications
 
-- `gradlew build` passe **après fusion de `main`** (lot CD et T22 compris) : **660 tests unitaires, 153 GameTests**, sans échec.
+- `gradlew build` passe **après fusion de `main`** (lots CD, B, EF, J et T22 compris) : **685 tests unitaires, 164 GameTests**, sans échec, puis 4 `runGameTest` de suite au vert.
+- Fusion avec les lots B et EF : aucun conflit. `NarratorMobs` (lot B) appelle `Teleports.landing` et `Teleports.move`, dont ni la signature ni le comportement n'ont changé ; il arme par `armDeathGuard(uuid, seconds)` (donc `ANY`) et pose son propre coussin, compatible avec `cushionFall` (tous deux gardent un coussin favorable plus long). `DeathReport` (lot EF) lit `armedUntil`, qui reste l'armement le plus tardif ; il ne montre pas encore les périls ni `revivedUntil`.
+- **Test instable hors de ce lot** : avant la fusion des lots B et EF, `DirectorEndToEndTests.aChatWakesTheDirectorWhoAnswersWithItsRealTools` (T22) a échoué 3 fois sur 6 sur `status counts the fake gateway's calls` (2 appels comptés au lieu d'au moins 3, selon l'ordre des réveils). Un instantané de `main` à ce moment, lancé 4 fois, et la branche après fusion, lancée 5 fois, sont restés au vert. Rien dans ce lot ne touche au Directeur ni au comptage des appels.
 - Nouveaux tests unitaires :
   - `AttributeTableTest` : `jump_strength` au-delà de 0,6, périls des attributs ;
   - `DeathQuotaTest` : `fallSeconds` (540 blocs ≈ 9-10 s, 3 664 blocs > 45 s, gravité lunaire, gravité nulle bornée) ;
