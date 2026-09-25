@@ -106,6 +106,19 @@ class ConfigValidationTest {
     }
 
     @Test
+    fun `the Journal's time zone must be a named zone, never an offset DuckDB would refuse`() {
+        listOf("Europe/Paris", "UTC", "America/New_York", "Etc/GMT-2").forEach { zone ->
+            assertEquals(emptyList(), problems(defaults.copy(journal = JournalConfig(timeZone = zone))), zone)
+        }
+        listOf("Z", "+02:00", "-05:00", "UTC+2", "UTC+02:00", "GMT+01:00", "utc", "europe/paris", "Mars/Olympus").forEach { zone ->
+            assertRefused(
+                defaults.copy(journal = JournalConfig(timeZone = zone)),
+                "journal.timeZone must be empty (the server's zone) or a named time zone such as Europe/Paris or UTC, not an offset",
+            )
+        }
+    }
+
+    @Test
     fun `an existing file without the new sections gets their defaults`() {
         dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "gateway": { "baseUrl": "http://localhost:8088" } }""")
         val config = ConfigStore.load(dir)

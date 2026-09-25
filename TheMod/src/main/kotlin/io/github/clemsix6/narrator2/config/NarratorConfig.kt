@@ -13,7 +13,6 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.time.DateTimeException
 import java.time.ZoneId
 
 @Serializable
@@ -111,7 +110,7 @@ data class JournalConfig(
     val memoryLimitMb: Int = 512,
     /** DuckDB's worker threads. */
     val threads: Int = 2,
-    /** Time zone of the timestamps read back, e.g. `Europe/Paris`; empty for the server's zone. */
+    /** Time zone of the timestamps read back, a named zone such as `Europe/Paris` or `UTC`; empty for the server's zone. */
     val timeZone: String = "",
     /** Longest a `sql` query of the Director may run. */
     val sqlTimeoutSeconds: Int = 5,
@@ -347,8 +346,8 @@ object ConfigStore {
         range("journal.queueCapacity", journal.queueCapacity.toLong(), 1_024, 1_048_576)
         range("journal.memoryLimitMb", journal.memoryLimitMb.toLong(), 64, 8_192)
         range("journal.threads", journal.threads.toLong(), 1, 8)
-        if (journal.timeZone.isNotBlank() && !isZoneId(journal.timeZone)) {
-            add("journal.timeZone must be empty (the server's zone) or a time zone id such as Europe/Paris")
+        if (journal.timeZone.isNotBlank() && !isNamedZone(journal.timeZone)) {
+            add("journal.timeZone must be empty (the server's zone) or a named time zone such as Europe/Paris or UTC, not an offset")
         }
         range("journal.sqlTimeoutSeconds", journal.sqlTimeoutSeconds.toLong(), 1, 60)
         if (journal.warnSizeMb <= 0) add("journal.warnSizeMb must be positive")
@@ -406,12 +405,12 @@ object ConfigStore {
         return url.scheme in setOf("http", "https") && !url.host.isNullOrEmpty()
     }
 
-    private fun isZoneId(value: String): Boolean = try {
-        ZoneId.of(value)
-        true
-    } catch (e: DateTimeException) {
-        false
-    }
+    /**
+     * A named IANA zone such as `Europe/Paris` or `UTC`. DuckDB's `SET TimeZone` refuses offsets (`Z`,
+     * `+02:00`), and an unusable zone would leave the server without its Journal. Every zone the JVM
+     * names is accepted by DuckDB (checked for all 604 of JDK 25).
+     */
+    private fun isNamedZone(value: String): Boolean = value in ZoneId.getAvailableZoneIds()
 
     private fun warnIfUnencrypted(setting: String, value: String, secret: String) {
         val url = URI(value)
