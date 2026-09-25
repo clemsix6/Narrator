@@ -18,15 +18,19 @@ import java.time.Clock
  * Refusals say until when, in the time of day of [clock]'s zone.
  */
 class TargetingPolicy(private val players: PlayerStates, private val clock: Clock) {
-    /** Whether [caller] may act against [target] now, given the running [episodes]. */
-    fun check(target: PlayerRef, caller: Caller, episodes: Episodes): Verdict {
+    /**
+     * Whether [caller] may act against [target] now, given the running [episodes]. [diedAt] is the
+     * player's last death saved with them (`GuardState.lastDeathAt`, epoch milliseconds), which holds
+     * across a reconnection when the session's own record does not.
+     */
+    fun check(target: PlayerRef, caller: Caller, episodes: Episodes, diedAt: Long? = null): Verdict {
         val now = clock.millis()
         val name = target.name
         val live = players.get(target.uuid)
         if (live != null && live.health <= 0f) {
             return Verdict.Denied(Rules.NO_PILE_ON, "$name is dead; no hostile action against them until $NO_PILE_ON_MINUTES minutes after their death.")
         }
-        val died = live?.lastDeathAt
+        val died = listOfNotNull(live?.lastDeathAt, diedAt).maxOrNull()
         if (died != null && now - died < NO_PILE_ON_MS) {
             val end = died + NO_PILE_ON_MS
             return Verdict.Denied(
@@ -66,7 +70,8 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
         /** The rule of fairness: too many punishments against the same player in the last hour. */
         const val FAIR_SHARE = "fair_share"
 
-        private const val NO_PILE_ON_MS = NO_PILE_ON_MINUTES * 60_000L
+        /** [NO_PILE_ON_MINUTES] in milliseconds. */
+        const val NO_PILE_ON_MS = NO_PILE_ON_MINUTES * 60_000L
 
         /** A duration for the model: `45s`, `3m`, `4m30s`, `1h05m`; rounded up to the second. */
         internal fun span(ms: Long): String {

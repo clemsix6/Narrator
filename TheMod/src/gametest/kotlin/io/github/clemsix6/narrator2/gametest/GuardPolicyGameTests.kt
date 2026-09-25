@@ -94,6 +94,9 @@ class GuardPolicyGameTests {
             // The Narrator's own commands.
             "narrator chaos 5" to "narrator",
             "pray please" to "pray",
+            // Recipes are progress: `recipe give @a *` would unlock them all for good.
+            "recipe give @a *" to "recipe",
+            "execute as @a run recipe give @s *" to "recipe",
         )
         val wrong = refused.mapNotNull { (command, name) ->
             val verdict = check(policy, command)
@@ -108,7 +111,6 @@ class GuardPolicyGameTests {
             "execute as @a at @s run playsound minecraft:entity.pig.ambient master @s",
             "execute if entity @e[type=minecraft:zombie,limit=1] run list",
             "particle minecraft:heart ~ ~1 ~",
-            "recipe give @a *",
             "list",
         )
         val blocked = allowed.mapNotNull { command ->
@@ -122,6 +124,9 @@ class GuardPolicyGameTests {
         val strict = CommandPolicy { listOf("playsound") }
         val extra = check(strict, "execute as @a at @s run playsound minecraft:entity.pig.ambient master @s")
         helper.assertTrue(extra is Verdict.Denied && "safety.extraForbiddenCommands" in extra.message, "the configuration adds roots: $extra")
+        val lax = CommandPolicy({ listOf("give", "recipe") }) { emptyList() }
+        val stillForbidden = listOf("give @a minecraft:diamond 64", "recipe give @a *").map { check(lax, it) }
+        helper.assertTrue(stillForbidden.all { it is Verdict.Denied }, "safety.extraAllowedCommands never allows a built-in root: $stillForbidden")
         helper.succeed()
     }
 
@@ -134,13 +139,15 @@ class GuardPolicyGameTests {
     fun everyCommandIsForbiddenOrReviewed(helper: GameTestHelper) {
         val root = helper.level.server.commands.dispatcher.root
         val names = root.children.map { it.name }
-        val unreviewed = names.filterNot { it in CommandPolicy.FORBIDDEN || it in REVIEWED_ALLOWED }.sorted()
-        helper.assertTrue(unreviewed.isEmpty(), "commands neither forbidden nor reviewed: $unreviewed")
+        val unreviewed = names.filterNot { it in CommandPolicy.FORBIDDEN || it in CommandPolicy.ALLOWED }.sorted()
+        helper.assertTrue(unreviewed.isEmpty(), "commands neither forbidden nor reviewed (refused by default, but decide): $unreviewed")
         // Development commands, LAN publishing (integrated servers), the JFR profiler (when available), and
         // `/pray`, which T21 registers.
         val sometimes = CommandPolicy.FORBIDDEN.filterValues { it.reason == CommandPolicy.Reason.DEV }.keys + setOf("publish", "unpublish", "jfr", "pray")
         val unknown = CommandPolicy.FORBIDDEN.keys.filterNot { it in names || it in sometimes }
         helper.assertTrue(unknown.isEmpty(), "forbidden roots that no command has: $unknown")
+        val unused = CommandPolicy.ALLOWED.filterNot { it in names }
+        helper.assertTrue(unused.isEmpty(), "reviewed roots that no command has: $unused")
         helper.succeed()
     }
 
@@ -200,17 +207,22 @@ class GuardPolicyGameTests {
     }
 
     /**
-     * Two zombies go for a player behind a wooden door, allowed to break doors at any difficulty: the
-     * ordinary one breaks its door, the Narrator's never does.
+     * Two zombies go for a villager behind a wooden door, allowed to break doors at any difficulty: the
+     * ordinary one breaks its door, the Narrator's never does. The targets are villagers without AI (they
+     * cannot open the door): GameTest's mock players answer CREATIVE to `gameMode()` whatever their game
+     * mode, so `Mob.asValidTarget` turns them away, and zombies set on one only broke their door when
+     * they happened to wander into it (the ordinary one took over 1 200 ticks once in four runs). The test
+     * also waits on conditions, not on a number of ticks: the ordinary zombie's door is broken (within a
+     * wide budget), and the Narrator's zombie has stood within reach of its own door (the 2 blocks
+     * `BreakDoorGoal` works from) for twice the time a door takes to break.
      */
     @GameTest(maxTicks = DOOR_TICKS)
     fun theNarratorsZombieNeverBreaksADoor(helper: GameTestHelper) {
         floor(helper)
         val narratorDoor = corridor(helper, z = 1)
         val ordinaryDoor = corridor(helper, z = 5)
-        val narratorTarget = mockPlayer(helper, BlockPos(6, 1, 1))
-        val ordinaryTarget = mockPlayer(helper, BlockPos(6, 1, 5))
-        helper.runAfterDelay((DOOR_TICKS - 1).toLong()) { removePlayers(helper, narratorTarget, ordinaryTarget) }
+        val narratorTarget = helper.spawnWithNoFreeWill(EntityTypes.VILLAGER, BlockPos(6, 1, 1))
+        val ordinaryTarget = helper.spawnWithNoFreeWill(EntityTypes.VILLAGER, BlockPos(6, 1, 5))
 
         val narrators = summonAsNarrator(helper, EntityTypes.ZOMBIE, Vec3(1.5, 1.0, 1.5), noAi = false)
         val ordinary = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
@@ -221,18 +233,22 @@ class GuardPolicyGameTests {
             zombie.setCanBreakDoors(true)
             zombie.getGoalSelector().addGoal(1, BreakDoorGoal(zombie) { true })
             zombie.target = target
+            helper.assertTrue(zombie.target === target, "the zombie goes for its villager")
         }
         fun isDoor(pos: BlockPos) = helper.getBlockState(pos).`is`(Blocks.OAK_DOOR) && helper.getBlockState(pos.above()).`is`(Blocks.OAK_DOOR)
+        val narratorDoorCenter = Vec3.atCenterOf(helper.absolutePos(narratorDoor))
+        var atItsDoor = 0
+        helper.onEachTick { if (narrators.position().closerThan(narratorDoorCenter, 2.0)) atItsDoor++ }
 
         helper.startSequence()
             .thenWaitUntil { helper.assertFalse(isDoor(ordinaryDoor), "the ordinary zombie breaks its door") }
-            // Out of reach of the ordinary zombie from now on.
-            .thenExecute { ordinaryTarget.setGameMode(GameType.CREATIVE) }
-            .thenIdle(DOOR_MARGIN_TICKS)
+            .thenWaitUntil {
+                helper.assertTrue(isDoor(narratorDoor), "the Narrator's zombie left its door alone")
+                helper.assertTrue(atItsDoor >= DOOR_TRIAL_TICKS, "the Narrator's zombie stood $atItsDoor ticks at its door")
+            }
             .thenExecute {
                 helper.assertTrue(isDoor(narratorDoor), "the Narrator's zombie left its door alone")
                 helper.assertTrue(narrators.isAlive, "the Narrator's zombie is still there")
-                removePlayers(helper, narratorTarget, ordinaryTarget)
                 helper.killAllEntities()
             }
             .thenSucceed()
@@ -358,18 +374,20 @@ class GuardPolicyGameTests {
         }
     }
 
-    private companion object {
-        /** Time for the ordinary zombie to walk to its door and break it (240 ticks), with room to spare. */
-        const val DOOR_TICKS = 1_200
+    /** Shared with `GuardGapGameTests`. */
+    internal companion object {
+        /**
+         * Budget of the door test. The ordinary zombie usually breaks its door within 500 ticks, but its AI
+         * sometimes wanders or loses its path and took over 1 200 ticks once in four runs; the tick budget
+         * costs little (the GameTest server runs its ticks back to back), the conditions decide.
+         */
+        const val DOOR_TICKS = 6_000
 
-        /** Ticks the Narrator's zombie keeps trying after the ordinary one broke through. */
-        const val DOOR_MARGIN_TICKS = 100
+        /** A door takes 240 ticks to break (`BreakDoorGoal`, javap). */
+        private const val DOOR_BREAK_TICKS = 240
 
-        /** Commands allowed after review: `run_command`'s last resort (M1_M2 §10.6). */
-        val REVIEWED_ALLOWED = setOf(
-            "execute", "return", "scoreboard", "trigger", "playsound", "stopsound", "particle", "recipe", "waypoint",
-            "random", "compute", "stopwatch", "swing", "help", "list", "version",
-        )
+        /** How long the Narrator's zombie must have stood within reach of its door before its door is judged: twice a break. */
+        const val DOOR_TRIAL_TICKS = 2 * DOOR_BREAK_TICKS
 
         fun guards(helper: GameTestHelper): GuardsImpl = helper.narrator().guards as GuardsImpl
 

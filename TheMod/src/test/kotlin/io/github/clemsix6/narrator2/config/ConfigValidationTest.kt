@@ -78,6 +78,12 @@ class ConfigValidationTest {
                 "safety.protectedPlayers[1] must be a player name",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("scoreboard", "tell raw"))) to
                 "safety.extraForbiddenCommands[1] must be a command root",
+            defaults.copy(safety = SafetyConfig(extraAllowedCommands = listOf("sethome", "/home"))) to
+                "safety.extraAllowedCommands[1] must be a command root",
+            defaults.copy(safety = SafetyConfig(extraAllowedCommands = listOf("sethome", "give"))) to
+                "safety.extraAllowedCommands[1]: give is forbidden by the built-in list and cannot be allowed",
+            defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("home"), extraAllowedCommands = listOf("home"))) to
+                "safety.extraAllowedCommands[0]: home is also in safety.extraForbiddenCommands",
             defaults.copy(jev = JevConfig(baseUrl = "api.typesafe.ai")) to "jev.baseUrl must be an http:// or https:// URL with a host",
             defaults.copy(jev = JevConfig(apiKeyEnv = " ")) to "jev.apiKeyEnv must name an environment variable",
             defaults.copy(jev = JevConfig(model = "")) to "jev.model must not be empty",
@@ -98,7 +104,7 @@ class ConfigValidationTest {
             defaults.copy(director = DirectorConfig(chapterTokenLimit = 900_000, chapterHardLimit = 900_000, emptyServerCloseMinutes = 120)),
             defaults.copy(workers = WorkersConfig(1, 3, 30)),
             defaults.copy(workers = WorkersConfig(8, 40, 1_800)),
-            defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"))),
+            defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(jev = JevConfig(baseUrl = "http://localhost:9000", timeoutMs = 300)),
             defaults.copy(jev = JevConfig(timeoutMs = 10_000)),
         )

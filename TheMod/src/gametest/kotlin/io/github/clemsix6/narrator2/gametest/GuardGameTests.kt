@@ -466,7 +466,8 @@ class GuardGameTests {
         helper.assertValueEqual(1f, player.health, "kept at 1 health")
     }
 
-    private companion object {
+    /** Shared with `GuardGapGameTests`. */
+    internal companion object {
         /** The mock players' play time, in ticks: long enough for a played hour to have passed before. */
         const val PLAY_TIME = 200_000L
 

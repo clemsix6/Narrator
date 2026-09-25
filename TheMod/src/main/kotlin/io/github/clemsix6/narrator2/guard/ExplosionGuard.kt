@@ -1,6 +1,5 @@
 package io.github.clemsix6.narrator2.guard
 
-import io.github.clemsix6.narrator2.NarratorRuntime
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.monster.Enemy
 import net.minecraft.world.entity.player.Player
@@ -9,7 +8,7 @@ import net.minecraft.world.level.Explosion
 /**
  * The Narrator's explosions (M1_M2 §10.7), applied by `mixin.policy.ServerExplosionGuardMixin`: they
  * touch no block (whatever their interaction), start no fire, and hurt, push or destroy nothing but
- * players (never a protected one) and monsters. Items on the ground, item frames, paintings, armor
+ * players (never a protected one, nor one dead less than 5 minutes ago) and monsters. Items on the ground, item frames, paintings, armor
  * stands, vehicles and their contents, animals, pets and villagers are left alone.
  *
  * An explosion is the Narrator's when it goes off inside [narrators] (the `explosion` tool, which has no
@@ -36,10 +35,10 @@ object ExplosionGuard {
     fun isNarrators(explosion: Explosion): Boolean =
         depth > 0 || NarratorMobs.isNarrators(explosion.directSourceEntity) || NarratorMobs.isNarrators(explosion.indirectSourceEntity)
 
-    /** Whether one of the Narrator's explosions leaves [entity] alone. */
+    /** Whether one of the Narrator's explosions leaves [entity] alone (a player: protected, or dead less than 5 minutes ago, see [CreatureShield]). */
     @JvmStatic
     fun spares(entity: Entity): Boolean = when (entity) {
-        is Player -> NarratorRuntime.current?.guards?.isProtected(entity.uuid) == true
+        is Player -> CreatureShield.spares(entity)
         is Enemy -> false
         else -> true
     }
