@@ -11,3 +11,6 @@ TheServer/
 
 # Local secrets (LLMGW key, Jev key): never versioned
 .secrets/
+
+# Agent worktrees
+.claude/
