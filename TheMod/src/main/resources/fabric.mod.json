@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "narrator2",
+  "version": "${version}",
+  "name": "The Narrator 2",
+  "description": "Un narrateur-dieu sarcastique, propulsé par Claude, qui observe, commente et bouscule votre serveur.",
+  "authors": ["clemsix6"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      { "value": "io.github.clemsix6.narrator2.Narrator2", "adapter": "kotlin" }
+    ]
+  },
+  "mixins": ["narrator2.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*",
+    "fabric-language-kotlin": "*"
+  }
+}

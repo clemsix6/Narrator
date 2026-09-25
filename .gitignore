@@ -1,0 +1,10 @@
+# Reference material (clones of other repos, v1 archive, spikes): never versioned
+.research/
+
+# Dev server run directory: world, logs, EULA, server config
+TheServer/
+
+# Kotlin / IDE
+.kotlin/
+.idea/
+*.log
