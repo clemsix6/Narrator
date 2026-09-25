@@ -37,9 +37,8 @@ object Rules {
 
 /**
  * The engine's rules, enforced by code whatever the model asks: protected players, no piling on, the
- * death guard, the ledgers that undo every temporary effect. Tools check here before acting.
- *
- * T09a extends this contract with the caps, the ledgers and the policies.
+ * death guard, the ledgers that undo every temporary effect. Tools check here before acting, and change
+ * players only through the ledgers (M1_M2 §10; `docs/design/handoff/T09a.md` shows how).
  */
 interface Guards {
     /** The player is protected from every hostile action. Any thread. */
@@ -52,7 +51,11 @@ interface Guards {
      */
     fun hostile(target: ServerPlayer, caller: Caller, until: Long): Verdict
 
-    /** Deaths of [target] in the next [seconds] are attributed to the Narrator (any action that can kill arms it). */
+    /**
+     * Deaths of [target] in the next [seconds] of their play time are attributed to the Narrator (any
+     * action that can kill arms it, before acting). On the server thread; from another thread, it is
+     * queued there. Nothing happens for a player offline.
+     */
     fun armDeathGuard(target: UUID, seconds: Int)
 
     /** Whether a death is the Narrator's doing and the inventory is kept, for the `PlayerDied` event. Server thread only. */
@@ -63,6 +66,27 @@ interface Guards {
 
     /** `/narrator protect`: protects [uuid] or lifts the protection; persisted with [name] for operators. */
     fun setProtected(uuid: UUID, name: String, on: Boolean)
+
+    /** The caps at the chaos level in force, read at each call (`/narrator reload` may change the level). Any thread. */
+    fun caps(): Caps
+
+    /** The Narrator's attribute modifiers: applied, reapplied after a death or a join, removed when due. Server thread. */
+    val attributes: AttributeLedger
+
+    /** The effects the Narrator put on players, told apart from the others. Server thread. */
+    val effects: EffectLedger
+
+    /** Confiscations: taken with their trace, given back when due. Server thread. */
+    val items: ItemLedger
+
+    /** The Narrator's creatures: marked, counted against the cap, removed when due. */
+    val mobs: NarratorMobs
+
+    /** What `run_command` may run. */
+    val commands: CommandPolicy
+
+    /** What `spawn` may summon. */
+    val spawns: SpawnPolicy
 }
 
 /**
@@ -75,7 +99,7 @@ data class DeathAttribution(val narrator: Boolean, val keptInventory: Boolean)
  * One of the Narrator's effects on a player.
  *
  * @property kind `effect`, `attribute`, `confiscation` or `mob`.
- * @property what e.g. `slowness II`, `scale x0.5`, `3x diamond`, `4 zombie`.
+ * @property what e.g. `slowness II`, `scale x0.5`, `3x minecraft:diamond`, `4 minecraft:zombie`.
  * @property until when it ends, epoch milliseconds.
  * @property harmful part of a punishment (a hostile action).
  */
