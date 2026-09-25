@@ -22,6 +22,13 @@ import java.util.concurrent.ConcurrentHashMap
  * `.md` next to it reads like a script: what the model received, its thinking summary, each tool call
  * with its arguments and result, tokens and latency. Timestamps carry the server's time zone.
  *
+ * Everything tried is written, committed or not. The pending messages of a request are written before
+ * it is sent (`sent` lines, titled `SENT`, and `OPERATOR / ENGINE NOTE` for a system message); the
+ * reply that follows says whether they joined the history with it (`COMMITTED`, and
+ * `narrator2_appended: true` in the JSONL) or not (`NOT COMMITTED (refusal | max_tokens… | error |
+ * cancelled)`). The committed history is thus the `message` lines plus, for each committed reply, the
+ * `sent` lines of its request and the reply.
+ *
  * Tracing never breaks a call: a transcript that cannot be written is logged and skipped. The LLMGW
  * key is never written: it is not part of a conversation or of a request's parameters.
  */
@@ -41,7 +48,22 @@ class Transcripts(val root: Path, enabled: Boolean) {
     fun message(conversation: Conversation, message: MessageParam) = write(conversation) { state ->
         val node = mapper.valueToTree<JsonNode>(message)
         appendJsonl(state, "message", node)
-        appendMarkdown(state, renderMessage(node))
+        appendMarkdown(state, renderMessage(node, userTitle = "RECEIVED"))
+    }
+
+    /**
+     * The pending messages of a request about to be sent, before it is: they join the history only if
+     * the reply that follows is committed ([response]). Nothing is written when there are none.
+     */
+    fun sent(conversation: Conversation, messages: List<MessageParam>) {
+        if (messages.isEmpty()) return
+        write(conversation) { state ->
+            messages.forEach { message ->
+                val node = mapper.valueToTree<JsonNode>(message)
+                appendJsonl(state, "sent", node)
+                appendMarkdown(state, renderMessage(node, userTitle = "SENT"))
+            }
+        }
     }
 
     /**
@@ -73,19 +95,21 @@ class Transcripts(val root: Path, enabled: Boolean) {
     }
 
     /**
-     * Claude's reply with its measurements. [appended] says whether it joined the conversation: a
-     * refusal or an incomplete reply does not.
+     * Claude's reply with its measurements. [notCommitted] is null when the reply joined the
+     * conversation with the pending messages of its request, else why they did not (a refusal, an
+     * incomplete or empty reply).
      */
-    fun response(conversation: Conversation, message: Message, stats: CallStats, appended: Boolean) =
+    fun response(conversation: Conversation, message: Message, stats: CallStats, notCommitted: String?) =
         write(conversation) { state ->
             val node = mapper.valueToTree<ObjectNode>(message)
             node.set<JsonNode>("narrator2_stats", statsNode(stats))
-            node.put("narrator2_appended", appended)
+            node.put("narrator2_appended", notCommitted == null)
+            notCommitted?.let { node.put("narrator2_not_committed", it) }
             appendJsonl(state, "response", node)
-            appendMarkdown(state, renderResponse(node, stats, appended))
+            appendMarkdown(state, renderResponse(node, stats, notCommitted))
         }
 
-    /** A failed call, after its last attempt. */
+    /** A failed call, after its last attempt: nothing was committed. */
     fun error(conversation: Conversation, error: Throwable, stats: CallStats) = write(conversation) { state ->
         val node = mapper.createObjectNode()
             .put("error", error.javaClass.name)
@@ -94,7 +118,8 @@ class Transcripts(val root: Path, enabled: Boolean) {
         appendJsonl(state, "error", node)
         appendMarkdown(
             state,
-            "\n### ${time()} · ERROR — ${stats.error} (${stats.ids()}, ${stats.durationMs} ms)\n\n`${error.javaClass.simpleName}`\n",
+            "\n### ${time()} · ERROR — ${stats.error} (${stats.ids()}, ${stats.durationMs} ms) — NOT COMMITTED (error)\n\n" +
+                "`${error.javaClass.simpleName}`\n",
         )
     }
 
@@ -147,10 +172,10 @@ class Transcripts(val root: Path, enabled: Boolean) {
         append("</details>\n")
     }
 
-    private fun renderMessage(node: JsonNode): String = buildString {
+    private fun renderMessage(node: JsonNode, userTitle: String): String = buildString {
         val title = when (val role = node.path("role").asText()) {
-            "user" -> "RECEIVED"
-            "system" -> "SYSTEM INSTRUCTION"
+            "user" -> userTitle
+            "system" -> "OPERATOR / ENGINE NOTE"
             else -> role.uppercase()
         }
         append("\n### ${time()} · $title\n\n")
@@ -172,15 +197,11 @@ class Transcripts(val root: Path, enabled: Boolean) {
         }
     }
 
-    private fun renderResponse(node: JsonNode, stats: CallStats, appended: Boolean): String = buildString {
-        append("\n### ${time()} · CLAUDE — ${stats.summary()}\n\n")
+    private fun renderResponse(node: JsonNode, stats: CallStats, notCommitted: String?): String = buildString {
+        append("\n### ${time()} · CLAUDE — ${stats.summary()} — ${notCommitted?.let { "NOT COMMITTED ($it)" } ?: "COMMITTED"}\n\n")
         append("*${stats.ids()}*\n\n")
-        if (!appended) {
-            val why = if (stats.refusalCategory != null || stats.stopReason == "refusal") "refused" else "incomplete"
-            append("**Not appended to the conversation ($why).**\n\n")
-            node.path("stop_details").path("explanation").takeIf { it.isTextual }?.let {
-                append("> *Refusal: ${it.asText()}*\n\n")
-            }
+        node.path("stop_details").path("explanation").takeIf { it.isTextual }?.let {
+            append("> *Refusal: ${it.asText()}*\n\n")
         }
         node.path("content").forEach { block ->
             when (block.path("type").asText()) {
