@@ -96,3 +96,57 @@ Relecture du 25/09/2026, sur `main` après la fusion de T08 à T21 et de T09c. C
 Relectures complémentaires à relancer :
 - Journal, Observateur et `SqlRunner` ;
 - Directeur, `AgentLoop`, Workers et chapitres.
+
+## Addendum : relectures du Journal et du Directeur
+
+19. **BLOQUANT (vie privée) : l'outil `sql` peut lire les fichiers de la base**, WAL compris.
+    - Où : `journal/SqlRunner.kt:201-219`. `read_blob`, `read_text`, `glob` et `current_setting` ne sont pas bloquées. Même avec `enable_external_access=false`, DuckDB autorise le fichier de la base, son `.wal` et `<db>.tmp/`. `current_setting('allowed_paths')` révèle les chemins. Un message privé a été extrait des octets bruts de `<db>.tmp/`.
+    - **Décision** :
+      - pour l'accès MODEL, une **liste blanche du plan** : seulement des parcours de tables et de vues visibles, plus `range`, `unnest` et ce qu'exige `columns_of`. Refuser aussi par le nom toute fonction `read_*`, `glob`, `sniff_csv`, `parquet_*`, `current_setting`, et les scans de remplacement (nom entre guillemets ou qui ressemble à un chemin) ;
+      - ajouter des tests sur une **base sur disque** ;
+      - corriger la KDoc et le design.
+20. **IMPORTANT : fuite par `/narrator sql`.** La décision `operator` garde la requête et le message d'erreur de DuckDB, lisibles par le modèle dans `engine_decisions`.
+    - **Décision** : ne jamais garder la requête ni l'erreur d'une commande `/narrator sql` dans une table lisible par le modèle. On ne garde qu'une empreinte (hash), la taille et le statut. Le masquage de l'événement `command` relève du lot CD.
+21. **IMPORTANT : le Journal dégradé ne se rétablit jamais** (`JournalWriter.kt:470-478`, `DuckJournal.kt:80,97`).
+    - **Décision** :
+      - le Journal tente de rouvrir la base toutes les 60 s ;
+      - les opérateurs en ligne sont prévenus une fois (message dans le chat), et la décision est écrite au retour ;
+      - borner `max_temp_directory_size` ;
+      - garantir la monotonie des identifiants après un crash (`TraceSink.kt:14-18`).
+22. **IMPORTANT : rien n'est borné pendant une coupure.**
+    - `mute()` ne s'applique pas en BACKOFF, donc des milliers de lignes périmées s'accumulent.
+    - `ContextExceeded` sur le premier message rouvre le chapitre en boucle.
+    - Une 400 systématique rouvre un chapitre toutes les 30 s.
+    - **Décision** :
+      - la boîte est bornée dans tous les états : au-delà d'un plafond, résumé compté par type ;
+      - backoff exponentiel plafonné à 15 min pour les réouvertures de chapitre sur erreur ;
+      - `ContextExceeded` au premier message réduit le briefing et réessaie une fois, puis applique un backoff.
+23. **IMPORTANT (M3) : le résumé de chapitre est perdu à la moindre erreur passagère** (`Chapters.kt:231-236`).
+    - **Décision** : sur une erreur passagère (429, 529, 5xx, réseau, 402), le chapitre reste ouvert en état de clôture et la demande de résumé est réessayée avec backoff. Seuls un refus ou une réponse vide ou tronquée, après ses relances, justifient d'abandonner le résumé.
+24. **IMPORTANT : après la limite d'étapes, le chat adressé au Narrateur est marqué vu sans réponse possible** (`AgentLoop.kt:161-170`).
+    - **Décision** : ce qui a été injecté après la dernière réponse possible retourne dans la boîte, non vu.
+25. **IMPORTANT : un reload qui change le modèle ou l'effort s'applique au chapitre en cours** (`ClaudeClient.kt:157`, `Chapters.kt:170-180`).
+    - **Décision** : le modèle et l'effort sont figés par conversation ; le changement vaut au chapitre suivant.
+26. **IMPORTANT (coût) : plus de 60 tours Opus par heure qui finissent sans rien faire.** Chaque ligne de chat entre joueurs réveille Opus en 45 s au plus, le battement heuristique vaut toujours 1.0 sans Jev, et il n'existe aucun budget de réveil global.
+    - **Décision** :
+      - le chat entre joueurs non adressé au Narrateur ne réveille pas : il attend le prochain battement ;
+      - le score du battement heuristique reflète vraiment l'activité (événements saillants depuis le dernier tour) ;
+      - un budget global de tours par heure, réglable (défaut 30), au-delà duquel seuls le chat adressé et les prières réveillent ;
+      - décision `salience throttled`.
+27. **IMPORTANT (injection) : les noms de joueurs ne sont pas échappés** (`<engine>` est un pseudo valide hors mode online), et les cellules `sql` et `OracleText.quote` laissent les chevrons tels quels.
+    - **Décision** : un seul échappement commun, appliqué à tout texte d'origine joueur envoyé au modèle : noms, chat, cellules SQL, textes de l'Oracle.
+28. **Mineurs** :
+    - Numéros de chapitre qui repartent à 1 après une erreur du Journal au démarrage : les relire au lieu de repartir de 1. **Lot I.**
+    - Chapitres vides résumés quand même : pas de résumé pour un chapitre sans échange. **Lot I.**
+    - Chapitres sans résumé qui occupent les 3 places du briefing : ne compter que les chapitres résumés. **Lot I.**
+    - Aucun plafond sur la file de `delegate` : 10 tâches en attente au plus. **Lot I.**
+    - Rappels perdus au redémarrage : **M4**.
+    - Index des blocs posés périmé (explosions, feu, pousses d'arbre) : **à traiter en M3 ou M4**, noté.
+
+### Lots supplémentaires
+| Lot | Constats | Fichiers principaux |
+|---|---|---|
+| H — confidentialité SQL | 19, 20, cellules SQL du 27 | `journal/SqlRunner.kt`, `journal/SqlFormat.kt`, `journal/DuckDatabase.kt`, `command/SqlCommand.kt`, leurs tests |
+| I — Directeur | 22, 23, 24, 25, noms et Oracle du 27, mineurs « Lot I » du 28 | `director/Director.kt`, `director/Inbox.kt`, `director/Chapters.kt`, `agent/AgentLoop.kt`, `director/EventFormatter.kt`, `oracle/*Text*`, `agent/Workers.kt` |
+| J — Journal | 21 | `journal/JournalWriter.kt`, `journal/DuckJournal.kt`, `trace/TraceSink.kt` |
+| EF (étendu) | 26 | `director/Salience.kt`, `director/WakeScheduler.kt` (déjà au lot EF) |

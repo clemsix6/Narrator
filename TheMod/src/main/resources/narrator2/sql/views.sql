@@ -35,18 +35,24 @@ SELECT id, ts, player, type AS kind,
 FROM events
 WHERE type NOT IN ('pickup', 'stat')
 UNION ALL
-SELECT id, ts, coalesce(player, 'NARRATOR'), 'chat:' || channel, text, NULL, NULL, NULL, NULL
+SELECT id, ts, player, 'chat:' || channel, text, NULL, NULL, NULL, NULL
 FROM chat;
 COMMENT ON VIEW timeline IS 'Events and chat, without item pickups and stats';
 COMMENT ON COLUMN timeline.id IS 'event or chat line id, in the order they happened: ORDER BY ts, id';
+COMMENT ON COLUMN timeline.player IS 'NULL for the Narrator''s lines (chat:narrator, chat:operator)';
 COMMENT ON COLUMN timeline.kind IS 'event type, or chat:<channel> for chat lines';
 COMMENT ON COLUMN timeline.what IS 'subject, or subject → other (see the event types); the text for chat';
 
+-- The Narrator is no player: its lines have no player name (a player may well be called NARRATOR).
 CREATE OR REPLACE VIEW chat_log AS
-SELECT id, ts, channel, coalesce(player, 'NARRATOR') AS player, recipients, text
+SELECT id, ts, channel,
+       CASE channel WHEN 'narrator' THEN 'narrator' WHEN 'operator' THEN 'operator' ELSE 'player' END AS speaker,
+       player, recipients, text
 FROM chat;
-COMMENT ON VIEW chat_log IS 'Public chat, prayers and the Narrator''s lines (player NARRATOR)';
+COMMENT ON VIEW chat_log IS 'Chat, prayers and the Narrator''s lines (speaker narrator or operator, player NULL)';
 COMMENT ON COLUMN chat_log.channel IS 'public, pray (to the Narrator), narrator, or operator (a line an operator made the Narrator say)';
+COMMENT ON COLUMN chat_log.speaker IS 'player, narrator, or operator (the Narrator, made to speak by an operator)';
+COMMENT ON COLUMN chat_log.player IS 'the player who wrote; NULL for the Narrator';
 COMMENT ON COLUMN chat_log.recipients IS 'names of the recipients; NULL = everyone';
 
 CREATE OR REPLACE VIEW narrator_actions AS
@@ -187,7 +193,7 @@ CREATE OR REPLACE VIEW player_stats AS
 SELECT p.name AS player, regexp_replace(s.stat, 'minecraft[.:]', '', 'g') AS stat, s.value, s.updated_at
 FROM stat_totals s
 JOIN players p USING (player_uuid);
-COMMENT ON VIEW player_stats IS 'Vanilla stat totals, e.g. mined:stone, killed:zombie, custom:play_time (ticks), custom:jump';
+COMMENT ON VIEW player_stats IS 'Vanilla stat totals, e.g. mined:stone, killed:zombie, custom:play_time (ticks)';
 
 -- ── Table macros ────────────────────────────────────────────────────────────────────────────────────
 -- Player names are compared without case.
