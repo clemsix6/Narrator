@@ -49,6 +49,8 @@ internal data class JournalTuning(
  *
  * @param onHealthDue called on this thread every [JournalTuning.healthIntervalMs].
  * @param onFinished called on this thread once the writer stopped: closes the reads and the database.
+ * @param endReads called on this thread at the close, before the last `CHECKPOINT`: a query left open
+ *   on a read connection would hold it back.
  */
 internal class JournalWriter(
     private val db: DuckDatabase,
@@ -58,6 +60,7 @@ internal class JournalWriter(
     private val tuning: JournalTuning,
     private val onHealthDue: () -> Unit,
     private val onFinished: () -> Unit,
+    private val endReads: () -> Unit = {},
 ) {
     private val log = Log.journal
     private val connection = db.writer
@@ -328,19 +331,18 @@ internal class JournalWriter(
 
     /**
      * One transaction: the in-place updates in order, then the whole rows in bulk (the last record of
-     * each key), then each appender filled and flushed. Returns the failure, if any.
+     * each key), then each appender filled and flushed, then the updates of appended rows
+     * ([Upsert.afterAppends]) in order. Returns the failure, if any.
      */
     private fun commit(rows: List<Row>): Exception? {
         try {
             execute("BEGIN TRANSACTION")
             val appends = EnumMap<AppendTable, MutableList<Append>>(AppendTable::class.java)
             val replaces = EnumMap<ReplaceTable, LinkedHashMap<List<Any?>, Replace>>(ReplaceTable::class.java)
+            val afterAppends = ArrayList<Execute>()
             for (row in rows) {
                 when (row) {
-                    is Execute -> statement(row.upsert).let { statement ->
-                        bind(statement, row.values)
-                        statement.executeUpdate()
-                    }
+                    is Execute -> if (row.upsert.afterAppends) afterAppends += row else update(row)
                     is Replace -> replaces.getOrPut(row.table) { LinkedHashMap() }[row.key] = row
                     is Append -> appends.getOrPut(row.table) { ArrayList() }.add(row)
                 }
@@ -355,6 +357,7 @@ internal class JournalWriter(
                 }
                 appender.flush()
             }
+            afterAppends.forEach(::update)
             execute("COMMIT")
             return null
         } catch (e: Exception) {
@@ -373,6 +376,12 @@ internal class JournalWriter(
     private fun appender(table: AppendTable): DuckDBAppender = appenders.getOrPut(table) { connection.createAppender(table.sqlName) }
 
     private fun statement(upsert: Upsert): PreparedStatement = statements.getOrPut(upsert) { connection.prepareStatement(upsert.sql) }
+
+    private fun update(row: Execute) {
+        val statement = statement(row.upsert)
+        bind(statement, row.values)
+        statement.executeUpdate()
+    }
 
     /** `INSERT OR REPLACE` of [rows] (distinct keys), a few thousand values per statement. */
     private fun replaceAll(table: ReplaceTable, rows: List<Replace>) {
@@ -504,8 +513,8 @@ internal class JournalWriter(
     // ── The end ─────────────────────────────────────────────────────────────────────────────────────
 
     /**
-     * Closes the sessions still open, counts what is left as lost, releases every barrier, checkpoints
-     * and hands over to [onFinished]. Runs once, on this thread.
+     * Closes the sessions still open, counts what is left as lost, releases every barrier, ends the
+     * reads, checkpoints and hands over to [onFinished]. Runs once, on this thread.
      */
     private fun finish() {
         val start = System.nanoTime()
@@ -546,6 +555,13 @@ internal class JournalWriter(
         discardStatements()
         // A writer that died without a close keeps the database open for reads; close() ends it later.
         if (!closing) return
+        // No FORCE CHECKPOINT here: it waits for every open transaction, and one left open on a read
+        // connection never ends by itself (verified: it hangs). Closing the read connections ends them.
+        try {
+            endReads()
+        } catch (e: Exception) {
+            log.error("closing: the reads could not be ended", e)
+        }
         val checkpointed = checkpoint()
         log.info(
             "closing: ${if (checkpointed) "checkpointed" else "not checkpointed"} in ${(System.nanoTime() - start) / 1_000_000} ms, " +

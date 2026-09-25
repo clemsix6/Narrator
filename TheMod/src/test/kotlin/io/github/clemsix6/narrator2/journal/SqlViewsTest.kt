@@ -1,9 +1,18 @@
 package io.github.clemsix6.narrator2.journal
 
+import io.github.clemsix6.narrator2.event.BlockBroken
+import io.github.clemsix6.narrator2.event.ChatChannel
+import io.github.clemsix6.narrator2.event.ChatMessage
+import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.PositionSampled
+import io.github.clemsix6.narrator2.event.SampleReason
 import io.github.clemsix6.narrator2.journal.SqlDataset.SECRET
+import io.github.clemsix6.narrator2.testing.TestClock
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -207,7 +216,7 @@ class SqlViewsTest {
     @Test
     fun `columns_of describes a table or a view, never a hidden table`() {
         assertEquals(
-            listOf("ts", "player", "block", "ore", "y", "dim", "x", "z", "tool"),
+            listOf("id", "ts", "player", "block", "ore", "y", "dim", "x", "z", "tool"),
             values("SELECT name FROM columns_of('Mining')").map { it.single() },
         )
         assertEquals(listOf(listOf<Any?>("ore", "BOOLEAN", "true for ores and ancient debris")), values("SELECT * FROM columns_of('mining') WHERE name = 'ore'"))
@@ -229,6 +238,39 @@ class SqlViewsTest {
         )
         assertEquals(listOf(listOf<Any?>("stone", "create:brass_ore", null)), values("SELECT bare('minecraft:stone'), bare('create:brass_ore'), bare(NULL)"))
     }
+
+    // ── Order ───────────────────────────────────────────────────────────────────────────────────────
+
+    /** Facts of one tick share their millisecond (T07): `ts, id` keeps the order they happened in, in views and macros. */
+    @Test
+    fun `facts that share a timestamp keep their order`() =
+        JournalFixture(clock = TestClock(Instant.now().truncatedTo(ChronoUnit.MILLIS))).use { journal ->
+            // The clock never moves: every fact below has the same ts.
+            val bartok = SqlDataset.bartok
+            journal.publish(PlayerJoined(bartok, SqlDataset.ow(0, 64, 0), sessionId = 1, firstTime = false, isOp = false))
+            val blocks = listOf("stone", "dirt", "gravel", "sand", "clay", "andesite")
+            blocks.forEach { block ->
+                journal.publish(BlockBroken(bartok, SqlDataset.ow(0, 64, 0), "minecraft:$block", null, creative = false, correctTool = true, placedBy = null))
+            }
+            listOf("one", "two", "three").forEach { text -> journal.publish(ChatMessage(bartok, ChatChannel.PUBLIC, text, emptyList())) }
+            // A straight walk, 50 blocks a step.
+            val steps = 20
+            repeat(steps) { step ->
+                val pos = SqlDataset.ow(30 * step, 64, 40 * step)
+                journal.publish(PositionSampled(bartok, pos, "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.MOVED))
+            }
+
+            val order = listOf(listOf<Any?>("join", null)) + blocks.map { listOf<Any?>("block_break", it) } +
+                listOf("one", "two", "three").map { listOf<Any?>("chat:public", it) }
+            assertEquals(order, journal.values("SELECT kind, what FROM timeline ORDER BY ts, id"))
+            assertEquals(order.map { it[1] }, journal.values("SELECT what FROM recent('Bartok')").map { it.single() })
+            assertEquals(listOf(listOf<Any?>("andesite")), journal.values("SELECT block FROM mining ORDER BY ts DESC, id DESC LIMIT 1"))
+            assertEquals(listOf(listOf<Any?>("three")), journal.values("SELECT text FROM chat_log ORDER BY ts DESC, id DESC LIMIT 1"))
+            assertEquals(
+                (0 until steps).map { listOf<Any?>(30 * it, if (it == 0) null else 50L) },
+                journal.values("SELECT x, moved FROM trail('Bartok')"),
+            )
+        }
 
     // ── Privacy ─────────────────────────────────────────────────────────────────────────────────────
 
