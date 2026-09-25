@@ -16,7 +16,11 @@ import java.util.Properties
  *
  * Opening, in order:
  * 1. connection properties: no file system access from SQL (`read_csv`, `glob`, `ATTACH`, `COPY`
- *    fail), no extension download, bounded memory and threads, streamed results;
+ *    fail), no extension download, bounded memory and threads, streamed results. DuckDB still lets
+ *    SQL read its own files: this database, its `.wal`, `.wal.checkpoint`, and the `<file>.tmp/`
+ *    folder where it spills blocks, all holding the private messages in raw bytes; and
+ *    `current_setting('allowed_paths')` tells where they are. [SqlRunner] keeps them out of the
+ *    model's reach ([SqlAccess.MODEL]);
  * 2. `SET TimeZone` on the write connection: TIMESTAMPTZ values read back in the Journal's zone;
  * 3. the migrations of [MIGRATIONS] not applied yet, each in one transaction with its `schema_version` row;
  * 4. [VIEWS], if bundled, run at every opening (`CREATE OR REPLACE`: views and macros follow the code);

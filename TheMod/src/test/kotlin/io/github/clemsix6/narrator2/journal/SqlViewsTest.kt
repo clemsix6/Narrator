@@ -292,4 +292,19 @@ class SqlViewsTest {
         assertEquals(listOf("columns_of"), naming.map { it[0] })
         assertContains(naming.single()[1] as String, "NOT IN ('private_messages')")
     }
+
+    /**
+     * The plan check of model queries cannot see a setting read by a view (DuckDB folds it into a
+     * constant): the definitions themselves must read no file and no setting.
+     */
+    @Test
+    fun `no view or macro reads a file or a setting`() {
+        val definitions = values("SELECT view_name, sql FROM duckdb_views() WHERE NOT internal") + values(
+            "SELECT function_name, macro_definition FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro')",
+        )
+        val words = SqlRunner.FILE_FUNCTION_PREFIXES + SqlRunner.FILE_FUNCTIONS
+        definitions.forEach { (name, sql) ->
+            words.forEach { word -> assertFalse(word in (sql as String).lowercase(), "$name uses $word") }
+        }
+    }
 }
