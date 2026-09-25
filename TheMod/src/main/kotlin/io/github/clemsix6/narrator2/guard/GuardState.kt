@@ -134,8 +134,9 @@ data class OpenEpisode(val turnId: Long?, val until: Long) {
  * The guards' state of one player. Immutable: always replaced by a new instance (`setAttached`), never
  * changed in place.
  *
- * @property armedUntil the death guard is armed until this value of the player's `PLAY_TIME` stat
- *   (ticks played): it counts the same ticks as the effects it covers, and pauses while they are away.
+ * @property armedUntil the death guard is armed, for some [perils], until this value of the player's
+ *   `PLAY_TIME` stat (ticks played): it counts the same ticks as the effects it covers, and pauses while
+ *   they are away.
  * @property protectedDeath the player died under the death guard and keeps their inventory: set when
  *   the death is allowed, cleared when they respawn. Read by the keep-inventory mixins.
  * @property narratorKills the player's `PLAY_TIME` at each death the Narrator caused within the last
@@ -143,6 +144,10 @@ data class OpenEpisode(val turnId: Long?, val until: Long) {
  * @property lastDeathAt when the player last died, whatever killed them, epoch milliseconds (real time,
  *   like the no-piling-on rule); forgotten once that rule no longer applies. Saved with the player, so a
  *   player who dies, leaves and comes back within the 5 minutes is still spared.
+ * @property perils what the death guard covers: for each [Peril] id, until which value of the `PLAY_TIME`
+ *   stat; [armedUntil] is the latest of them.
+ * @property revivedUntil beyond the quota, a death was prevented, and no other is until this value of the
+ *   `PLAY_TIME` stat (the end of the armed stretch it happened in): one revival per episode.
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -153,6 +158,8 @@ data class GuardState(
     val protectedDeath: Boolean = false,
     val narratorKills: List<Long> = emptyList(),
     val lastDeathAt: Long? = null,
+    val perils: Map<String, Long> = emptyMap(),
+    val revivedUntil: Long = 0,
 ) {
     companion object {
         val EMPTY = GuardState()
@@ -168,8 +175,13 @@ data class GuardState(
                 Codec.BOOL.optionalFieldOf("protected_death", false).forGetter(GuardState::protectedDeath),
                 Codec.LONG.listOf().optionalFieldOf("narrator_kills", emptyList()).forGetter(GuardState::narratorKills),
                 Codec.LONG.optionalFieldOf("last_death_at").forGetter { Optional.ofNullable(it.lastDeathAt) },
-            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt ->
-                GuardState(modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null))
+                Codec.unboundedMap(Codec.STRING, Codec.LONG).optionalFieldOf("perils", emptyMap()).forGetter(GuardState::perils),
+                Codec.LONG.optionalFieldOf("revived_until", 0L).forGetter(GuardState::revivedUntil),
+            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, revivedUntil ->
+                GuardState(
+                    modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null),
+                    perils, revivedUntil,
+                )
             }
         }
 

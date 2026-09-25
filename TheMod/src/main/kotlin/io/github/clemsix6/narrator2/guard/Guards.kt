@@ -58,6 +58,13 @@ interface Guards {
      */
     fun armDeathGuard(target: UUID, seconds: Int)
 
+    /**
+     * Like [armDeathGuard], for the deaths [peril] covers only (M2 review, finding 11): a levitation arms
+     * the guard for a fall, not for a zombie's blow. [armDeathGuard] without a peril covers [Peril.ANY].
+     * A fake that does not tell perils apart arms for any.
+     */
+    fun armDeathGuard(target: UUID, seconds: Int, peril: Peril) = armDeathGuard(target, seconds)
+
     /** Whether a death is the Narrator's doing and the inventory is kept, for the `PlayerDied` event. Server thread only. */
     fun deathAttribution(victim: ServerPlayer, source: DamageSource): DeathAttribution
 

@@ -27,13 +27,16 @@ class EffectLedger(private val states: GuardStates, private val clock: Clock) {
      * effect of the `HARMFUL` category is recorded as part of a punishment.
      */
     fun apply(player: ServerPlayer, effect: Holder<MobEffect>, level: Int, seconds: Int, particles: Boolean, turnId: Long?): LedgerEffect {
-        player.removeEffect(effect)
-        player.addEffect(MobEffectInstance(effect, seconds * TICKS_PER_SECOND, level - 1, false, particles, true))
         val entry = LedgerEffect(
             effect.registeredName, level, clock.millis() + seconds * 1_000L,
             harmful = effect.value().category == MobEffectCategory.HARMFUL, turnId = turnId,
         )
-        states.update(player) { state -> state.copy(effects = state.effects.filterNot { it.effect == entry.effect } + entry) }
+        // Forgotten before the removal: the effect replaced does not end as the Narrator's (a levitation
+        // replaced by a new one leaves nobody falling, so its end is not cushioned).
+        states.update(player) { state -> state.copy(effects = state.effects.filterNot { it.effect == entry.effect }) }
+        player.removeEffect(effect)
+        player.addEffect(MobEffectInstance(effect, seconds * TICKS_PER_SECOND, level - 1, false, particles, true))
+        states.update(player) { state -> state.copy(effects = state.effects + entry) }
         log.debug { "effect ${describe(entry)} on ${player.plainTextName} for $seconds s" }
         return entry
     }
@@ -43,6 +46,13 @@ class EffectLedger(private val states: GuardStates, private val clock: Clock) {
         prune(player)
         return states.of(player).effects
     }
+
+    /**
+     * The ledger's entry of [effect] on [player], if the Narrator put it there; read as it is, without
+     * pruning, so that it still answers while the effect is leaving the player.
+     */
+    fun entryOf(player: ServerPlayer, effect: Holder<MobEffect>): LedgerEffect? =
+        states.of(player).effects.firstOrNull { it.effect == effect.registeredName }
 
     /** Removes [effect] from [player] and forgets it; false when the player did not have it. */
     fun remove(player: ServerPlayer, effect: Holder<MobEffect>): Boolean {

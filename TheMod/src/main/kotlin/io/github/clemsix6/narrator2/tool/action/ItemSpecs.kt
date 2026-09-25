@@ -15,6 +15,7 @@ import net.minecraft.core.registries.Registries
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.Identifier
+import net.minecraft.tags.ItemTags
 import net.minecraft.tags.TagKey
 import net.minecraft.world.flag.FeatureFlagSet
 import net.minecraft.world.item.GameMasterBlockItem
@@ -34,7 +35,7 @@ data class EnchantmentSpec(
     @Doc("Enchantment id, e.g. sharpness, protection, efficiency, mending, fire_aspect.")
     @MaxLen(64)
     val id: String,
-    @Doc("Level; may go past the game's usual maximum.")
+    @Doc("Level; at most one past the game's usual maximum (sharpness 6, protection 5).")
     @Range(1.0, 10.0)
     val level: Int = 1,
 )
@@ -63,7 +64,8 @@ class ItemSpec(
  *
  * Some items are never given ([forbidden]): operator items, blocks no survival player can break, spawn
  * eggs and spawners, and the ominous bottle (its Bad Omen starts a raid, which the Narrator's effects
- * never do).
+ * never do). An enchantment goes one level past the game's maximum at most, and precious items are
+ * rationed per player and per hour ([preciousness]).
  */
 object ItemSpecs {
     /** The rule of a refused item: `DENIED (forbidden_item): …`. */
@@ -99,6 +101,34 @@ object ItemSpecs {
 
     /** The ids of the items refused by name (not those refused by their class). */
     val forbiddenIds: Set<String> get() = FORBIDDEN.keys
+
+    /** Precious items worth one point each. */
+    private val ONE_POINT = setOf("minecraft:diamond", "minecraft:diamond_ore", "minecraft:deepslate_diamond_ore", "minecraft:golden_apple")
+
+    /** Precious items worth a whole hour's points, besides the netherite and diamond ones and the shulker boxes. */
+    private val RARE = setOf(
+        "minecraft:ancient_debris", "minecraft:elytra", "minecraft:totem_of_undying", "minecraft:enchanted_golden_apple",
+        "minecraft:beacon", "minecraft:nether_star", "minecraft:conduit", "minecraft:heart_of_the_sea", "minecraft:heavy_core",
+        "minecraft:mace", "minecraft:trident", "minecraft:dragon_egg", "minecraft:shulker_shell",
+    )
+
+    /** Every item whose id starts so is worth a whole hour's points: netherite, and diamond gear and blocks. */
+    private val RARE_PREFIXES = listOf("minecraft:netherite_", "minecraft:diamond_")
+
+    /**
+     * How precious one [item] is (M2 review, finding 13): the Narrator slows progression down, so a
+     * player gets at most [GiftLimiter.PRECIOUS_POINTS_PER_HOUR] points of precious items an hour. A
+     * diamond or a golden apple is one point; netherite, diamond gear and blocks, elytra, totems, enchanted
+     * golden apples, beacons, shulker boxes and the like are the whole hour's; anything else is 0.
+     */
+    fun preciousness(item: Holder<Item>): Int {
+        val id = item.registeredName
+        return when {
+            id in ONE_POINT -> 1
+            id in RARE || RARE_PREFIXES.any { id.startsWith(it) } || item.`is`(ItemTags.SHULKER_BOXES) -> GiftLimiter.PRECIOUS_POINTS_PER_HOUR
+            else -> 0
+        }
+    }
 
     /** The item called [raw] (`diamond_sword`, `minecraft:diamond_sword`); null when there is none. Any thread. */
     fun item(raw: String): Holder.Reference<Item>? =
@@ -161,6 +191,11 @@ object ItemSpecs {
                         "unknown enchantment \"${spec.id}\"; closest ids: ${closestIds(spec.id, registry.keySet().map(::shortId)).joinToString()}",
                     ),
                 )
+            // One level past the game's own maximum at most (M2 review, finding 13): a gag, never a weapon.
+            val cap = enchantment.value().maxLevel + 1
+            if (spec.level > cap) {
+                refuse(ToolResult.invalid("${shortId(enchantment)} goes up to level $cap, one past the game's own maximum (asked ${spec.level})"))
+            }
             enchantment to spec.level
         }
         if (resolved.map { it.first }.distinct().size < resolved.size) refuse(ToolResult.invalid("an enchantment is listed twice"))

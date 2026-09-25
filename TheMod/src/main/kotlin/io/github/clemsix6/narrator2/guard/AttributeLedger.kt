@@ -66,6 +66,9 @@ class AttributeLedger(private val states: GuardStates, private val decisions: De
         val instance = instance(player, key)
         val entry = LedgerModifier(key.id, amount, operation.serializedName, expiresAt, harmful, turnId)
         states.update(player) { state -> state.copy(modifiers = state.modifiers.filterNot { it.attribute == key.id } + entry) }
+        // The game's update leaves the previous modifier of the same id in place when its operation differs
+        // (an add, then a multiply, would both count, and the add would outlive the ledger): removed first.
+        instance.removeModifier(modifierId(key))
         instance.addOrUpdateTransientModifier(AttributeModifier(modifierId(key), amount, operation))
         val value = instance.value
         decisions.record(

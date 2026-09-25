@@ -16,6 +16,8 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.util.Util
 import net.minecraft.world.damagesource.DamageSource
+import net.minecraft.world.effect.MobEffectInstance
+import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.gamerules.GameRules
 import java.time.Clock
@@ -46,8 +48,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         Util.ioPool(),
     )
 
-    val death = DeathGuard(states, ::caps, decisions, clock)
     override val attributes = AttributeLedger(states, decisions, clock)
+    val death = DeathGuard(states, ::caps, decisions, clock, attributes)
     override val effects = EffectLedger(states, clock)
     override val items = ItemLedger(states, decisions, clock) { services.settings.get().ui }
     override val mobs = NarratorMobs(items)
@@ -94,13 +96,26 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         return verdict
     }
 
-    override fun armDeathGuard(target: UUID, seconds: Int) {
+    override fun armDeathGuard(target: UUID, seconds: Int) = armDeathGuard(target, seconds, Peril.ANY)
+
+    override fun armDeathGuard(target: UUID, seconds: Int, peril: Peril) {
         val server = services.server
         if (!server.isSameThread) {
-            server.execute { armDeathGuard(target, seconds) }
+            server.execute { armDeathGuard(target, seconds, peril) }
             return
         }
-        server.playerList.getPlayer(target)?.let { death.arm(it, seconds) }
+        server.playerList.getPlayer(target)?.let { death.arm(it, seconds, peril) }
+    }
+
+    /**
+     * An effect left [player] (it ran out, milk, a removal): the end of the Narrator's levitation leaves
+     * them in the air, so their fall is cushioned and covered by the death guard (M2 review, finding 1).
+     * `ServerMobEffectEvents.AFTER_REMOVE`; server thread.
+     */
+    fun onEffectEnded(player: ServerPlayer, effect: MobEffectInstance) {
+        if (player.isDeadOrDying || !effect.`is`(MobEffects.LEVITATION)) return
+        val mine = effects.entryOf(player, effect.effect) ?: return
+        death.cushionFall(player, mine.turnId)
     }
 
     override fun deathAttribution(victim: ServerPlayer, source: DamageSource): DeathAttribution = DeathAttribution(
