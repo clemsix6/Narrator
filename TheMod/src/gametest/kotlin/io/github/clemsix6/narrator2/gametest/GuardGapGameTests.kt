@@ -534,9 +534,12 @@ class GuardGapGameTests {
             }
             .thenIdle(10)
             .thenExecute {
-                helper.assertBlockProperty(fires.first, CampfireBlock.LIT, false)
-                helper.assertBlockPresent(Blocks.DECORATED_POT, pots.first)
-                helper.assertBlockPresent(Blocks.POINTED_DRIPSTONE, stalagmites.first)
+                val changed = listOfNotNull(
+                    "the campfire is lit".takeIf { helper.getBlockState(fires.first).getValue(CampfireBlock.LIT) },
+                    "the pot is broken".takeUnless { helper.getBlockState(pots.first).`is`(Blocks.DECORATED_POT) },
+                    "the dripstone is broken".takeUnless { helper.getBlockState(stalagmites.first).`is`(Blocks.POINTED_DRIPSTONE) },
+                )
+                helper.assertTrue(changed.isEmpty(), "the Narrator's projectiles changed blocks: ${changed.joinToString()}")
                 for ((pair, _) in blocks) {
                     helper.setBlock(pair.first, Blocks.AIR)
                     helper.setBlock(pair.second, Blocks.AIR)
