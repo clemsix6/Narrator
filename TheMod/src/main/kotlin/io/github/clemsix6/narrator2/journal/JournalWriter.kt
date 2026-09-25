@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.ReceiveChannel
 import org.duckdb.DuckDBAppender
+import org.duckdb.DuckDBConnection
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.time.Clock
@@ -27,12 +28,21 @@ import java.util.concurrent.locks.LockSupport
  *   every `journal.flushIntervalMs`, or at once when full, on a barrier and at the close).
  * @property healthIntervalMs how often the health report is logged and recorded.
  * @property maxBatch records written per transaction at most.
+ * @property reopenIntervalMs how often the writer tries to open a failed database again.
+ * @property idBlock ids reserved on disk at a time, for each kind but events ([IdReservations]).
+ * @property eventIdBlock event ids reserved on disk at a time.
  */
 internal data class JournalTuning(
     val pollMs: Long = 100,
     val healthIntervalMs: Long = TimeUnit.MINUTES.toMillis(5),
     val maxBatch: Int = 50_000,
-)
+    val reopenIntervalMs: Long = TimeUnit.MINUTES.toMillis(1),
+    val idBlock: Long = 1_000,
+    val eventIdBlock: Long = 100_000,
+) {
+    /** [reopenIntervalMs] for a log line: `60 s`. */
+    val reopenInterval: String get() = if (reopenIntervalMs % 1000 == 0L) "${reopenIntervalMs / 1000} s" else "$reopenIntervalMs ms"
+}
 
 /**
  * The Journal's writer (M1_M2 §5.6): a daemon thread, `narrator2-journal`, alone owner of the write
@@ -44,16 +54,19 @@ internal data class JournalTuning(
  * ([ReplaceTable]), in-place updates through prepared statements ([Upsert]). A
  * batch that fails is rolled back and written again by halves, so that a faulty row is dropped alone
  * (logged with its content, counted as lost) and never takes the others with it. A failure of the
- * database itself (the connection no longer answers: disk full, corrupt file) turns the Journal
- * unavailable: what comes next is counted as lost.
+ * database itself (the connection no longer answers: disk full, file locked, connection closed) turns
+ * the Journal unavailable: what comes next is counted as lost, and the writer tries to open the
+ * database again every [JournalTuning.reopenIntervalMs] through [recovery]. While it is down, facts
+ * still go through the mapping, which keeps following the sessions.
  *
  * @param onHealthDue called on this thread every [JournalTuning.healthIntervalMs].
  * @param onFinished called on this thread once the writer stopped: closes the reads and the database.
  * @param endReads called on this thread at the close, before the last `CHECKPOINT`: a query left open
  *   on a read connection would hold it back.
+ * @param recovery how to get over a failed database; without it, a failure lasts until the restart.
  */
 internal class JournalWriter(
-    private val db: DuckDatabase,
+    db: DuckDatabase,
     private val clock: Clock,
     flushIntervalMs: Long,
     private val queueCapacity: Int,
@@ -61,9 +74,25 @@ internal class JournalWriter(
     private val onHealthDue: () -> Unit,
     private val onFinished: () -> Unit,
     private val endReads: () -> Unit = {},
+    private val recovery: Recovery? = null,
 ) {
+    /** How the writer gets over a database that stopped answering (DuckJournal). Every call runs on the writer thread. */
+    interface Recovery {
+        /** The database stopped answering, for [error]: close it (its file stays locked while it is open). */
+        fun failed(error: String)
+
+        /** Opens the database again and returns its write connection; throws while it cannot. */
+        fun reopen(): DuckDBConnection
+
+        /** The database opened again: records are taken again, and the next batch is written at once. */
+        fun reopened()
+
+        /** A batch was committed on the reopened database: the outage is over. */
+        fun recovered()
+    }
+
     private val log = Log.journal
-    private val connection = db.writer
+    private var connection: DuckDBConnection = db.writer // writer thread
     private val mapping = JournalMapping()
     private val appenders = EnumMap<AppendTable, DuckDBAppender>(AppendTable::class.java)
     private val statements = EnumMap<Upsert, PreparedStatement>(Upsert::class.java)
@@ -71,6 +100,7 @@ internal class JournalWriter(
     private val flushNanos = TimeUnit.MILLISECONDS.toNanos(flushIntervalMs)
     private val pollNanos = TimeUnit.MILLISECONDS.toNanos(minOf(tuning.pollMs, flushIntervalMs))
     private val healthNanos = TimeUnit.MILLISECONDS.toNanos(tuning.healthIntervalMs)
+    private val reopenNanos = TimeUnit.MILLISECONDS.toNanos(tuning.reopenIntervalMs)
 
     /** A `barrier()` call waiting for what was handed over before it. */
     private class Barrier(val done: CompletableDeferred<Unit> = CompletableDeferred())
@@ -79,6 +109,8 @@ internal class JournalWriter(
     private val traces = ConcurrentLinkedQueue<Any>()
     private val tracesQueued = AtomicInteger()
     private val lostCount = AtomicLong()
+    private val factsLostWhileDownCount = AtomicLong()
+    private val tracesLostWhileDownCount = AtomicLong()
     private val lastQueueWarning = AtomicLong(Long.MIN_VALUE)
     private val checkpointRequested = AtomicBoolean()
     private val closeRequested = AtomicBoolean()
@@ -99,6 +131,12 @@ internal class JournalWriter(
     private var rowErrorsThisMinute = 0
     private var rowErrorsSuppressed = 0
     private var rowErrorMinute = 0L
+    private var nextReopen = Long.MAX_VALUE
+    private var reopenFailures = 0
+    private var flushSoon = false
+
+    /** True from a reopening until the first batch committed on the reopened database. */
+    private var recovering = false
 
     // Read by any thread.
     @Volatile
@@ -135,6 +173,12 @@ internal class JournalWriter(
     /** Records lost since the start on the writer's side: full queue, faulty rows, unavailable or closed Journal. */
     val lost: Long get() = lostCount.get()
 
+    /** Facts from the bus dropped since the start because the database was down. */
+    val factsLostWhileDown: Long get() = factsLostWhileDownCount.get()
+
+    /** Trace records dropped since the start because the database was down. */
+    val tracesLostWhileDown: Long get() = tracesLostWhileDownCount.get()
+
     private val thread = Thread(::run, "narrator2-journal").apply { isDaemon = true }
 
     fun start() = thread.start()
@@ -143,6 +187,7 @@ internal class JournalWriter(
     fun submit(record: Any) {
         if (finished || !available) {
             lostCount.incrementAndGet()
+            if (!finished) tracesLostWhileDownCount.incrementAndGet()
             log.debug { "not recorded (${if (finished) "the Journal is closed" else "the Journal is unavailable"}): $record" }
             return
         }
@@ -198,13 +243,19 @@ internal class JournalWriter(
                 val now = System.nanoTime()
                 if (closing && now >= drainDeadline) break
                 val due = now >= nextFlush || pending.size >= tuning.maxBatch || awaitingCommit.isNotEmpty() ||
-                    closing || checkpointRequested.get()
+                    closing || checkpointRequested.get() || flushSoon
                 if (due) {
+                    flushSoon = false
                     flush()
                     nextFlush = now + flushNanos
                     if (checkpointRequested.getAndSet(false)) checkpoint()
                 }
                 updateRowsPerMinute(now)
+                if (!available && !closing && now >= nextReopen) {
+                    nextReopen = now + reopenNanos
+                    reopen()
+                    if (available) continue // straight to the batch that confirms it
+                }
                 if (now >= nextHealth) {
                     nextHealth = now + healthNanos
                     try {
@@ -281,7 +332,7 @@ internal class JournalWriter(
 
     private fun write(items: List<Any>) {
         if (!available) {
-            lostCount.addAndGet(items.size.toLong())
+            dropWhileDown(items)
             return
         }
         val start = System.nanoTime()
@@ -300,6 +351,31 @@ internal class JournalWriter(
         lastFlushRows = written
         recentFlushes.addLast(longArrayOf(start, written.toLong()))
         log.debug { "wrote $written rows (${items.size} records) in $ms ms" }
+        if (recovering && available) {
+            recovering = false
+            recovery?.recovered()
+        }
+    }
+
+    /**
+     * Drops [items] while the database is down, counted as lost. Facts still go through the mapping,
+     * which keeps following the sessions: once the database is back, facts get their session again
+     * and a departure writes its whole session.
+     */
+    private fun dropWhileDown(items: List<Any>) {
+        for (item in items) {
+            if (item is Envelope) {
+                factsLostWhileDownCount.incrementAndGet()
+                try {
+                    mapping.rows(item)
+                } catch (_: Exception) {
+                    // counted as lost all the same
+                }
+            } else {
+                tracesLostWhileDownCount.incrementAndGet()
+            }
+        }
+        lostCount.addAndGet(items.size.toLong())
     }
     // ── Writing rows ────────────────────────────────────────────────────────────────────────────────
 
@@ -316,8 +392,8 @@ internal class JournalWriter(
         }
         val error = commit(rows) ?: return rows.size
         if (!databaseAnswers()) {
-            lostCount.addAndGet(rows.size.toLong())
             degrade(error)
+            lostCount.addAndGet(rows.size.toLong()) // after degrade: counted in the outage
             return 0
         }
         if (rows.size == 1) {
@@ -467,14 +543,48 @@ internal class JournalWriter(
 
     // ── Failures ────────────────────────────────────────────────────────────────────────────────────
 
+    /**
+     * The database no longer answers: the Journal turns unavailable, and [recovery] closes the
+     * database and tries to open it again every [JournalTuning.reopenIntervalMs].
+     */
     private fun degrade(error: Exception) {
         if (!available) return
-        lastError = error.message?.lineSequence()?.firstOrNull() ?: error.javaClass.simpleName
+        val why = error.message?.lineSequence()?.firstOrNull() ?: error.javaClass.simpleName
+        lastError = why
         available = false
-        log.error(
-            "the database failed, the Journal stops recording until the server restarts; facts and traces are counted as lost: $lastError",
-            error,
-        )
+        recovering = false
+        val retry = if (recovery == null) "until the server restarts" else "until it opens the database again (every ${tuning.reopenInterval})"
+        log.error("the database failed, the Journal stops recording $retry; facts and traces are counted as lost: $why", error)
+        discardAppenders()
+        discardStatements()
+        try {
+            recovery?.failed(why)
+        } catch (e: Exception) {
+            log.error("closing the failed database failed", e)
+        }
+        nextReopen = System.nanoTime() + reopenNanos
+    }
+
+    /** One attempt to open the database again; once it opens, records are taken again and written at once. */
+    private fun reopen() {
+        val recovery = recovery ?: return
+        val start = System.nanoTime()
+        val fresh = try {
+            recovery.reopen()
+        } catch (e: Exception) {
+            reopenFailures++
+            val why = e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName
+            val line = "opening the database again failed (attempt $reopenFailures), next attempt in ${tuning.reopenInterval}: $why"
+            if (reopenFailures == 1 || reopenFailures % 10 == 0) log.warn(line) else log.debug { line }
+            return
+        }
+        connection = fresh
+        reopenFailures = 0
+        recovering = true
+        flushSoon = true
+        available = true
+        log.info("opened the database again in ${(System.nanoTime() - start) / 1_000_000} ms")
+        recovery.reopened()
     }
 
     /** Logs a dropped row or record, at most [ROW_ERRORS_PER_MINUTE] lines a minute; the rest is counted. */

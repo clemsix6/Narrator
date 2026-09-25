@@ -73,7 +73,7 @@ L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouvea
 | Noms du jeu | Noms officiels de Mojang (le jeu n'est plus obfusqué depuis 26.1) | Le code compilé à chaud voit exactement les mêmes noms que le jeu en cours d'exécution |
 | Claude | SDK Java officiel d'Anthropic, pointé sur **LLMGW** | Protocole Anthropic Messages standard ; LLMGW gère clés projet, budgets et comptes |
 | Journal et mémoire | **DuckDB** embarqué (JDBC) | Base analytique en colonnes : agrégations rapides sur des millions de lignes, SQL riche (fenêtres, `QUALIFY`, JSON, listes), aucun serveur à gérer |
-| Recherche plein texte | Lucene (analyseur français) | BM25 local, léger ; k-NN possible plus tard |
+| Recherche plein texte | BM25 calculé en SQL dans DuckDB, analyseur français en Kotlin | Rien de plus dans le jar ; l’extension `fts` de DuckDB n’est pas embarquable et Lucene ajouterait 6,5 Mo et un second stockage (mesures dans `design/M3.md`) |
 | Code à chaud | **Java 25** compilé en mémoire : javac si le serveur tourne sur un JDK, sinon ECJ embarqué (3,4 Mo) | ~50 ms par compilation une fois chaud, API standard, et c'est en Java que Claude écrit le mieux contre les classes de Minecraft (voir §10) |
 
 Versions vérifiées (fixées dans `TheMod/gradle.properties`) :
@@ -445,7 +445,7 @@ Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, dur
 |---|---|---|
 | **M0 — Fondations** — **terminé (25/09/2026)** | Projet Gradle Fabric/Kotlin 26.3, serveur de dev, configuration, client LLMGW, traces des appels, `/narrator ping` | Le mod démarre et parle à Claude — vérifié contre le vrai serveur LLMGW (`gradlew liveTest`) et de bout en bout (`/narrator ping` sur le serveur de dev, réponse en 4,5 s) |
 | **M1 — Journal** | Observateur (hooks, statistiques, mixins, positions), DuckDB, outil `sql` | Tout est enregistré et interrogeable. **Terminé le 25/09/2026** (voir `design/handoff/T07.md`) |
-| **M2 — Directeur v1** | Boucle événementielle, saillance, parole, Oracle, actions typées, validation des commandes, prompt de voix, transcriptions | Le Narrateur réagit au chat et au jeu |
+| **M2 — Directeur v1** | Boucle événementielle, saillance, parole, Oracle, actions typées, validation des commandes, prompt de voix, transcriptions | Le Narrateur réagit au chat et au jeu. **Recette passée le 25/09/2026**, en jeu contre le vrai LLMGW (voir `design/handoff/T22.md`) ; clôture à la fusion des lots bloquants de la relecture (`design/reviews/M2_REVIEW.md`) |
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures |
 | **M4 — Mécaniques** | Défis, châtiments, faveurs, pièges, récits, cooldowns, barres de boss, Règles (§10.1) | Des parties rythmées, des règles du monde folles |
 | **M5 — Forge** | SDK, compilation Java à chaud, outils d'introspection, Forgeron, arsenal de départ | Il invente de nouvelles mécaniques |

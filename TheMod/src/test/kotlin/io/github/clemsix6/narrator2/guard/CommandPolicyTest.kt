@@ -26,7 +26,14 @@ class CommandPolicyTest {
         register(literal("fill").then(argument("size", integer()).executes(ok)))
         register(literal("say").then(argument("text", greedyString()).executes(ok)))
         register(literal("scoreboard").then(literal("objectives").then(literal("list").executes(ok))))
+        register(literal("stopsound").then(argument("sound", word()).executes(ok)))
         register(literal("playsound").then(argument("sound", word()).executes(ok)))
+        register(literal("particle").then(argument("name", word()).then(argument("count", integer()).executes(ok))))
+        register(
+            literal("random")
+                .then(literal("value").then(argument("range", word()).executes(ok)))
+                .then(literal("roll").then(argument("range", word()).executes(ok))),
+        )
         register(literal("stop").requires { false }.executes(ok))
         // Another mod's command, and its alias.
         val sethome = register(literal("sethome").then(argument("name", word()).executes(ok)))
@@ -112,10 +119,37 @@ class CommandPolicyTest {
     fun `the reviewed commands run, and a word that is no command is left to run_command`() {
         allowed("scoreboard objectives list")
         allowed("execute as all run scoreboard objectives list")
-        allowed("execute if block here run playsound pig")
-        allowed("playsound pig")
+        allowed("execute if block here run stopsound pig")
+        allowed("stopsound pig")
+        allowed("random value 1..6")
+        allowed("execute as all run random value 1..6")
         allowed("fil 3")
         allowed("execute run fil 3")
+    }
+
+    /** M2 review, finding 7: bounded tools do the same, and `random roll` tells every player. */
+    @Test
+    fun `particle, playsound and random roll are refused, alone or behind execute`() {
+        assertEquals(
+            "`particle` is forbidden: a tool with its own limits does it; use the particles tool instead.",
+            refused("particle heart 2000000000", "particle"),
+        )
+        refused("execute as all run particle heart 2000000000", "particle")
+        assertEquals(
+            "`playsound` is forbidden: a tool with its own limits does it; use the play_sound tool instead.",
+            refused("playsound pig", "playsound"),
+        )
+        refused("execute if block here run playsound pig", "playsound")
+        assertEquals(
+            "`random roll` is forbidden: the Narrator speaks through its speech tools (say, show_title, actionbar, give_book), " +
+                "which are recorded; use random value (its result reaches you alone) instead.",
+            refused("random roll 1..6", "random roll"),
+        )
+        refused("execute as all run random roll 1..6", "random roll")
+        refused("random roll", "random roll")
+        extraAllowed = listOf("particle", "playsound")
+        refused("particle heart 1", "particle")
+        refused("playsound pig", "playsound")
     }
 
     @Test
@@ -147,15 +181,15 @@ class CommandPolicyTest {
 
     @Test
     fun `the configuration adds roots, read at each check`() {
-        allowed("playsound pig")
-        extra = listOf(" PlaySound ")
+        allowed("stopsound pig")
+        extra = listOf(" StopSound ")
         assertEquals(
-            "`playsound` is forbidden: the operators forbid it (safety.extraForbiddenCommands).",
-            refused("playsound pig", "playsound"),
+            "`stopsound` is forbidden: the operators forbid it (safety.extraForbiddenCommands).",
+            refused("stopsound pig", "stopsound"),
         )
-        refused("execute as all run playsound pig", "playsound")
+        refused("execute as all run stopsound pig", "stopsound")
         extra = emptyList()
-        allowed("playsound pig")
+        allowed("stopsound pig")
     }
 
     @Test
@@ -177,8 +211,11 @@ class CommandPolicyTest {
             "weather", "time", "locate", "bossbar",
         )
         assertEquals(emptyList(), design.filterNot { it in CommandPolicy.FORBIDDEN })
-        listOf("execute", "scoreboard", "playsound", "particle", "waypoint").forEach {
+        listOf("execute", "scoreboard", "stopsound", "waypoint", "random").forEach {
             assertTrue(it !in CommandPolicy.FORBIDDEN && it in CommandPolicy.ALLOWED, "$it stays allowed")
+        }
+        listOf("particle", "playsound").forEach {
+            assertEquals(CommandPolicy.Reason.TOOL, CommandPolicy.FORBIDDEN[it]?.reason, "$it: a bounded tool does it")
         }
         assertEquals(CommandPolicy.Reason.ITEMS, CommandPolicy.FORBIDDEN["recipe"]?.reason, "recipes are progress: never handed out")
         assertEquals(emptySet(), CommandPolicy.ALLOWED intersect CommandPolicy.FORBIDDEN.keys, "allowed and forbidden at once")

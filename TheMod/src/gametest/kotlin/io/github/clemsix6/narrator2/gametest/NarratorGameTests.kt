@@ -138,9 +138,11 @@ class NarratorGameTests {
 
         val hold = Hold()
         fake.enqueue(reply { hold(hold); thinking("An operator is checking the line."); text("Pong. I hear you, alas."); usage(input = 80, output = 12) })
+        // The Director stays asleep: with a key in force it would wake up for the other tests' players and
+        // send its turns to this test's fake gateway. DirectorEndToEndTests runs it, in a batch of its own.
         Files.writeString(
             NarratorRuntime.configFile,
-            """{ "gateway": { "baseUrl": "${fake.baseUrl}", "apiKeyEnv": "$KEY_ENV", "maxRetries": 0 } }""",
+            """{ "gateway": { "baseUrl": "${fake.baseUrl}", "apiKeyEnv": "$KEY_ENV", "maxRetries": 0 }, "director": { "enabled": false } }""",
         )
         val output = CommandOutput()
         val source = helper.level.server.createCommandSourceStack().withSource(output)
