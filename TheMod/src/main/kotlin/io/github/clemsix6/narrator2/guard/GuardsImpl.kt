@@ -6,6 +6,10 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.server.MinecraftServer
@@ -85,7 +89,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         states.update(target) { it.copy(episode = episode) }
         decisions.record(
             log, DecisionRecord.Kind.GUARD, "allowed", name, reason = "hostile action; the punishment runs until ${clockTime(clock, episode.until)}",
-            conversationId = caller.conversationId, turnId = caller.turnId, level = Log.Level.DEBUG,
+            conversationId = caller.conversationId, turnId = caller.turnId,
         )
         return verdict
     }
@@ -175,10 +179,54 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         states.forget(player.uuid)
     }
 
-    /** [player] died (no totem saved them), whatever killed them: the death is saved with them, and counted if the Narrator's. Server thread. */
+    /**
+     * [player] died (no totem saved them), whatever killed them: the death is saved with them, counted if
+     * the Narrator's, and explained by a `death_guard died` decision ([DeathReport]). Server thread.
+     */
     fun onDeath(player: ServerPlayer, source: DamageSource) {
-        states.update(player) { it.copy(lastDeathAt = clock.millis()) }
+        val now = clock.millis()
+        states.update(player) { it.copy(lastDeathAt = now) }
         death.afterDeath(player, source)
+        explain(player, source, now)
+    }
+
+    /**
+     * Writes the `death_guard died` decision of [player]'s death at [at] (M2 review, finding 18): the
+     * guard's state is read here, on the server thread; the Narrator's actions of the minute before are
+     * read from the Journal off this thread, once the tool that may have killed has written its row.
+     */
+    private fun explain(player: ServerPlayer, source: DamageSource, at: Long) {
+        val state = states.of(player)
+        val playTime = DeathGuard.playTime(player)
+        val cap = caps().narratorKillsPerHour
+        val name = player.plainTextName
+        val shielded = protection.isProtected(player.uuid, name)
+        val report = DeathReport(
+            player = name,
+            at = at,
+            cause = source.typeHolder().registeredName,
+            narrator = DeathGuard.keepsInventory(player),
+            keptInventory = deathAttribution(player, source).keptInventory,
+            isProtected = shielded,
+            playTime = playTime,
+            armedUntil = state.armedUntil,
+            deathsLeft = if (shielded) 0 else DeathGuard.quotaLeft(state.narratorKills, playTime, cap),
+            deathsPerHour = cap,
+        )
+        val journal = services.journal
+        services.scope.launch {
+            val explained = try {
+                delay(DEATH_REPORT_DELAY_MS)
+                withTimeoutOrNull(DEATH_REPORT_BARRIER_MS) { journal.barrier() }
+                val actions = journal.read(DEATH_REPORT_READ_MS) { DeathReport.actionsOn(it, name, at - DeathReport.WINDOW_MS, at) }
+                report.copy(actions = actions)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                report.copy(actionsUnknown = e.message ?: e.javaClass.simpleName)
+            }
+            decisions.record(log, DecisionRecord.Kind.DEATH_GUARD, "died", name, reason = explained.reason(), detail = explained.detail())
+        }
     }
 
     /** End of a server tick: once a second of wall-clock time, [check] what is due. Server thread. */
@@ -215,6 +263,11 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         const val PROTECTED_FILE = "protected.json"
 
         private const val CHECK_INTERVAL_MS = 1_000L
+
+        /** A death is explained this long after it: the tool that killed has returned and written its row. */
+        private const val DEATH_REPORT_DELAY_MS = 2_000L
+        private const val DEATH_REPORT_BARRIER_MS = 1_000L
+        private const val DEATH_REPORT_READ_MS = 5_000L
     }
 }
 
