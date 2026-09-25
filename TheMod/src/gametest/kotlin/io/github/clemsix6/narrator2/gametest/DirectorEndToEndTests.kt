@@ -104,7 +104,8 @@ class DirectorEndToEndTests {
             check(lines.any { "CHAT ${speaker.name}" in it && model.greet in it }) { "trace turn shows the chat that woke it: $lines" }
             check(lines.any { it.trimStart().startsWith("→ sql") } && lines.any { it.trimStart().startsWith("→ say") }) { "trace turn shows both tools: $lines" }
             val calls = Regex("Usage \\(24 h\\): Claude (\\d+) calls").find(lines.joinToString("\n"))?.groupValues?.get(1)?.toInt() ?: 0
-            check(calls >= 3) { "status counts the fake gateway's calls: $lines" }
+            // The greeting's two calls at least: the player's join, posted before the key arrived, is dropped by the sleeping Director.
+            check(calls >= 2) { "status counts the fake gateway's calls: $lines" }
             check(lines.any { it.startsWith("Director: ") } && lines.any { it.startsWith("Chapter: #") }) { "status follows the Director: $lines" }
 
             // 3. A question for the Analyst: delegate, the Analyst's Oracle on the live player, its report wakes the Director.
