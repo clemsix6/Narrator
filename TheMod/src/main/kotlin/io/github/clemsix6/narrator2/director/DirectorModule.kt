@@ -2,14 +2,21 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.command.narratorLine
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ServerStoppedException
+import io.github.clemsix6.narrator2.core.ServerThreadTimeoutException
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.ToolCatalog
 import io.github.clemsix6.narrator2.tool.speech.Speech
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import net.minecraft.network.chat.Component
 import net.minecraft.server.MinecraftServer
+import net.minecraft.util.thread.BlockableEventLoop
 import java.util.UUID
 
 /**
@@ -59,16 +66,40 @@ private class ServerGameView(private val services: NarratorServices) : GameView 
         onServer { server -> operators.forEach { server.playerList.getPlayer(it)?.sendSystemMessage(narratorLine(text)) } }
     }
 
-    /**
-     * Runs [block] on the server thread: right away when already on it (`execute` would defer it behind
-     * the task in progress, after a line shown in the same tick), queued otherwise.
-     */
-    private fun onServer(block: (MinecraftServer) -> Unit) {
-        val server = services.server
-        if (server.isSameThread) block(server) else server.execute { block(server) }
-    }
+    private fun onServer(block: (MinecraftServer) -> Unit) = showOnServer(services.server, services.scope, SHOW_TIMEOUT_MS, block)
 
     private companion object {
         const val WORLD_TIMEOUT_MS = 1_000L
+
+        /** A line the server thread does not show within this delay is dropped: it would come too late. */
+        const val SHOW_TIMEOUT_MS = 5_000L
+    }
+}
+
+/**
+ * Runs [block] on [loop]'s thread (the server's) without waiting for it: at once when already on that
+ * thread (`execute` would defer it behind the task in progress, after a line shown in the same tick),
+ * else through [onServerThread], started in [scope] before this returns so that the blocks keep their
+ * order. The block never runs on another thread (M2 review, finding 17): once the server has stopped,
+ * Minecraft runs a submitted task on the caller's thread, and the block is dropped instead; it is
+ * dropped too when the server thread does not get to it within [timeoutMs], or once [scope] is cancelled.
+ */
+internal fun <L : BlockableEventLoop<*>> showOnServer(loop: L, scope: CoroutineScope, timeoutMs: Long, block: (L) -> Unit) {
+    if (loop.isSameThread) {
+        block(loop)
+        return
+    }
+    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        try {
+            loop.onServerThread(timeoutMs) { block(loop) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ServerStoppedException) {
+            Log.director.debug { "not shown: ${e.message}" }
+        } catch (e: ServerThreadTimeoutException) {
+            Log.director.warn("not shown: ${e.message}")
+        } catch (e: Exception) {
+            Log.director.error("showing something to the players failed", e)
+        }
     }
 }

@@ -18,6 +18,7 @@ Lot I de la relecture de M2 (`reviews/M2_REVIEW.md`, addendum). Branche `worktre
   ```
   `Inbox.takeOverflow()` prend les comptes, `restoreOverflow()` les remet quand la requête qui les portait n'a pas eu de réponse utilisable (le tour les suit dans `sentSkipped`, comme `sent` pour les éléments). Un Directeur désactivé les jette avec la boîte.
 - `droppedSignals` de `/narrator status` compte toujours les éléments retirés.
+- Avec le budget de tours du lot EF (constat 26), des éléments `SOON` peuvent attendre jusqu'à une heure : l'ordre de retrait les garde après les `NEXT`, et le chat adressé mis en `SOON` par le budget d'un joueur passe après les autres `SOON`. Au-delà de 200 éléments en attente, les plus anciens sont retirés et comptés, comme le reste.
 
 ### Les chapitres fermés sur une erreur rouvrent avec un backoff
 
@@ -83,7 +84,6 @@ Calculée en `Double` : au-delà d'environ 46 000 blocs, le carré débordait l'
 
 - `director/Briefing.kt` et `director/SituationReport.kt` (aucun autre lot) : indispensables pour les 3 places, le briefing réduit et les noms.
 - `llm/Conversation.kt` (ajout de `frozen`) et `llm/ClaudeClient.kt` (une ligne) : le modèle se choisit là (constat 25).
-- `gametest/DirectorEndToEndTests.kt` (T22) : un seuil, voir « Vérifications ».
 - Tests : `DirectorScenariosTest` (S5 attend le backoff), `ChapterScenariosTest`, `BriefingTest` (#11 sans résumé antérieur au dernier résumé n'est plus listé), `AgentLoopTest` (nouvelle signature de `afterTools`), `WorkersTest`, `OracleTextTest`, `OracleToolsTest`, `EventFormatterTest`, `InboxTest` (nouvel ordre de retrait).
 - **Contrat non modifié mais désormais inexact** : la KDoc de `DirectorControl.post` (T01) dit « never addressed chat nor control signals ». Le chat adressé peut maintenant être retiré, en dernier recours et compté. À corriger par le propriétaire du contrat.
 - `Salience.kt` et `WakeScheduler.kt` (lot EF) ne sont pas touchés : l'annotation du tri est échappée à l'affichage, dans `EventFormatter`.
@@ -92,7 +92,7 @@ Calculée en `Double` : au-delà d'environ 46 000 blocs, le carré débordait l'
 
 - **M3** : `Chapters.finish` est le seul point de fin réelle d'un chapitre (pour `chapterClosed`) ; `Briefing.render(reduced = true)` est le drapeau de la forme réduite ; `ModelText` est l'échappement à utiliser pour tout texte de joueur des nouvelles sections (fiches, chronique, souvenirs).
 - **Suggestion (lot J)** : un chapitre ouvert pendant une coupure du Journal n'a pas `sql` jusqu'à sa fin. On pourrait marquer le chapitre (comme un rechargement) quand `journal.available` revient ; je ne l'ai pas fait (hors des constats du lot).
-- **Lot EF** : le budget global de réveils (constat 26) s'ajoutera probablement dans `Director.step` ; la vérification `chapters.isClosing` doit rester avant tout réveil.
+- **Lot EF** (fusionné) : son budget de tours vit dans `WakeScheduler.wakeAt` et `heartbeat()` ; la vérification `chapters.isClosing` de `Director.step` passe avant tout réveil et tout battement. La KDoc d'`Item.isUnaddressedChat` est mise à jour (le chat entre joueurs ne réveille plus).
 
 ## Vérifications
 
@@ -116,6 +116,6 @@ Calculée en `Double` : au-delà d'environ 46 000 blocs, le carré débordait l'
   | pas de plafond de file | `WorkersTest` file de 10 |
   | `distance` en `Int` | `OracleTextTest` distances, `OracleToolsTest` 50 000 blocs |
 
-- `gradlew build` après fusion de `main` (lots CD et J, T22 compris) : **688 tests unitaires et 143 GameTests, tous verts**.
-- **GameTest de T22 corrigé** (`DirectorEndToEndTests`, une ligne) : `check(calls >= 3)` sur la ligne `Usage (24 h)` de `status` échouait **aussi sur `main`** (vérifié dans une copie de `main` à `90dcc09` : « status counts the fake gateway's calls », 2 appels). Le tour du salut fait 2 appels (le test le vérifie lui-même : `llm_calls = 2`), et l'arrivée du joueur, postée avant la clé, est jetée par le Directeur endormi : il n'y a pas de troisième appel. Le seuil passe à 2.
+- `gradlew build` après fusion de `main` (lots B, CD, EF et J, T22 compris) : **707 tests unitaires et 154 GameTests, tous verts**.
+- `DirectorEndToEndTests` (T22) échouait aussi sur `main` à `90dcc09` (`calls >= 3` à l'étape `status`, 2 appels) : je l'avais corrigé en `>= 2`, le lot EF a fait le même correctif ; c'est sa version qui est gardée à la fusion.
 - Pas de `runServer`, pas de `liveTest`.

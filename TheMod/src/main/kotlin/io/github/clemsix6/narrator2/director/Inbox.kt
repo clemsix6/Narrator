@@ -34,7 +34,7 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
     /** The chat message it carries, if any. */
     val chat: ChatMessage? get() = (signal as? DirectorSignal.Event)?.envelope?.event as? ChatMessage
 
-    /** A public message between players: it waits for company (M1_M2 §12.3). */
+    /** A public message between players: it wakes nobody and goes with the next wake-up or heartbeat (M2 review, finding 26). */
     val isUnaddressedChat: Boolean get() = chat?.channel == ChatChannel.PUBLIC && urgency == Urgency.NEXT
 
     /** A message or a prayer addressed to the Narrator: its author waits for an answer. */
