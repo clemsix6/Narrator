@@ -2,7 +2,26 @@
   "required": true,
   "package": "io.github.clemsix6.narrator2.mixin.observer",
   "compatibilityLevel": "JAVA_25",
-  "mixins": [],
+  "mixins": [
+    "AbstractVillagerMixin",
+    "AnvilMenuMixin",
+    "BredAnimalsTriggerMixin",
+    "ConsumeItemTriggerMixin",
+    "EnchantedItemTriggerMixin",
+    "EnderEyeItemMixin",
+    "FishingRodHookedTriggerMixin",
+    "GrindstoneResultSlotMixin",
+    "ItemStackCraftMixin",
+    "ItemUsedOnLocationTriggerMixin",
+    "LootTableTriggerMixin",
+    "PlayerAdvancementsMixin",
+    "ProjectileMixin",
+    "ServerExplosionObserverMixin",
+    "ServerGamePacketListenerImplMixin",
+    "ServerPlayerObserverMixin",
+    "StatsCounterAccessor",
+    "TameAnimalTriggerMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
