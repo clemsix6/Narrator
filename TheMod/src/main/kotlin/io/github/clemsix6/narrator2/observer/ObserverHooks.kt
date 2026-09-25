@@ -27,7 +27,7 @@ import io.github.clemsix6.narrator2.event.ProjectileHit
 import io.github.clemsix6.narrator2.event.RespawnPointSet
 import io.github.clemsix6.narrator2.event.StatAwarded
 import io.github.clemsix6.narrator2.event.Traded
-import io.github.clemsix6.narrator2.guard.NarratorMobs
+import io.github.clemsix6.narrator2.guard.ExplosionGuard
 import net.fabricmc.fabric.api.entity.FakePlayer
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents
@@ -571,8 +571,9 @@ object ObserverHooks {
                 blocksHit = blocks?.get(0) ?: 0,
                 playerBlocksHit = playerBlocksHit,
                 nearby = nearby,
-                // The Narrator's entities carry its tag: its creatures, and whatever its tools spawn (TNT, fireworks…).
-                narrator = NarratorMobs.isNarrators(direct) || NarratorMobs.isNarrators(author),
+                // The Narrator's entities carry its tag (its creatures, whatever its tools spawn); the explosion
+                // tool has no source entity, and goes off inside ExplosionGuard.narrators, which we are still in.
+                narrator = ExplosionGuard.isNarrators(explosion),
             ),
         )
     }

@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.config.JournalConfig
+import io.github.clemsix6.narrator2.event.AdvancementEarned
 import io.github.clemsix6.narrator2.event.BlockBroken
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.event.ChatMessage
@@ -37,6 +38,7 @@ import java.nio.file.Path
 import java.sql.SQLException
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -58,6 +60,8 @@ class DuckJournalTest {
     private fun left(player: PlayerRef, session: Long, seconds: Long, pos: Pos = here) = PlayerLeft(player, pos, session, seconds, LeaveReason.LEAVE)
 
     private fun broke(player: PlayerRef) = BlockBroken(player, here, "minecraft:stone", null, creative = false, correctTool = true, placedBy = null)
+
+    private fun earned(player: PlayerRef) = AdvancementEarned(player, here, "minecraft:story/root", "Minecraft", "task")
 
     private fun position(player: PlayerRef) =
         PositionSampled(player, here, "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.MOVED)
@@ -103,6 +107,40 @@ class DuckJournalTest {
         assertEquals(
             listOf(listOf("Steve", start), listOf("Steve2", joined2)),
             journal.values("SELECT name, first_seen FROM player_names ORDER BY first_seen"),
+        )
+    }
+
+    /**
+     * Fabric publishes the join at the end of the connection, after what the connection set off in the
+     * same tick (T07: an advancement unlocked by the reloaded inventory): the session that opens adopts
+     * those facts, whether they are still in the writer's batch or already written. Other facts without
+     * a session stay so.
+     */
+    @Test
+    fun `facts published in the tick of a join, just before it, belong to the session it opens`() = JournalFixture().use { journal ->
+        val carl = PlayerRef(UUID.randomUUID(), "Carl")
+        journal.publish(broke(steve)) // long before: no session
+        journal.clock.advance(Duration.ofHours(1))
+        journal.publish(earned(steve)) // during the connection
+        journal.publish(joined(steve, 1))
+        journal.publish(earned(alex))
+        journal.sync() // Alex's advancement is written before his join comes
+        journal.clock.advance(Duration.ofMillis(300))
+        journal.publish(joined(alex, 2))
+        journal.publish(broke(alex))
+        journal.publish(earned(carl))
+        journal.gameTime += 1 // the next tick: not set off by Carl's connection
+        journal.publish(joined(carl, 3))
+        journal.clock.advance(Duration.ofMinutes(5))
+        journal.publish(earned(PlayerRef(UUID.randomUUID(), "Ghost"))) // never joins
+
+        assertEquals(
+            listOf(
+                listOf("Steve", "block_break", null), listOf("Steve", "advancement", 1L), listOf("Steve", "join", 1L),
+                listOf("Alex", "advancement", 2L), listOf("Alex", "join", 2L), listOf("Alex", "block_break", 2L),
+                listOf("Carl", "advancement", null), listOf("Carl", "join", 3L), listOf("Ghost", "advancement", null),
+            ),
+            journal.values("SELECT player, type, session_id FROM events ORDER BY id"),
         )
     }
 
@@ -302,7 +340,57 @@ class DuckJournalTest {
         assertEquals(100L, journal.count("events"))
     }
 
+    /**
+     * T07: after the GameTests' last read, every `CHECKPOINT` failed ("other write transactions active").
+     * The read stopped at its first row; DuckDB kept its query and read transaction open on the
+     * connection, and the writes that followed, which updated rows, could not let go of the checkpoint.
+     */
+    @Test
+    fun `a read that stops before the end of its result does not hold the checkpoint back`() = JournalFixture(file).use { journal ->
+        journal.publish(joined(steve, 1))
+        repeat(100) { journal.publish(broke(steve)) }
+        journal.sync()
+        val first = runBlocking {
+            journal.journal.read(5_000) { connection ->
+                connection.prepareStatement("SELECT type FROM events WHERE player = ?").use { statement ->
+                    statement.setString(1, "Steve")
+                    statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }
+        }
+        assertTrue(first != null)
+        LogCapture().use { logs ->
+            journal.publish(left(steve, 1, 60)) // updates sessions and players in place
+            journal.sync()
+            journal.journal.checkpointAsync()
+            journal.sync()
+            journal.sync()
+            assertFalse("CHECKPOINT failed" in logs.text, logs.text)
+        }
+        assertEquals(0L, journal.db.walBytes(), "the WAL is folded into the file")
+    }
+
     // ── Close, restart ──────────────────────────────────────────────────────────────────────────────
+
+    /** Whatever left a query open on a read connection (a read still running, say), the close ends it before its checkpoint. */
+    @Test
+    fun `the close checkpoints even when a query was left open on a read connection`() {
+        val fixture = JournalFixture(file)
+        LogCapture().use { logs ->
+            fixture.publish(joined(steve, 1))
+            repeat(100) { fixture.publish(broke(steve)) }
+            fixture.sync()
+            // Straight on the connection, where the pool cannot end it.
+            fixture.db.readers.first().createStatement().use { statement ->
+                statement.executeQuery("SELECT type FROM events WHERE player = 'Steve'").use { rows -> assertTrue(rows.next()) }
+            }
+            fixture.publish(left(steve, 1, 60))
+            fixture.sync()
+            fixture.close()
+            assertFalse("CHECKPOINT failed" in logs.text, logs.text)
+            assertContains(logs.text, "[Journal] closing: checkpointed")
+        }
+    }
 
     @Test
     fun `close writes what is queued within its timeout, then checkpoints`() {

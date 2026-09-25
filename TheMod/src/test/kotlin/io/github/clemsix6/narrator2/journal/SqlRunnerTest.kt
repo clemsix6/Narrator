@@ -1,6 +1,8 @@
 package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.config.JournalConfig
+import io.github.clemsix6.narrator2.event.ChatChannel
+import io.github.clemsix6.narrator2.event.ChatMessage
 import io.github.clemsix6.narrator2.journal.SqlDataset.SECRET
 import io.github.clemsix6.narrator2.testing.TestClock
 import kotlinx.coroutines.runBlocking
@@ -325,6 +327,21 @@ class SqlRunnerTest {
             result.text.lines().drop(1),
         )
     }
+
+    /** The writer writes about once a second; the model's `sql` and `/narrator sql` must see a fact just published (T07). */
+    @Test
+    fun `the model and the operators see the facts published just before their query`() =
+        JournalFixture(config = JournalConfig(flushIntervalMs = 3_600_000)).use { journal ->
+            journal.sync() // from now on, the writer only writes on a barrier: once an hour otherwise
+            val runner = SqlRunner(journal.journal, journal.clock)
+            journal.publish(ChatMessage(SqlDataset.bartok, ChatChannel.PUBLIC, "first", emptyList()))
+            val model = rows(runBlocking { runner.query("SELECT text FROM chat_log", limits) })
+            assertEquals(listOf("text", "first"), model.text.lines().drop(1))
+
+            journal.publish(ChatMessage(SqlDataset.bartok, ChatChannel.PUBLIC, "second", emptyList()))
+            val operator = rows(runBlocking { runner.query("SELECT text FROM chat ORDER BY id", SqlLimits.OPERATOR, SqlAccess.OPERATOR) })
+            assertEquals(listOf("text", "first", "second"), operator.text.lines().drop(1))
+        }
 
     @Test
     fun `an unavailable Journal fails the query with its reason`() {

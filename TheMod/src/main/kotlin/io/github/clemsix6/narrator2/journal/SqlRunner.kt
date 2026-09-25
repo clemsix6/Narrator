@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.core.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -105,13 +106,22 @@ sealed interface SqlOutcome {
 class SqlRunner(private val journal: Journal, private val clock: Clock) {
     private val log = Log.sql
 
-    /** Runs [sql] for [access] within [limits]. Never throws, except the caller's cancellation. */
+    /**
+     * Runs [sql] for [access] within [limits]. Never throws, except the caller's cancellation.
+     *
+     * The facts of the last second may still wait for the writer (it writes about once a second): a
+     * `barrier()` first makes them readable, so that the model, reacting to a fresh fact, finds it. The
+     * barrier is given [BARRIER_TIMEOUT_MS] at most; past that, the query runs on what is written.
+     */
     suspend fun query(sql: String, limits: SqlLimits, access: SqlAccess = SqlAccess.MODEL): SqlOutcome {
         val query = sql.trim().removeSuffix(";").trimEnd()
         val outcome = when {
             query.isEmpty() -> SqlOutcome.Rejected("the query is empty")
             query.length > MAX_QUERY_CHARS -> SqlOutcome.Rejected("the query is longer than $MAX_QUERY_CHARS characters (got ${query.length})")
             else -> try {
+                if (withTimeoutOrNull(BARRIER_TIMEOUT_MS) { journal.barrier() } == null) {
+                    log.debug { "the barrier took more than $BARRIER_TIMEOUT_MS ms: the query may miss the last facts" }
+                }
                 journal.read(limits.timeoutSeconds * 1_000L + READ_GRACE_MS) { connection -> run(connection, query, limits, access) }
             } catch (e: CancellationException) {
                 throw e
@@ -311,6 +321,9 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
 
         /** Time given to `Journal.read` on top of the statement timeout: waiting for a read connection. */
         private const val READ_GRACE_MS = 2_000L
+
+        /** The longest a query waits for the facts still queued to be written ([Journal.barrier]). */
+        const val BARRIER_TIMEOUT_MS = 500L
 
         private fun hiddenReason(table: String) =
             "this query names $table, which is never readable: private messages between players stay private"

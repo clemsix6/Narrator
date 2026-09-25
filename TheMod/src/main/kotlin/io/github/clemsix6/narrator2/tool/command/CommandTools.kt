@@ -65,11 +65,12 @@ data class RunCommandArgs(
 class RunCommandTool : NarratorTool<RunCommandArgs>(
     name = "run_command",
     description = "Last resort: runs a Minecraft 26.3 server command, for what no other tool does (scoreboard, particle, " +
-        "recipe, execute if … probes). The command is parsed by this server first and runs only if it is valid; " +
+        "playsound, execute if … probes). The command is parsed by this server first and runs only if it is valid; " +
         "otherwise you get the error, where it is (<--[HERE]) and the exact syntax. command_help gives a command's syntax " +
-        "beforehand. Refused, also behind execute … run: commands that change blocks, items, entities, players, game rules " +
-        "or the server, speech (use the speech tools) and what another tool does. At most $COMMANDS_PER_TURN commands per " +
-        "turn. Returns what the command answered.",
+        "beforehand, and with no command the list of those this tool accepts: only commands reviewed for you run. Refused, " +
+        "also behind execute … run: commands that change blocks, items, recipes, entities, players, game rules or the " +
+        "server, speech (use the speech tools) and what another tool does. At most $COMMANDS_PER_TURN commands per turn. " +
+        "Returns what the command answered.",
     args = RunCommandArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {

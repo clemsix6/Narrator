@@ -104,8 +104,11 @@ internal enum class ReplaceTable(val sqlName: String, val columns: Int, val keyC
  * The statements that update rows in place (counters, sessions that close), prepared once by the
  * writer and run one by one, in order. Never through an appender: an update would not see the rows
  * still held by an appender.
+ *
+ * @property afterAppends run after the appenders of the batch are flushed, in the same transaction: the
+ *   statement updates rows of an append-only table, which may be in this very batch.
  */
-internal enum class Upsert(val sql: String) {
+internal enum class Upsert(val sql: String, val afterAppends: Boolean = false) {
     /** A session opens (join). A row already there is kept. */
     SESSION_OPENED(
         "INSERT INTO sessions (session_id, player_uuid, player, joined_at, join_dim, join_x, join_y, join_z) " +
@@ -134,6 +137,12 @@ internal enum class Upsert(val sql: String) {
     ),
 
     PLAYER_NAME("INSERT INTO player_names VALUES (?, ?, ?) ON CONFLICT DO NOTHING"),
+
+    /** A session that opens adopts its player's facts published just before, between two event ids. */
+    EVENTS_ADOPTED(
+        "UPDATE events SET session_id = ? WHERE player_uuid = ? AND session_id IS NULL AND id >= ? AND id < ?",
+        afterAppends = true,
+    ),
 }
 
 /**
@@ -185,11 +194,20 @@ private const val ROW_LOG_CHARS = 300
  *
  * It also follows the sessions in the order of the stream: the current session of each player gives
  * the `session_id` of their `events` and `positions` rows. Writer thread only.
+ *
+ * Fabric publishes a join at the end of the connection, after the facts the connection itself set off
+ * (an advancement unlocked by the reloaded inventory, say): those facts come without a session. The
+ * session that opens adopts the ones published in the same tick as its join, and within [ADOPT_WINDOW]
+ * (the game time stands still while the server is paused, empty) ([Upsert.EVENTS_ADOPTED]).
  */
 internal class JournalMapping {
     private class OpenSession(val id: Long, val player: PlayerRef, val joinedAt: Instant, var lastAt: Instant)
 
+    /** The first of the latest facts a player published without a session: same tick, within [ADOPT_WINDOW]. */
+    private class Orphans(val firstId: Long, val firstAt: Instant, val gameTime: Long)
+
     private val sessions = HashMap<UUID, OpenSession>()
+    private val orphans = HashMap<UUID, Orphans>()
 
     /** The rows of one published fact. */
     fun rows(envelope: Envelope): List<Row> {
@@ -201,7 +219,7 @@ internal class JournalMapping {
             EventTable.EVENTS -> when (event) {
                 is PlayerJoined -> joined(envelope, event, ts)
                 is PlayerLeft -> left(envelope, event, ts)
-                else -> listOf(eventRow(envelope, ts, sessionOf(event.player)))
+                else -> listOf(eventRow(envelope, ts, sessionOrOrphan(envelope, ts)))
             }
             EventTable.CHAT -> listOf(chatRow(envelope, ts))
             EventTable.PRIVATE_MESSAGES -> listOf(privateRow(envelope.id, ts, event as ChatMessage))
@@ -240,12 +258,29 @@ internal class JournalMapping {
 
     private fun sessionOf(player: PlayerRef?): Long? = player?.let { sessions[it.uuid]?.id }
 
+    /** The session of the fact's player; without one, the fact is noted for the session that may open next. */
+    private fun sessionOrOrphan(envelope: Envelope, ts: Instant): Long? {
+        val player = envelope.event.player ?: return null
+        sessions[player.uuid]?.let { return it.id }
+        val latest = orphans[player.uuid]
+        if (latest == null || !latest.adoptableAt(envelope, ts)) orphans[player.uuid] = Orphans(envelope.id, ts, envelope.gameTime)
+        return null
+    }
+
+    private fun Orphans.adoptableAt(envelope: Envelope, ts: Instant) =
+        gameTime == envelope.gameTime && Duration.between(firstAt, ts) <= ADOPT_WINDOW
+
     private fun joined(envelope: Envelope, event: PlayerJoined, ts: Instant): List<Row> {
         val player = event.player
         val previous = sessions.put(player.uuid, OpenSession(event.sessionId, player, ts, ts))
         // A departure that never reached the Journal (lost in a full queue): that session ends at its last fact.
         val recovered = previous?.takeIf { it.id != event.sessionId }?.let { closeWithoutLeave(it, it.lastAt, RECOVERED) }.orEmpty()
-        return recovered + listOf(
+        val adopted = orphans.remove(player.uuid)
+            ?.takeIf { it.adoptableAt(envelope, ts) }
+            ?.let { listOf(Execute(Upsert.EVENTS_ADOPTED, listOf(event.sessionId, player.uuid, it.firstId, envelope.id))) }
+            .orEmpty()
+        orphans.values.removeIf { Duration.between(it.firstAt, ts) > ADOPT_WINDOW } // players who never joined
+        return recovered + adopted + listOf(
             eventRow(envelope, ts, event.sessionId),
             Execute(
                 Upsert.SESSION_OPENED,
@@ -258,6 +293,7 @@ internal class JournalMapping {
 
     private fun left(envelope: Envelope, event: PlayerLeft, ts: Instant): List<Row> {
         val player = event.player
+        orphans.remove(player.uuid) // facts of a session whose join was lost: not for the next one
         val open = sessions.remove(player.uuid)
         // Another session still open: its departure was lost, it ends at its last fact.
         val stale = open?.takeIf { it.id != event.sessionId }?.let { closeWithoutLeave(it, it.lastAt, RECOVERED) }.orEmpty()
@@ -519,6 +555,13 @@ internal class JournalMapping {
 
         /** `sessions.end_reason` of a session still open when the Journal closes. */
         const val SERVER_STOP = "server_stop"
+
+        /**
+         * How long before its join, at most, a player's fact without a session is adopted by the session
+         * that opens (and in the same tick). What a connection sets off comes milliseconds before its
+         * join; a player reconnects in several seconds at best.
+         */
+        val ADOPT_WINDOW: Duration = Duration.ofSeconds(2)
 
         /**
          * A compact JSON object of the non-null [entries], in their order; null when all are null.

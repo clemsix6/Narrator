@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.PlayerRespawned
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.Subscription
+import io.github.clemsix6.narrator2.guard.GuardStates
 import net.minecraft.server.level.ServerPlayer
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -27,7 +28,8 @@ import java.util.concurrent.ConcurrentHashMap
  * @property structure structure the player is in, if any (looked up every 5 s and in each new chunk).
  * @property underground no sky light and well below sea level (`SamplerRules.isUnderground`).
  * @property vehicle entity type of the vehicle or mount, if any.
- * @property lastDeathAt last death this session, if any.
+ * @property lastDeathAt last death, if any: this session's, or at the join the one saved with the player
+ *   (`GuardState.lastDeathAt`, kept 5 minutes), so that a reconnection does not hide a recent death.
  * @property lastMoveAt last time the player moved (2 blocks or more) or acted.
  * @property idle no action and no move for 5 minutes (`IdleChanged`).
  */
@@ -144,7 +146,7 @@ class PlayerStates {
         maxHealth = live?.maxHealth ?: DEFAULT_HEALTH,
         food = live?.foodData?.foodLevel ?: DEFAULT_FOOD,
         vehicle = live?.vehicle?.typeId,
-        lastDeathAt = null,
+        lastDeathAt = live?.let { GuardStates.read(it).lastDeathAt },
         lastMoveAt = at,
         idle = false,
     )
