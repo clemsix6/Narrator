@@ -76,7 +76,8 @@ interface GameView {
  * - **Wake-ups.** The [Salience] classifies the bus's events; the [WakeScheduler] groups them into
  *   wake-ups; heartbeats come a few minutes after the last turn while players are online, when the
  *   reflexes find the activity worth it. Each wake-up is one turn of [AgentLoop] on the open chapter,
- *   opened by a message with `<events>`, `<heartbeat>` and `<situation>`.
+ *   opened by a message with `<events>`, `<heartbeat>` and `<situation>`. Beyond `director.turnsPerHour`
+ *   turns in the last hour ([TurnBudget]), only addressed chat, prayers and whispers wake it.
  * - **Never blocked.** Events that arrive during a turn are given to the model between two tool calls,
  *   in a `<new_events>` block placed after the tool results; operator whispers become notes.
  * - **No quota.** A turn that ends without acting is a normal turn; the engine never prompts the model
@@ -116,6 +117,9 @@ class Director(
     private val reminders = ConcurrentHashMap<Long, Reminder>()
     private val reminderIds = AtomicLong(1)
 
+    /** The turns of the last hour, against `director.turnsPerHour` (M2 review, finding 26). */
+    private val budget = TurnBudget { services.settings.get().config.director.turnsPerHour }
+
     /** The services the turns run with: the same, with the Director's own acting tool calls remembered for its situation. */
     private val turnServices: NarratorServices = object : NarratorServices by services {
         override val trace: TraceSink = object : TraceSink by services.trace {
@@ -153,7 +157,7 @@ class Director(
 
     /** Subscribes to the bus and starts the Director's coroutine in `services.scope`. */
     fun start(): Job {
-        Salience(services, digest, ::post).start(services.scope)
+        Salience(services, digest, ::post, budget).start(services.scope)
         indicator.subscribe(services.bus)
         return services.scope.launch(CoroutineName("narrator2-director")) { run() }
     }
@@ -258,7 +262,7 @@ class Director(
             resumeWake = resumeWake || carry.isNotEmpty()
         }
         val config = services.settings.get().config.director
-        val wakeAt = if (resumeWake) now else WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore)
+        val wakeAt = if (resumeWake) now else WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore, budget.spent(now))
         if (wakeAt != null && wakeAt <= now) {
             wake(scope, null)
             return
@@ -377,25 +381,34 @@ class Director(
         return nextHeartbeat ?: WakeScheduler.nextHeartbeat(heartbeatFrom, minutes, random).also { nextHeartbeat = it }
     }
 
+    /**
+     * A heartbeat: skipped while the budget of turns is spent (the activity keeps adding up), else worth
+     * what the reflexes and the salient items waiting since the last turn say ([WakeScheduler.heartbeatWorth]).
+     */
     private suspend fun heartbeat(scope: CoroutineScope, now: Long) {
-        val windowStart = digest.windowStart
-        val summary = digest.takeWindow()
         heartbeatFrom = now
         nextHeartbeat = null
-        if (summary.isEmpty()) {
+        if (budget.spent(now)) {
+            decisions.record(log, DecisionRecord.Kind.SALIENCE, "throttled", HEARTBEAT, "${budget.describe()}: no heartbeat until a turn leaves the hour")
+            return
+        }
+        val windowStart = digest.windowStart
+        val summary = digest.takeWindow()
+        val waiting = inbox.items()
+        if (summary.isEmpty() && WakeScheduler.salience(waiting) == 0.0) {
             decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "skipped", HEARTBEAT, "nobody did anything since ${formatter.time(windowStart)}")
             return
         }
         val window = now - windowStart
         val online = services.players.online.map { it.ref.name }
-        val verdict = services.reflexes.heartbeat(((window + 30_000) / 60_000).toInt().coerceAtLeast(1), summary, online)
-        val score = "worth ${p(verdict.worth)} by ${verdict.source}"
-        if (verdict.worth < ReflexThresholds.HEARTBEAT_WORTH) {
-            decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "skipped", HEARTBEAT, "$score < ${p(ReflexThresholds.HEARTBEAT_WORTH)}")
+        val verdict = if (summary.isEmpty()) null else services.reflexes.heartbeat(((window + 30_000) / 60_000).toInt().coerceAtLeast(1), summary, online)
+        val worth = WakeScheduler.heartbeatWorth(verdict, waiting)
+        if (worth.value < ReflexThresholds.HEARTBEAT_WORTH) {
+            decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "skipped", HEARTBEAT, "${worth.why} < ${p(ReflexThresholds.HEARTBEAT_WORTH)}")
             return
         }
-        decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "woke", HEARTBEAT, "$score, hook ${verdict.hook ?: "none"}")
-        wake(scope, Beat(summary, window, verdict.hook))
+        decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "woke", HEARTBEAT, "${worth.why}, hook ${verdict?.hook ?: "none"}")
+        wake(scope, Beat(summary, window, verdict?.hook))
     }
 
     // ── Wake-ups and turns ──────────────────────────────────────────────────────────────────────────
@@ -429,6 +442,7 @@ class Director(
         val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
         carry = emptyList()
         val trigger = triggerOf(items, beat, resumed)
+        budget.started(now)
         Turn(scope, open, trigger, items, beat).run(opening)
         afterTurn()
     }
