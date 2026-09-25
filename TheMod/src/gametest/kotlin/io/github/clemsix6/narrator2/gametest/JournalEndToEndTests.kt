@@ -390,7 +390,9 @@ class JournalEndToEndTests {
 
     /**
      * M1_M2 §6.6: `/narrator sql` answers an operator in the chat, refuses what is not a single
-     * `SELECT`, and records each query as an `operator` decision.
+     * `SELECT`, and records each query as an `operator` decision that keeps only a fingerprint, the
+     * length and the status, never the query or its error (M2 review, finding 20): an operator reads
+     * private messages, and the model reads `engine_decisions`.
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun operatorsReadTheJournalWithNarratorSql(helper: GameTestHelper) {
@@ -425,9 +427,23 @@ class JournalEndToEndTests {
                         Questions(
                             runtime,
                             mapOf(
+                                // Each query is one operator `sql` decision; the SELECT is ok, the DELETE refused.
                                 "decisions" to Question(
-                                    "SELECT decision, subject, starts_with(reason, 'refused') AS refused FROM engine_decisions " +
-                                        "WHERE kind = 'operator' AND reason LIKE '%${herald.name}%' ORDER BY refused",
+                                    "SELECT decision, subject, detail ->> 'status' AS status FROM engine_decisions " +
+                                        "WHERE kind = 'operator' AND decision = 'sql' ORDER BY status",
+                                    SqlAccess.OPERATOR,
+                                ),
+                                // Finding 20: neither the query, its keywords, nor the player it named leak into the decision.
+                                "leak" to Question(
+                                    "SELECT count(*) AS n FROM engine_decisions WHERE kind = 'operator' AND decision = 'sql' AND " +
+                                        "(reason ILIKE '%${herald.name}%' OR reason ILIKE '%select%' OR reason ILIKE '%delete%' OR " +
+                                        "reason ILIKE '%chat%' OR CAST(detail AS VARCHAR) ILIKE '%${herald.name}%' OR CAST(detail AS VARCHAR) ILIKE '%select%')",
+                                    SqlAccess.OPERATOR,
+                                ),
+                                // The decision keeps a hash, the length and the status, nothing else.
+                                "detail" to Question(
+                                    "SELECT list_sort(json_keys(detail)) AS keys FROM engine_decisions " +
+                                        "WHERE kind = 'operator' AND decision = 'sql' LIMIT 1",
                                     SqlAccess.OPERATOR,
                                 ),
                                 "kept" to Question("SELECT count(*) AS n FROM chat_log WHERE player = '${herald.name}'"),
@@ -439,9 +455,11 @@ class JournalEndToEndTests {
                 .thenExecute {
                     val answers = decisions.get().answers(helper)
                     helper.assertEquals(
-                        listOf(listOf("sql", "Server", "false"), listOf("sql", "Server", "true")),
+                        listOf(listOf("sql", "Server", "ok"), listOf("sql", "Server", "refused")),
                         helper.table(answers, "decisions"), "operator decisions",
                     )
+                    helper.assertEquals(listOf(listOf("0")), helper.table(answers, "leak"), "the query never leaks into the decision")
+                    helper.assertEquals(listOf(listOf("[query_chars, query_hash, status]")), helper.table(answers, "detail"), "only a fingerprint, length and status")
                     helper.assertEquals(listOf(listOf("1")), helper.table(answers, "kept"), "the refused DELETE deleted nothing")
                     herald.close()
                 }

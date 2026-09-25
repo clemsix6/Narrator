@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerializationException
@@ -53,12 +54,16 @@ data class SqlLimits(val maxRows: Int, val timeoutSeconds: Int, val maxCellChars
 /** Who a query is run for. */
 enum class SqlAccess {
     /**
-     * The model (`sql` tool). Refused: the tables of [Journal.HIDDEN_FROM_MODEL] under any form, the
-     * database catalog (it describes and measures every table), and functions that run SQL given as text.
+     * The model (`sql` tool). It reads the Journal's visible tables and views, `range()`, `unnest()` and
+     * the macros, nothing else. Refused: the tables of [Journal.HIDDEN_FROM_MODEL] under any form, the
+     * database catalog (it describes and measures every table), functions that run SQL given as text,
+     * and any file or setting of the server: DuckDB keeps its own files (the database, its WAL, its
+     * temporary files) readable from SQL even with external access disabled, and they hold the private
+     * messages in raw bytes.
      */
     MODEL,
 
-    /** An operator (`/narrator sql`): every table and the catalog are readable. */
+    /** An operator (`/narrator sql`): every table, the catalog and DuckDB's own files are readable. */
     OPERATOR,
 }
 
@@ -91,17 +96,28 @@ sealed interface SqlOutcome {
  *    serializes `SELECT` statements: `INSERT`, `PRAGMA`, `COPY`, `ATTACH`, `SET`… fail there;
  * 3. it holds exactly one statement;
  * 4. its syntax tree calls no function that changes the database or reads raw memory ([UNSAFE_FUNCTIONS]);
- * 5. for the model only ([SqlAccess.MODEL]): the tree names no table of [Journal.HIDDEN_FROM_MODEL],
- *    anywhere and in any case (`SUMMARIZE`, `DESCRIBE`, a string given to a function included), no
- *    part of the database catalog ([CATALOG_PREFIXES], [CATALOG_SCHEMAS], `SHOW TABLES`), and no
- *    function that runs SQL given as text ([SQL_FROM_TEXT]);
+ * 5. for the model only ([SqlAccess.MODEL]), in the syntax tree:
+ *    - no table of [Journal.HIDDEN_FROM_MODEL] is named, anywhere and in any case (`SUMMARIZE`,
+ *      `DESCRIBE`, a string given to a function included);
+ *    - no function runs SQL given as text ([SQL_FROM_TEXT]);
+ *    - nothing of the database catalog is named ([CATALOG_PREFIXES], [CATALOG_SCHEMAS], `SHOW TABLES`);
+ *    - no function reads a file or a setting ([FILE_FUNCTION_PREFIXES], [FILE_FUNCTIONS]);
+ *    - every table, schema and catalog name is a plain name, and the schema is `main`: a quoted path
+ *      or file name (`FROM '…/narrator.duckdb'`) would make DuckDB read the file (a replacement scan);
+ *    - `FROM` calls no table function but [MODEL_TABLE_FUNCTIONS] and the Journal's own table macros;
  * 6. DuckDB prepares it (binding and planning, nothing runs): its errors are [SqlOutcome.Failed];
- * 7. for the model only, a second barrier: the plan (`EXPLAIN`) scans no hidden table, whatever view
- *    or macro the query goes through.
+ * 7. for the model only, a second barrier on the plan (`EXPLAIN`), whatever view or macro the query goes
+ *    through: a white list. Its scans read visible tables only, its table functions are [PLAN_FUNCTIONS]
+ *    only, and every other operator is one of [PLAN_OPERATORS], none of which reads anything.
+ *
+ * Why the model's checks go that far: `enable_external_access = false` closes every file but DuckDB's
+ * own (the database, its `.wal`, `.wal.checkpoint` and the `<db>.tmp/` folder of spilled blocks),
+ * whose raw bytes hold the private messages, and `current_setting('allowed_paths')` tells where they are.
  *
  * Then the query runs unchanged (its `ORDER BY` holds) on a read connection of the Journal, with a
  * statement timeout ([SqlLimits.timeoutSeconds]); results are streamed: [SqlLimits.maxRows] rows are
- * read, the others only counted, up to [SqlFormat.COUNT_LIMIT].
+ * read, the others only counted, up to [SqlFormat.COUNT_LIMIT]. The model's errors lose any path of the
+ * server, and `<` `>` in them become `‹` `›` like in the cells ([SqlFormat]): an error may quote a value.
  */
 class SqlRunner(private val journal: Journal, private val clock: Clock) {
     private val log = Log.sql
@@ -137,7 +153,7 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
             }
         }
         report(query, access, outcome)
-        return outcome
+        return if (access == SqlAccess.MODEL) forModel(outcome) else outcome
     }
 
     /** Validation, the plan check and the query itself, on one read connection. */
@@ -146,7 +162,7 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
             is Parsed.Refused -> return parsed.outcome
             is Parsed.Tree -> parsed.statement
         }
-        refusal(tree, access)?.let { return SqlOutcome.Rejected(it) }
+        refusal(connection, tree, access)?.let { return SqlOutcome.Rejected(it) }
         // Preparing binds and plans the query without running it: DuckDB's errors come with their line and caret.
         return connection.prepareStatement(query).use { statement ->
             if (access == SqlAccess.MODEL) planRefusal(connection, query, limits)?.let { return SqlOutcome.Rejected(it) }
@@ -198,7 +214,7 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
     }
 
     /** Why [tree] may not run for [access]; null when it may. */
-    private fun refusal(tree: JsonElement, access: SqlAccess): String? {
+    private fun refusal(connection: Connection, tree: JsonElement, access: SqlAccess): String? {
         val nodes = objects(tree).toList()
         val functions = nodes.mapNotNull { it.string("function_name") }.map(::identifier)
         functions.firstOrNull { it in UNSAFE_FUNCTIONS }?.let { return "$it() is not allowed: queries are read-only" }
@@ -210,17 +226,41 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
         }
         functions.firstOrNull { it in SQL_FROM_TEXT }?.let { return "$it() is not allowed: write the query itself" }
         functions.firstOrNull(::isCatalogName)?.let { return catalogReason("$it()") }
-        nodes.mapNotNull { it.string("table_name") }.map(::identifier).firstOrNull(::isCatalogName)?.let { return catalogReason(it) }
-        (nodes.mapNotNull { it.string("schema_name") } + nodes.mapNotNull { it.string("schema") })
-            .map(::identifier).firstOrNull { it in CATALOG_SCHEMAS }?.let { return catalogReason(it) }
+        val tables = nodes.mapNotNull { it.string("table_name") }.map(::identifier)
+        tables.firstOrNull(::isCatalogName)?.let { return catalogReason(it) }
+        val schemas = (nodes.mapNotNull { it.string("schema_name") } + nodes.mapNotNull { it.string("schema") }).map(::identifier)
+        schemas.firstOrNull { it in CATALOG_SCHEMAS }?.let { return catalogReason(it) }
         // SHOW TABLES, SHOW ALL TABLES, SHOW DATABASES: a SHOW without a query lists the catalog.
         if (nodes.any { it.string("type") == "SHOW_REF" && it["query"] is JsonNull }) return catalogReason("SHOW")
+
+        // DuckDB's own files stay readable from SQL: no file function, no setting, no path or file name as a table.
+        functions.firstOrNull(::readsFiles)?.let { return fileReason("$it()") }
+        val catalogs = (nodes.mapNotNull { it.string("catalog_name") } + nodes.mapNotNull { it.string("catalog") }).map(::identifier)
+        if ((tables + schemas + catalogs).any { it.isNotEmpty() && !PLAIN_NAME.matches(it) }) return fileReason("a path or a file name")
+        schemas.firstOrNull { it.isNotEmpty() && it != "main" }?.let { return "$it is not a schema of the Journal: name its tables and views alone" }
+        val tableFunctions = nodes.filter { it.string("type") == "TABLE_FUNCTION" }
+            .mapNotNull { (it["function"] as? JsonObject)?.string("function_name") }.map(::identifier)
+            .filterNot { it in MODEL_TABLE_FUNCTIONS }
+        if (tableFunctions.isNotEmpty()) {
+            val macros = tableMacros(connection)
+            tableFunctions.firstOrNull { it !in macros }?.let { return readReason("$it()") }
+        }
         return null
     }
 
+    /** The table macros of the Journal (`views.sql`): `recent`, `hotspots`, `columns_of`… */
+    private fun tableMacros(connection: Connection): Set<String> = connection.createStatement().use { statement ->
+        statement.executeQuery(
+            "SELECT function_name FROM duckdb_functions() " +
+                "WHERE function_type = 'table_macro' AND database_name = current_database() AND schema_name = 'main'",
+        ).use { rows -> buildSet { while (rows.next()) add(rows.getString(1).lowercase()) } }
+    }
+
     /**
-     * Why the plan of [query] may not run for the model: it scans a hidden table, whatever views or
-     * macros lead to it, or it cannot be read (then it cannot be checked); null when it may run.
+     * Why the plan of [query] may not run for the model, whatever views or macros it goes through;
+     * null when it may run. A white list: every scan reads a visible table, every table function is one
+     * of [PLAN_FUNCTIONS], and every other operator is one of [PLAN_OPERATORS], none of which reads
+     * anything. A plan that cannot be read cannot be checked, so it is refused too.
      */
     private fun planRefusal(connection: Connection, query: String, limits: SqlLimits): String? {
         val plan = connection.createStatement().use { statement ->
@@ -234,10 +274,21 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
         } catch (_: SerializationException) {
             return "the plan of this query could not be checked"
         }
-        return objects(tree)
-            .mapNotNull { node -> (node["extra_info"] as? JsonObject)?.string("Table")?.lowercase() }
-            .firstNotNullOfOrNull { table -> Journal.HIDDEN_FROM_MODEL.firstOrNull { it in table } }
-            ?.let(::hiddenReason)
+        val operators = objects(tree).filter { it.containsKey("name") && it.containsKey("children") }.toList()
+        if (operators.isEmpty()) return "the plan of this query could not be checked"
+        operators.forEach { operator ->
+            val name = operator.string("name").orEmpty().trim().uppercase()
+            val info = operator["extra_info"] as? JsonObject
+            val table = info?.string("Table")
+            // A table function scans with its name in `Function`; an in-out one (`FROM unnest((SELECT …))`) in `Name`.
+            val function = info?.string("Function") ?: info?.string("Name")?.takeIf { name == "INOUT_FUNCTION" }
+            when {
+                table != null -> Journal.HIDDEN_FROM_MODEL.firstOrNull { it in table.lowercase() }?.let { return hiddenReason(it) }
+                function != null -> if (function.uppercase() !in PLAN_FUNCTIONS) return readReason(function.lowercase())
+                name !in PLAN_OPERATORS -> return readReason(name.lowercase())
+            }
+        }
+        return null
     }
 
     /** Runs the prepared query and reads its result: [SqlLimits.maxRows] rows, the others counted. */
@@ -302,9 +353,48 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
         /**
          * Functions that run SQL given as text, refused in model queries: the text could name a hidden
          * table in pieces (`'private_' || 'messages'`). `json_execute_serialized_sql` does not even show
-         * its scans in `EXPLAIN`.
+         * its scans in `EXPLAIN`; `json_serialize_plan` binds its text (a file function would read its
+         * file) and returns the plan with its constants folded (`current_setting('allowed_paths')`).
          */
-        val SQL_FROM_TEXT: Set<String> = Journal.SQL_FROM_STRING_FUNCTIONS + "json_execute_serialized_sql"
+        val SQL_FROM_TEXT: Set<String> = Journal.SQL_FROM_STRING_FUNCTIONS + "json_execute_serialized_sql" + "json_serialize_plan"
+
+        /**
+         * Name prefixes of the functions that read files, refused in model queries: `read_blob`,
+         * `read_text`, `read_csv`, `read_duckdb`, `parquet_metadata`… External access is disabled, but
+         * DuckDB's own files stay readable, the private messages in their raw bytes.
+         */
+        val FILE_FUNCTION_PREFIXES: List<String> = listOf("read_", "parquet_")
+
+        /**
+         * Other functions refused in model queries: `glob` and `sniff_csv` read the disk, and
+         * `current_setting` tells where DuckDB's files are (`allowed_paths`, `temp_directory`).
+         */
+        val FILE_FUNCTIONS: Set<String> = setOf("glob", "sniff_csv", "current_setting")
+
+        /** The table functions a model query may call in `FROM`, besides the Journal's table macros. */
+        val MODEL_TABLE_FUNCTIONS: Set<String> = setOf("range", "unnest")
+
+        /**
+         * The table functions a model query's plan may hold: `range`, `unnest`, and `duckdb_columns`,
+         * which only `columns_of()` reaches (the name itself is refused in the query, as the catalog).
+         */
+        val PLAN_FUNCTIONS: Set<String> = setOf("RANGE", "UNNEST", "DUCKDB_COLUMNS")
+
+        /**
+         * The operators a model query's plan may hold besides its scans: they transform what the scans
+         * read, and read nothing themselves (VALUES, `DESCRIBE` and intermediate results included).
+         * Anything else, such as a file reader behind a view, is refused.
+         */
+        val PLAN_OPERATORS: Set<String> = setOf(
+            "PROJECTION", "FILTER", "ORDER_BY", "TOP_N", "LIMIT", "STREAMING_LIMIT", "LIMIT_PERCENT",
+            "HASH_GROUP_BY", "PERFECT_HASH_GROUP_BY", "PARTITIONED_AGGREGATE", "UNGROUPED_AGGREGATE",
+            "WINDOW", "STREAMING_WINDOW", "UNNEST", "PIVOT", "RESERVOIR_SAMPLE", "STREAMING_SAMPLE",
+            "HASH_JOIN", "NESTED_LOOP_JOIN", "BLOCKWISE_NL_JOIN", "PIECEWISE_MERGE_JOIN", "IE_JOIN", "ASOF_JOIN",
+            "CROSS_PRODUCT", "POSITIONAL_JOIN", "POSITIONAL_SCAN", "LEFT_DELIM_JOIN", "RIGHT_DELIM_JOIN", "DELIM_JOIN",
+            "DELIM_SCAN", "UNION", "CTE", "CTE_SCAN", "REC_CTE", "REC_CTE_SCAN", "REC_REC_CTE_SCAN", "REC_KEY_CTE",
+            "RECURSIVE_CTE", "RECURSIVE_CTE_SCAN", "RECURSIVE_RECURRING_CTE_SCAN", "RECURSIVE_KEY_CTE",
+            "DUMMY_SCAN", "EMPTY_RESULT", "COLUMN_DATA_SCAN", "CHUNK_SCAN", "EXPRESSION_SCAN",
+        )
 
         /**
          * Name prefixes of the database catalog's functions and views (`duckdb_tables()`,
@@ -332,7 +422,33 @@ class SqlRunner(private val journal: Journal, private val clock: Clock) {
             "the database catalog ($what) is not readable here: the tables, views and macros are in the tool " +
                 "description, and columns_of('<table>') lists the columns of one"
 
+        private fun fileReason(what: String) =
+            "$what is not allowed: no file or setting of the server is readable, only the Journal's tables and views"
+
+        private fun readReason(what: String) =
+            "this query reads through $what, which is not allowed: only the Journal's tables and views, range(), " +
+                "unnest() and the macros of the description"
+
         private fun isCatalogName(name: String) = CATALOG_PREFIXES.any { name.startsWith(it) }
+
+        private fun readsFiles(function: String) = function in FILE_FUNCTIONS || FILE_FUNCTION_PREFIXES.any { function.startsWith(it) }
+
+        /** A table, schema or catalog name that DuckDB cannot take for a file: letters, digits and `_`. */
+        private val PLAIN_NAME = Regex("""[\p{L}_][\p{L}\p{N}_]*""")
+
+        /**
+         * An absolute path in an error: `C:\…`, `C:/…`, `\\host\…`, or `/a/…` (neither a division such as
+         * `a/b/c` nor a web address). DuckDB names its files in some errors (a full temporary folder, a
+         * Journal that cannot open), and none of the server's paths is the model's business.
+         */
+        private val PATH = Regex("""(?:(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\|(?<![\w.:/])/(?=[^\s/"']+/))[^\s"'`]*""")
+
+        /** What the model reads of [outcome]: errors without paths, and `<` `>` escaped like in the cells. */
+        private fun forModel(outcome: SqlOutcome): SqlOutcome = when (outcome) {
+            is SqlOutcome.Failed -> SqlOutcome.Failed(ModelText.escape(outcome.message.replace(PATH, "[path]")))
+            is SqlOutcome.Rejected -> SqlOutcome.Rejected(ModelText.escape(outcome.reason))
+            else -> outcome
+        }
 
         /** An identifier as DuckDB resolves it: without quotes, in lower case. */
         private fun identifier(name: String) = name.replace("\"", "").lowercase()

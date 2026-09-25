@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.journal
 
+import io.github.clemsix6.narrator2.core.ModelText
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.duckdb.DuckDBStruct
@@ -27,6 +28,8 @@ import java.time.format.DateTimeFormatter
  * ```
  *
  * Columns are separated by `|` without alignment; `|` and line breaks inside a value become `¦` and `⏎`.
+ * Cells and column names often hold what players wrote (chat, names, the values a `PIVOT` turns into
+ * columns): `<` `>` become `‹` `›` ([ModelText.escape]), so that none can pass for a tag of the engine.
  * Timestamps are in the Journal's time zone, `MM-dd HH:mm:ss`, with the year when it is not the current
  * one; the header gives `now` so that the reader can work out how long ago. Numbers keep at most two
  * decimals, JSON is compacted, `NULL` is written as is. A cell longer than [SqlLimits.maxCellChars] is
@@ -145,9 +148,9 @@ internal object SqlFormat {
         text
     }
 
-    /** `|` and line breaks replaced, then cut to [maxChars] with `…(+N)`, never inside a character. */
+    /** `|`, line breaks and `<` `>` replaced, then cut to [maxChars] with `…(+N)`, never inside a character. */
     private fun escape(text: String, maxChars: Int): String {
-        val flat = text.replace("\r\n", "⏎").replace('\n', '⏎').replace('\r', '⏎').replace('|', '¦')
+        val flat = ModelText.escape(text.replace("\r\n", "⏎").replace('\n', '⏎').replace('\r', '⏎').replace('|', '¦'))
         if (flat.length <= maxChars) return flat
         val end = if (Character.isHighSurrogate(flat[maxChars - 1])) maxChars - 1 else maxChars
         return flat.substring(0, end) + "…(+${flat.length - end})"
