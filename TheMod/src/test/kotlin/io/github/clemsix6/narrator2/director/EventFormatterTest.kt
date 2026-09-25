@@ -67,7 +67,7 @@ class EventFormatterTest {
             <events now="21:32:41" since="21:32:05">
             [-36s] CHAT Bartok (to you 0.92, hostile, provocation): "narrateur t'es nul"
             [-31s] DEATH Mimosa: fall (overworld -120 64 330), inventory dropped
-            [-11s] ADVANCEMENT clemsix6: "Hidden in the Depths" (nether 40 15 -12)
+            [-11s] ADVANCEMENT clemsix6: "Hidden in the Depths" (the_nether 40 15 -12)
             [-4s] PRAY Mimosa (to you 0.97, mocking_playful, request): "rends-moi mes diamants"
             [-2s] TASK T-12 analyst done in 41s: "Bartok mines mostly around -1400 -40 3100 (72% of his ore)"
             </events>
@@ -180,7 +180,7 @@ class EventFormatterTest {
             line(PlayerJoined(bartok, overworld, 1, firstTime = false, isOp = false)) to "JOIN Bartok (overworld -120 64 330)",
             line(PlayerLeft(bartok, overworld, 1, 4_320, LeaveReason.LEAVE)) to "LEAVE Bartok after 1h12m",
             line(AdvancementEarned(bartok, nether, "minecraft:nether/netherite_armor", "Cover Me in Debris", "challenge")) to
-                "ADVANCEMENT Bartok: \"Cover Me in Debris\" (challenge, nether 40 15 -12)",
+                "ADVANCEMENT Bartok: \"Cover Me in Debris\" (challenge, the_nether 40 15 -12)",
             line(StructureEntered(bartok, overworld, "minecraft:ancient_city", firstVisit = true)) to
                 "STRUCTURE Bartok entered ancient_city, first visit (overworld -120 64 330)",
             line(StructureEntered(bartok, overworld, "minecraft:stronghold", firstVisit = false)) to "STRUCTURE Bartok entered stronghold (overworld -120 64 330)",
@@ -194,10 +194,10 @@ class EventFormatterTest {
                 "EXPLOSION creeper near Mimosa: no block destroyed (overworld -120 64 330)",
             line(LootChestOpened(bartok, overworld, "minecraft:chests/simple_dungeon")) to "LOOT Bartok opened chests/simple_dungeon (overworld -120 64 330)",
             line(Teleported(bartok, overworld.copy(x = 900), overworld, 1020.4)) to "TELEPORT Bartok jumped 1020 blocks to (overworld 900 64 330)",
-            line(DimensionChanged(bartok, nether, overworld, "nether_portal")) to "DIMENSION Bartok overworld → nether via nether_portal (nether 40 15 -12)",
+            line(DimensionChanged(bartok, nether, overworld, "nether_portal")) to "DIMENSION Bartok overworld → the_nether via nether_portal (the_nether 40 15 -12)",
             line(PlayerRespawned(bartok, overworld, alive = false)) to "RESPAWN Bartok (overworld -120 64 330)",
             line(PlayerRespawned(bartok, overworld, alive = true)) to "RESPAWN Bartok left the End (overworld -120 64 330)",
-            line(ItemCrafted(bartok, Pos("minecraft:the_end", 1, 2, 3), "minecraft:torch", 16, "minecraft:crafting")) to "CRAFT Bartok (end 1 2 3)",
+            line(ItemCrafted(bartok, Pos("minecraft:the_end", 1, 2, 3), "minecraft:torch", 16, "minecraft:crafting")) to "CRAFT Bartok (the_end 1 2 3)",
         )
         rows.forEach { (actual, expected) -> assertEquals(expected, actual) }
     }
@@ -236,15 +236,17 @@ class EventFormatterTest {
 
     @Test
     fun `durations, times, ids and places`() {
-        assertEquals(listOf("0s", "36s", "59s", "1m", "1m30s", "9m59s", "10m", "12m", "59m", "1h00m", "1h05m", "26h40m"), listOf(
-            0L, 36_000L, 59_400L, 60_000L, 90_000L, 599_000L, 600_000L, 12 * 60_000L + 20_000, 59 * 60_000L + 29_000, 3_600_000L, 3_900_000L, 96_000_000L,
-        ).map(EventFormatter::ago))
-        assertEquals("0s", EventFormatter.ago(-5_000), "a time in the future is now")
+        // The durations and dimensions of every text for the model (tool/ToolTextTest), here in their lines.
+        assertEquals("[-1d2h] REMINDER R-3 set 1d2h ago: \"check the base\"", formatter.line(Item(DirectorSignal.ReminderDue(3, "check the base", now - 192_000_000, now - 96_000_000), now - 96_000_000), now))
+        assertEquals("[-0s] REMINDER R-4 set 9m59s ago: \"soon\"", formatter.line(Item(DirectorSignal.ReminderDue(4, "soon", now + 5_000 - 599_000, now + 5_000), now + 5_000), now), "a time in the future is now")
         assertEquals("21:32:41", formatter.time(now))
         assertEquals("diamond_ore", EventFormatter.id("minecraft:diamond_ore"))
         assertEquals("othermod:ruby", EventFormatter.id("othermod:ruby"))
-        assertEquals(listOf("overworld", "nether", "end", "othermod:moon"), listOf("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end", "othermod:moon").map(EventFormatter::dim))
-        assertEquals("nether 40 15 -12", EventFormatter.pos(nether))
+        assertEquals(
+            listOf("overworld 1 2 3", "the_nether 1 2 3", "the_end 1 2 3", "othermod:moon 1 2 3"),
+            listOf("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end", "othermod:moon").map { EventFormatter.pos(Pos(it, 1, 2, 3)) },
+        )
+        assertEquals("the_nether 40 15 -12", EventFormatter.pos(nether))
         assertEquals(listOf("3", "3.5", "20"), listOf(3.0, 3.5, 20.0).map(EventFormatter::number))
     }
 }

@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.Reflexes
+import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.TraceSink
 import io.github.clemsix6.narrator2.trace.Transcripts
 import kotlinx.coroutines.CoroutineScope
@@ -72,4 +73,7 @@ interface NarratorServices {
     val director: DirectorControl
 
     val workers: WorkersControl
+
+    /** The tools' limits that no new conversation resets (speech, gifts, weather and time, commands per turn). */
+    val toolLimits: ToolLimits
 }

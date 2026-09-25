@@ -162,16 +162,30 @@ object AdminCommands {
         }
     }
 
-    /** `Director: waiting until 21:32:04 · turn #42 running · inbox 3 (1 dropped) · reminders R-3 21:40`. */
+    /**
+     * `Director: waiting until 21:32:04 · turn #42 running · turns this hour 12 of 30 (18 left) · inbox 3 (1 dropped)
+     * · reminders R-3 21:40`.
+     */
     private fun directorLine(director: DirectorStatus, text: TraceText): String = buildString {
         append("Director: ").append(director.state.name.lowercase())
         director.until?.let { append(" until ").append(text.time(Instant.ofEpochMilli(it))) }
         director.reason?.let { append(" (").append(it).append(')') }
         director.turnId?.let { append(" · turn #").append(it).append(" running") }
+        append(" · ").append(turnsLine(director))
         append(" · inbox ").append(director.inbox)
         if (director.droppedSignals > 0) append(" (").append(director.droppedSignals).append(" dropped)")
         append(" · reminders ")
         append(if (director.reminders.isEmpty()) "none" else director.reminders.joinToString { "R-${it.id} ${text.time(Instant.ofEpochMilli(it.at))}" })
+    }
+
+    /**
+     * The budget of turns (`director.turnsPerHour`): `turns this hour 12 of 30 (18 left)`, or, once spent,
+     * `turns this hour 30 of 30 (none left: only addressed chat, prayers and whispers wake it)`.
+     */
+    private fun turnsLine(director: DirectorStatus): String {
+        val left = (director.turnsPerHour - director.turnsThisHour).coerceAtLeast(0)
+        val rest = if (left > 0) "$left left" else "none left: only addressed chat, prayers and whispers wake it"
+        return "turns this hour ${director.turnsThisHour} of ${director.turnsPerHour} ($rest)"
     }
 
     /** `Chapter: #3 · context 61k tokens · operator channel system_message`. */

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.MissingNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import io.github.clemsix6.narrator2.llm.ClaudeClient
 import java.io.IOException
 import java.io.OutputStream
 import java.net.InetAddress
@@ -25,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * It serves `POST /v1/messages` as an SSE stream, exactly like the real API with `stream: true`,
  * answering each request with the next scripted [FakeResponse]: first from the queue of the request's
- * `X-Session-ID` ([enqueueFor]), else from the global queue ([enqueue]). Every request is recorded
+ * conversation ([RecordedRequest.conversation], [enqueueFor]), else from the global queue ([enqueue]). Every request is recorded
  * (headers and JSON body) so tests can check what the client sent.
  *
  * ```
@@ -38,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  *     // Point the client at fake.baseUrl, run the code under test, then check what it sent:
  *     fake.requests[0].json.path("model").asText()
- *     fake.requests[0].header("X-Session-ID")
+ *     fake.requests[0].conversation   // the X-Narrator-Conversation header
  * }
  * ```
  *
@@ -50,7 +51,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * user turns or more (LLMGW places its own `1h` markers, and the API allows 4 at most: behaviour seen on
  * 25/09/2026).
  *
- * It also checks that each session (`X-Session-ID`) is append-only: the system prompt and the tools
+ * It also checks that each conversation ([RecordedRequest.conversation]) is append-only, and keeps its
+ * gateway session (`X-Session-ID`, the affinity to an upstream account): the system prompt and the tools
  * never change, and a request starts with the messages of the session's **last successful exchange**
  * (the last request answered by a complete, usable reply), followed by that reply unchanged (blank text
  * blocks aside). A request that got no usable reply (refused, truncated, failed) leaves nothing to
@@ -106,7 +108,7 @@ class FakeAnthropic(
         script.add(responder)
     }
 
-    /** Queues responses for the requests whose `X-Session-ID` is [sessionId]; they go before the global queue. */
+    /** Queues responses for the requests of the conversation [sessionId] ([RecordedRequest.conversation]); they go before the global queue. */
     fun enqueueFor(sessionId: String, vararg responses: FakeResponse) {
         responses.forEach { response -> sessionScript(sessionId).add { response } }
     }
@@ -146,7 +148,7 @@ class FakeAnthropic(
                 else -> nextResponse(request)
             }
             exchange.responseHeaders.add(requestIdHeader, nextId("req"))
-            val session = request.header("X-Session-ID")?.takeIf { strict && violation == null }
+            val session = request.conversation?.takeIf { strict && violation == null }
             response.writeTo(exchange, request) { reply -> session?.let { succeeded(it, request, reply) } }
         } catch (e: InterruptedException) {
             // close() while a reply was held.
@@ -159,7 +161,7 @@ class FakeAnthropic(
     }
 
     private fun nextResponse(request: RecordedRequest): FakeResponse {
-        val responder = request.header("X-Session-ID")?.let { sessionScripts[it]?.poll() } ?: script.poll()
+        val responder = request.conversation?.let { sessionScripts[it]?.poll() } ?: script.poll()
         return responder?.invoke(request) ?: run {
             unscriptedCount.incrementAndGet()
             httpError(400, message = "FakeAnthropic: no scripted response left for request #${recorded.size}")
@@ -233,16 +235,19 @@ class FakeAnthropic(
     }
 
     /**
-     * Checks [request] against its session: same system prompt and tools as its first request, and
-     * the messages of the last successful exchange followed by its reply.
+     * Checks [request] against its conversation: same gateway session, system prompt and tools as its first
+     * request, and the messages of the last successful exchange followed by its reply.
      */
     private fun appendOnlyViolation(request: RecordedRequest): String? {
-        val id = request.header("X-Session-ID") ?: return null
+        val id = request.conversation ?: return null
         val body = request.json
         val messages = body.path("messages")
         synchronized(sessions) {
-            val session = sessions.getOrPut(id) { Session(body.path("system"), body.path("tools")) }
+            val session = sessions.getOrPut(id) { Session(request.header(SESSION_HEADER), body.path("system"), body.path("tools")) }
             val prefix = "FakeAnthropic (strict): session $id is not append-only:"
+            if (session.gateway != request.header(SESSION_HEADER)) {
+                return "FakeAnthropic (strict): conversation $id moved from gateway session ${session.gateway} to ${request.header(SESSION_HEADER)}"
+            }
             if (session.system != body.path("system")) return "$prefix the system prompt changed"
             if (session.tools != body.path("tools")) return "$prefix the tools changed"
             val last = session.lastSuccess ?: return null
@@ -273,7 +278,8 @@ class FakeAnthropic(
         }
     }
 
-    private class Session(val system: JsonNode, val tools: JsonNode) {
+    /** A conversation seen by the fake: its gateway session (`X-Session-ID`), prompt, tools and last successful exchange. */
+    private class Session(val gateway: String?, val system: JsonNode, val tools: JsonNode) {
         var lastSuccess: SuccessfulExchange? = null
     }
 
@@ -312,6 +318,12 @@ class RecordedRequest(
 
     /** First value of header [name] (case-insensitive), or null. */
     fun header(name: String): String? = headers[name.lowercase()]?.firstOrNull()
+
+    /** The conversation it belongs to (`Conversation.id`, header `X-Narrator-Conversation`), or null. */
+    val conversation: String? get() = header(ClaudeClient.CONVERSATION_HEADER)
+
+    /** The gateway session it asks for (`X-Session-ID`, the affinity to an upstream account), or null. */
+    val session: String? get() = header(SESSION_HEADER)
 
     /** The body as JSON; a missing node when it is not JSON, so `json.path(…)` chains never throw. */
     val json: JsonNode by lazy { runCatching { MAPPER.readTree(body) }.getOrNull() ?: MissingNode.getInstance() }
@@ -464,6 +476,7 @@ class ReplyBuilder internal constructor() {
 }
 
 private val MAPPER = ObjectMapper()
+private const val SESSION_HEADER = ClaudeClient.SESSION_HEADER
 private val IDS = AtomicInteger()
 
 private fun nextId(prefix: String) = "${prefix}_fake_%03d".format(IDS.incrementAndGet())

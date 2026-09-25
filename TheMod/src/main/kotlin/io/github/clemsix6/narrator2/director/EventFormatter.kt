@@ -24,6 +24,8 @@ import io.github.clemsix6.narrator2.event.PlayerRespawned
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.event.Teleported
+import io.github.clemsix6.narrator2.tool.ToolText.dimension
+import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import java.time.Instant
 import java.time.ZoneId
@@ -39,7 +41,8 @@ import java.util.Locale
  * between double quotes, with `"` and `\` escaped, line breaks turned into spaces, at most [QUOTE_MAX]
  * characters, `<` `>` replaced by `‹` `›`); player names ([who]), a mob's name tag, the triage's
  * annotation and a grief's count are escaped the same way, without quotes. Ids lose their
- * `minecraft:` prefix; dimensions are `overworld`, `nether` and `end`.
+ * `minecraft:` prefix, dimensions too (`overworld`, `the_nether`, `the_end`); durations are written as
+ * everywhere else (`tool/ToolText`: `36s`, `4m05s`, `1h12m`).
  *
  * @param taskStartedAt when a task started (epoch milliseconds), to say how long it took; null when unknown.
  */
@@ -82,10 +85,10 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         val body = when (val signal = item.signal) {
             is DirectorSignal.Event -> event(signal.envelope, signal.annotation)
             is DirectorSignal.TaskDone -> task(signal)
-            is DirectorSignal.ReminderDue -> "REMINDER R-${signal.id} set ${ago(signal.at - signal.setAt)} ago: ${quote(signal.note)}"
+            is DirectorSignal.ReminderDue -> "REMINDER R-${signal.id} set ${duration(signal.at - signal.setAt)} ago: ${quote(signal.note)}"
             else -> return null
         }
-        return "[-${ago(now - item.at)}] $body"
+        return "[-${duration(now - item.at)}] $body"
     }
 
     /** One event, without its date. [annotation] comes from the salience: the chat triage, or a grief's count. */
@@ -114,7 +117,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             val notes = listOfNotNull("first time".takeIf { event.firstTime }, "operator".takeIf { event.isOp })
             "JOIN ${who(event.player)}${if (notes.isEmpty()) "" else " (${notes.joinToString()})"} (${pos(event.pos)})"
         }
-        is PlayerLeft -> "LEAVE ${who(event.player)} after ${ago(event.sessionSeconds * 1_000)}"
+        is PlayerLeft -> "LEAVE ${who(event.player)} after ${duration(event.sessionSeconds * 1_000)}"
         is AdvancementEarned -> {
             val frame = event.frame.takeIf { it != "task" }?.let { "$it, " }.orEmpty()
             "ADVANCEMENT ${who(event.player)}: ${quote(event.title, TITLE_MAX)} ($frame${pos(event.pos)})"
@@ -143,7 +146,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         }
         is LootChestOpened -> "LOOT ${who(event.player)} opened ${id(event.lootTable)} (${pos(event.pos)})"
         is Teleported -> "TELEPORT ${who(event.player)} jumped ${event.distance.toLong()} blocks to (${pos(event.pos)})"
-        is DimensionChanged -> "DIMENSION ${who(event.player)} ${dim(event.from.dim)} → ${dim(event.pos.dim)} via ${event.via} (${pos(event.pos)})"
+        is DimensionChanged -> "DIMENSION ${who(event.player)} ${dimension(event.from.dim)} → ${dimension(event.pos.dim)} via ${event.via} (${pos(event.pos)})"
         is PlayerRespawned -> "RESPAWN ${who(event.player)}${if (event.alive) " left the End" else ""} (${pos(event.pos)})"
         else -> generic(event)
     }
@@ -153,7 +156,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
 
     private fun task(done: DirectorSignal.TaskDone): String {
         val head = "TASK T-${done.taskId} ${done.role.id}"
-        val took = taskStartedAt(done.taskId)?.let { " in ${ago(done.at - it)}" }.orEmpty()
+        val took = taskStartedAt(done.taskId)?.let { " in ${duration(done.at - it)}" }.orEmpty()
         return when (done.status) {
             TaskRecord.Status.DONE -> {
                 val result = done.result.trim()
@@ -252,30 +255,12 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         /** An id without its `minecraft:` namespace, e.g. `diamond_ore`; other namespaces are kept. */
         fun id(id: String): String = id.removePrefix("minecraft:")
 
-        /** `overworld`, `nether`, `end`, or the id of another dimension. */
-        fun dim(dim: String): String = when (dim) {
-            "minecraft:the_nether" -> "nether"
-            "minecraft:the_end" -> "end"
-            else -> id(dim)
-        }
-
-        /** `overworld -120 64 330`. */
-        fun pos(pos: Pos): String = "${dim(pos.dim)} ${pos.x} ${pos.y} ${pos.z}"
+        /** `overworld -120 64 330`, `the_nether 40 15 -12` ([ToolText.dimension]). */
+        fun pos(pos: Pos): String = "${dimension(pos.dim)} ${pos.x} ${pos.y} ${pos.z}"
 
         /** A player by name; a mob by type, with its name tag quoted. */
         fun entity(entity: EntityRef): String =
             entity.player?.let(::who) ?: (id(entity.type) + (entity.name?.let { " ${quote(it, TITLE_MAX)}" }.orEmpty()))
-
-        /** A duration: `36s`, `1m30s`, `12m`, `1h05m`. */
-        fun ago(ms: Long): String {
-            val seconds = (ms.coerceAtLeast(0) + 500) / 1_000
-            return when {
-                seconds < 60 -> "${seconds}s"
-                seconds < 600 && seconds % 60 != 0L -> "${seconds / 60}m%02ds".format(Locale.ROOT, seconds % 60)
-                seconds < 3_600 -> "${seconds / 60}m"
-                else -> "${seconds / 3_600}h%02dm".format(Locale.ROOT, seconds % 3_600 / 60)
-            }
-        }
 
         /** A health or damage number: `3`, `3.5`. */
         fun number(value: Double): String =

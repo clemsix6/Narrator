@@ -44,7 +44,7 @@ class SnapshotFormatTest {
             snapshot().describe(),
         )
         assertEquals(
-            "nether 40 72 -12 · dripstone_caves · open · riding strider · hp 13.5/20 food 12 · creative",
+            "the_nether 40 72 -12 · dripstone_caves · open · riding strider · hp 13.5/20 food 12 · creative",
             snapshot(
                 dimension = "minecraft:the_nether", x = 40, y = 72, z = -12, enclosure = Enclosure.OPEN, depth = null,
                 structure = null, health = 13.5f, gameMode = "creative", vehicle = "minecraft:strider",

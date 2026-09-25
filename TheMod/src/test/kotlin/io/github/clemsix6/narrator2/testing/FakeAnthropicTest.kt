@@ -31,13 +31,19 @@ class FakeAnthropicTest {
 
     private fun user(text: String) = MessageParam.builder().role(MessageParam.Role.USER).content(text).build()
 
-    private fun params(messages: List<MessageParam>, session: String = "session-1", configure: MessageCreateParams.Builder.() -> Unit = {}) =
+    private fun params(
+        messages: List<MessageParam>,
+        session: String = "session-1",
+        gateway: String = "narrator2-director",
+        configure: MessageCreateParams.Builder.() -> Unit = {},
+    ) =
         MessageCreateParams.builder()
             .model("claude-opus-5-5")
             .maxTokens(100)
             .system("You are the Narrator.")
             .messages(messages)
-            .putAdditionalHeader("X-Session-ID", session)
+            .putAdditionalHeader("X-Session-ID", gateway)
+            .putAdditionalHeader("X-Narrator-Conversation", session)
             .apply(configure)
             .build()
 
@@ -113,6 +119,30 @@ class FakeAnthropicTest {
             fake.enqueue(reply { text("Another session starts afresh.") })
             send(params(listOf(user("Hello")), session = "session-3"))
         })
+    }
+
+    @Test
+    fun `conversations that share a gateway session are each append-only on their own`() {
+        fake.enqueue(reply { text("First.") }, reply { text("Other.") }, reply { text("Second.") }, reply { text("Other again.") })
+        // Every chapter of the Director goes to the same upstream account (X-Session-ID), each its own conversation.
+        send(params(listOf(user("Hi")), session = "director-1"))
+        assertEquals("Other.", send(params(listOf(user("A new chapter")), session = "director-2")), "not an edit of director-1")
+        assertEquals("Second.", send(params(listOf(user("Hi"), assistant("First."), user("More")), session = "director-1")))
+        assertEquals("Other again.", send(params(listOf(user("A new chapter"), assistant("Other."), user("More")), session = "director-2")))
+        assertContains(
+            rejected(params(listOf(user("Hi"), assistant("Other."), user("More")), session = "director-1")),
+            "session director-1 is not append-only: messages.1 differs",
+        )
+    }
+
+    @Test
+    fun `strict mode rejects a conversation that moves to another gateway session`() {
+        fake.enqueue(reply { text("First.") })
+        send(params(listOf(user("Hi")), session = "analyst-1", gateway = "narrator2-analyst"))
+        assertContains(
+            rejected(params(listOf(user("Hi"), assistant("First."), user("More")), session = "analyst-1", gateway = "analyst-1")),
+            "conversation analyst-1 moved from gateway session narrator2-analyst to analyst-1",
+        )
     }
 
     private fun assistant(text: String) = MessageParam.builder().role(MessageParam.Role.ASSISTANT).content(text).build()

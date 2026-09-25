@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.tool.ToolText
 import net.minecraft.core.Holder
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.resources.Identifier
@@ -98,8 +99,6 @@ class EffectLedger(private val states: GuardStates, private val clock: Clock) {
             Identifier.tryParse(entry.effect)?.let { BuiltInRegistries.MOB_EFFECT.get(it).orElse(null) }
 
         /** `slowness II`. */
-        fun describe(entry: LedgerEffect): String = "${entry.effect.substringAfter(':')} ${roman(entry.level)}"
-
-        private fun roman(level: Int): String = listOf("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X").getOrElse(level - 1) { level.toString() }
+        fun describe(entry: LedgerEffect): String = "${entry.effect.substringAfter(':')} ${ToolText.roman(entry.level)}"
     }
 }

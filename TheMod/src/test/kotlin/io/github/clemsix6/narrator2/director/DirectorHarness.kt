@@ -222,7 +222,7 @@ class DirectorHarness(
     /** The block types of the last `user` message of request [request]. */
     fun userBlocks(request: Int): List<String> = blocks(lastUser(request)).map { it.path("type").asText() }
 
-    fun sessionOf(request: Int): String? = fake.requests[request].header("X-Session-ID")
+    fun sessionOf(request: Int): String? = fake.requests[request].conversation
 
     /**
      * What every request must respect: nothing rejected by the strict fake server (append-only against

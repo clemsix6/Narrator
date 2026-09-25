@@ -8,10 +8,12 @@ import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
+import io.github.clemsix6.narrator2.tool.TurnCounter
 import io.github.clemsix6.narrator2.tool.command.CommandHelpArgs
 import io.github.clemsix6.narrator2.tool.command.CommandHelpTool
 import io.github.clemsix6.narrator2.tool.command.RunCommandArgs
 import io.github.clemsix6.narrator2.tool.command.RunCommandTool
+import io.github.clemsix6.narrator2.tool.command.commandTools
 import io.netty.channel.ChannelFutureListener
 import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.runBlocking
@@ -107,7 +109,7 @@ class CommandToolGameTests {
 
     @GameTest
     fun anInvalidCommandGetsItsErrorWhereItIsAndTheExactSyntax(helper: GameTestHelper) {
-        val tool = RunCommandTool()
+        val tool = RunCommandTool(TurnCounter(RunCommandTool.COMMANDS_PER_TURN))
         val unknownBlock = run(helper, tool, "execute if block ~ ~ ~ minecraft:hart")
         helper.assertEquals(ToolStatus.INVALID, unknownBlock.status, unknownBlock.text)
         helper.assertEquals(
@@ -193,16 +195,21 @@ class CommandToolGameTests {
 
     @GameTest
     fun sixCommandsPerTurn(helper: GameTestHelper) {
-        val tool = RunCommandTool()
-        repeat(RunCommandTool.COMMANDS_PER_TURN) { helper.assertEquals(ToolStatus.OK, run(helper, tool, "list").status, "command ${it + 1}") }
-        val seventh = run(helper, tool, "list")
+        // The tools of two conversations built for this server count against its own limit (ToolLimits.commands).
+        val caller = CALLER.copy(conversationId = "command-gametest-limit-${UUID.randomUUID()}")
+        val first = commandTools(helper.narrator()).filterIsInstance<RunCommandTool>().single()
+        val tool = commandTools(helper.narrator()).filterIsInstance<RunCommandTool>().single()
+        repeat(RunCommandTool.COMMANDS_PER_TURN) {
+            helper.assertEquals(ToolStatus.OK, run(helper, if (it % 2 == 0) first else tool, "list", caller = caller).status, "command ${it + 1}")
+        }
+        val seventh = run(helper, tool, "list", caller = caller)
         helper.assertEquals(ToolStatus.DENIED, seventh.status, seventh.text)
         helper.assertEquals(
             "DENIED (${RunCommandTool.LIMIT_RULE}): 6 commands already ran this turn, the most a turn may run; do the rest next turn, or with the typed tools",
             seventh.text,
             "the seventh",
         )
-        helper.assertEquals(ToolStatus.OK, run(helper, tool, "list", caller = CALLER.copy(turnId = CALLER.turnId!! + 1)).status, "the next turn")
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, "list", caller = caller.copy(turnId = caller.turnId!! + 1)).status, "the next turn")
         helper.succeed()
     }
 
@@ -263,9 +270,9 @@ class CommandToolGameTests {
             return helper.absolutePos(BlockPos(1, 1, 1))
         }
 
-        /** `run_command` in a turn of its own (a new tool: the per-turn limit starts afresh). */
+        /** `run_command` in a turn of its own (a new counter: the per-turn limit starts afresh). */
         fun run(helper: GameTestHelper, command: String, asPlayer: String? = null): ToolResult =
-            run(helper, RunCommandTool(), command, asPlayer)
+            run(helper, RunCommandTool(TurnCounter(RunCommandTool.COMMANDS_PER_TURN)), command, asPlayer)
 
         fun run(helper: GameTestHelper, tool: RunCommandTool, command: String, asPlayer: String? = null, caller: Caller = CALLER): ToolResult =
             call(helper, tool, RunCommandArgs(command, asPlayer), caller)

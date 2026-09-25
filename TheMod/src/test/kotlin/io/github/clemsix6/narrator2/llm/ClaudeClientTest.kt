@@ -65,7 +65,8 @@ class ClaudeClientTest {
         val request = fake.requests.single()
         assertEquals("POST", request.method)
         assertEquals("/v1/messages", request.path)
-        assertEquals(conversation.id, request.header("X-Session-ID"))
+        assertEquals("narrator2-director", request.header("X-Session-ID"), "the gateway's affinity is the role's")
+        assertEquals(conversation.id, request.header("X-Narrator-Conversation"))
         assertEquals(TEST_API_KEY, request.header("X-Api-Key"))
 
         val body = request.json
@@ -122,7 +123,20 @@ class ClaudeClientTest {
         assertEquals(expected.maxTokens, body.path("max_tokens").asLong())
         assertEquals(expected.effort, result.stats.effort)
         assertEquals(role, result.stats.role)
-        assertTrue(fake.requests.single().header("X-Session-ID")!!.startsWith("${role.id}-"))
+        assertEquals("narrator2-${role.id}", fake.requests.single().session)
+        assertTrue(fake.requests.single().conversation!!.startsWith("${role.id}-"))
+    }
+
+    @Test
+    fun `the conversations of a role share the gateway's session, each keeps its own id`() {
+        fake.enqueue(reply { text("Chapter 1.") }, reply { text("Chapter 2.") }, reply { text("A task.") })
+        val chapters = listOf(testConversation(), testConversation())
+        chapters.forEach { send(it) }
+        send(testConversation(role = Role.ANALYST))
+
+        val (first, second, task) = fake.requests
+        assertEquals(listOf("narrator2-director", "narrator2-director", "narrator2-analyst"), listOf(first.session, second.session, task.session))
+        assertEquals(chapters.map { it.id }, listOf(first.conversation, second.conversation), "the traces and transcripts keep each conversation")
     }
 
     @Test
@@ -214,7 +228,8 @@ class ClaudeClientTest {
         val (first, second) = fake.requests
         assertEquals(first.json.path("system"), second.json.path("system"))
         assertEquals(first.json.path("tools"), second.json.path("tools"))
-        assertEquals(first.header("X-Session-ID"), second.header("X-Session-ID"))
+        assertEquals(first.session, second.session)
+        assertEquals(first.conversation, second.conversation)
 
         val messages = second.json.path("messages")
         assertEquals(3, messages.size())

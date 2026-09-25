@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.tool.Doc
 import io.github.clemsix6.narrator2.tool.MaxLen
 import io.github.clemsix6.narrator2.tool.Range
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.refuse
 import io.github.clemsix6.narrator2.tool.speech.Speech
 import io.github.clemsix6.narrator2.tool.speech.closestIds
 import kotlinx.serialization.Serializable

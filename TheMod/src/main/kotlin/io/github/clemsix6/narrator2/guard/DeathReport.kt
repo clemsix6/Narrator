@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.guard
 
+import io.github.clemsix6.narrator2.tool.ToolText
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -54,10 +55,10 @@ data class DeathReport(
         append("; ").append(actionsBefore())
     }
 
-    /** The guard's arming at the death: `armed for 12 s of play more`, `ran out 3 s of play before`, `not armed`. */
+    /** The guard's arming at the death: `armed for 12s of play more`, `ran out 3s of play before`, `not armed`. */
     fun guard(): String = when {
-        armedUntil > playTime -> "armed for ${seconds(armedUntil - playTime)} s of play more"
-        armedUntil > 0 -> "ran out ${seconds(playTime - armedUntil)} s of play before"
+        armedUntil > playTime -> "armed for ${ToolText.duration(seconds(armedUntil - playTime) * 1_000)} of play more"
+        armedUntil > 0 -> "ran out ${ToolText.duration(seconds(playTime - armedUntil) * 1_000)} of play before"
         else -> "not armed"
     }
 
@@ -67,10 +68,10 @@ data class DeathReport(
 
     /** What the Narrator did to the player in the [WINDOW_MS] before the death. */
     fun actionsBefore(): String {
-        val window = "in the last ${WINDOW_MS / 1_000} s"
+        val window = "in the last ${ToolText.duration(WINDOW_MS)}"
         val done = actions ?: return "the Narrator's actions $window are unknown (${actionsUnknown ?: "not read"})"
         if (done.isEmpty()) return "no world action of the Narrator on $player $window"
-        return "the Narrator acted on $player $window: " + done.joinToString { "${it.tool} ${secondsBefore(it)} s before${it.turnId?.let { turn -> " (turn $turn)" }.orEmpty()}" }
+        return "the Narrator acted on $player $window: " + done.joinToString { "${it.tool} ${ToolText.duration(secondsBefore(it) * 1_000)} before${it.turnId?.let { turn -> " (turn $turn)" }.orEmpty()}" }
     }
 
     /** Seconds between [action]'s start and the death. */

@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.command.narratorLine
 import io.github.clemsix6.narrator2.config.ConfigException
 import io.github.clemsix6.narrator2.config.ConfigStore
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.runOnServerThread
 import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.createDirector
@@ -29,6 +30,7 @@ import io.github.clemsix6.narrator2.runtime.SettingsHolder
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
 import io.github.clemsix6.narrator2.runtime.ShutdownSequence
 import io.github.clemsix6.narrator2.runtime.TickClock
+import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
@@ -87,6 +89,8 @@ class NarratorRuntime private constructor(
     /** Game time for the bus, readable from any thread. */
     val ticks = TickClock()
 
+    override val toolLimits = ToolLimits(clock)
+
     final override lateinit var journal: Journal
         private set
 
@@ -144,10 +148,15 @@ class NarratorRuntime private constructor(
         return journal
     }
 
-    /** A yellow `[Narrator]` line in the chat of the operators online (the Journal's outages). Any thread. */
-    private fun tellOperatorsOnline(text: String) = server.execute {
-        val line = narratorLine(text, ChatFormatting.YELLOW)
-        server.playerList.players.filter { server.playerList.isOp(it.nameAndId()) }.forEach { it.sendSystemMessage(line) }
+    /**
+     * A yellow `[Narrator]` line in the chat of the operators online (the Journal's outages). Any thread;
+     * on the server thread only, so dropped once the server has stopped.
+     */
+    private fun tellOperatorsOnline(text: String) {
+        server.runOnServerThread {
+            val line = narratorLine(text, ChatFormatting.YELLOW)
+            server.playerList.players.filter { server.playerList.isOp(it.nameAndId()) }.forEach { it.sendSystemMessage(line) }
+        }
     }
 
     /** Undoes a [wire] that failed halfway. */

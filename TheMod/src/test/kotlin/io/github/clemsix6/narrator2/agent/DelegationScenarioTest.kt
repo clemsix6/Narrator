@@ -99,8 +99,8 @@ class DelegationScenarioTest {
         val analystScript = ConcurrentLinkedQueue<FakeResponse>()
         repeat(12) {
             fake.enqueue { request ->
-                val script = if (request.session().startsWith("analyst-")) analystScript else directorScript
-                script.poll() ?: httpError(400, message = "unscripted request of ${request.session()}")
+                val script = if (request.conversationOf().startsWith("analyst-")) analystScript else directorScript
+                script.poll() ?: httpError(400, message = "unscripted request of ${request.conversationOf()}")
             }
         }
         val brief = "Where has Bartok mined in the last hours? Ores, dimension and coordinates: I want to mock his diamond."
@@ -119,7 +119,7 @@ class DelegationScenarioTest {
             while (true) {
                 scheduler.runCurrent()
                 if (condition()) return
-                if (System.nanoTime() > deadline) fail("timed out waiting for $what: ${director.status().state}, ${fake.requests.map { it.session() }}")
+                if (System.nanoTime() > deadline) fail("timed out waiting for $what: ${director.status().state}, ${fake.requests.map { it.conversationOf() }}")
                 Thread.sleep(2)
             }
         }
@@ -134,8 +134,8 @@ class DelegationScenarioTest {
             // The Director delegates and ends its turn; the Analyst's first reply is held until the test releases it.
             await("the Director's first turn") { traces.turns.any { it.outcome != null } && director.status().turnId == null }
             await("the Analyst at Claude") { firstReply.awaitReached(0) }
-            val directorSession = fake.requests[0].session()
-            val directorRequests = { fake.requests.filter { it.session() == directorSession } }
+            val directorSession = fake.requests[0].conversationOf()
+            val directorRequests = { fake.requests.filter { it.conversationOf() == directorSession } }
             assertEquals(2, directorRequests().size, "the Director went on without waiting for the Analyst")
             val delegated = directorRequests()[1].lastUser().path("content")[0]
             assertEquals("tool_result", delegated.path("type").asText())
@@ -148,7 +148,7 @@ class DelegationScenarioTest {
             await("the report") { traces.latestTask(1)?.status == TaskRecord.Status.DONE }
             val analystSession = workers.list().single().conversationId!!
             assertNotEquals(directorSession, analystSession)
-            val analystRequests = fake.requests.filter { it.session() == analystSession }
+            val analystRequests = fake.requests.filter { it.conversationOf() == analystSession }
             assertEquals(3, analystRequests.size)
             assertEquals(
                 listOf("area_info", "inspect_player", "list_players", "locate", "player_stats", "scan_area", "sql"),
@@ -197,7 +197,7 @@ class DelegationScenarioTest {
         }
     }
 
-    private fun RecordedRequest.session(): String = header("X-Session-ID") ?: fail("a request without X-Session-ID")
+    private fun RecordedRequest.conversationOf(): String = conversation ?: fail("a request without its conversation")
 
     private fun RecordedRequest.lastUser(): JsonNode = json.path("messages").last { it.path("role").asText() == "user" }
 

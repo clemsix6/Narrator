@@ -76,7 +76,7 @@ class DeathTraceGameTests {
             .thenExecute {
                 val sentence = reason.get()!!
                 helper.assertTrue(sentence.startsWith("minecraft:fall, not the Narrator's (guard not armed), inventory dropped; "), "the blame and the guard: $sentence")
-                helper.assertTrue(sentence.endsWith("the Narrator acted on $name in the last 60 s: apply_effect 20 s before (turn $turn)"), "the action: $sentence")
+                helper.assertTrue(sentence.endsWith("the Narrator acted on $name in the last 1m: apply_effect 20s before (turn $turn)"), "the action: $sentence")
                 val server = helper.level.server
                 server.commands.performPrefixedCommand(server.createCommandSourceStack().withSource(output), "narrator why $name")
             }

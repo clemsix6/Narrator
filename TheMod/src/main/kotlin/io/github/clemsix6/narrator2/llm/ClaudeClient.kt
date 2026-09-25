@@ -42,8 +42,9 @@ import kotlin.random.Random
  *
  * Every call streams, asks for summarized thinking (logged for debugging; Opus 5.5 never returns raw
  * reasoning), sets the role's effort, enables automatic prompt caching with the configured TTL, and
- * sends a stable `X-Session-ID` so the gateway keeps the conversation on the same upstream account,
- * where its prompt cache lives.
+ * sends an `X-Session-ID` stable **per role** ([sessionOf]) so the gateway keeps every conversation of a
+ * role on the upstream account where their common prefix is cached; the conversation's own id goes in
+ * [CONVERSATION_HEADER].
  *
  * A request is the conversation's committed history followed by the *pending* messages of this call;
  * the pending messages join the history with the reply, and only when the reply is usable (see
@@ -259,7 +260,8 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
                     cacheControl(CacheControlEphemeral.builder().ttl(CacheControlEphemeral.Ttl.of(gateway.cacheTtl)).build())
                 }
             }
-            .putAdditionalHeader("X-Session-ID", conversation.id)
+            .putAdditionalHeader(SESSION_HEADER, sessionOf(conversation.role))
+            .putAdditionalHeader(CONVERSATION_HEADER, conversation.id)
             .apply { if (conversation.tools.isNotEmpty()) tools(conversation.tools) }
             .build()
 
@@ -413,6 +415,21 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
     companion object {
         /** [SendResult.Incomplete.reason] of a usable stop reason with nothing to commit, see [isEmptyReply]. */
         const val EMPTY_REPLY = "empty reply: no text, no tool call"
+
+        /** The gateway's session affinity: the requests with the same value go to the same upstream account. */
+        const val SESSION_HEADER = "X-Session-ID"
+
+        /** The conversation of a request ([Conversation.id]): for the gateway's logs and the tests, never for routing. */
+        const val CONVERSATION_HEADER = "X-Narrator-Conversation"
+
+        /**
+         * The [SESSION_HEADER] of every conversation of [role]: `narrator2-director`, `narrator2-analyst`. The
+         * prompt cache lives on the upstream account, and the gateway picks the account by this value: a value
+         * of its own per conversation sent each chapter, each task of the Analyst, to any account, where its
+         * prefix (prompt and tools, the same for the whole role) was written again (T22, finding 3). One
+         * value per role keeps them all on the account that holds it: the next chapter or task reads it.
+         */
+        fun sessionOf(role: Role): String = "narrator2-${role.id}"
 
         private val USABLE = setOf(StopReason.END_TURN, StopReason.TOOL_USE, StopReason.PAUSE_TURN, StopReason.STOP_SEQUENCE)
     }

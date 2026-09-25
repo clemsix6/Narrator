@@ -77,7 +77,7 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
     }
 
     private fun overtime(tool: NarratorTool<*>): ToolResult {
-        val what = "${tool.name} did not finish within ${tool.timeoutMs} ms"
+        val what = "${tool.name} did not finish within ${ToolText.wait(tool.timeoutMs)}"
         return if (tool.effect == ToolEffect.READ) ToolResult.timeout(what) else ToolResult.unknown("$what; the action may or may not have happened")
     }
 

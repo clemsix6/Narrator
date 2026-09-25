@@ -32,8 +32,9 @@ import java.util.UUID
  *   the conversation only declares [tools] (a ping, a live check).
  * @property tools the tool definitions sent with every request.
  * @property transcripts where this conversation is transcribed; null to keep no transcript.
- * @property id also the `X-Session-ID` header, which keeps the conversation on the upstream account
- *   holding its prompt cache.
+ * @property id the conversation in the traces, the transcripts and the `X-Narrator-Conversation` header;
+ *   the gateway's affinity (`X-Session-ID`) is the role's, shared by its conversations
+ *   (`ClaudeClient.sessionOf`).
  */
 class Conversation private constructor(
     val role: Role,

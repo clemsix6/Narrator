@@ -7,7 +7,6 @@ import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
-import io.github.clemsix6.narrator2.guard.clockTime
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -20,8 +19,18 @@ import io.github.clemsix6.narrator2.tool.Range
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
+import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.ToolText.duration
+import io.github.clemsix6.narrator2.tool.ToolText.number
+import io.github.clemsix6.narrator2.tool.answer
+import io.github.clemsix6.narrator2.tool.at
+import io.github.clemsix6.narrator2.tool.chaos
+import io.github.clemsix6.narrator2.tool.live
+import io.github.clemsix6.narrator2.tool.online
+import io.github.clemsix6.narrator2.tool.punish
+import io.github.clemsix6.narrator2.tool.refuse
+import io.github.clemsix6.narrator2.tool.shownName
 import io.github.clemsix6.narrator2.tool.speech.Speech
-import io.github.clemsix6.narrator2.tool.speech.SpeechLimiter
 import io.github.clemsix6.narrator2.tool.speech.closestIds
 import it.unimi.dsi.fastutil.ints.IntArrayList
 import kotlinx.serialization.SerialName
@@ -68,9 +77,7 @@ import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
 import java.time.Clock
-import java.util.Locale
 import java.util.UUID
-import java.util.WeakHashMap
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.min
@@ -90,7 +97,7 @@ import kotlin.math.sin
  * - a bolt is only visual, and never lands on copper or a lightning rod (which even a visual bolt changes).
  */
 fun worldActionTools(services: NarratorServices): List<NarratorTool<*>> {
-    val limits = WorldLimits.of(services)
+    val limits = services.toolLimits.world
     return listOf(SpawnTool(), LightningTool(), ExplosionTool(), FireworksTool(), ParticlesTool(), SetWeatherTool(limits), SetTimeTool(limits))
 }
 
@@ -246,12 +253,12 @@ class SpawnTool : NarratorTool<SpawnArgs>(
                 ),
             )
         }
-        val near = ctx.onlinePlayer(args.near)
+        val near = ctx.online(args.near)
         ctx.onServer { server -> answer { summon(ctx, server, near, args, name) } }
     }
 
     private fun summon(ctx: ToolContext, server: MinecraftServer, near: PlayerRef, args: SpawnArgs, name: String?): ToolResult {
-        val player = server.livePlayer(near)
+        val player = server.live(near)
         val level = player.level()
         val type = entityType(args.entity)
         val id = EntityType.getKey(type).toString()
@@ -269,7 +276,7 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             mobs += mob
         }
         if (mobs.isEmpty()) {
-            refuse(ToolResult.failed("no free ground for $id within ${args.distance} blocks of ${player.plainTextName}; try another distance or creature"))
+            refuse(ToolResult.failed("no free ground for $id within ${args.distance} blocks of ${player.shownName}; try another distance or creature"))
         }
 
         val now = ctx.clock.millis()
@@ -408,18 +415,18 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             if (args.baby) add(if (mobs.all { it.isBaby }) "baby" else "no baby form for $id")
             args.attributes?.forEach { add("${it.attribute.id} x${number(it.multiply)}") }
             args.equipment?.slots()?.let { slots -> if (slots.isNotEmpty()) add("equipped (${slots.joinToString { (slot, item) -> "${slot.serializedName} $item" }})") }
-            if (args.target) add("going for ${player.plainTextName}")
+            if (args.target) add("going for ${player.shownName}")
             if (args.height > 0) add("up to ${args.height} blocks in the air")
             if (args.launch > 0) add("thrown up at ${number(args.launch)}")
-            args.explode?.let { add("exploding after ${it.afterSeconds} s (power ${number(min(it.power, ctx.guards.caps().explosionPower))}${if (it.hurts) "" else ", harmless"})") }
+            args.explode?.let { add("exploding after ${duration(it.afterSeconds * 1_000L)} (power ${number(min(it.power, ctx.guards.caps().explosionPower))}${if (it.hurts) "" else ", harmless"})") }
         }
         val fewer = if (mobs.size < args.count) " (only ${mobs.size} of ${args.count}: no more free ground)" else ""
         val extras = mobs.flatMap { mob -> group(mob).filter { it !== mob } }.groupingBy { it.type.toShortString() }.eachCount()
         val jockeys = if (extras.isEmpty()) "" else "; the game gave them mounts or riders, the Narrator's too: " +
             extras.entries.joinToString { (type, count) -> "$count minecraft:$type" }
         val positions = mobs.joinToString("; ") { "${it.blockX} ${it.blockY} ${it.blockZ}" }
-        val punishment = if (hostile) "; a punishment of ${player.plainTextName}" else ""
-        return "ok: ${mobs.size} $id summoned around ${player.plainTextName}$fewer, until ${ctx.at(expiresAt)} (in ${args.lifetimeMinutes} min)" +
+        val punishment = if (hostile) "; a punishment of ${player.shownName}" else ""
+        return "ok: ${mobs.size} $id summoned around ${player.shownName}$fewer, until ${ctx.at(expiresAt)} (in ${duration(args.lifetimeMinutes * 60_000L)})" +
             (if (details.isEmpty()) "" else ": ${details.joinToString(", ")}") + "; at $positions$jockeys$punishment"
     }
 
@@ -637,7 +644,7 @@ class LightningTool : NarratorTool<LightningArgs>(
                 refuse(ToolResult.invalid("at chaos ${ctx.chaos} lightning does at most ${number(caps.lightningHearts)} hearts of damage (asked ${number(args.damageHearts)})"))
             }
         }
-        val named = args.player?.let { ctx.onlinePlayer(it) }
+        val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { strike(ctx, server, named, args) } }
     }
 
@@ -730,7 +737,7 @@ class ExplosionTool : NarratorTool<ExplosionArgs>(
         if (args.power > caps.explosionPower) {
             refuse(ToolResult.invalid("at chaos ${ctx.chaos} an explosion has a power of at most ${number(caps.explosionPower)} (asked ${number(args.power)})"))
         }
-        val named = args.player?.let { ctx.onlinePlayer(it) }
+        val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { blast(ctx, server, named, args) } }
     }
 
@@ -757,7 +764,7 @@ class ExplosionTool : NarratorTool<ExplosionArgs>(
             if (hurt.isEmpty()) {
                 "nobody hurt"
             } else {
-                "hurt: " + hurt.joinToString { "${it.plainTextName} ${number(before.getValue(it).toDouble())} → ${if (it.isDeadOrDying) "dead" else number(it.health.toDouble())}" }
+                "hurt: " + hurt.joinToString { "${it.shownName} ${number(before.getValue(it).toDouble())} → ${if (it.isDeadOrDying) "dead" else number(it.health.toDouble())}" }
             }
         }
         return ToolResult.ok("ok: explosion of power ${number(args.power)}, $where$at: $effects; no block touched", around.map { it.ref() })
@@ -809,7 +816,7 @@ class FireworksTool : NarratorTool<FireworksArgs>(
     effect = ToolEffect.WORLD,
 ) {
     override suspend fun run(ctx: ToolContext, args: FireworksArgs): ToolResult = answer {
-        val named = args.player?.let { ctx.onlinePlayer(it) }
+        val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { launch(server, named, args) } }
     }
 
@@ -988,7 +995,7 @@ class ParticlesTool : NarratorTool<ParticlesArgs>(
     effect = ToolEffect.WORLD,
 ) {
     override suspend fun run(ctx: ToolContext, args: ParticlesArgs): ToolResult = answer {
-        val named = args.player?.let { ctx.onlinePlayer(it) }
+        val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server ->
             answer {
                 val target = server.target(named, args.x, args.y, args.z, args.dimension)
@@ -1043,7 +1050,7 @@ class SetWeatherTool(private val limits: WorldLimits) : NarratorTool<SetWeatherA
         }
         limits.weather.record()
         val until = ctx.clock.millis() + args.minutes * 60_000L
-        ToolResult.ok("ok: ${args.weather.name.lowercase()} for ${args.minutes} min (until ${ctx.at(until)})")
+        ToolResult.ok("ok: ${args.weather.name.lowercase()} for ${duration(args.minutes * 60_000L)} (until ${ctx.at(until)})")
     }
 }
 
@@ -1093,8 +1100,8 @@ class SetTimeTool(private val limits: WorldLimits) : NarratorTool<SetTimeArgs>(
 
 /**
  * The limits of the world tools that act on the whole server: one weather change every 10 minutes, one
- * time change every 20. Counted once the change is made. One per server ([of]), so a new chapter does not
- * reset them; in memory only.
+ * time change every 20. Counted once the change is made. The server's own is `ToolLimits.world`, so a new
+ * chapter does not reset them; in memory only.
  */
 class WorldLimits(clock: Clock) {
     val weather = Cooldown(clock, WEATHER_COOLDOWN_MS)
@@ -1104,14 +1111,13 @@ class WorldLimits(clock: Clock) {
     class Cooldown(private val clock: Clock, private val ms: Long) {
         private var last: Long? = null
 
-        /** Null when a change is allowed now; else why not (`changed 4 min ago; …`). */
+        /** Null when a change is allowed now; else why not (`changed 4m ago; …`). */
         @Synchronized
         fun check(): String? {
             val last = last ?: return null
             val ago = clock.millis() - last
             if (ago >= ms) return null
-            return "changed ${SpeechLimiter.describe(ago)} ago; the next change is possible in ${SpeechLimiter.describe(ms - ago)} " +
-                "(one every ${SpeechLimiter.describe(ms)})"
+            return "changed ${ToolText.duration(ago)} ago; the next change is possible in ${ToolText.wait(ms - ago)} (one every ${ToolText.duration(ms)})"
         }
 
         @Synchronized
@@ -1129,12 +1135,6 @@ class WorldLimits(clock: Clock) {
 
         const val WEATHER_COOLDOWN_MS = 10 * 60_000L
         const val TIME_COOLDOWN_MS = 20 * 60_000L
-
-        private val byServer = WeakHashMap<NarratorServices, WorldLimits>()
-
-        /** The limits of the server [services] belong to: the same for every conversation, dropped with the server. */
-        @Synchronized
-        fun of(services: NarratorServices): WorldLimits = byServer.getOrPut(services) { WorldLimits(services.clock) }
     }
 }
 
@@ -1160,21 +1160,26 @@ private class Target(val level: ServerLevel, val pos: Vec3, val player: ServerPl
 /** The target of a call: [named]'s position, or x, y, z in [dimension]; refuses when it is not loaded. Server thread. */
 private fun MinecraftServer.target(named: PlayerRef?, x: Int?, y: Int?, z: Int?, dimension: String?): Target {
     if (named != null) {
-        val player = livePlayer(named)
-        return Target(player.level(), player.position(), player, player.plainTextName)
+        val player = live(named)
+        return Target(player.level(), player.position(), player, player.shownName)
     }
     val level = dimensionLevel(dimension)
     val pos = BlockPos(x!!, y!!, z!!)
-    val label = "x $x, y $y, z $z" + if (level === overworld()) "" else " in ${shortId(level.dimension().identifier())}"
+    val label = "x $x, y $y, z $z" + if (level === overworld()) "" else " in ${ToolText.dimension(level.dimension().identifier().toString())}"
     if (!level.isInsideBuildHeight(pos.y) || !level.isColumnLoaded(pos.x, pos.z)) refuse(ToolResult.failed("$label is not loaded: no player is near enough to see anything"))
     return Target(level, Vec3.atBottomCenterOf(pos), null, label)
 }
 
-/** The level of [dimension] (`the_nether`, `minecraft:the_end`), the overworld when null; refuses an unknown one. */
+/**
+ * The level of [dimension] in any of the forms the model writes (`the_nether`, `nether`,
+ * `minecraft:the_end`: [ToolText.dimensionId]), the overworld when null; refuses an unknown one.
+ */
 private fun MinecraftServer.dimensionLevel(dimension: String?): ServerLevel {
     if (dimension == null) return overworld()
-    val level = parseId(dimension)?.let { getLevel(ResourceKey.create(Registries.DIMENSION, it)) }
-    return level ?: refuse(ToolResult.invalid("unknown dimension \"$dimension\"; dimensions: ${levelKeys().joinToString { shortId(it.identifier()) }}"))
+    val level = Identifier.tryParse(ToolText.dimensionId(dimension))?.let { getLevel(ResourceKey.create(Registries.DIMENSION, it)) }
+    return level ?: refuse(
+        ToolResult.invalid("unknown dimension \"$dimension\"; dimensions: ${levelKeys().joinToString { ToolText.dimension(it.identifier().toString()) }}"),
+    )
 }
 
 /** A point [distance] blocks from [from], in a random direction, at the same height. */
@@ -1208,27 +1213,3 @@ private fun groundNear(level: ServerLevel, from: Vec3, distance: Int): Vec3 {
 /** Whether the chunk of column ([x], [z]) is loaded; never loads it (`ORACLE_ACTIONS_API.md` §2.2). Server thread. */
 private fun ServerLevel.isColumnLoaded(x: Int, z: Int): Boolean =
     chunkSource.getChunkNow(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)) != null
-
-/** The online player called [name] (ignoring case); refuses with who is online otherwise. Any thread. */
-private fun ToolContext.onlinePlayer(name: String): PlayerRef =
-    players.byName(name)?.ref
-        ?: refuse(ToolResult.invalid("$name is not online; online: ${players.online.joinToString { it.ref.name }.ifEmpty { "nobody" }}"))
-
-/** The live player of [ref]; refuses when they left. Server thread. */
-private fun MinecraftServer.livePlayer(ref: PlayerRef): ServerPlayer =
-    playerList.getPlayer(ref.uuid) ?: refuse(ToolResult.failed("${ref.name} left the game"))
-
-/** A hostile action against [player] until [until] (epoch milliseconds), or the guards' refusal. Server thread. */
-private fun ToolContext.punish(player: ServerPlayer, until: Long) {
-    val verdict = guards.hostile(player, caller, until)
-    if (verdict is Verdict.Denied) refuse(ToolResult.denied(verdict))
-}
-
-/** The chaos level in force. */
-private val ToolContext.chaos: Int get() = settings.config.chaos
-
-/** [epochMs] as a time of day, `21:41:10`. */
-private fun ToolContext.at(epochMs: Long): String = clockTime(clock, epochMs)
-
-/** [value] without a useless fraction: `3`, `0.5`, `12.25`. */
-private fun number(value: Double): String = "%.2f".format(Locale.ROOT, value).trimEnd('0').trimEnd('.')

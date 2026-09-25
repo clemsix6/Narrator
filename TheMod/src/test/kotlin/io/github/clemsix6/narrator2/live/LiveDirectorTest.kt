@@ -179,9 +179,11 @@ class LiveDirectorTest {
     }
 
     /**
-     * The measurement asked by T20: each task of the Analyst has its own session. Is the common prefix
-     * (prompt and tools, about 9 000 tokens) read from the cache by the next task, or written again? Two
-     * small tasks in a row on the test Journal; the first request of each is printed. Measured, not asserted.
+     * The cache from one conversation to the next (T22, finding 3; M2-fix-G): each task of the Analyst is a
+     * conversation of its own, but all of them ask the gateway for the same session (`X-Session-ID:
+     * narrator2-analyst`), so they go to the upstream account where the common prefix (prompt and tools,
+     * about 9 000 tokens) is cached. Two small tasks in a row on the test Journal: the very first request of
+     * the second task reads it.
      */
     @Test
     fun `c) two Analyst tasks in a row - the second reads the prefix the first one cached`() {
@@ -217,6 +219,7 @@ class LiveDirectorTest {
             val total = traces.llmCalls.sumOf { Tokens.of(it).cost }
             println("[live] c) first request of task 1: ${first[0]} · of task 2: ${first[1]} · total ${dollars(total)}")
             println("[live] c) the second task ${if (first[1].cacheRead > 0) "READ the cached prefix" else "did NOT read the cached prefix (written again)"}")
+            assertTrue(first[1].cacheRead > 0, "the first request of the second task reads the prefix the first task cached: ${first[1]}")
         } finally {
             scope.cancel()
             client.close()

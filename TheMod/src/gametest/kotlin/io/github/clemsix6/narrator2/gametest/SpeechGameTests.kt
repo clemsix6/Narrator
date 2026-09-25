@@ -178,7 +178,7 @@ class SpeechGameTests {
 
             val again = run(helper, tool, ShowTitleArgs("ENCORE", to = listOf(bob.name)))
             helper.assertEquals(ToolStatus.DENIED, again.status, again.text)
-            helper.assertTrue(again.text.startsWith("DENIED (speech_limit): one title per player every 30 s: ${bob.name} got one"), again.text)
+            helper.assertTrue(again.text.startsWith("DENIED (speech_limit): one title per player every 30s: ${bob.name} got one"), again.text)
             helper.assertEquals(1, bob.packets.count { it is ClientboundSetTitleTextPacket }, "no second title")
         } finally {
             spoken.close()
@@ -196,7 +196,7 @@ class SpeechGameTests {
 
             helper.assertEquals(ToolStatus.OK, result.status, result.text)
             helper.assertTrue(
-                result.text.startsWith("ok: title shown to ${alice.name}; skipped (one title per player every 30 s): ${bob.name} got one "),
+                result.text.startsWith("ok: title shown to ${alice.name}; skipped (one title per player every 30s): ${bob.name} got one "),
                 result.text,
             )
             helper.assertEquals(listOf(alice.ref), (spoken.envelopes.single().event as NarratorSpoke).recipients, "journaled for Alice only")
@@ -271,7 +271,7 @@ class SpeechGameTests {
 
             val again = run(helper, tool, GiveBookArgs(bob.name, "Bis", listOf("Encore.")))
             helper.assertEquals(ToolStatus.DENIED, again.status, again.text)
-            helper.assertTrue(again.text.contains("one book per player every 5 min"), again.text)
+            helper.assertTrue(again.text.contains("one book per player every 5m"), again.text)
         } finally {
             spoken.close()
         }

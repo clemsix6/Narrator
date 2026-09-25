@@ -70,12 +70,12 @@ class DirectorEndToEndTests {
                 server.playerList.broadcastChatMessage(PlayerChatMessage.unsigned(player.uuid, greeting), player, ChatType.bind(ChatType.CHAT, player))
             }
             val wake = awaitRequest(fake, "the greeting's wake-up") { isDirector(it) && model.greet in lastUser(it).wakeText() }
-            val chapterSession = wake.header("X-Session-ID")!!
+            val chapterSession = wake.conversation!!
             awaitQuiet(runtime)
-            val answered = fake.requests.dropWhile { it !== wake }.first { it.header("X-Session-ID") == chapterSession && lastUser(it).hasToolResult() }
+            val answered = fake.requests.dropWhile { it !== wake }.first { it.conversation == chapterSession && lastUser(it).hasToolResult() }
             check("CHAT ${speaker.name} (to you" in lastUser(wake).wakeText()) { "the addressed chat line: ${lastUser(wake).wakeText()}" }
             check("<situation now=" in lastUser(wake).wakeText()) { "the situation follows the events" }
-            val opening = fake.requests.first { it.header("X-Session-ID") == chapterSession }
+            val opening = fake.requests.first { it.conversation == chapterSession }
             val briefing = opening.json.path("messages")[0].path("content")[0].path("text").asText()
             check(briefing.startsWith("<briefing chapter=\"")) { "the chapter opens with its briefing: ${briefing.take(200)}" }
             check("<world day=\"" in briefing) { "the world line, read on the server thread: ${briefing.take(600)}" }
@@ -145,7 +145,7 @@ class DirectorEndToEndTests {
             val close = operatorCommands(helper, "narrator chapter close")
             check(close.lines.any { "closes at the next quiet moment" in it }) { "chapter close: ${close.lines}" }
             val summaryRequest = awaitRequest(fake, "the summary request", timeoutMs = 45_000) { "<chapter_end chapter=" in lastUser(it).wakeText() }
-            check(summaryRequest.header("X-Session-ID") == chapterSession) { "the summary is asked on the chapter's own session" }
+            check(summaryRequest.conversation == chapterSession) { "the summary is asked on the chapter's own session" }
             awaitCondition("the chapter is closed with its summary") {
                 runCatchingJournal(runtime, "SELECT summary FROM conversations WHERE conversation_id = ?", chapterSession)?.firstOrNull()?.toString()?.contains(ScriptedModel.SUMMARY) == true
             }
@@ -154,7 +154,10 @@ class DirectorEndToEndTests {
                 server.playerList.broadcastChatMessage(PlayerChatMessage.unsigned(player.uuid, "Narrateur, encore là ? ${model.again}"), player, ChatType.bind(ChatType.CHAT, player))
             }
             val next = awaitRequest(fake, "the next chapter's first request") { isDirector(it) && model.again in lastUser(it).wakeText() }
-            check(next.header("X-Session-ID") != chapterSession) { "a new chapter, a new session" }
+            check(next.conversation != chapterSession) { "a new chapter, a new conversation" }
+            check(next.session == "narrator2-director" && wake.session == next.session) {
+                "every chapter on the Director's gateway session, where the cache of their prefix lives: ${wake.session}, ${next.session}"
+            }
             val nextBriefing = next.json.path("messages")[0].path("content")[0].path("text").asText()
             check(nextBriefing.startsWith("<briefing chapter=\"") && ScriptedModel.SUMMARY in nextBriefing) { "the briefing carries the summary: ${nextBriefing.take(400)}" }
             check("NARRATOR→all: \"${ScriptedModel.GREETING_LINE}\"" in nextBriefing) { "the briefing's chat has the Narrator's line: $nextBriefing" }
@@ -299,9 +302,9 @@ suspend fun awaitRequest(fake: FakeAnthropic, what: String, timeoutMs: Long = 15
     return fake.requests.last(accept)
 }
 
-fun isDirector(request: RecordedRequest) = request.header("X-Session-ID").orEmpty().startsWith("director-")
+fun isDirector(request: RecordedRequest) = request.conversation.orEmpty().startsWith("director-")
 
-fun isAnalyst(request: RecordedRequest) = request.header("X-Session-ID").orEmpty().startsWith("analyst-")
+fun isAnalyst(request: RecordedRequest) = request.conversation.orEmpty().startsWith("analyst-")
 
 /** The last `user` message of [request]. */
 fun lastUser(request: RecordedRequest): JsonNode = request.json.path("messages").last { it.path("role").asText() == "user" }

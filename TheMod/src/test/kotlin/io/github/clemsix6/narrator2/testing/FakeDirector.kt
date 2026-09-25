@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.testing
 
+import io.github.clemsix6.narrator2.config.DirectorConfig
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.director.DirectorSignal
@@ -53,6 +54,8 @@ class FakeDirector(
         turnId = null,
         operatorChannel = OperatorChannelMode.SYSTEM_MESSAGE,
         reminders = reminders.toList(),
+        turnsThisHour = 0,
+        turnsPerHour = DirectorConfig().turnsPerHour,
     )
 
     override fun recentActivity(player: UUID, minutes: Int): String? = activity[player]

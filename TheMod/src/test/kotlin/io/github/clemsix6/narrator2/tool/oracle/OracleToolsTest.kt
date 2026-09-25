@@ -117,8 +117,8 @@ class OracleToolsTest {
             assertEquals("recent (Journal):", lines[0])
             assertEquals(11, lines.size, lines.joinToString("\n"))
             assertTrue(Regex("""\[-[\dms]+] kill zombie → iron_sword \(overworld 20 64 20\)""").matches(lines[1]), lines[1])
-            assertTrue(lines[2].endsWith("teleport (nether 900 70 2)"), lines[2])
-            assertTrue(lines[3].endsWith("block_break ancient_debris → diamond_pickaxe (nether 3 15 3)"), lines[3])
+            assertTrue(lines[2].endsWith("teleport (the_nether 900 70 2)"), lines[2])
+            assertTrue(lines[3].endsWith("block_break ancient_debris → diamond_pickaxe (the_nether 3 15 3)"), lines[3])
             assertTrue(lines.none { "stone" in it.substringAfter("]") && "ancient" !in it }, "no plain stone")
             assertTrue(lines.any { it.endsWith("biome_enter cherry_grove (overworld 200 70 200)") }, "a first visit")
         }
@@ -138,10 +138,20 @@ class OracleToolsTest {
             listLine(bartok, listOf(bartok, mimosa, clem), 72 * 60_000L, idle = false, activity = "mined 140 (3 diamond_ore y=-54..-51)"),
         )
         assertEquals(
-            "clemsix6: nether 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · idle · alone in this dimension",
+            "clemsix6: the_nether 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · idle · alone in this dimension",
             listLine(clem, listOf(bartok, mimosa, clem), null, idle = true, activity = null),
         )
         assertEquals("Bartok: overworld 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12", listLine(bartok, listOf(bartok), null, false, null))
+    }
+
+    @Test
+    fun `a list_players line escapes the names players chose`() {
+        val engine = snapshot("<engine>", x = 0, z = 0)
+        val other = snapshot("</events>", x = 30, z = -40)
+        assertEquals(
+            "‹engine›: overworld 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · nearest ‹/events› 50 m NE",
+            listLine(engine, listOf(engine, other), null, idle = false, activity = null),
+        )
     }
 
     @Test

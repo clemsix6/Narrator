@@ -145,8 +145,8 @@ class ToolRunnerTest {
 
         assertEquals(
             listOf(
-                "UNKNOWN: slow_world did not finish within 100 ms; the action may or may not have happened",
-                "TIMEOUT: slow_read did not finish within 100 ms",
+                "UNKNOWN: slow_world did not finish within 1s; the action may or may not have happened",
+                "TIMEOUT: slow_read did not finish within 1s",
             ),
             results.map { it.text },
         )

@@ -2,15 +2,20 @@ package io.github.clemsix6.narrator2.command
 
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ServerStoppedException
+import io.github.clemsix6.narrator2.core.ServerThreadTimeoutException
+import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.llm.describeFailure
 import io.github.clemsix6.narrator2.runtime.Phase
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.network.chat.Component
+import net.minecraft.util.thread.BlockableEventLoop
 
 /*
  * What every `/narrator …` module shares: the look of the replies, the check that the Narrator runs,
@@ -47,7 +52,7 @@ fun runningNarrator(source: CommandSourceStack): NarratorRuntime? {
  * Runs [work] in the runtime's scope, off the server thread (network, database, files), and sends the
  * lines it returns to [source] on the server thread, and to the other operators too when [broadcast].
  * A failure becomes a red `<what> failed: …` line and an error in the log; a cancellation (the server
- * stops) sends nothing.
+ * stops) sends nothing, and neither does a server that has stopped meanwhile ([replyOn]).
  */
 fun replyLater(
     source: CommandSourceStack,
@@ -55,8 +60,23 @@ fun replyLater(
     what: String,
     broadcast: Boolean = false,
     work: suspend () -> List<Component>,
+): Job = replyOn(runtime.server, runtime.scope, what, { line -> source.sendSuccess({ line }, broadcast) }, work)
+
+/**
+ * [replyLater] on [loop] (the server's thread) in [scope]: [work] runs off the server thread, then each
+ * line it returns goes to [send] on the server thread, through [onServerThread]. Never from another
+ * thread: once the server has stopped, Minecraft would run a task on the caller's thread, and the lines
+ * are dropped instead (M2 review, finding 17); so they are when the server thread does not get to them
+ * within [REPLY_TIMEOUT_MS].
+ */
+internal fun replyOn(
+    loop: BlockableEventLoop<*>,
+    scope: CoroutineScope,
+    what: String,
+    send: (Component) -> Unit,
+    work: suspend () -> List<Component>,
 ): Job =
-    runtime.scope.launch(Dispatchers.IO) {
+    scope.launch(Dispatchers.IO) {
         val lines = try {
             work()
         } catch (e: CancellationException) {
@@ -65,5 +85,14 @@ fun replyLater(
             Log.command.error("$what failed", e)
             listOf(errorLine("$what failed: ${describeFailure(e)}"))
         }
-        runtime.server.execute { lines.forEach { line -> source.sendSuccess({ line }, broadcast) } }
+        try {
+            loop.onServerThread(REPLY_TIMEOUT_MS) { lines.forEach(send) }
+        } catch (e: ServerStoppedException) {
+            Log.command.debug { "$what: the answer was not sent: ${e.message}" }
+        } catch (e: ServerThreadTimeoutException) {
+            Log.command.warn("$what: the answer was not sent: ${e.message}")
+        }
     }
+
+/** An answer the server thread does not send within this delay is dropped. */
+private const val REPLY_TIMEOUT_MS = 10_000L

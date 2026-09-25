@@ -77,7 +77,7 @@ class SituationReportTest {
             <situation now="21:32:41" day="37" time="night" weather="clear">
             Bartok: overworld underground y=-58 dripstone_caves · hp 14/20 food 12 · online 1h12m · last 5m: mined 5 (3 diamond_ore y=-54..-51, stone 2)
             Mimosa: overworld, dead · online 25m · protected from hostile actions until 21:36 (died)
-            clemsix6: nether creative in fortress y=72 nether_wastes · hp 20/20 food 20 · online 5m, idle · protected from every hostile action (operators)
+            clemsix6: the_nether creative in fortress y=72 nether_wastes · hp 20/20 food 20 · online 5m, idle · protected from every hostile action (operators)
             Your active effects: Bartok slowness II until 21:34
             Deaths you may still cause: Bartok 1, Mimosa 0, clemsix6 0
             Tasks: T-13 analyst running 12s, T-14 analyst queued · Reminders: R-3 at 21:40 "check Bob's village"
