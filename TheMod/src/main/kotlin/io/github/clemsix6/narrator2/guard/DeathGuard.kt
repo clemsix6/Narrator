@@ -4,6 +4,8 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.tool.action.Teleports
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.server.level.ServerPlayer
@@ -20,7 +22,7 @@ import java.util.Locale
 /**
  * The death guard (M1_M2 §10.3): the Narrator kills a player at most [Caps.narratorKillsPerHour] times
  * per hour that player has played, the player keeps their inventory and experience when it does, and
- * beyond the quota the death is prevented.
+ * beyond the quota it never kills: the player is rescued.
  *
  * - **Arming**: any harmful action arms the guard for the player ([arm]), for a number of seconds of the
  *   player's own play time (the `PLAY_TIME` stat), saved with the player: it covers the same ticks as the
@@ -31,16 +33,16 @@ import java.util.Locale
  *   covers the cause of the death and no other player dealt the blow. An operator's `/kill`
  *   (`generic_kill`) never is.
  * - **At `ALLOW_DEATH`** (before the totem): quota left → the death goes on and the player is marked
- *   ([GuardState.protectedDeath], on disk); quota spent → the death is refused once per episode ([revive]):
- *   the player keeps 1 health, the guard stays armed 5 more seconds, and a player who fell into the void
- *   is taken out of it. A second death of the same episode goes on, the inventory kept: an armed guard is
- *   never an immortality.
+ *   ([GuardState.protectedDeath], on disk); quota spent → the death is refused, every time, and the
+ *   player is rescued ([rescue]): taken out of the danger that was killing them, to their respawn point.
+ *   A rescue arms nothing: a player who dies again under the same armings is rescued again, and cannot
+ *   die over and over where they were, since they are no longer there.
  * - **At `AFTER_DEATH`**: the death happened (no totem saved the player): it is counted.
  * - The keep-inventory mixins read the mark on the dying player, then on the old player at respawn
  *   ([keepsInventory]): the mark is the only state they need, and it lives in the player's file until
  *   the respawn clears it, restarts and disconnections included.
- * - **Falls**: a player the Narrator leaves in the air (the end of its levitation) or takes out of the
- *   void lands without fall damage ([cushionFall]).
+ * - **Falls**: a player the Narrator leaves in the air (the end of its levitation) lands without fall
+ *   damage ([cushionFall]), and so does a rescued player.
  *
  * Server thread only.
  */
@@ -50,8 +52,12 @@ class DeathGuard(
     private val decisions: Decisions,
     private val clock: Clock,
     private val attributes: AttributeLedger,
+    private val effects: EffectLedger,
 ) {
     private val log = Log.guard
+
+    /** The players rescued during the current server tick, put out again at its end ([afterTick]). */
+    private val rescuedThisTick = mutableListOf<ServerPlayer>()
 
     /**
      * Deaths of [player] by [peril] in the next [seconds] of their play time are the Narrator's; never
@@ -90,7 +96,7 @@ class DeathGuard(
     /**
      * `ALLOW_DEATH` for a player about to die: whether the death may happen. A death attributed to the
      * Narrator marks the player (inventory kept) while the quota lasts; beyond it, the death is refused
-     * once per episode.
+     * and the player rescued, every time.
      */
     fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean {
         if (!attributed(player, source)) {
@@ -99,86 +105,116 @@ class DeathGuard(
         }
         val now = playTime(player)
         val cap = caps().narratorKillsPerHour
-        val state = states.of(player)
-        val recent = recentKills(state.narratorKills, now)
-        // Beyond the quota, a death is refused once per episode; the next one goes on, like one within
-        // the quota: an armed guard never makes a player immortal, and they keep their inventory.
-        if (recent.size >= cap && state.revivedUntil <= now && revive(player, source, recent, cap, now)) return false
+        val recent = recentKills(states.of(player).narratorKills, now)
+        if (recent.size >= cap) {
+            rescue(player, source, recent, cap, now)
+            return false
+        }
         states.update(player) { it.copy(protectedDeath = true, narratorKills = recent) }
         return true
     }
 
     /**
-     * Refuses the death of [player] by [source], beyond the quota: they keep 1 health, the guard stays
-     * armed [PREVENTED_REARM_SECONDS] more seconds (a lasting hazard, lava or fire, is still the
-     * Narrator's), and no other death is refused until this armed stretch ends. A player who fell into
-     * the void is taken out of it first ([rescue]); false when there is nowhere to take them, and the
-     * death goes on.
+     * Beyond the quota, [player] does not die of [source]: they are taken out of the danger that was
+     * killing them. In order: alive again, before anything moves them; the Narrator's harmful effects and
+     * modifiers lifted (a levitation would lift them again, a smaller scale changes where they fit);
+     * taken to safety ([moveToSafety]); their fall stopped, their fire put out (again at the end of the
+     * tick, [afterTick]), air in their lungs, food if they were starving; no fall damage for
+     * [CUSHION_SECONDS] (a favor in the attribute ledger); [RESCUE_HEALTH] health. Nothing is armed.
+     *
+     * Decision `death_guard rescued`, at the `WARN` level for the operators when the player has been
+     * rescued more than [RESCUES_BEFORE_WARNING] times in [RESCUE_WINDOW_MS]: the Narrator keeps putting
+     * them in mortal danger beyond its quota, or they use the rescue as a way home.
      */
-    private fun revive(player: ServerPlayer, source: DamageSource, recent: List<Long>, cap: Int, now: Long): Boolean {
+    private fun rescue(player: ServerPlayer, source: DamageSource, recent: List<Long>, cap: Int, now: Long) {
         val cause = source.typeHolder().registeredName
-        val health = player.health
-        // Alive before anything moves them; given back when they cannot be saved, so the death goes on as it was.
         player.health = 1f
-        val rescued = if (source.`is`(DamageTypes.FELL_OUT_OF_WORLD)) {
-            rescue(player) ?: run {
-                player.health = health
-                return false
-            }
-        } else {
-            null
-        }
-        arm(player, PREVENTED_REARM_SECONDS)
-        val state = states.update(player) { it.copy(protectedDeath = false, revivedUntil = it.armedUntil) }
+        val effectsLifted = effects.removeHarmful(player).map(EffectLedger::describe)
+        val attributesLifted = attributes.resetHarmful(player).map { it.id }
+        val safety = moveToSafety(player)
+        if (safety == null) log.error("could not take ${player.plainTextName} to safety: the game refused to move them; kept alive where they are")
+        player.resetFallDistance()
+        player.deltaMovement = Vec3.ZERO
+        player.clearFire()
+        player.airSupply = player.maxAirSupply
+        if (player.foodData.foodLevel == 0) player.foodData.foodLevel = RESCUE_FOOD
+        cushion(player, CUSHION_SECONDS, turnId = null)
+        player.health = RESCUE_HEALTH
+        rescuedThisTick += player
+
+        val at = clock.millis()
+        val state = states.update(player) { it.copy(protectedDeath = false, rescues = recentRescues(it.rescues, at) + at) }
+        val often = state.rescues.size > RESCUES_BEFORE_WARNING
+        val lifted = effectsLifted + attributesLifted
         val nextFree = recent.minOrNull()?.let { (it + HOUR_TICKS - now) / TICKS_PER_SECOND }
         decisions.record(
-            log, DecisionRecord.Kind.DEATH_GUARD, "prevented", player.plainTextName,
-            reason = "$cause: the Narrator's quota of $cap deaths per played hour is spent; kept alive at 1 health" +
-                (rescued?.let { " and taken out of the void to ${where(player, it)}" } ?: "") +
-                "; one revival per episode: another death within ${(state.revivedUntil - now) / TICKS_PER_SECOND} s of play goes on" +
-                (nextFree?.let { " (the quota comes back in $it s of play)" } ?: ""),
+            log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
+            reason = "$cause: the Narrator's quota of deaths ($cap per played hour) is spent; " +
+                (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
+                ", fire put out, air given" +
+                (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
+                ", ${"%.1f".format(Locale.ROOT, player.health)} health, no fall damage for $CUSHION_SECONDS s; nothing armed" +
+                (nextFree?.let { " (the quota comes back in $it s of play)" } ?: "") +
+                (if (often) "; rescued ${state.rescues.size} times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""),
             detail = buildJsonObject {
                 put("cause", cause)
                 put("cap", cap)
                 put("recent_kills", recent.size)
-                put("revived_until", state.revivedUntil)
-                if (rescued != null) put("rescued_to", where(player, rescued))
+                safety?.let { (how, spot) ->
+                    put("rescued_by", how)
+                    put("rescued_to", where(player, spot))
+                }
+                put("lifted", JsonArray(lifted.map(::JsonPrimitive)))
+                put("health", player.health)
+                put("recent_rescues", state.rescues.size)
             },
+            level = if (often) Log.Level.WARN else Log.Level.INFO,
         )
-        return true
     }
 
     /**
-     * Takes [player] out of the void: to their respawn point as the game finds it (their bed or anchor,
-     * without using a charge; the world spawn otherwise), else onto safe ground in the column they fell
-     * through ([Teleports.landing]). Their fall is cushioned. Returns where they are, or null when there
-     * was nowhere to go.
+     * Takes [player] to their respawn point as the game finds it (their bed or anchor, without using a
+     * charge; the world spawn otherwise), else onto safe ground in the column where they are
+     * ([Teleports.landing]). Returns how ([RESPAWN_POINT] or [SAFE_GROUND]) and where they are now; null
+     * when there was nowhere to go (the game refuses to move a player it is removing).
      */
-    private fun rescue(player: ServerPlayer): Vec3? {
+    private fun moveToSafety(player: ServerPlayer): Pair<String, Vec3>? {
         val home = player.findRespawnPositionAndUseSpawnBlock(false, TeleportTransition.DO_NOTHING)
         // Rebuilt without the "no respawn block" flag: the player is not respawning, and must not be told so.
         val spot = TeleportTransition(home.newLevel(), home.position(), Vec3.ZERO, home.yRot(), home.xRot(), home.relatives(), TeleportTransition.DO_NOTHING)
-        val moved = player.teleport(spot) != null ||
-            Teleports.landing(player.level(), player, player.blockX, player.blockZ, null)?.let { Teleports.move(player, it) } == true
-        if (!moved) {
-            log.warn("could not take ${player.plainTextName} out of the void: no respawn point, no ground in their column")
-            return null
-        }
-        player.resetFallDistance()
-        player.deltaMovement = Vec3.ZERO
-        cushionFall(player, turnId = null)
-        return player.position()
+        if (player.teleport(spot) != null) return RESPAWN_POINT to player.position()
+        val ground = Teleports.landing(player.level(), player, player.blockX, player.blockZ, null) ?: return null
+        return if (Teleports.move(player, ground)) SAFE_GROUND to player.position() else null
     }
 
     /**
-     * [player] may fall from high up through no doing of their own: the Narrator's levitation ended, or
-     * they were taken out of the void. No fall damage for [CUSHION_SECONDS], longer when a fall from where
-     * they are to the bottom of the world lasts longer, through the attribute ledger (it ends by itself,
-     * even after a restart), and the guard armed as long for a fall. A longer cushion of the Narrator's is
-     * kept. Returns the seconds covered.
+     * End of a server tick: the players rescued during it are put out again. What set them alight may
+     * act again after the blow the rescue answered, in the same tick: a player who crossed two blocks of
+     * lava is set alight once for each.
+     */
+    fun afterTick() {
+        if (rescuedThisTick.isEmpty()) return
+        for (player in rescuedThisTick) if (!player.isRemoved) player.clearFire()
+        rescuedThisTick.clear()
+    }
+
+    /**
+     * [player] may fall from high up through no doing of their own: the Narrator's levitation ended. No
+     * fall damage for [CUSHION_SECONDS], longer when a fall from where they are to the bottom of the world
+     * lasts longer ([cushion]), and the guard armed as long for a fall. Returns the seconds covered.
      */
     fun cushionFall(player: ServerPlayer, turnId: Long?): Int {
         val seconds = CUSHION_SECONDS + fallSeconds(player.y - player.level().minY, player.gravity)
+        cushion(player, seconds, turnId)
+        arm(player, seconds, Peril.FALL)
+        return seconds
+    }
+
+    /**
+     * No fall damage for [player] for [seconds], through the attribute ledger (it ends by itself, even
+     * after a restart). A longer cushion of the Narrator's is kept.
+     */
+    private fun cushion(player: ServerPlayer, seconds: Int, turnId: Long?) {
         val until = clock.millis() + seconds * 1_000L
         val key = AttributeKey.FALL_DAMAGE_MULTIPLIER
         val kept = attributes.on(player).firstOrNull { it.attribute == key.id }
@@ -186,8 +222,6 @@ class DeathGuard(
         if (kept == null) {
             attributes.apply(player, key, -1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL, until, harmful = false, turnId = turnId)
         }
-        arm(player, seconds, Peril.FALL)
-        return seconds
     }
 
     /** `AFTER_DEATH` for a player who died: a protected death counts against the quota. */
@@ -199,8 +233,7 @@ class DeathGuard(
         decisions.record(
             log, DecisionRecord.Kind.DEATH_GUARD, "counted", player.plainTextName,
             reason = "${source.typeHolder().registeredName}: a death caused by the Narrator; inventory and experience kept; " +
-                "${state.narratorKills.size} of $cap in the last played hour" +
-                (if (state.narratorKills.size > cap) " (beyond the quota: this episode's one revival was already spent)" else ""),
+                "${state.narratorKills.size} of $cap in the last played hour",
             detail = buildJsonObject {
                 put("cause", source.typeHolder().registeredName)
                 put("cap", cap)
@@ -210,16 +243,16 @@ class DeathGuard(
         )
     }
 
-    /** Forgets armings and a revival that ran out, and the kills older than a played hour: the saved state stays small. Once a second. */
+    /** Forgets armings that ran out, the kills older than a played hour and the old rescues: the saved state stays small. Once a second. */
     fun tidy(player: ServerPlayer) {
         val state = states.of(player)
-        if (state.armedUntil == 0L && state.perils.isEmpty() && state.revivedUntil == 0L && state.narratorKills.isEmpty()) return
+        if (state.armedUntil == 0L && state.perils.isEmpty() && state.rescues.isEmpty() && state.narratorKills.isEmpty()) return
         val now = playTime(player)
         val tidied = state.copy(
             armedUntil = if (state.armedUntil > now) state.armedUntil else 0L,
             perils = state.perils.filterValues { it > now },
-            revivedUntil = if (state.revivedUntil > now) state.revivedUntil else 0L,
             narratorKills = recentKills(state.narratorKills, now),
+            rescues = recentRescues(state.rescues, clock.millis()),
         )
         if (tidied != state) states.update(player) { tidied }
     }
@@ -249,11 +282,26 @@ class DeathGuard(
         /** One played hour, in ticks of the `PLAY_TIME` stat. */
         const val HOUR_TICKS = 72_000L
 
-        /** How long the guard stays armed after it prevented a death. */
-        const val PREVENTED_REARM_SECONDS = 5
-
-        /** A fall the Narrator caused is cushioned at least this long (M2 review, finding 1). */
+        /** A fall the Narrator caused is cushioned at least this long (M2 review, finding 1), and a rescued player too. */
         const val CUSHION_SECONDS = 30
+
+        /** The health a rescued player is left with: 3 hearts, or their maximum when it is lower. */
+        const val RESCUE_HEALTH = 6f
+
+        /** The food a rescued player who was starving gets: enough not to starve again at once. */
+        const val RESCUE_FOOD = 6
+
+        /** Past this many rescues of a player in [RESCUE_WINDOW_MS], each new one is a warning for the operators. */
+        const val RESCUES_BEFORE_WARNING = 3
+
+        /** The window of [RESCUES_BEFORE_WARNING], in milliseconds of real time. */
+        const val RESCUE_WINDOW_MS = 10 * 60_000L
+
+        /** How a rescue took the player to safety, in its decision: to their respawn point. */
+        const val RESPAWN_POINT = "respawn_point"
+
+        /** How a rescue took the player to safety, in its decision: onto safe ground where they were. */
+        const val SAFE_GROUND = "safe_ground"
 
         /** The longest fall [fallSeconds] counts: a player who barely falls (no gravity) is not cushioned for ever. */
         private const val MAX_FALL_SECONDS = 900
@@ -286,6 +334,9 @@ class DeathGuard(
          * [now] (the stats were reset) counts as a kill at [now], so it still expires an hour later.
          */
         fun recentKills(kills: List<Long>, now: Long): List<Long> = kills.map { minOf(it, now) }.filter { now - it < HOUR_TICKS }
+
+        /** The rescues within [RESCUE_WINDOW_MS] before [now] (epoch milliseconds). */
+        fun recentRescues(rescues: List<Long>, now: Long): List<Long> = rescues.filter { now - it < RESCUE_WINDOW_MS }
 
         /** How many more deaths the Narrator may cause at play time [now] with a cap of [cap] per hour. */
         fun quotaLeft(kills: List<Long>, now: Long, cap: Int): Int = (cap - recentKills(kills, now).size).coerceAtLeast(0)

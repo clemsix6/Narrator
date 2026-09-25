@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
+import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.guard.AttributeKey
 import io.github.clemsix6.narrator2.guard.AttributeLedger
@@ -52,6 +53,8 @@ import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.effect.MobEffectInstance
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.level.GameType
+import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.storage.LevelData
 import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.phys.Vec3
@@ -92,24 +95,39 @@ class GuardGameTests {
         helper.assertValueEqual(listOf(PLAY_TIME), GuardStates.read(respawned).narratorKills, "the quota follows the player")
     }
 
+    /**
+     * Beyond the quota, the Narrator never kills (M2-fix-A2): the player is rescued, taken to their respawn
+     * point with some health, rid of the Narrator's harmful effects and modifiers (only those), fed if they
+     * were starving. The rescue arms nothing; an hour of play later, the quota is back.
+     */
     @GameTest
-    fun aDeathBeyondTheQuotaIsPrevented(helper: GameTestHelper) = withPlayer(helper) { player ->
+    fun aDeathBeyondTheQuotaIsARescueThatArmsNothing(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = guards(helper)
+        val now = System.currentTimeMillis()
         equip(player)
-        // Chaos 3: one death per played hour, and one happened 1 000 ticks ago.
-        guards.states.update(player) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
-        guards.armDeathGuard(player.uuid, 10)
+        val home = homeAt(helper, player)
+        spendQuota(guards, player)
+        guards.armDeathGuard(player.uuid, 60)
+        guards.effects.apply(player, MobEffects.SLOWNESS, 2, 60, particles = false, turnId = 1)
+        guards.effects.apply(player, MobEffects.SPEED, 1, 60, particles = false, turnId = 1)
+        guards.attributes.apply(player, AttributeKey.MAX_HEALTH, -0.5, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL, now + 60_000, harmful = true, turnId = 1)
+        player.addEffect(MobEffectInstance(MobEffects.POISON, 200))
+        player.foodData.foodLevel = 0
+        val armed = GuardStates.read(player).let { it.armedUntil to it.perils }
 
         kill(helper, player)
-        helper.assertFalse(player.isDeadOrDying, "the death is prevented")
-        helper.assertValueEqual(1f, player.health, "kept at 1 health")
+        helper.assertFalse(player.isDeadOrDying, "the death is refused")
+        helper.assertTrue(isAt(player, home), "rescued to the respawn point: ${player.position()}")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+        helper.assertValueEqual(20.0, player.getAttributeValue(Attributes.MAX_HEALTH), "the Narrator's harmful modifier is lifted")
+        helper.assertFalse(player.hasEffect(MobEffects.SLOWNESS), "and its harmful effect")
+        helper.assertTrue(player.hasEffect(MobEffects.SPEED), "its favor stays")
+        helper.assertTrue(player.hasEffect(MobEffects.POISON), "what the Narrator did not do stays")
+        helper.assertValueEqual(DeathGuard.RESCUE_FOOD, player.foodData.foodLevel, "fed: starving, they would die again")
         helper.assertValueEqual(5, count(player, Items.DIAMOND), "the inventory is untouched")
         helper.assertFalse(DeathGuard.keepsInventory(player), "no mark")
-        helper.assertValueEqual(listOf(PLAY_TIME - 1_000), GuardStates.read(player).narratorKills, "nothing more is counted")
-        helper.assertTrue(
-            GuardStates.read(player).armedUntil >= PLAY_TIME + DeathGuard.PREVENTED_REARM_SECONDS * DeathGuard.TICKS_PER_SECOND,
-            "armed a little longer: a lasting hazard cannot finish the job",
-        )
+        helper.assertValueEqual(listOf(PLAY_TIME - 1_000), GuardStates.read(player).narratorKills, "nothing is counted")
+        helper.assertValueEqual(armed, GuardStates.read(player).let { it.armedUntil to it.perils }, "a rescue arms nothing")
 
         // An hour of play later, the quota is back.
         setPlayTime(player, PLAY_TIME + DeathGuard.HOUR_TICKS)
@@ -119,35 +137,196 @@ class GuardGameTests {
     }
 
     /**
-     * Beyond the quota, a death is refused once per episode (M2 review, finding 11): the next one of the
-     * same armed stretch goes on, the inventory kept, so an armed guard is never an immortality. A later
-     * episode has its own revival.
+     * Beyond the quota, a second death attributed to the Narrator in the same armed stretch is a rescue
+     * too (M2-fix-A2): there is no second death, and no immortality either, since the player is no longer
+     * where they were dying.
      */
     @GameTest
-    fun aSecondDeathOfTheSameEpisodeGoesOnWithTheInventory(helper: GameTestHelper) = withPlayer(helper) { player ->
+    fun twoDeathsOfTheSameEpisodeAreTwoRescues(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = guards(helper)
         equip(player)
-        guards.states.update(player) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+        val home = homeAt(helper, player)
+        spendQuota(guards, player)
         guards.armDeathGuard(player.uuid, 60)
 
         kill(helper, player)
-        helper.assertFalse(player.isDeadOrDying, "the first death beyond the quota is refused")
-        helper.assertValueEqual(1f, player.health, "kept at 1 health")
-        helper.assertTrue(GuardStates.read(player).revivedUntil >= PLAY_TIME + 60 * DeathGuard.TICKS_PER_SECOND, "no other revival in this stretch")
-
+        helper.assertTrue(!player.isDeadOrDying && isAt(player, home), "the first death beyond the quota is a rescue")
+        val away = helper.absolutePos(BlockPos(1, 1, 1))
+        player.teleportTo(away.x + 0.5, away.y.toDouble(), away.z + 0.5)
         kill(helper, player)
-        helper.assertTrue(player.isDeadOrDying, "the second death of the episode goes on: no immortality")
-        helper.assertTrue(DeathGuard.keepsInventory(player), "the Narrator's death: the inventory is kept")
-        helper.assertValueEqual(listOf(PLAY_TIME - 1_000, PLAY_TIME), GuardStates.read(player).narratorKills, "counted, beyond the quota")
-        val respawned = respawn(helper, player)
-        helper.assertValueEqual(5, count(respawned, Items.DIAMOND), "the inventory comes back")
+        helper.assertFalse(player.isDeadOrDying, "the second one of the episode too: no second death")
+        helper.assertTrue(isAt(player, home), "rescued again: ${player.position()}")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+        helper.assertFalse(DeathGuard.keepsInventory(player), "no mark")
+        helper.assertValueEqual(listOf(PLAY_TIME - 1_000), GuardStates.read(player).narratorKills, "nothing is counted")
+        helper.assertValueEqual(2, GuardStates.read(player).rescues.size, "two rescues")
+        helper.assertValueEqual(5, count(player, Items.DIAMOND), "the inventory is untouched")
+    }
 
-        // Once the stretch is over, a new episode has its own revival.
-        vulnerable(respawned)
-        setPlayTime(respawned, PLAY_TIME + 60 * DeathGuard.TICKS_PER_SECOND + 1)
-        guards.armDeathGuard(respawned.uuid, 10)
-        kill(helper, respawned)
-        helper.assertFalse(respawned.isDeadOrDying, "refused again in a new episode")
+    /**
+     * Beyond the quota, a player in lava is taken out of it once and for all (M2-fix-A2): rescued at the
+     * first blow of the lava that would kill them, put out, and alive ticks later, far from it, with a
+     * single rescue: no loop. A second ignition in the same tick (a second block of lava crossed) is put
+     * out at the end of the tick. The decision says what happened.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aPlayerInLavaBeyondTheQuotaIsRescuedOnce(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val guards = guards(helper)
+        val bob = TestPlayer(helper)
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            basin(helper, Blocks.LAVA)
+            bob.standAt(BlockPos(1, 1, 1))
+            bob.makeVulnerable()
+            val player = bob.live
+            setPlayTime(player, PLAY_TIME)
+            equip(player)
+            val home = homeAt(helper, player)
+            spendQuota(guards, player)
+            // The Narrator took away their fire resistance: fire and lava are its doing for a minute.
+            guards.armDeathGuard(bob.uuid, 60, Peril.FIRE)
+            val armed = GuardStates.read(player).perils
+            player.health = 1f
+
+            repeat(20) { if (GuardStates.read(player).rescues.isEmpty()) player.doTick() }
+            helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "rescued from the lava")
+            helper.assertFalse(player.isDeadOrDying, "alive")
+            helper.assertTrue(isAt(player, home), "out of the lava, at the respawn point: ${player.position()}")
+            helper.assertFalse(player.isOnFire, "put out")
+            helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+            helper.assertValueEqual(armed, GuardStates.read(player).perils, "nothing more armed")
+            helper.assertValueEqual(5, count(player, Items.DIAMOND), "the inventory is untouched")
+            // What set them alight in this tick may act again after the blow (a second block of lava crossed).
+            player.igniteForSeconds(15f)
+
+            var decisions: AtomicReference<Any>? = null
+            helper.startSequence()
+                .thenIdle(2)
+                .thenExecute {
+                    helper.assertFalse(player.isOnFire, "put out again at the end of the tick")
+                    repeat(200) { player.doTick() }
+                    helper.assertTrue(!player.isDeadOrDying && isAt(player, home), "alive at home ticks later")
+                    helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "a single rescue: no loop")
+                    decisions = deathGuardDecisions(runtime, bob.name)
+                }
+                .thenAwait { helper.assertEquals(listOf("rescued" to "minecraft:lava"), decisions?.get(), "decisions of ${bob.name}") }
+                .thenExecute {
+                    basin(helper, Blocks.STONE)
+                    bob.close()
+                }
+                .thenSucceed()
+        }
+    }
+
+    /**
+     * Beyond the quota, the fall at the end of the Narrator's levitation is a rescue (M2-fix-A2): once its
+     * cushion is over, a fatal fall takes the player home, with no fall damage for 30 s more and nothing
+     * more armed.
+     */
+    @GameTest
+    fun aFallAfterTheNarratorsLevitationBeyondTheQuotaIsARescue(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        val sources = helper.level.damageSources()
+        equip(player)
+        val home = homeAt(helper, player)
+        spendQuota(guards, player)
+        // What apply_effect levitation does: the effect, and the guard armed for a fall.
+        guards.effects.apply(player, MobEffects.LEVITATION, 1, 1, particles = false, turnId = 1)
+        guards.death.arm(player, 1 + 30, Peril.FALL)
+        repeat(40) { if (player.hasEffect(MobEffects.LEVITATION)) player.doTick() }
+        helper.assertFalse(player.hasEffect(MobEffects.LEVITATION), "the levitation ran out")
+        // Its cushion is over; the guard of the fall is not.
+        guards.attributes.expire(player, System.currentTimeMillis() + 3_600_000)
+        helper.assertValueEqual(1.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "the cushion is over")
+        val armed = GuardStates.read(player).perils
+
+        player.causeFallDamage(60.0, 1f, sources.fall())
+        helper.assertFalse(player.isDeadOrDying, "the fall does not kill")
+        helper.assertTrue(isAt(player, home), "rescued to the respawn point: ${player.position()}")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+        helper.assertValueEqual(0.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage for a while")
+        val cushion = GuardStates.read(player).modifiers.single { it.attribute == AttributeKey.FALL_DAMAGE_MULTIPLIER.id }
+        helper.assertTrue(!cushion.harmful && cushion.expiresAt >= System.currentTimeMillis() + 29_000, "a favor of 30 s: $cushion")
+        helper.assertValueEqual(armed, GuardStates.read(player).perils, "nothing more armed")
+
+        player.causeFallDamage(60.0, 1f, sources.fall())
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "a fall right after hurts nothing")
+        helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "one rescue")
+    }
+
+    /**
+     * Beyond the quota, a player burning to death is put out (M2-fix-A2): the burn that would kill them
+     * is a rescue, and they burn no more.
+     */
+    @GameTest
+    fun aPlayerBurningToDeathBeyondTheQuotaIsPutOut(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        equip(player)
+        val home = homeAt(helper, player)
+        spendQuota(guards, player)
+        guards.armDeathGuard(player.uuid, 60, Peril.FIRE)
+        player.health = 1f
+        player.igniteForSeconds(10f)
+
+        repeat(20) { if (GuardStates.read(player).rescues.isEmpty()) player.doTick() }
+        helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "the burn that would kill is a rescue")
+        helper.assertFalse(player.isDeadOrDying, "alive")
+        helper.assertFalse(player.isOnFire, "put out")
+        helper.assertTrue(isAt(player, home), "at the respawn point: ${player.position()}")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+
+        repeat(200) { player.doTick() }
+        helper.assertTrue(!player.isDeadOrDying && !player.isOnFire, "no burn ticks later")
+        helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "a single rescue")
+    }
+
+    /** Beyond the quota, a drowning player is taken out of the water with air in their lungs (M2-fix-A2). */
+    @GameTest
+    fun aDrowningPlayerBeyondTheQuotaIsRescuedWithAir(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        equip(player)
+        basin(helper, Blocks.WATER, depth = 2)
+        val home = homeAt(helper, player)
+        spendQuota(guards, player)
+        // The Narrator took away their water breathing: drowning is its doing for a minute.
+        guards.armDeathGuard(player.uuid, 60, Peril.DROWNING)
+        player.health = 1f
+        player.airSupply = -19
+
+        repeat(20) { if (GuardStates.read(player).rescues.isEmpty()) player.doTick() }
+        helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "drowning is a rescue")
+        helper.assertFalse(player.isDeadOrDying, "alive")
+        helper.assertTrue(isAt(player, home), "out of the water: ${player.position()}")
+        helper.assertValueEqual(player.maxAirSupply, player.airSupply, "air in their lungs")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
+
+        repeat(200) { player.doTick() }
+        helper.assertTrue(!player.isDeadOrDying && player.airSupply == player.maxAirSupply, "breathing ticks later")
+        helper.assertValueEqual(1, GuardStates.read(player).rescues.size, "a single rescue")
+        basin(helper, Blocks.STONE, depth = 2)
+    }
+
+    /**
+     * A player rescued again and again in a short time is a warning for the operators (M2-fix-A2): past
+     * 3 rescues in 10 minutes, each one says so; the player is still never let die.
+     */
+    @GameTest
+    fun manyRescuesInAShortTimeWarnTheOperators(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val runtime = helper.narrator()
+        // Guards of their own, whose decisions are in memory: chaos 0, where every death of the Narrator is a rescue.
+        val services = TestServices(minecraft = helper.level.server, settings = testSettings(NarratorConfig(chaos = 0)), players = runtime.players)
+        val calm = GuardsImpl(services)
+        homeAt(helper, player)
+        calm.death.arm(player, 60)
+        repeat(DeathGuard.RESCUES_BEFORE_WARNING + 1) {
+            player.health = 0f
+            helper.assertFalse(calm.death.allowDeath(player, helper.level.damageSources().magic()), "never let die")
+        }
+        val rescues = services.traces.decisions.filter { it.decision == "rescued" && it.subject == player.plainTextName }
+        helper.assertValueEqual(DeathGuard.RESCUES_BEFORE_WARNING + 1, rescues.size, "all rescued")
+        helper.assertTrue(rescues.dropLast(1).none { "look at what keeps putting them in danger" in it.reason.orEmpty() }, "no warning at first")
+        helper.assertTrue("rescued 4 times in 10 min" in rescues.last().reason.orEmpty(), "then a warning: ${rescues.last().reason}")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "alive")
     }
 
     /**
@@ -191,40 +370,24 @@ class GuardGameTests {
             bob.makeVulnerable()
             setPlayTime(bob.live, PLAY_TIME)
             equip(bob.live)
-            val home = helper.absolutePos(BlockPos(4, 1, 4))
-            bob.live.setRespawnPosition(ServerPlayer.RespawnConfig(LevelData.RespawnData.of(helper.level.dimension(), home, 0f, 0f), true), false)
-            guards.states.update(bob.live) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+            val home = homeAt(helper, bob.live, BlockPos(4, 1, 4))
+            spendQuota(guards, bob.live)
             guards.armDeathGuard(bob.uuid, 30, Peril.FALL)
+            val armed = GuardStates.read(bob.live).perils
             bob.live.teleportTo(bob.live.x, helper.level.minY - 70.0, bob.live.z)
 
             kill(helper, bob.live, helper.level.damageSources().fellOutOfWorld())
             helper.assertFalse(bob.live.isDeadOrDying, "the death in the void is refused")
-            helper.assertValueEqual(1f, bob.live.health, "kept at 1 health")
-            helper.assertTrue(bob.live.position().distanceTo(Vec3.atBottomCenterOf(home)) < 1.0, "back at the respawn point: ${bob.live.position()}, $home")
+            helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, bob.live.health, "with some health")
+            helper.assertTrue(isAt(bob.live, home), "back at the respawn point: ${bob.live.position()}, $home")
             helper.assertValueEqual(0.0, bob.live.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
             helper.assertFalse(DeathGuard.keepsInventory(bob.live), "no mark")
             helper.assertValueEqual(5, count(bob.live, Items.DIAMOND), "the inventory is untouched")
+            helper.assertValueEqual(armed, GuardStates.read(bob.live).perils, "nothing more armed")
 
-            val decisions = AtomicReference<Any>()
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    runtime.journal.barrier()
-                    decisions.set(
-                        runtime.journal.read(5_000) { connection ->
-                            connection.prepareStatement(
-                                "SELECT decision, json_extract_string(detail, '\$.cause') FROM engine_decisions WHERE kind = 'death_guard' AND subject = ? ORDER BY id",
-                            ).use { statement ->
-                                statement.setString(1, bob.name)
-                                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
-                            }
-                        },
-                    )
-                } catch (e: Exception) {
-                    decisions.set("read failed: $e")
-                }
-            }
+            val decisions = deathGuardDecisions(runtime, bob.name)
             helper.startSequence()
-                .thenAwait { helper.assertValueEqual(listOf("prevented" to "minecraft:out_of_world"), decisions.get(), "decisions of ${bob.name}") }
+                .thenAwait { helper.assertValueEqual(listOf("rescued" to "minecraft:out_of_world"), decisions.get(), "decisions of ${bob.name}") }
                 .thenExecute { bob.close() }
                 .thenSucceed()
         }
@@ -258,14 +421,16 @@ class GuardGameTests {
         }
     }
 
-    /** A spent arming and the kills older than a played hour are forgotten; an empty state leaves the player's file. */
+    /** A spent arming, the kills older than a played hour and the old rescues are forgotten; an empty state leaves the player's file. */
     @GameTest
     fun aSpentDeathGuardIsForgotten(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = guards(helper)
+        val now = System.currentTimeMillis()
         guards.states.update(player) {
             it.copy(
-                armedUntil = PLAY_TIME - 1, perils = mapOf(Peril.FALL.id to PLAY_TIME - 1), revivedUntil = PLAY_TIME - 1,
+                armedUntil = PLAY_TIME - 1, perils = mapOf(Peril.FALL.id to PLAY_TIME - 1),
                 narratorKills = listOf(PLAY_TIME - DeathGuard.HOUR_TICKS - 1, PLAY_TIME - 10),
+                rescues = listOf(now - DeathGuard.RESCUE_WINDOW_MS - 1),
             )
         }
         guards.death.tidy(player)
@@ -597,7 +762,7 @@ class GuardGameTests {
             narratorKills = listOf(100_000, 150_000),
             lastDeathAt = 1_234,
             perils = mapOf(Peril.FALL.id to 123_456, Peril.ANY.id to 100_000),
-            revivedUntil = 110_000,
+            rescues = listOf(1_700_000_000_000, 1_700_000_060_000),
         )
         val saved = GuardState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow()
         helper.assertValueEqual(state, GuardState.CODEC.parse(NbtOps.INSTANCE, saved).getOrThrow(), "round trip")
@@ -627,10 +792,11 @@ class GuardGameTests {
         helper.assertTrue(services.traces.decisions.any { it.decision == "denied" && it.subject == player.plainTextName }, "the refusal is a decision")
         helper.assertEquals(null, GuardStates.read(player).episode, "no punishment opened")
 
-        // No death at chaos 0: the Narrator's kill is prevented.
+        // No death at chaos 0: the Narrator's kill is a rescue.
+        homeAt(helper, player)
         calm.death.arm(player, 10)
-        helper.assertFalse(calm.death.allowDeath(player, helper.level.damageSources().magic()), "prevented at chaos 0")
-        helper.assertValueEqual(1f, player.health, "kept at 1 health")
+        helper.assertFalse(calm.death.allowDeath(player, helper.level.damageSources().magic()), "refused at chaos 0")
+        helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "rescued")
     }
 
     /** Shared with `GuardGapGameTests`. */
@@ -669,6 +835,62 @@ class GuardGameTests {
 
         fun setPlayTime(player: ServerPlayer, ticks: Long) {
             player.stats.setValue(player, Stats.CUSTOM.get(Stats.PLAY_TIME), ticks.toInt())
+        }
+
+        /** Beyond the quota at chaos 3 (one death per played hour): the Narrator killed [player] 1 000 ticks of play ago. */
+        fun spendQuota(guards: GuardsImpl, player: ServerPlayer) {
+            guards.states.update(player) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+        }
+
+        /**
+         * Lays a stone floor under the test and makes [pos], relative to the test, [player]'s respawn point:
+         * where a rescue takes them. Returns it, absolute.
+         */
+        fun homeAt(helper: GameTestHelper, player: ServerPlayer, pos: BlockPos = BlockPos(6, 1, 6)): BlockPos {
+            for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+            val home = helper.absolutePos(pos)
+            player.setRespawnPosition(ServerPlayer.RespawnConfig(LevelData.RespawnData.of(helper.level.dimension(), home, 0f, 0f), true), false)
+            return home
+        }
+
+        /** Whether [player] stands at [home] (absolute). */
+        fun isAt(player: ServerPlayer, home: BlockPos): Boolean = player.position().distanceTo(Vec3.atBottomCenterOf(home)) < 1.0
+
+        /**
+         * [block] at (1, 1, 1) of the test, [depth] blocks high, in a stone basin on a stone floor: [Blocks.STONE]
+         * fills it back.
+         */
+        fun basin(helper: GameTestHelper, block: Block, depth: Int = 1) {
+            for (x in 0..2) for (z in 0..2) {
+                helper.setBlock(x, 0, z, Blocks.STONE)
+                for (y in 1..depth) helper.setBlock(x, y, z, if (x == 1 && z == 1) block else Blocks.STONE)
+            }
+        }
+
+        /**
+         * The `death_guard` decisions about [name] in the Journal, as (decision, cause) pairs, read off the
+         * server thread once what was written so far is in; the reference holds them, or why the read failed.
+         */
+        fun deathGuardDecisions(runtime: NarratorRuntime, name: String): AtomicReference<Any> {
+            val decisions = AtomicReference<Any>()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    runtime.journal.barrier()
+                    decisions.set(
+                        runtime.journal.read(5_000) { connection ->
+                            connection.prepareStatement(
+                                "SELECT decision, json_extract_string(detail, '\$.cause') FROM engine_decisions WHERE kind = 'death_guard' AND subject = ? ORDER BY id",
+                            ).use { statement ->
+                                statement.setString(1, name)
+                                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    decisions.set("read failed: $e")
+                }
+            }
+            return decisions
         }
 
         /** 5 diamonds and 7 levels of experience. */
