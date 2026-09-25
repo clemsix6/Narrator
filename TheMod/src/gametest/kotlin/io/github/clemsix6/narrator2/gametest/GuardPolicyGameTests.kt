@@ -87,6 +87,13 @@ class GuardPolicyGameTests {
             "tellraw @a \"hello\"" to "tellraw",
             "weather clear" to "weather",
             "time set day" to "time",
+            // M2 review, finding 7: bounded tools do it, and a roll is told to every player.
+            "particle minecraft:heart ~ ~1 ~ 0 0 0 1 2000000000 force" to "particle",
+            "execute as @a at @s run particle minecraft:heart ~ ~1 ~" to "particle",
+            "playsound minecraft:entity.pig.ambient master @a" to "playsound",
+            "execute as @a at @s run playsound minecraft:entity.pig.ambient master @s" to "playsound",
+            "random roll 1..6" to "random roll",
+            "execute as @a run random roll 1..6" to "random roll",
             // Invisible to a gamemaster, refused by name all the same.
             "stop" to "stop",
             "execute run op Steve" to "op",
@@ -108,9 +115,9 @@ class GuardPolicyGameTests {
         val allowed = listOf(
             "scoreboard objectives list",
             "execute if block ~ ~ ~ minecraft:air run scoreboard objectives list",
-            "execute as @a at @s run playsound minecraft:entity.pig.ambient master @s",
+            "execute as @a at @s run stopsound @s master",
             "execute if entity @e[type=minecraft:zombie,limit=1] run list",
-            "particle minecraft:heart ~ ~1 ~",
+            "random value 1..6",
             "list",
         )
         val blocked = allowed.mapNotNull { command ->
@@ -121,11 +128,12 @@ class GuardPolicyGameTests {
         }
         helper.assertTrue(blocked.isEmpty(), "valid and allowed commands: $blocked")
 
-        val strict = CommandPolicy { listOf("playsound") }
-        val extra = check(strict, "execute as @a at @s run playsound minecraft:entity.pig.ambient master @s")
+        val strict = CommandPolicy { listOf("stopsound") }
+        val extra = check(strict, "execute as @a at @s run stopsound @s master")
         helper.assertTrue(extra is Verdict.Denied && "safety.extraForbiddenCommands" in extra.message, "the configuration adds roots: $extra")
-        val lax = CommandPolicy({ listOf("give", "recipe") }) { emptyList() }
-        val stillForbidden = listOf("give @a minecraft:diamond 64", "recipe give @a *").map { check(lax, it) }
+        val lax = CommandPolicy({ listOf("give", "recipe", "particle", "playsound") }) { emptyList() }
+        val stillForbidden = listOf("give @a minecraft:diamond 64", "recipe give @a *", "particle minecraft:heart ~ ~1 ~", "playsound minecraft:entity.pig.ambient master @a")
+            .map { check(lax, it) }
         helper.assertTrue(stillForbidden.all { it is Verdict.Denied }, "safety.extraAllowedCommands never allows a built-in root: $stillForbidden")
         helper.succeed()
     }

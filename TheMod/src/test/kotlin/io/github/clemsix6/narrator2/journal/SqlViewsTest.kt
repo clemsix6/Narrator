@@ -3,7 +3,10 @@ package io.github.clemsix6.narrator2.journal
 import io.github.clemsix6.narrator2.event.BlockBroken
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.event.ChatMessage
+import io.github.clemsix6.narrator2.event.NarratorChannel
+import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.PositionSampled
 import io.github.clemsix6.narrator2.event.SampleReason
 import io.github.clemsix6.narrator2.journal.SqlDataset.SECRET
@@ -13,6 +16,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -40,7 +44,7 @@ class SqlViewsTest {
             values("SELECT player, kind, what, dim, x, y, z FROM timeline WHERE kind = 'block_break' ORDER BY ts LIMIT 1"),
         )
         assertEquals(
-            listOf(listOf<Any?>("NARRATOR", "Bartok, ta pioche pleure.", null)),
+            listOf(listOf<Any?>(null, "Bartok, ta pioche pleure.", null)),
             values("SELECT player, what, dim FROM timeline WHERE kind = 'chat:narrator'"),
         )
         assertFalse(values("SELECT * FROM timeline").flatten().any { it == SECRET })
@@ -50,12 +54,43 @@ class SqlViewsTest {
     fun `chat_log has public chat, prayers and the Narrator, never private messages`() {
         assertEquals(
             listOf(
-                listOf<Any?>("public", "Bartok", null, "narrateur, t'es nul"),
-                listOf<Any?>("pray", "Bartok", null, "rends-moi mes diamants"),
-                listOf<Any?>("narrator", "NARRATOR", null, "Bartok, ta pioche pleure."),
+                listOf<Any?>("public", "player", "Bartok", null, "narrateur, t'es nul"),
+                listOf<Any?>("pray", "player", "Bartok", null, "rends-moi mes diamants"),
+                listOf<Any?>("narrator", "narrator", null, null, "Bartok, ta pioche pleure."),
             ),
-            values("SELECT channel, player, recipients, text FROM chat_log ORDER BY ts"),
+            values("SELECT channel, speaker, player, recipients, text FROM chat_log ORDER BY ts"),
         )
+    }
+
+    /** M2 review, finding 15: the Narrator's lines have no player name, so a player called NARRATOR is only himself. */
+    @Test
+    fun `a player called NARRATOR is not the Narrator`() {
+        JournalFixture(clock = TestClock(Instant.now())).use { journal ->
+            val impostor = PlayerRef(UUID.fromString("00000000-0000-4000-8000-0000000000e1"), "NARRATOR")
+            journal.publish(PlayerJoined(impostor, SqlDataset.ow(0, 64, 0), sessionId = 1, firstTime = true, isOp = false))
+            journal.publish(ChatMessage(impostor, ChatChannel.PUBLIC, "je suis le vrai narrateur", emptyList()))
+            journal.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Imposteur.", null, turnId = 7, operator = null))
+            journal.publish(NarratorSpoke(NarratorChannel.OPERATOR, "Silence.", listOf(impostor), turnId = null, operator = "Clement"))
+            assertEquals(
+                listOf(
+                    listOf<Any?>("player", "NARRATOR", "je suis le vrai narrateur"),
+                    listOf<Any?>("narrator", null, "Imposteur."),
+                    listOf<Any?>("operator", null, "Silence."),
+                ),
+                journal.values("SELECT speaker, player, text FROM chat_log ORDER BY ts, id"),
+            )
+            assertEquals(listOf(listOf<Any?>("je suis le vrai narrateur")), journal.values("SELECT text FROM chat_log WHERE player = 'NARRATOR'"))
+            assertEquals(listOf(listOf<Any?>("Imposteur.")), journal.values("SELECT text FROM chat_log WHERE speaker = 'narrator'"))
+            assertEquals(
+                listOf(listOf<Any?>("join"), listOf<Any?>("chat:public")),
+                journal.values("SELECT kind FROM recent('narrator') ORDER BY kind DESC"),
+                "the impostor's timeline, without the Narrator's lines",
+            )
+            assertEquals(
+                listOf(listOf<Any?>("chat:narrator", null), listOf<Any?>("chat:operator", null)),
+                journal.values("SELECT kind, player FROM timeline WHERE kind IN ('chat:narrator', 'chat:operator') ORDER BY kind"),
+            )
+        }
     }
 
     @Test
