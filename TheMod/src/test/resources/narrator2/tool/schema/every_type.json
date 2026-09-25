@@ -1,0 +1,80 @@
+{
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "What to say.",
+        "maxLength": 300
+      },
+      "to": {
+        "type": "array",
+        "description": "Player names; everyone when left out.",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+          "type": "string",
+          "maxLength": 16
+        }
+      },
+      "seconds": {
+        "type": "integer",
+        "description": "How long, in seconds.",
+        "minimum": 1,
+        "maximum": 900
+      },
+      "task_id": {
+        "type": "integer"
+      },
+      "volume": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 2
+      },
+      "particles": {
+        "type": "boolean"
+      },
+      "shape": {
+        "type": "string",
+        "enum": ["small_ball", "star"]
+      },
+      "enchantments": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 3,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Enchantment id, e.g. sharpness."
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "required": ["id"],
+          "additionalProperties": false
+        }
+      },
+      "gear": {
+        "type": "object",
+        "properties": {
+          "head": {
+            "type": "string"
+          },
+          "mainhand": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "required": ["text", "seconds"],
+    "additionalProperties": false
+  },
+  "name": "every_type",
+  "description": "A tool with every supported argument type."
+}

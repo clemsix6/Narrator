@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.llm
 import com.anthropic.models.messages.MessageParam
 import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ToolUnion
+import io.github.clemsix6.narrator2.tool.ToolSet
 import io.github.clemsix6.narrator2.trace.Transcripts
 import java.util.UUID
 
@@ -13,26 +14,59 @@ import java.util.UUID
  * conversation's lifetime: Opus 5.5 binds its thinking to the exact conversation prefix, and the
  * prompt cache depends on the same prefix. Anything that changes over time is appended instead.
  *
+ * [messages] is the committed history only. The engine never appends by itself: it gives
+ * [ClaudeClient.send] the messages of the next request (the *pending* messages), and they join the
+ * history together with the reply, only when the reply is usable. A refusal, a truncated reply, an
+ * error or a cancellation commits nothing, so the history never holds an empty assistant turn nor a
+ * user message left without an answer, and the next request may carry different messages.
+ *
  * A conversation has a single writer: while [ClaudeClient.send] is in flight, another `send` or an
- * [append] fails with an [IllegalStateException] instead of racing the reply. Each message is
- * transcribed as soon as it is appended.
+ * [append] fails with an [IllegalStateException] instead of racing the reply. Committed messages are
+ * transcribed as they are sent or received.
  *
  * @property role whose model, effort and timeouts the calls use.
  * @property label human-readable name used in transcripts and logs.
+ * @property toolSet the tools the engine runs for this conversation (`agent/AgentLoop`); null when
+ *   the conversation only declares [tools] (a ping, a live check).
+ * @property tools the tool definitions sent with every request.
  * @property transcripts where this conversation is transcribed; null to keep no transcript.
+ * @property id also the `X-Session-ID` header, which keeps the conversation on the upstream account
+ *   holding its prompt cache.
  */
-class Conversation(
+class Conversation private constructor(
     val role: Role,
     val label: String,
     val system: List<TextBlockParam>,
-    val tools: List<ToolUnion> = emptyList(),
-    val transcripts: Transcripts? = null,
-    val id: String = "${role.id}-${UUID.randomUUID().toString().substring(0, 8)}",
+    val toolSet: ToolSet?,
+    val tools: List<ToolUnion>,
+    val transcripts: Transcripts?,
+    val id: String,
 ) : AutoCloseable {
+    /** A conversation of the engine, whose [tools] `AgentLoop` runs. */
+    constructor(
+        role: Role,
+        label: String,
+        system: List<TextBlockParam>,
+        tools: ToolSet,
+        transcripts: Transcripts? = null,
+        id: String = newId(role),
+    ) : this(role, label, system, tools, tools.definitions, transcripts, id)
+
+    /** A conversation that only declares [tools] (a ping, a live check): `AgentLoop` cannot run it. */
+    constructor(
+        role: Role,
+        label: String,
+        system: List<TextBlockParam>,
+        tools: List<ToolUnion> = emptyList(),
+        transcripts: Transcripts? = null,
+        id: String = newId(role),
+    ) : this(role, label, system, null, tools, transcripts, id)
+
     private val lock = Any()
     private val history = mutableListOf<MessageParam>() // guarded by lock
     private var inFlight = false // guarded by lock
 
+    /** The committed history, a snapshot. */
     val messages: List<MessageParam>
         get() = synchronized(lock) { history.toList() }
 
@@ -44,6 +78,10 @@ class Conversation(
     var contextTokens: Long = 0
         internal set
 
+    /**
+     * Appends [message] to the history at once. For setting up a conversation outside the engine (a
+     * ping, a test): the engine sends pending messages instead, committed with the reply.
+     */
     fun append(message: MessageParam) = synchronized(lock) {
         check(!inFlight) { "$id: cannot append while a call is in flight (a conversation has a single writer)" }
         history += message
@@ -59,14 +97,21 @@ class Conversation(
         history.toList()
     }
 
-    /** Ends the call, appending [reply] when there is one; the client transcribes it with its measurements. */
-    internal fun endCall(reply: MessageParam?) = synchronized(lock) {
-        reply?.let { history += it }
+    /**
+     * Ends the call, committing [committed] (the pending messages, then the reply) when the reply was
+     * usable, nothing otherwise. The client transcribes them itself, with its measurements.
+     */
+    internal fun endCall(committed: List<MessageParam>?) = synchronized(lock) {
+        committed?.let { history += it }
         inFlight = false
     }
 
     /** Releases the transcript's resources; the conversation must not be used afterwards. */
     override fun close() {
         transcripts?.close(this)
+    }
+
+    private companion object {
+        fun newId(role: Role) = "${role.id}-${UUID.randomUUID().toString().substring(0, 8)}"
     }
 }
