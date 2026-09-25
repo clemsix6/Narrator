@@ -212,7 +212,9 @@ class OracleGameTests {
                 helper.assertTrue(lines[0].startsWith("${named.name} · ") && "hp 20/20" in lines[0] && "xp level 0" in lines[0], "header: ${lines[0]}")
                 expectContains(helper, inspected, "position: overworld ${feet.x} ${feet.y} ${feet.z} · biome $biome · underground, 9 below surface · surface y=${feet.y + 9} · light sky 0")
                 expectContains(helper, inspected, "facing E; looking at stone 7 m E")
-                expectContains(helper, inspected, "zombie 4 m E")
+                // Other tests run side by side: their creatures and players may be within 24 blocks too.
+                val around = lines.single { it.startsWith("around (24 blocks): ") }
+                helper.assertTrue(Regex("""(zombie|\d+ zombie \(nearest) 4 m E""").containsMatchIn(around), "the zombie 4 blocks east: $around")
                 expectContains(helper, inspected, "equipment: mainhand diamond_pickaxe (efficiency V; 100%)")
                 expectContains(helper, inspected, "64 cobblestone")
                 expectContains(helper, inspected, "effects: speed II 1:")

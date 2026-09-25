@@ -62,18 +62,22 @@ object OracleText {
         return if (vertical == null) head else "$head, $vertical"
     }
 
-    /** A duration as the situation writes it: `40s`, `25m`, `1h12`, `3d4h`. */
+    /**
+     * A duration as the Director's messages write it (`EventFormatter.ago`, T18): `40s`, `4m05s`, `25m`,
+     * `1h12m`; and `3d4h` from a day on. Rounded to the second.
+     */
     fun duration(ms: Long): String {
-        val seconds = (ms / 1000).coerceAtLeast(0)
+        val seconds = (ms.coerceAtLeast(0) + 500) / 1000
         return when {
             seconds < 60 -> "${seconds}s"
+            seconds < 600 && seconds % 60 != 0L -> "${seconds / 60}m%02ds".format(Locale.ROOT, seconds % 60)
             seconds < 3600 -> "${seconds / 60}m"
-            seconds < 86_400 -> "${seconds / 3600}h%02d".format((seconds % 3600) / 60)
+            seconds < 86_400 -> "${seconds / 3600}h%02dm".format(Locale.ROOT, (seconds % 3600) / 60)
             else -> "${seconds / 86_400}d${(seconds % 86_400) / 3600}h"
         }
     }
 
-    /** How long ago, as `[-12m]` in the event lists: `[-40s]`, `[-3h05]`. */
+    /** How long ago, as `[-12m]` in the event lists: `[-40s]`, `[-3h05m]`. */
     fun ago(ms: Long): String = "[-${duration(ms)}]"
 
     /** Health or another float: `14`, `13.5`. */

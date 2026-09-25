@@ -146,7 +146,9 @@ object Structures {
         val tag = Identifier.tryParse(tagName)?.let { registry.get(TagKey.create(Registries.STRUCTURE, it)).orElse(null) }
         if (tag != null) return Result.success(Target.Structures("#" + OracleText.bare(tag.key().location().toString()), tag.stream().toList()))
         val ids = registry.keySet().map { OracleText.bare(it.toString()) }.sorted()
-        val tags = registry.tags.map { "#" + OracleText.bare(it.key().location().toString()) }.toList().sorted()
+        // The tags that name kinds of places; not those of maps, cats or other mods' conventions.
+        val tags = registry.tags.map { "#" + OracleText.bare(it.key().location().toString()) }.toList()
+            .filter { !it.startsWith("#on_") && !it.startsWith("#cats_") && ':' !in it }.sorted()
         return Result.failure(IllegalArgumentException(unknown("structure", name, ids, tags)))
     }
 

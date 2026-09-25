@@ -55,7 +55,7 @@ class StatSummaryTest {
 
         assertEquals(
             listOf(
-                "play time 1d17h · deaths 17 (last 2h00 of play ago)",
+                "play time 1d17h · deaths 17 (last 2h00m of play ago)",
                 "kills: 1204 mobs, 3 players · killed by players 2 times",
                 "mined 40243 blocks (diamond ore 212, ancient debris 31)",
                 "placed about 18400 blocks",

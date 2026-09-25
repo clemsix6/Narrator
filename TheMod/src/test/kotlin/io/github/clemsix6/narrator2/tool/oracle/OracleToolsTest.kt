@@ -116,7 +116,7 @@ class OracleToolsTest {
 
             assertEquals("recent (Journal):", lines[0])
             assertEquals(11, lines.size, lines.joinToString("\n"))
-            assertTrue(Regex("""\[-\d+m] kill zombie → iron_sword \(overworld 20 64 20\)""").matches(lines[1]), lines[1])
+            assertTrue(Regex("""\[-[\dms]+] kill zombie → iron_sword \(overworld 20 64 20\)""").matches(lines[1]), lines[1])
             assertTrue(lines[2].endsWith("teleport (nether 900 70 2)"), lines[2])
             assertTrue(lines[3].endsWith("block_break ancient_debris → diamond_pickaxe (nether 3 15 3)"), lines[3])
             assertTrue(lines.none { "stone" in it.substringAfter("]") && "ancient" !in it }, "no plain stone")
@@ -133,7 +133,7 @@ class OracleToolsTest {
         val clem = snapshot("clemsix6", dimension = "minecraft:the_nether")
 
         assertEquals(
-            "Bartok: overworld 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · online 1h12 · " +
+            "Bartok: overworld 0 -58 0 · dripstone_caves · cave, 41 below surface · hp 14/20 food 12 · online 1h12m · " +
                 "last 5m: mined 140 (3 diamond_ore y=-54..-51) · nearest Mimosa 50 m NE",
             listLine(bartok, listOf(bartok, mimosa, clem), 72 * 60_000L, idle = false, activity = "mined 140 (3 diamond_ore y=-54..-51)"),
         )

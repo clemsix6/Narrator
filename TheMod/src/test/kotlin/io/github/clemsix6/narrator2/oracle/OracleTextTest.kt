@@ -49,10 +49,12 @@ class OracleTextTest {
     @Test
     fun `durations are compact`() {
         assertEquals("0s", OracleText.duration(-5))
-        assertEquals("40s", OracleText.duration(40_999))
+        assertEquals("40s", OracleText.duration(40_400))
+        assertEquals("4m05s", OracleText.duration(245_000))
+        assertEquals("4m", OracleText.duration(240_000))
         assertEquals("25m", OracleText.duration(25 * 60_000L + 59_000))
-        assertEquals("1h12", OracleText.duration(72 * 60_000L))
-        assertEquals("3h05", OracleText.duration(185 * 60_000L))
+        assertEquals("1h12m", OracleText.duration(72 * 60_000L))
+        assertEquals("3h05m", OracleText.duration(185 * 60_000L))
         assertEquals("2d4h", OracleText.duration((52 * 60 + 30) * 60_000L))
         assertEquals("[-3m]", OracleText.ago(180_000))
     }

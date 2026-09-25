@@ -374,7 +374,8 @@ class ScanAreaTool : NarratorTool<ScanAreaArgs>(
         fun name(uuid: UUID) = read.names[uuid] ?: uuid.toString()
         val byPlacer = count.byPlacer.joinToString { "${name(it.first)} ${it.second}" }
         val clusters = count.clusters.joinToString("\n") { cluster ->
-            hitLine("${cluster.blocks} blocks by ${name(cluster.mainPlacer)} (${cluster.topBlocks.joinToString()})", cluster.center, read.center.pos)
+            val blocks = if (cluster.blocks == 1) "1 block" else "${cluster.blocks} blocks"
+            hitLine("$blocks by ${name(cluster.mainPlacer)} (${cluster.topBlocks.joinToString()})", cluster.center, read.center.pos)
         }
         return "$header${count.total} ($byPlacer)$loaded\ndensest spots:\n$clusters"
     }
