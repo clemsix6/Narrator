@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * In-game tests of the administration commands and `/pray` (M1_M2 §17.3), run through the server's
- * real command dispatcher by players with unique names ([TestPlayer]), so that the Journal rows of each
+ * real command dispatcher by players with unique names ([CommandPlayer]), so that the Journal rows of each
  * test are told apart by the operator's or the player's name.
  *
  * Owned by T21. Shared helpers: `GameTestSupport.kt`.
@@ -65,7 +65,7 @@ class CommandGameTests {
             helper.succeed()
             return
         }
-        TestPlayer(helper).use { operator ->
+        CommandPlayer(helper).use { operator ->
             operator.run("narrator pause", op = true)
             operator.run("narrator resume", op = true)
             operator.run("narrator whisper Be nicer to Bartok.", op = true)
@@ -93,9 +93,9 @@ class CommandGameTests {
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun sayIsJournaledAsTheOperatorsLine(helper: GameTestHelper) {
         val runtime = helper.narrator()
-        val operator = TestPlayer(helper)
+        val operator = CommandPlayer(helper)
         val marker = "Silence, mortels. ${UUID.randomUUID().toString().take(8)}"
-        val heard = Heard(helper) { it is NarratorSpoke && marker in it.text }
+        val heard = HeardEvents(helper) { it is NarratorSpoke && marker in it.text }
         try {
             operator.run("narrator say §6$marker", op = true)
             val event = heard.envelopes.single().event as NarratorSpoke
@@ -130,9 +130,9 @@ class CommandGameTests {
     fun prayPublishesAPrivatePrayerAndLimitsItsRate(helper: GameTestHelper) {
         val runtime = helper.narrator()
         val ui = runtime.settings.get().ui
-        val devout = TestPlayer(helper)
-        val bystander = TestPlayer(helper)
-        val heard = Heard(helper) { it is ChatMessage && it.player.uuid == devout.uuid }
+        val devout = CommandPlayer(helper)
+        val bystander = CommandPlayer(helper)
+        val heard = HeardEvents(helper) { it is ChatMessage && it.player.uuid == devout.uuid }
         val prayer = "Ô Narrateur, épargne mes moutons ${UUID.randomUUID().toString().take(6)}"
         val id = try {
             devout.run("pray $prayer")
@@ -166,8 +166,8 @@ class CommandGameTests {
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun protectOnAndOffAndTheGuardsShowIt(helper: GameTestHelper) {
         val runtime = helper.narrator()
-        val operator = TestPlayer(helper)
-        val target = TestPlayer(helper)
+        val operator = CommandPlayer(helper)
+        val target = CommandPlayer(helper)
         try {
             operator.run("narrator protect ${target.name}", op = true)
             helper.assertTrue(runtime.guards.isProtected(target.uuid), "protected")
@@ -207,8 +207,8 @@ class CommandGameTests {
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun traceAndWhyReadAPreparedTurn(helper: GameTestHelper) {
         val runtime = helper.narrator()
-        val operator = TestPlayer(helper)
-        val speaker = TestPlayer(helper)
+        val operator = CommandPlayer(helper)
+        val speaker = CommandPlayer(helper)
         val trace = runtime.trace
         val clock = runtime.clock
         val conversation = "director-t21-${UUID.randomUUID().toString().take(8)}"
@@ -306,10 +306,10 @@ class CommandGameTests {
  * joins for one test, runs commands with their own source (or as a game master), and keeps what the
  * commands answer ([output]) and the chat lines the server sends them ([chat]).
  */
-private class TestPlayer(private val helper: GameTestHelper) : AutoCloseable {
+private class CommandPlayer(private val helper: GameTestHelper) : AutoCloseable {
     val name = "cm_" + UUID.randomUUID().toString().replace("-", "").take(10)
     val output = CommandOutput()
-    private val connection = ChatConnection()
+    private val connection = CommandPlayerConnection()
     val player: ServerPlayer
 
     init {
@@ -341,7 +341,7 @@ private class TestPlayer(private val helper: GameTestHelper) : AutoCloseable {
 }
 
 /** A connection that keeps the text of the chat lines it sends, and sends everything on as usual. */
-private class ChatConnection : Connection(PacketFlow.SERVERBOUND) {
+private class CommandPlayerConnection : Connection(PacketFlow.SERVERBOUND) {
     val lines = CopyOnWriteArrayList<String>()
 
     override fun send(packet: Packet<*>, listener: ChannelFutureListener?, flush: Boolean) {
@@ -351,7 +351,7 @@ private class ChatConnection : Connection(PacketFlow.SERVERBOUND) {
 }
 
 /** The events that [accept] picks, published from now until [close]. */
-private class Heard(helper: GameTestHelper, accept: (GameEvent) -> Boolean) : AutoCloseable {
+private class HeardEvents(helper: GameTestHelper, accept: (GameEvent) -> Boolean) : AutoCloseable {
     private val bus = helper.narrator().bus
     private val owner = "command-test-${UUID.randomUUID()}"
     val envelopes = CopyOnWriteArrayList<Envelope>()
