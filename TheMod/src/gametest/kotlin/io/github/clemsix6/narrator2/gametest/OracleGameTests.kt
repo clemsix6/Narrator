@@ -179,7 +179,8 @@ class OracleGameTests {
     @GameTest(structure = ROOM, skyAccess = true, maxTicks = ASYNC_MAX_TICKS)
     fun listAndInspectDescribeAPlayerInATunnel(helper: GameTestHelper) {
         rockWithTunnel(helper, Blocks.STONE.defaultBlockState())
-        helper.spawnWithNoFreeWill(EntityTypes.ZOMBIE, BlockPos(11, 5, 7))
+        val zombie = helper.spawnWithNoFreeWill(EntityTypes.ZOMBIE, BlockPos(11, 5, 7))
+        helper.runAfterDelay((ASYNC_MAX_TICKS - 1).toLong()) { zombie.discard() }
         val named = NamedPlayer(helper, helper.absolutePos(TUNNEL), yRot = EAST)
         val player = named.player
         val efficiency = helper.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.EFFICIENCY)
@@ -220,6 +221,7 @@ class OracleGameTests {
                 expectContains(helper, inspected, "effects: speed II 1:")
                 expectContains(helper, inspected, "yours on them: none")
                 expectContains(helper, inspected, "recent (Journal):")
+                zombie.discard()
                 named.close()
             }
             .thenSucceed()
@@ -243,10 +245,13 @@ class OracleGameTests {
         set(helper, BlockPos(22, 4, 12), Blocks.CHEST.defaultBlockState())
         (level.getBlockEntity(helper.absolutePos(BlockPos(22, 4, 12))) as ChestBlockEntity).setLootTable(BuiltInLootTables.SIMPLE_DUNGEON)
         set(helper, BlockPos(20, 4, 20), Blocks.BARREL.defaultBlockState())
-        set(helper, BlockPos(12, 4, 12), Blocks.SPAWNER.defaultBlockState())
-        (level.getBlockEntity(helper.absolutePos(BlockPos(12, 4, 12))) as SpawnerBlockEntity).setEntityId(EntityTypes.ZOMBIE, level.random)
+        // A spawner of pigs: nothing can spawn from it on the desert's sand (a zombie spawner would feed the
+        // tests next door with zombies as soon as one of their players came within 16 blocks).
+        set(helper, SPAWNER, Blocks.SPAWNER.defaultBlockState())
+        (level.getBlockEntity(helper.absolutePos(SPAWNER)) as SpawnerBlockEntity).setEntityId(EntityTypes.PIG, level.random)
         fill(helper, BlockPos(23, 3, 15), BlockPos(25, 4, 17), stone) // a basin: the lava cannot flow
         set(helper, BlockPos(24, 4, 16), Blocks.LAVA.defaultBlockState())
+        helper.runAfterDelay((ASYNC_MAX_TICKS - 1).toLong()) { clearHazards(helper) }
         val bedHead = BlockPos(8, 4, 20)
         val bed = Blocks.BED.red().defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, Direction.NORTH)
         set(helper, bedHead, bed.setValue(BlockStateProperties.BED_PART, BedPart.HEAD))
@@ -267,6 +272,7 @@ class OracleGameTests {
         helper.startSequence()
             .thenAwait { helper.assertTrue(scans.values.all { it.isDone }, "every scan answers") }
             .thenExecute {
+                clearHazards(helper)
                 val text = scans.mapValues { (_, future) -> ok(helper, future) }
                 text.forEach { (find, answer) -> Log.tool.info("oracle sample scan_area ${find.name.lowercase()}:\n$answer") }
                 expectLines(helper, text.getValue(ScanFind.DIAMONDS), "diamonds ${from}2", "diamond_ore ${at(BlockPos(18, 4, 16))} (2 m E)", "deepslate_diamond_ore ${at(BlockPos(16, 4, 24))} (8 m S)")
@@ -278,7 +284,7 @@ class OracleGameTests {
                     "barrel (empty) ${at(BlockPos(20, 4, 20))} (6 m SE)",
                     "chest (loot, never opened) ${at(BlockPos(22, 4, 12))} (7 m NE)",
                 )
-                expectLines(helper, text.getValue(ScanFind.SPAWNERS), "spawners ${from}1", "spawner (zombie) ${at(BlockPos(12, 4, 12))} (6 m NW)")
+                expectLines(helper, text.getValue(ScanFind.SPAWNERS), "spawners ${from}1", "spawner (pig) ${at(SPAWNER)} (6 m NW)")
                 expectLines(helper, text.getValue(ScanFind.LAVA), "lava ${from}1", "lava ${at(BlockPos(24, 4, 16))} (8 m E)")
                 expectLines(helper, text.getValue(ScanFind.BEDS), "beds ${from}1", "red_bed (respawn point of ${named.name}) ${at(bedHead)} (9 m SW)")
                 expectLines(helper, text.getValue(ScanFind.PORTALS), "portals ${from}1 portal", "nether_portal (6 blocks) ${at(BlockPos(22, 4, 22))} (8 m SE)")
@@ -302,7 +308,8 @@ class OracleGameTests {
             set(helper, rel, planks)
             PlacedBlocks.mark(helper.level, helper.absolutePos(rel), planks, named.player.uuid)
         }
-        helper.spawnWithNoFreeWill(EntityTypes.COW, BlockPos(14, 5, 15))
+        val cow = helper.spawnWithNoFreeWill(EntityTypes.COW, BlockPos(14, 5, 15))
+        helper.runAfterDelay((ASYNC_MAX_TICKS - 1).toLong()) { cow.discard() }
         val center = helper.absolutePos(BlockPos(16, 6, 16))
         val answer = AtomicReference<CompletableFuture<ToolResult>>()
         helper.startSequence()
@@ -322,6 +329,7 @@ class OracleGameTests {
                 expectContains(helper, text, "stone 50%")
                 expectContains(helper, text, "creatures: creature 1 (cow 1); players: ${named.name}")
                 expectContains(helper, text, "player blocks: 50% of the blocks (20: ${named.name} 20)")
+                cow.discard()
                 named.close()
             }
             .thenSucceed()
@@ -493,6 +501,15 @@ class OracleGameTests {
         /** Feet in the 1×2 tunnel of [rockWithTunnel], and in the room of [rockWithCavern]. */
         val TUNNEL = BlockPos(7, 5, 7)
         val CAVERN = BlockPos(7, 2, 7)
+
+        /** The spawner of [scanAreaFindsWhatIsAround]. */
+        val SPAWNER = BlockPos(12, 4, 12)
+
+        /** Removes the spawner and the lava of [scanAreaFindsWhatIsAround], which outlive the test otherwise. */
+        fun clearHazards(helper: GameTestHelper) {
+            set(helper, SPAWNER, Blocks.AIR.defaultBlockState())
+            set(helper, BlockPos(24, 4, 16), Blocks.AIR.defaultBlockState())
+        }
 
         /** A player's yaw looking east (+x). */
         const val EAST = -90f
