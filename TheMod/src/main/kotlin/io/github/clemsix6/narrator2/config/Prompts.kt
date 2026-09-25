@@ -18,7 +18,7 @@ class Prompts private constructor(private val texts: Map<String, String>) {
 
     companion object {
         /** Every prompt the mod ships. Adding a prompt means adding its file name here. */
-        val NAMES = listOf("director", "ping")
+        val NAMES = listOf("director", "analyst", "chapter_summary", "ping")
 
         const val README = "README.md"
 
@@ -45,6 +45,12 @@ class Prompts private constructor(private val texts: Map<String, String>) {
                 .forEach { log.warn("${it.toAbsolutePath()} is ignored: no prompt is named ${it.nameWithoutExtension}") }
             return Prompts(texts)
         }
+
+        /**
+         * The prompts of the jar, overrides ignored: what the Narrator runs with when its configuration
+         * cannot be loaded.
+         */
+        fun bundled(): Prompts = Prompts(NAMES.associateWith(::bundled))
 
         private fun createOverrideDir(dir: Path) {
             Files.createDirectories(dir)

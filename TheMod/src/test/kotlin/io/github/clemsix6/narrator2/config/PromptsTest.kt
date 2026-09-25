@@ -22,6 +22,20 @@ class PromptsTest {
         Prompts::class.java.getResourceAsStream("/narrator2/prompts/$name.md")!!.use { String(it.readAllBytes(), Charsets.UTF_8) }
 
     @Test
+    fun `ships the prompts of the Director, the Analyst, the chapter summary and the ping`() {
+        assertEquals(listOf("director", "analyst", "chapter_summary", "ping"), Prompts.NAMES)
+    }
+
+    @Test
+    fun `the jar's prompts can be read without the override folder`() {
+        Files.createDirectories(overrides)
+        overrides.resolve("analyst.md").writeText("Ignored by bundled().")
+
+        val prompts = Prompts.bundled()
+        Prompts.NAMES.forEach { name -> assertEquals(bundled(name), prompts.get(name)) }
+    }
+
+    @Test
     fun `reads every prompt from the jar and copies nothing`() {
         val prompts = Prompts.load(overrides)
 
