@@ -47,6 +47,8 @@ class UiTexts private constructor(val language: String, private val texts: Map<S
             "pray.cooldown" to setOf("seconds"),
             // Sent when confiscated items come back.
             "items.returned" to setOf("items"),
+            // Sent once when confiscated items are due but the inventory is full: they wait in the ledger.
+            "items.no_room" to setOf("items"),
             // Author of the books the Narrator gives.
             "book.author" to emptySet(),
         )
