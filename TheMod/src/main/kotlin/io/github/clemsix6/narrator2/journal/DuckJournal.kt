@@ -18,10 +18,12 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.duckdb.DuckDBConnection
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
@@ -31,34 +33,63 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The Journal on DuckDB (M1_M2 §5): facts from the bus and traces of the engine, written in batches by
  * [JournalWriter] on its own thread; reads on a small pool of read connections (`narrator2-sql-N`).
  * Nothing here blocks the caller: records are queued, reads run on the pool.
  *
- * Ids ([nextId]) start past every id found in the database, including ids cited by other rows, so an
- * id is never handed out twice across restarts (unless its rows were lost in a crash before reaching
- * the disk).
+ * Ids ([nextId]) start past every id found in the database, including ids cited by other rows, and past
+ * the ids reserved on disk before they were handed out ([IdReservations]): an id is never handed out
+ * twice, across restarts and crashes.
+ *
+ * When the database stops answering (disk full, file locked…), the Journal turns unavailable: records
+ * are counted as lost, reads fail, and the operators online are told once ([tellOperators]). The writer
+ * then tries to open the database again every minute ([reopen]). Once it opens, reads and writes go on,
+ * a `journal_health` decision `reopened` tells how long it lasted and what was lost, and the operators
+ * are told again once the reopened database took its first batch.
  */
 internal class DuckJournal private constructor(
-    private val db: DuckDatabase,
+    db: DuckDatabase,
     private val clock: Clock,
     private val queueCapacity: Int,
-    seeds: Map<IdKind, Long>,
+    private val ids: IdReservations,
     private val hookNanos: () -> Long?,
     flushIntervalMs: Long,
-    tuning: JournalTuning,
-) : Journal {
+    private val tuning: JournalTuning,
+    private val reopenDatabase: (() -> DuckDatabase)?,
+) : Journal, JournalWriter.Recovery {
     private val log = Log.journal
-    private val ids: Map<IdKind, AtomicLong> = IdKind.entries.associateWith { AtomicLong(seeds.getValue(it)) }
-    private val writer = JournalWriter(db, clock, flushIntervalMs, queueCapacity, tuning, ::reportHealth, ::closeResources, ::endReads)
+
+    /** The database; replaced when it opens again after an outage. */
+    @Volatile
+    private var db: DuckDatabase = db
+
+    /** True while [db] is closed after a failure, until it opens again. */
+    @Volatile
+    private var released = false
+
+    private val writer = JournalWriter(db, clock, flushIntervalMs, queueCapacity, tuning, ::reportHealth, ::closeResources, ::endReads, this)
     private val readers = LinkedBlockingQueue(db.readers)
     private val readThreads: ExecutorService = Executors.newFixedThreadPool(db.readers.size.coerceAtLeast(1)) { task ->
         Thread(task, "narrator2-sql-${READ_THREADS.incrementAndGet()}").apply { isDaemon = true }
     }
     private val resourcesClosed = AtomicBoolean()
+
+    /**
+     * Tells the operators online, in the chat: set by the runtime once the server's players can be
+     * reached. Called on the writer thread; must not block.
+     */
+    @Volatile
+    var tellOperators: (String) -> Unit = {}
+
+    /** Since when the database is down, and the loss counters then. Writer thread. */
+    private class Outage(val error: String, val since: Instant, val sinceNanos: Long, val lost: Long, val facts: Long, val traces: Long) {
+        var attempts = 0
+    }
+
+    /** The outage in progress, until a batch is committed on the reopened database. Writer thread. */
+    private var outage: Outage? = null
 
     @Volatile
     private var closing = false
@@ -79,12 +110,17 @@ internal class DuckJournal private constructor(
 
     override val available: Boolean get() = writer.available && !writer.finished && !closing
 
-    override fun nextIdSeed(kind: IdKind): Long = ids.getValue(kind).get()
+    override fun nextIdSeed(kind: IdKind): Long = ids.seed(kind)
 
-    override fun nextId(kind: IdKind): Long = ids.getValue(kind).getAndIncrement()
+    override fun nextId(kind: IdKind): Long = ids.next(kind)
 
+    /**
+     * Drains [bus] on the writer thread. The Journal must be the first to subscribe: its synchronous
+     * [ID_SUBSCRIBER] reserves each event id on disk before any other subscriber sees the event.
+     */
     override fun attach(bus: EventBus) {
         check(subscription == null) { "the Journal is already attached to a bus" }
+        bus.subscribeSync(ID_SUBSCRIBER, OWNER) { envelope -> ids.handedOut(IdKind.EVENT, envelope.id) }
         val subscription = bus.subscribeAsync(SUBSCRIBER, OWNER, queueCapacity)
         this.bus = bus
         this.subscription = subscription
@@ -99,14 +135,19 @@ internal class DuckJournal private constructor(
         try {
             readThreads.execute {
                 if (result.isDone) return@execute // timed out or cancelled while waiting for a thread
-                val connection = readers.take()
+                // None while the database is down after a failure.
+                val connection = readers.poll(timeoutMs, TimeUnit.MILLISECONDS)
+                if (connection == null) {
+                    result.completeExceptionally(JournalTimeoutException(timeoutMs))
+                    return@execute
+                }
                 try {
                     result.complete(query(connection))
                 } catch (e: Throwable) {
                     result.completeExceptionally(e)
                 } finally {
                     endQuery(connection)
-                    readers.put(connection)
+                    giveBack(connection)
                 }
             }
         } catch (_: RejectedExecutionException) {
@@ -135,6 +176,19 @@ internal class DuckJournal private constructor(
             connection.createStatement().use { statement -> statement.executeQuery("SELECT 1").use { rows -> while (rows.next()) Unit } }
         } catch (e: SQLException) {
             log.debug { "could not end the last query of a read connection: ${e.message}" }
+        }
+    }
+
+    /** Back to the pool; closed instead when its database was closed since, after a failure. */
+    private fun giveBack(connection: DuckDBConnection) {
+        if (!released && db.readers.any { it === connection }) {
+            readers.put(connection)
+        } else {
+            try {
+                connection.close()
+            } catch (_: SQLException) {
+                // already closed with its database
+            }
         }
     }
 
@@ -214,10 +268,98 @@ internal class DuckJournal private constructor(
         return current ?: lastBusStats
     }
 
+    // ── Outages (writer thread) ─────────────────────────────────────────────────────────────────────
+
+    override fun failed(error: String) {
+        if (outage == null) {
+            val health = health()
+            outage = Outage(error, clock.instant(), System.nanoTime(), health.droppedEvents, writer.factsLostWhileDown, writer.tracesLostWhileDown)
+            tell(
+                "The Journal failed and records nothing: $error. Facts and traces are lost, sql and the briefing are off " +
+                    "until it opens its database again; it tries every ${tuning.reopenInterval}. See the server log.",
+            )
+        }
+        release()
+    }
+
+    /** Closes the failed database: its file stays locked while it is open. Reads in flight fail. */
+    private fun release() {
+        released = true
+        readers.clear()
+        db.close()
+    }
+
+    override fun reopen(): DuckDBConnection {
+        outage?.let { it.attempts++ }
+        val open = reopenDatabase ?: throw IllegalStateException("a database in memory cannot be opened again")
+        val fresh = open()
+        db = fresh
+        readers.clear()
+        readers.addAll(fresh.readers)
+        released = false
+        return fresh.writer
+    }
+
+    override fun reopened() {
+        val outage = outage ?: return
+        val lost = lostSince(outage)
+        Decisions(this, clock).record(
+            log, DecisionRecord.Kind.JOURNAL_HEALTH, "reopened",
+            reason = "the database opened again after ${took(outage)} (${outage.attempts} attempts; it failed with: ${outage.error}); " +
+                "${lost.total} records lost during the outage: ${lost.facts} facts and ${lost.traces} trace records dropped while it was down, " +
+                "${lost.total - lost.facts - lost.traces} more in the batch that failed or a full queue",
+            detail = buildJsonObject {
+                put("error", outage.error)
+                put("since", outage.since.toString())
+                put("outage_ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - outage.sinceNanos))
+                put("attempts", outage.attempts)
+                put("lost", lost.total)
+                put("lost_facts", lost.facts)
+                put("lost_traces", lost.traces)
+            },
+            level = Log.Level.WARN,
+        )
+    }
+
+    override fun recovered() {
+        val outage = outage ?: return
+        this.outage = null
+        val lost = lostSince(outage)
+        log.info("recording again, after ${took(outage)} down: ${lost.total} records lost during the outage")
+        tell("The Journal records again, after ${took(outage)}: ${lost.total} records were lost during the outage (see the server log).")
+    }
+
+    private class Lost(val total: Long, val facts: Long, val traces: Long)
+
+    private fun lostSince(outage: Outage) = Lost(
+        health().droppedEvents - outage.lost,
+        writer.factsLostWhileDown - outage.facts,
+        writer.tracesLostWhileDown - outage.traces,
+    )
+
+    private fun took(outage: Outage): String {
+        val seconds = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - outage.sinceNanos)
+        return if (seconds < 60) "$seconds s" else "${seconds / 60} min ${seconds % 60} s"
+    }
+
+    private fun tell(text: String) {
+        try {
+            tellOperators(text)
+        } catch (e: Exception) {
+            log.error("could not tell the operators: $text", e)
+        }
+    }
+
     /** The periodic report (M1_M2 §5.6): one log line and one `journal_health` decision. Writer thread. */
     private fun reportHealth() {
         val health = health()
         val now = System.nanoTime()
+        val outage = outage
+        if (outage != null && !health.available) {
+            // No decision: it could not be written. The next report counts these losses as new.
+            log.warn("still unavailable after ${took(outage)} (${outage.attempts} attempts to open the database): ${lostSince(outage).total} records lost since")
+            return
+        }
         val hooks = currentHookNanos()
         val previous = lastReport
         lastReport = Report(health.droppedEvents, hooks, now)
@@ -277,17 +419,24 @@ internal class DuckJournal private constructor(
         }
     }
 
-    /** Ends the reads, then closes the database. Once; on the writer thread, or on the closing one if the writer died. */
+    /**
+     * Ends the reads, closes the database, then keeps on disk exactly the ids handed out. Once; on the
+     * writer thread, or on the closing one if the writer died.
+     */
     private fun closeResources() {
         if (!resourcesClosed.compareAndSet(false, true)) return
         endReads()
-        db.close()
+        if (!released) db.close()
+        ids.close()
     }
 
     companion object {
         /** Name and owner of the Journal's bus subscription. */
         const val SUBSCRIBER = "journal"
         const val OWNER = "journal"
+
+        /** Name of the Journal's synchronous subscription, which reserves the event ids. */
+        const val ID_SUBSCRIBER = "journal_ids"
 
         private val CLOSE_RESERVE_NANOS = TimeUnit.SECONDS.toNanos(2)
         private const val READS_GRACE_MS = 1_000L
@@ -313,7 +462,9 @@ internal class DuckJournal private constructor(
 
         /**
          * Opens the Journal on [db], which it owns from now on: repairs what a crash left open, seeds the
-         * ids, and starts the writer. A failed repair is logged and does not stop the Journal.
+         * ids (past the database and past `narrator.ids` next to it), and starts the writer. A failed
+         * repair is logged and does not stop the Journal. After a failure, the writer opens the
+         * database file again with the same settings; a database in memory is never opened again.
          */
         internal fun open(
             db: DuckDatabase,
@@ -329,7 +480,12 @@ internal class DuckJournal private constructor(
                 log.error("could not close what the previous run left open; recording anyway", e)
                 null
             }
-            val journal = DuckJournal(db, clock, config.queueCapacity, seeds(db.writer), hookNanos, config.flushIntervalMs, tuning)
+            val file = db.file
+            val ids = IdReservations.open(file?.resolveSibling(IdReservations.FILE_NAME), seeds(db.writer), tuning.idBlock, tuning.eventIdBlock)
+            val reopen = file?.let { path ->
+                { DuckDatabase.open(path, DuckDatabase.Options.of(config).copy(timeZone = db.timeZone, readers = db.readers.size)) }
+            }
+            val journal = DuckJournal(db, clock, config.queueCapacity, ids, hookNanos, config.flushIntervalMs, tuning, reopen)
             journal.start(repair)
             return journal
         }
