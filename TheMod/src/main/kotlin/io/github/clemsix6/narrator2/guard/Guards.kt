@@ -87,6 +87,13 @@ interface Guards {
 
     /** What `spawn` may summon. */
     val spawns: SpawnPolicy
+
+    /**
+     * How many more deaths the Narrator may cause [player] now (the death guard's quota: the chaos
+     * level's [Caps.narratorKillsPerHour] minus the Narrator's kills in the player's last played hour);
+     * 0 for a protected player. For a player online (the full quota for one offline). Any thread.
+     */
+    fun deathsLeft(player: UUID): Int
 }
 
 /**

@@ -13,6 +13,7 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 - On y accède par un tunnel SSH vers le serveur du réseau local : `ssh -o BatchMode=yes -N -L 8088:localhost:8088 clement@192.168.1.20`. Le nom public `<ssh-host>` passe par Cloudflare, qui ne relaie pas SSH : utilise toujours l'IP locale.
 - URL de base : `http://localhost:8088/`. Authentification : en-tête `x-api-key: <clé>` (`Authorization: Bearer` marche aussi). Test : `GET /v1/models`.
 - La clé se trouve dans `.secrets/llmgw.key` (non versionné). Pour le mod, elle passe par la variable d'environnement `NARRATOR_LLMGW_KEY`. **Ne jamais l'afficher, la logger, la commiter ni la recopier ailleurs.**
+- Tunnel partagé : avant d'ouvrir le tunnel, vérifie si le port 8088 écoute déjà (`netstat -ano | findstr :8088`). S'il écoute, réutilise ce tunnel. Ne ferme que le processus ssh que tu as lancé toi-même.
 - Les tests automatisés n'appellent jamais le vrai serveur. Les appels réels servent seulement aux tests de fumée, avec des requêtes minimales.
 
 ## On repart de zéro

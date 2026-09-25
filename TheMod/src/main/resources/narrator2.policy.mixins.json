@@ -4,8 +4,11 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "BreakDoorGoalGuardMixin",
+    "LivingEntityEffectGuardMixin",
     "MobPickUpGuardMixin",
-    "ServerExplosionGuardMixin"
+    "MobTargetGuardMixin",
+    "ServerExplosionGuardMixin",
+    "TargetingConditionsGuardMixin"
   ],
   "injectors": {
     "defaultRequire": 1

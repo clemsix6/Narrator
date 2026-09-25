@@ -1,13 +1,10 @@
 package io.github.clemsix6.narrator2.gametest
 
 import com.anthropic.models.messages.ToolResultBlockParam
-import com.mojang.authlib.GameProfile
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
-import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.llm.Role
-import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
@@ -29,8 +26,6 @@ import io.github.clemsix6.narrator2.tool.speech.ShowTitleTool
 import io.github.clemsix6.narrator2.tool.speech.Speech
 import io.github.clemsix6.narrator2.tool.speech.SpeechLimiter
 import io.github.clemsix6.narrator2.tool.toolUse
-import io.netty.channel.ChannelFutureListener
-import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -38,17 +33,12 @@ import kotlinx.coroutines.runBlocking
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.component.DataComponents
 import net.minecraft.gametest.framework.GameTestHelper
-import net.minecraft.network.Connection
 import net.minecraft.network.protocol.Packet
-import net.minecraft.network.protocol.PacketFlow
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
 import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket
 import net.minecraft.network.protocol.game.ClientboundSoundPacket
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket
-import net.minecraft.server.level.ClientInformation
-import net.minecraft.server.level.ServerPlayer
-import net.minecraft.server.network.CommonListenerCookie
 import net.minecraft.world.item.Items
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -58,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference
  * In-game tests of the speech tools (M1_M2 §9.1, §17.3): what the players get, the [NarratorSpoke]
  * of each line and its row in the Journal's `chat` table.
  *
- * Each test has its own [Listener]s (players with unique names, who record the packets they get) and
+ * Each test has its own [TestPlayer]s (players with unique names, who record the packets they get) and
  * its own [SpeechLimiter]: tests run side by side, and the server's limiter is shared.
  */
 class SpeechGameTests {
@@ -67,7 +57,7 @@ class SpeechGameTests {
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun sayPublishesNarratorSpokeAndTheLineReachesTheChatTable(helper: GameTestHelper) {
         val runtime = helper.narrator()
-        val listener = Listener(helper)
+        val listener = TestPlayer(helper)
         val spoken = Spoken(helper) { it.recipients?.any { ref -> ref.uuid == listener.uuid } == true }
         val (line, envelopeId, toolUseId) = try {
             val toolUseId = "toolu_speech_${UUID.randomUUID().toString().take(8)}"
@@ -132,7 +122,7 @@ class SpeechGameTests {
     @GameTest
     fun aPublicLineReachesEveryoneWithThePrefixAndTheConsole(helper: GameTestHelper) {
         val marker = "Marqueur ${UUID.randomUUID().toString().take(8)}"
-        withListeners(helper, 2) { (first, second) ->
+        withTestPlayers(helper, 2) { (first, second) ->
             val spoken = Spoken(helper) { marker in it.text }
             try {
                 val result = run(helper, SayTool(SpeechLimiter(helper.narrator().clock)), SayArgs("Oyez, mortels. $marker"))
@@ -150,7 +140,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun aPrivateLineReachesItsRecipientsOnly(helper: GameTestHelper) = withListeners(helper, 2) { (bob, alice) ->
+    fun aPrivateLineReachesItsRecipientsOnly(helper: GameTestHelper) = withTestPlayers(helper, 2) { (bob, alice) ->
         val result = run(helper, SayTool(SpeechLimiter(helper.narrator().clock)), SayArgs("Rien que pour toi.", to = listOf(bob.name.uppercase())))
 
         helper.assertEquals("ok: whispered to ${bob.name}", result.text, "names ignore case")
@@ -159,7 +149,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun sayNamesWhoIsOnlineWhenAPlayerIsNot(helper: GameTestHelper) = withListeners(helper, 1) { (bob) ->
+    fun sayNamesWhoIsOnlineWhenAPlayerIsNot(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         val result = run(helper, SayTool(SpeechLimiter(helper.narrator().clock)), SayArgs("Allô ?", to = listOf("nobody_here")))
 
         helper.assertEquals(ToolStatus.INVALID, result.status, result.text)
@@ -169,7 +159,7 @@ class SpeechGameTests {
 
     /** The subtitle goes before the title (the title packet shows the last subtitle received); then 30 s per player. */
     @GameTest
-    fun aTitleSendsItsSubtitleFirstThenWaitsThirtySeconds(helper: GameTestHelper) = withListeners(helper, 1) { (bob) ->
+    fun aTitleSendsItsSubtitleFirstThenWaitsThirtySeconds(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         val tool = ShowTitleTool(SpeechLimiter(helper.narrator().clock))
         val spoken = Spoken(helper) { it.recipients == listOf(bob.ref) }
         try {
@@ -197,7 +187,7 @@ class SpeechGameTests {
 
     /** A per-player limit holds back only the players who must wait; the others get the title, and only they are journaled. */
     @GameTest
-    fun aTitleSkipsOnlyThePlayersWhoMustWait(helper: GameTestHelper) = withListeners(helper, 2) { (bob, alice) ->
+    fun aTitleSkipsOnlyThePlayersWhoMustWait(helper: GameTestHelper) = withTestPlayers(helper, 2) { (bob, alice) ->
         val tool = ShowTitleTool(SpeechLimiter(helper.narrator().clock))
         run(helper, tool, ShowTitleArgs("Premier", to = listOf(bob.name)))
         val spoken = Spoken(helper) { it.text == "[title] Second" }
@@ -218,7 +208,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun aTitleWithoutSubtitleClearsTheLastOne(helper: GameTestHelper) = withListeners(helper, 1) { (bob) ->
+    fun aTitleWithoutSubtitleClearsTheLastOne(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         run(helper, ShowTitleTool(SpeechLimiter(helper.narrator().clock)), ShowTitleArgs("Silence", to = listOf(bob.name)))
 
         val subtitle = bob.packets.filterIsInstance<ClientboundSetSubtitleTextPacket>().single()
@@ -226,7 +216,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun actionbarShowsAColoredLineAboveTheHotbar(helper: GameTestHelper) = withListeners(helper, 1) { (bob) ->
+    fun actionbarShowsAColoredLineAboveTheHotbar(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         val tool = ActionbarTool(SpeechLimiter(helper.narrator().clock))
         val result = run(helper, tool, ActionbarArgs("Psst… derrière toi.", to = listOf(bob.name)))
 
@@ -239,7 +229,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun playSoundChecksItsIdAndPlaysItPrivately(helper: GameTestHelper) = withListeners(helper, 2) { (bob, alice) ->
+    fun playSoundChecksItsIdAndPlaysItPrivately(helper: GameTestHelper) = withTestPlayers(helper, 2) { (bob, alice) ->
         val tool = PlaySoundTool(SpeechLimiter(helper.narrator().clock))
 
         val unknown = run(helper, tool, PlaySoundArgs("entity.lightning_bolt.thuner", to = listOf(bob.name)))
@@ -256,7 +246,7 @@ class SpeechGameTests {
     }
 
     @GameTest
-    fun giveBookGivesASignedBookOncePerFiveMinutes(helper: GameTestHelper) = withListeners(helper, 1) { (bob) ->
+    fun giveBookGivesASignedBookOncePerFiveMinutes(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         val ui = helper.narrator().settings.get().ui
         val tool = GiveBookTool(SpeechLimiter(helper.narrator().clock))
         val spoken = Spoken(helper) { it.recipients == listOf(bob.ref) }
@@ -304,68 +294,6 @@ class SpeechGameTests {
             is ClientboundSetTitleTextPacket -> "title ${packet.text().string}"
             else -> packet.toString()
         }
-
-        /** Runs [test] with [count] new listeners, removed however it ends; the test succeeds when [test] returns. */
-        fun withListeners(helper: GameTestHelper, count: Int, test: (List<Listener>) -> Unit) {
-            val listeners = mutableListOf<Listener>()
-            try {
-                repeat(count) { listeners += Listener(helper) }
-                listeners.forEach { it.forget() } // each one got the next ones' "joined the game"
-                test(listeners)
-            } finally {
-                listeners.forEach { it.close() }
-            }
-            helper.succeed()
-        }
-    }
-}
-
-/**
- * A player with a unique name (mock players are all called `test-mock-player`, and the tools address
- * players by name), who joins for one test and records the packets of interest that the server sends
- * them.
- */
-private class Listener(private val helper: GameTestHelper) : AutoCloseable {
-    val name = "sp_" + UUID.randomUUID().toString().replace("-", "").take(10)
-    private val connection = RecordingConnection()
-    val player: ServerPlayer
-
-    init {
-        val server = helper.level.server
-        val profile = GameProfile(UUID.randomUUID(), name)
-        player = ServerPlayer(server, helper.level, profile, ClientInformation.createDefault())
-        EmbeddedChannel(connection)
-        server.playerList.placeNewPlayer(connection, player, CommonListenerCookie.createInitial(profile, false))
-        forget()
-    }
-
-    val uuid: UUID get() = player.uuid
-    val ref: PlayerRef get() = player.ref()
-    val packets: List<Packet<*>> get() = connection.recorded
-
-    /** Forgets what was received so far (the "joined the game" lines). */
-    fun forget() = connection.recorded.clear()
-
-    /** The chat lines received (not the lines above the hotbar). */
-    fun chat(): List<ClientboundSystemChatPacket> = packets.filterIsInstance<ClientboundSystemChatPacket>().filterNot { it.overlay() }
-
-    override fun close() {
-        val players = helper.level.server.playerList
-        players.getPlayer(uuid)?.let { players.remove(it) }
-    }
-}
-
-/** A connection that keeps the chat, title and sound packets it sends, and sends everything on as usual. */
-private class RecordingConnection : Connection(PacketFlow.SERVERBOUND) {
-    val recorded = CopyOnWriteArrayList<Packet<*>>()
-
-    override fun send(packet: Packet<*>, listener: ChannelFutureListener?, flush: Boolean) {
-        if (packet is ClientboundSystemChatPacket || packet is ClientboundSoundPacket || packet is ClientboundSetTitlesAnimationPacket ||
-            packet is ClientboundSetSubtitleTextPacket || packet is ClientboundSetTitleTextPacket
-        ) {
-            recorded += packet
-        }
-        super.send(packet, listener, flush)
     }
 }
 

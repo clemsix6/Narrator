@@ -28,6 +28,9 @@ class CommandPolicyTest {
         register(literal("scoreboard").then(literal("objectives").then(literal("list").executes(ok))))
         register(literal("playsound").then(argument("sound", word()).executes(ok)))
         register(literal("stop").requires { false }.executes(ok))
+        // Another mod's command, and its alias.
+        val sethome = register(literal("sethome").then(argument("name", word()).executes(ok)))
+        register(literal("home").redirect(sethome))
         val teleport = register(literal("teleport").then(argument("x", integer()).executes(ok)))
         register(literal("tp").redirect(teleport))
         val execute = register(literal("execute"))
@@ -46,7 +49,8 @@ class CommandPolicyTest {
     }
 
     private var extra = listOf<String>()
-    private val policy = CommandPolicy { extra }
+    private var extraAllowed = listOf<String>()
+    private val policy = CommandPolicy({ extraAllowed }) { extra }
 
     private fun check(command: String): Verdict = policy.verdict(dispatcher.parse(command, Any()))
 
@@ -105,12 +109,40 @@ class CommandPolicyTest {
     }
 
     @Test
-    fun `what the list does not name is allowed`() {
+    fun `the reviewed commands run, and a word that is no command is left to run_command`() {
         allowed("scoreboard objectives list")
         allowed("execute as all run scoreboard objectives list")
         allowed("execute if block here run playsound pig")
         allowed("playsound pig")
         allowed("fil 3")
+        allowed("execute run fil 3")
+    }
+
+    @Test
+    fun `a command nobody reviewed is refused, unless the operators allow it`() {
+        assertEquals(
+            "`sethome` is forbidden: only the commands reviewed for the Narrator run, and this one was not (the operators can allow it " +
+                "with safety.extraAllowedCommands); command_help with no command lists those run_command accepts.",
+            refused("sethome base", "sethome"),
+        )
+        refused("execute as all run sethome base", "sethome")
+        refused("sethome", "sethome")
+        refused("home base", "home")
+
+        extraAllowed = listOf(" SetHome ")
+        allowed("sethome base")
+        allowed("execute as all run sethome base")
+        refused("home base", "home")
+
+        // An allowed alias that lands in a command nobody allowed is caught where it lands.
+        extraAllowed = listOf("home")
+        refused("home base", "sethome")
+
+        // The forbidden lists win over the allowed one.
+        extraAllowed = listOf("sethome", "fill")
+        extra = listOf("sethome")
+        refused("sethome base", "sethome")
+        refused("fill 3", "fill")
     }
 
     @Test
@@ -145,8 +177,10 @@ class CommandPolicyTest {
             "weather", "time", "locate", "bossbar",
         )
         assertEquals(emptyList(), design.filterNot { it in CommandPolicy.FORBIDDEN })
-        listOf("execute", "scoreboard", "playsound", "particle", "recipe", "waypoint").forEach {
-            assertTrue(it !in CommandPolicy.FORBIDDEN, "$it stays allowed")
+        listOf("execute", "scoreboard", "playsound", "particle", "waypoint").forEach {
+            assertTrue(it !in CommandPolicy.FORBIDDEN && it in CommandPolicy.ALLOWED, "$it stays allowed")
         }
+        assertEquals(CommandPolicy.Reason.ITEMS, CommandPolicy.FORBIDDEN["recipe"]?.reason, "recipes are progress: never handed out")
+        assertEquals(emptySet(), CommandPolicy.ALLOWED intersect CommandPolicy.FORBIDDEN.keys, "allowed and forbidden at once")
     }
 }
