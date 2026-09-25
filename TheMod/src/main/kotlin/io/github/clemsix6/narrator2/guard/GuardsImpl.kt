@@ -51,8 +51,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     )
 
     override val attributes = AttributeLedger(states, decisions, clock)
-    val death = DeathGuard(states, ::caps, decisions, clock, attributes)
     override val effects = EffectLedger(states, clock)
+    val death = DeathGuard(states, ::caps, decisions, clock, attributes, effects)
     override val items = ItemLedger(states, decisions, clock) { services.settings.get().ui }
     override val mobs = NarratorMobs(items)
     override val commands = CommandPolicy(
@@ -244,8 +244,12 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         }
     }
 
-    /** End of a server tick: once a second of wall-clock time, [check] what is due. Server thread. */
+    /**
+     * End of a server tick: the players the death guard rescued during it are put out again, and once a
+     * second of wall-clock time, [check] what is due. Server thread.
+     */
     fun tick(server: MinecraftServer) {
+        death.afterTick()
         val now = clock.millis()
         if (now - lastCheck < CHECK_INTERVAL_MS) return
         lastCheck = now

@@ -70,6 +70,19 @@ class EffectLedger(private val states: GuardStates, private val clock: Clock) {
         return mine
     }
 
+    /**
+     * Removes the harmful effects the Narrator put on [player] (a rescue by the death guard), forgotten
+     * before the removal: they do not end as the Narrator's (a levitation lifted this way is not
+     * cushioned, and arms nothing). Returns them.
+     */
+    fun removeHarmful(player: ServerPlayer): List<LedgerEffect> {
+        val harmful = on(player).filter { it.harmful }
+        if (harmful.isEmpty()) return harmful
+        states.update(player) { state -> state.copy(effects = state.effects - harmful.toSet()) }
+        for (entry in harmful) holderOf(entry)?.let { player.removeEffect(it) }
+        return harmful
+    }
+
     /** Forgets the entries whose effect is no longer on [player]. Once a second, and at each join and respawn. */
     fun prune(player: ServerPlayer) {
         val effects = states.of(player).effects
