@@ -48,10 +48,16 @@ interface GameView {
     /** The overworld's clock and weather, read on the server thread; fails when it does not answer in time. */
     suspend fun worldTime(): WorldTime
 
-    /** Shows [text] above the hotbar of the [players] online. Any thread; never waits for the server thread. */
-    fun actionbar(players: Collection<UUID>, text: String)
+    /**
+     * Shows [text] above the hotbar of the players online that [to] returns when it is shown: they may
+     * have got their answer between the call and the display. Any thread; never waits for the server thread.
+     */
+    fun actionbar(text: String, to: () -> Collection<UUID>)
 
-    /** Clears the text above the hotbar of the [players] online. Any thread. */
+    /**
+     * Clears the text above the hotbar of the [players] online, at once when called on the server thread:
+     * a line of the Narrator shown right after in the same tick must not be erased. Any thread.
+     */
     fun clearActionbar(players: Collection<UUID>)
 
     /** Tells the operators online, in the chat, in English (`[Narrator] …`). Any thread. */

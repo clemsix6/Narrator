@@ -276,8 +276,9 @@ class DirectorHarness(
 
         override suspend fun worldTime(): WorldTime = world ?: throw IllegalStateException("the server thread did not answer in time")
 
-        override fun actionbar(players: Collection<UUID>, text: String) {
-            shown += players.toList() to text
+        override fun actionbar(text: String, to: () -> Collection<UUID>) {
+            val players = to().toList()
+            if (players.isNotEmpty()) shown += players to text
         }
 
         override fun clearActionbar(players: Collection<UUID>) {

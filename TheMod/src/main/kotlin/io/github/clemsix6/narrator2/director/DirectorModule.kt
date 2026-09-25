@@ -6,7 +6,9 @@ import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.ToolCatalog
+import io.github.clemsix6.narrator2.tool.speech.Speech
 import net.minecraft.network.chat.Component
+import net.minecraft.server.MinecraftServer
 import java.util.UUID
 
 /**
@@ -33,23 +35,31 @@ private class ServerGameView(private val services: NarratorServices) : GameView 
         }
     }
 
-    override fun actionbar(players: Collection<UUID>, text: String) = overlay(players, Component.literal(text))
+    override fun actionbar(text: String, to: () -> Collection<UUID>) {
+        val message = Speech.colored(services.settings.get().ui, text)
+        onServer { server -> to().forEach { server.playerList.getPlayer(it)?.sendOverlayMessage(message) } }
+    }
 
-    override fun clearActionbar(players: Collection<UUID>) = overlay(players, Component.empty())
+    override fun clearActionbar(players: Collection<UUID>) {
+        if (players.isEmpty()) return
+        val targets = players.toList()
+        onServer { server -> targets.forEach { server.playerList.getPlayer(it)?.sendOverlayMessage(Component.empty()) } }
+    }
 
     override fun tellOperators(text: String) {
         Log.director.warn("told the operators: $text")
         val operators = services.players.online.filter { it.isOp }.map { it.ref.uuid }
         if (operators.isEmpty()) return
-        val server = services.server
-        server.execute { operators.forEach { server.playerList.getPlayer(it)?.sendSystemMessage(narratorLine(text)) } }
+        onServer { server -> operators.forEach { server.playerList.getPlayer(it)?.sendSystemMessage(narratorLine(text)) } }
     }
 
-    private fun overlay(players: Collection<UUID>, message: Component) {
-        if (players.isEmpty()) return
+    /**
+     * Runs [block] on the server thread: right away when already on it (`execute` would defer it behind
+     * the task in progress, after a line shown in the same tick), queued otherwise.
+     */
+    private fun onServer(block: (MinecraftServer) -> Unit) {
         val server = services.server
-        val targets = players.toList()
-        server.execute { targets.forEach { server.playerList.getPlayer(it)?.sendOverlayMessage(message) } }
+        if (server.isSameThread) block(server) else server.execute { block(server) }
     }
 
     private companion object {

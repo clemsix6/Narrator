@@ -33,14 +33,13 @@ class ThinkingIndicator(private val game: GameView, private val text: () -> Stri
         val shown = text() ?: return
         val added = players.filter { waiting.add(it) }
         if (added.isEmpty()) return
-        game.actionbar(added, shown)
+        game.actionbar(shown) { added.filter { it in waiting } }
         if (refresher?.isActive == true) return
         refresher = scope.launch {
             while (true) {
                 delay(REFRESH_MS)
-                val still = waiting.toList()
-                if (still.isEmpty()) break
-                text()?.let { game.actionbar(still, it) }
+                if (waiting.isEmpty()) break
+                text()?.let { game.actionbar(it) { waiting.toList() } }
             }
         }
     }
