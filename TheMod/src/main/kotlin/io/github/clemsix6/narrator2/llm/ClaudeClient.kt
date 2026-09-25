@@ -64,6 +64,18 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
     /** False when no LLMGW key was given: calls would be refused by the gateway. */
     val isConfigured: Boolean get() = apiKey != null
 
+    private val lifecycle = Any()
+    private var callsInFlight = 0 // guarded by lifecycle
+    private var closeRequested = false // guarded by lifecycle
+
+    /** True once the client is closed: [send] then fails with a [ClientClosedException]. */
+    @Volatile
+    var isClosed: Boolean = false
+        private set
+
+    /** Calls running right now. */
+    val inFlight: Int get() = synchronized(lifecycle) { callsInFlight }
+
     /**
      * Sends [conversation] to Claude and appends the reply to it when the reply is usable (see
      * [SendResult]). Blocking network I/O runs on [Dispatchers.IO].
@@ -71,18 +83,56 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
      * Cancelling the caller closes the response stream at once and leaves the conversation unchanged;
      * the [CancellationException] is rethrown as is. A failure is thrown after the last attempt, with
      * the conversation unchanged. A second `send` on the same conversation while this one is in flight
-     * fails with an [IllegalStateException].
+     * fails with an [IllegalStateException]. Once the client is closed, fails with a
+     * [ClientClosedException] before sending anything.
      */
-    suspend fun send(conversation: Conversation): SendResult = withContext(Dispatchers.IO) {
-        val history = conversation.beginCall()
-        var reply: MessageParam? = null
+    suspend fun send(conversation: Conversation): SendResult {
+        enter()
         try {
-            execute(conversation, history).also { result ->
-                if (result is SendResult.Reply) reply = result.message.toParam()
+            return withContext(Dispatchers.IO) {
+                val history = conversation.beginCall()
+                var reply: MessageParam? = null
+                try {
+                    execute(conversation, history).also { result ->
+                        if (result is SendResult.Reply) reply = result.message.toParam()
+                    }
+                } finally {
+                    conversation.endCall(reply)
+                }
             }
         } finally {
-            conversation.endCall(reply)
+            leave()
         }
+    }
+
+    /**
+     * Closes the client once the calls in flight are over, at once when there are none. Used when
+     * `/narrator reload` replaces the client: the calls it already started finish normally. A call that
+     * starts in the meantime is still served and delays the closing.
+     */
+    fun closeWhenIdle() {
+        val closeNow = synchronized(lifecycle) {
+            closeRequested = true
+            callsInFlight == 0
+        }
+        if (closeNow) {
+            closeClient("replaced client closed, no call was in flight")
+        } else {
+            log.info("replaced client closes after its calls in flight")
+        }
+    }
+
+    private fun enter() = synchronized(lifecycle) {
+        if (isClosed) throw ClientClosedException()
+        callsInFlight++
+    }
+
+    private fun leave() {
+        val closeNow = synchronized(lifecycle) {
+            callsInFlight--
+            closeRequested && callsInFlight == 0
+        }
+        if (closeNow) closeClient("replaced client closed after its last call")
     }
 
     private suspend fun execute(conversation: Conversation, history: List<MessageParam>): SendResult {
@@ -236,7 +286,20 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
 
     private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
 
-    override fun close() = client.close()
+    /**
+     * Closes the client now; calls still in flight fail. Their callers are cancelled first when the
+     * server stops (see [closeWhenIdle] to let them finish). Closing again does nothing.
+     */
+    override fun close() = closeClient("client closed")
+
+    private fun closeClient(what: String) {
+        synchronized(lifecycle) {
+            if (isClosed) return
+            isClosed = true
+        }
+        client.close()
+        log.info(what)
+    }
 
     /** What every attempt of one call shares: its role, its start and its deadline. */
     private class CallContext(val conversation: Conversation, val role: RoleConfig) {

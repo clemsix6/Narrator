@@ -23,13 +23,20 @@ import java.time.Instant
 class BudgetExceededException(val resetAt: Instant?, dimension: String?, window: String?) :
     RuntimeException("LLMGW budget exceeded (${dimension ?: "?"} per ${window ?: "?"}), resets at ${resetAt ?: "an unknown time"}")
 
+/**
+ * The client was closed: `/narrator reload` replaced it, or the server is stopping. Nothing was sent;
+ * read the settings again for the client in force.
+ */
+class ClientClosedException :
+    IllegalStateException("this LLMGW client is closed (replaced by /narrator reload, or the server is stopping)")
+
 /** The response stream ended before `message_stop`: the connection was cut mid-answer. */
 class TruncatedStreamException(afterContent: Boolean) :
     IOException("the response stream ended before message_stop, ${if (afterContent) "after" else "before"} any content")
 
 /** A short explanation of a failed call, for logs, transcripts and operators. */
 fun describeFailure(error: Throwable): String = when (error) {
-    is BudgetExceededException, is TruncatedStreamException -> error.message.orEmpty()
+    is BudgetExceededException, is TruncatedStreamException, is ClientClosedException -> error.message.orEmpty()
     is UnauthorizedException -> "key rejected by the gateway (HTTP 401)"
     is PermissionDeniedException -> "access denied by the gateway (HTTP 403)"
     is RateLimitException -> "rate limit reached (HTTP 429)"
