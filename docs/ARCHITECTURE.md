@@ -73,7 +73,7 @@ L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouvea
 | Noms du jeu | Noms officiels de Mojang (le jeu n'est plus obfusqué depuis 26.1) | Le code compilé à chaud voit exactement les mêmes noms que le jeu en cours d'exécution |
 | Claude | SDK Java officiel d'Anthropic, pointé sur **LLMGW** | Protocole Anthropic Messages standard ; LLMGW gère clés projet, budgets et comptes |
 | Journal et mémoire | **DuckDB** embarqué (JDBC) | Base analytique en colonnes : agrégations rapides sur des millions de lignes, SQL riche (fenêtres, `QUALIFY`, JSON, listes), aucun serveur à gérer |
-| Recherche plein texte | Lucene (analyseur français) | BM25 local, léger ; k-NN possible plus tard |
+| Recherche plein texte | BM25 calculé en SQL dans DuckDB, analyseur français en Kotlin | Rien de plus dans le jar ; l’extension `fts` de DuckDB n’est pas embarquable et Lucene ajouterait 6,5 Mo et un second stockage (mesures dans `design/M3.md`) |
 | Code à chaud | **Java 25** compilé en mémoire : javac si le serveur tourne sur un JDK, sinon ECJ embarqué (3,4 Mo) | ~50 ms par compilation une fois chaud, API standard, et c'est en Java que Claude écrit le mieux contre les classes de Minecraft (voir §10) |
 
 Versions vérifiées (fixées dans `TheMod/gradle.properties`) :

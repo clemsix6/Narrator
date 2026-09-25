@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
+import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.event.AdvancementEarned
 import io.github.clemsix6.narrator2.event.AnimalTamed
 import io.github.clemsix6.narrator2.event.AnvilUsed
@@ -25,19 +26,30 @@ import io.github.clemsix6.narrator2.event.RespawnPointSet
 import io.github.clemsix6.narrator2.event.StatAwarded
 import io.github.clemsix6.narrator2.event.StatsSnapshot
 import io.github.clemsix6.narrator2.event.Traded
+import io.github.clemsix6.narrator2.journal.Journal
+import io.github.clemsix6.narrator2.journal.SqlAccess
+import io.github.clemsix6.narrator2.journal.SqlLimits
+import io.github.clemsix6.narrator2.journal.SqlOutcome
+import io.github.clemsix6.narrator2.journal.SqlRunner
 import io.github.clemsix6.narrator2.observer.PlacedBlocks
 import io.github.clemsix6.narrator2.observer.StatsImport
 import io.github.clemsix6.narrator2.observer.blockId
 import io.github.clemsix6.narrator2.observer.toPos
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.core.registries.Registries
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.network.protocol.game.ClientboundDisguisedChatPacket
+import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket
 import net.minecraft.network.protocol.game.ServerboundChatCommandPacket
 import net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket
 import net.minecraft.resources.Identifier
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.server.permissions.LevelBasedPermissionSet
 import net.minecraft.stats.Stats
 import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.EntityTypes
@@ -57,8 +69,10 @@ import net.minecraft.world.level.storage.LevelData
 import net.minecraft.world.level.storage.LevelResource
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.Vec3
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.readText
 
 /**
@@ -284,6 +298,94 @@ class ObserverMixinGameTests {
     }
 
     /**
+     * M2 review, finding 8: wherever a private message hides, its text reaches no table or view the
+     * model may read. An operator sends it behind `execute … run` (`msg`, `tell`, `w`, `teammsg`, `tm`),
+     * and through the redirects `tell`, `w`, `tm`; another mod's private messages are typed too (unknown
+     * to this server, but the Observer sees every typed line), and a player tries `/narrator`. Two
+     * commands without a private message keep their text, which proves the search finds what is there.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aPrivateMessageReachesNothingTheModelReads(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val server = helper.level.server
+        val secret = "s" + UUID.randomUUID().toString().replace("-", "").take(12)
+        val kept = "k" + UUID.randomUUID().toString().replace("-", "").take(12)
+        val sender = TestPlayer(helper, "pm_")
+        val friend = TestPlayer(helper, "pf_") { it is ClientboundPlayerChatPacket || it is ClientboundDisguisedChatPacket }
+        // In the test's area, near the other tests' players: far from them, an Oracle test's distances would overflow.
+        sender.standAt(BlockPos(1, 1, 1))
+        friend.standAt(BlockPos(2, 1, 1))
+        val owner = "privacy-test-${sender.uuid}"
+        val commands = CopyOnWriteArrayList<CommandIssued>()
+        val ours = setOf(sender.uuid, friend.uuid)
+        runtime.bus.subscribeSync("recorder", owner, { it.player?.uuid in ours }) { (it.event as? CommandIssued)?.let(commands::add) }
+        // The test server gives a plain `op` the level of every player: `execute` needs a gamemaster.
+        server.playerList.op(sender.player.nameAndId(), Optional.of(LevelBasedPermissionSet.GAMEMASTER), Optional.empty())
+        val cleanup = AutoCloseable {
+            runtime.bus.unsubscribeOwner(owner)
+            server.playerList.deop(sender.player.nameAndId())
+            sender.close()
+            friend.close()
+        }
+        helper.closingOnFailure(cleanup, ASYNC_MAX_TICKS) {
+            val to = friend.name
+            val operatorLines = listOf(
+                "execute as @s run msg $to the base is behind $secret",
+                "execute run tell $to the base is behind $secret",
+                "execute as @s at @s run w $to the base is behind $secret",
+                "execute as @s run teammsg the base is behind $secret",
+                "execute run execute run tm the base is behind $secret",
+                "return run msg $to the base is behind $secret",
+                "tell $to the base is behind $secret",
+                "w $to the base is behind $secret",
+                "tm the base is behind $secret",
+                // Other mods' private messages, alone and behind execute.
+                "r the base is behind $secret",
+                "reply the base is behind $secret",
+                "whisper $to the base is behind $secret",
+                "pm $to the base is behind $secret",
+                "dm $to the base is behind $secret",
+                "mail send $to the base is behind $secret",
+                "execute run r the base is behind $secret",
+                // Kept: no private message anywhere in the line.
+                "scoreboard objectives add $kept dummy",
+                "execute as @s run scoreboard objectives remove $kept",
+            )
+            // A player (not an operator) tries the operators' commands: refused, but typed all the same.
+            val playerLines = listOf("narrator whisper be kind to $secret", "narrator sql SELECT '$secret'")
+            operatorLines.forEach { sender.player.connection.handleChatCommand(ServerboundChatCommandPacket(it)) }
+            playerLines.forEach { friend.player.connection.handleChatCommand(ServerboundChatCommandPacket(it)) }
+            val search = AtomicReference<PrivacySearch>()
+            helper.startSequence()
+                .thenAwait { helper.assertValueEqual(operatorLines.size + playerLines.size, commands.size, "commands observed") }
+                .thenExecute {
+                    val texts = commands.mapNotNull { it.text }
+                    helper.assertValueEqual(listOf(operatorLines[16], operatorLines[17]), texts, "the only texts kept")
+                    // Unsigned (as a test sends them), they go out disguised; signed, as player chat.
+                    val delivered = friend.packets.count { packet ->
+                        when (packet) {
+                            is ClientboundDisguisedChatPacket -> secret in packet.message().string
+                            is ClientboundPlayerChatPacket -> secret in packet.body().content()
+                            else -> false
+                        }
+                    }
+                    helper.assertTrue(delivered >= 1, "the private messages did go out: $delivered")
+                    search.set(PrivacySearch(runtime, secret, kept))
+                }
+                .thenAwait {
+                    val running = search.get()
+                    helper.assertTrue(running != null, "the search has not started")
+                    val found = running!!.result(helper)
+                    helper.assertEquals(emptyMap<String, Long>(), found.secret.filterValues { it > 0 }, "the secret in what the model reads")
+                    helper.assertEquals(2L, found.kept["events"], "the kept texts are found, in events.detail: ${found.kept}")
+                    helper.assertTrue(found.operators > 0, "the vanilla private messages are journaled for the operators")
+                }
+                .thenExecute { cleanup.close() }
+                .thenSucceed()
+        }
+    }
+
+    /**
      * The full death message is read at the head of `die`, while the combat tracker still knows the
      * fall: "fell from a high place", where the end of `die` only gives "hit the ground too hard".
      */
@@ -444,5 +546,54 @@ private class Watched(private val helper: GameTestHelper) : AutoCloseable {
         runtime.bus.unsubscribeOwner(owner)
         val players = helper.level.server.playerList
         players.getPlayer(uuid)?.let { players.remove(it) }
+    }
+}
+
+/**
+ * How often [secret] and [kept] appear in each table and view the model may read (every relation of
+ * the Journal but [Journal.HIDDEN_FROM_MODEL]), searched in the whole text of each row with the
+ * model's own access; and how often [secret] is in the private messages, for the operators. Runs off
+ * the server thread, once the Journal has written everything published before (`Journal.barrier`).
+ */
+private class PrivacySearch(runtime: NarratorRuntime, secret: String, kept: String) {
+    class Found(val secret: Map<String, Long>, val kept: Map<String, Long>, val operators: Long)
+
+    private val found = AtomicReference<Found>()
+    private val failure = AtomicReference<Throwable>()
+
+    init {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                runtime.journal.barrier()
+                val runner = SqlRunner(runtime.journal, runtime.clock)
+                val limits = SqlLimits(maxRows = 200, timeoutSeconds = 10)
+                suspend fun rows(sql: String, access: SqlAccess): List<String> {
+                    val outcome = runner.query(sql, limits, access)
+                    check(outcome is SqlOutcome.Rows) { "$sql → $outcome" }
+                    return outcome.text.lines().drop(2)
+                }
+                val relations = rows(
+                    "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' AND NOT internal " +
+                        "UNION ALL SELECT view_name FROM duckdb_views() WHERE schema_name = 'main' AND NOT internal",
+                    SqlAccess.OPERATOR,
+                ).filterNot { it in Journal.HIDDEN_FROM_MODEL }
+                check("events" in relations && "timeline" in relations) { "relations: $relations" }
+                suspend fun count(word: String) = relations.associateWith { relation ->
+                    rows("SELECT count(*) FROM $relation AS r WHERE CAST(r AS VARCHAR) ILIKE '%$word%'", SqlAccess.MODEL).single().toLong()
+                }
+                val operators = rows("SELECT count(*) FROM private_messages WHERE text ILIKE '%$secret%'", SqlAccess.OPERATOR).single().toLong()
+                found.set(Found(count(secret), count(kept), operators))
+            } catch (e: Throwable) {
+                failure.set(e)
+            }
+        }
+    }
+
+    /** What was found; fails the step until the search is done, and the test if it failed. */
+    fun result(helper: GameTestHelper): Found {
+        failure.get()?.let { throw IllegalStateException("searching the Journal failed", it) }
+        val done = found.get()
+        helper.assertTrue(done != null, "the Journal has not answered yet")
+        return done!!
     }
 }

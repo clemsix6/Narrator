@@ -571,16 +571,47 @@ data class PlayerRespawned(override val player: PlayerRef, override val pos: Pos
  * A player ran a command.
  *
  * @property root the command's first word, lowercase, e.g. `tp`.
- * @property text the whole command line, without `/`; null when [root] is redacted (a root of
- *   `observer.redactedCommands`, such as a login command) or is one of [PRIVATE_MESSAGE_COMMANDS]:
- *   the text of a private message is only in its [ChatMessage] of channel [ChatChannel.WHISPER].
+ * @property text the whole command line, without `/`; null unless every command the line runs (its
+ *   root, each command behind `execute … run`, each command a redirect lands in) is one of
+ *   [TEXT_KEPT_ROOTS] and none is withheld by the configuration (`observer.privateMessageCommands`,
+ *   `observer.redactedCommands`); null too when the line does not parse to its end. The text of a
+ *   private message is only in its [ChatMessage] of channel [ChatChannel.WHISPER], never shown to the model.
  */
 data class CommandIssued(override val player: PlayerRef, override val pos: Pos, val root: String, val text: String?) : GameEvent {
     override val type: String get() = "command"
 
     companion object {
-        /** Commands that send a private message between players; they also publish a [ChatMessage] ([ChatChannel.WHISPER]). */
+        /**
+         * The vanilla commands that send a private message between players; they also publish a
+         * [ChatMessage] ([ChatChannel.WHISPER]). Other mods' are in `observer.privateMessageCommands`.
+         */
         val PRIVATE_MESSAGE_COMMANDS: Set<String> = setOf("msg", "tell", "w", "teammsg", "tm")
+
+        /**
+         * The only roots whose text may be kept: vanilla 26.3 commands, and `/pray` (the prayer is also a
+         * chat line to the Narrator). Left out: the private messages, the texts shown to chosen players
+         * (`tellraw`, `title`, `dialog`, `bossbar`, the reasons of `kick` and `ban`), the development
+         * commands, `narrator` (the operators' instructions and queries) and every other mod's command.
+         */
+        val TEXT_KEPT_ROOTS: Set<String> = setOf(
+            // Administration.
+            "stop", "save-all", "save-off", "save-on", "op", "deop", "banlist", "pardon", "pardon-ip", "whitelist",
+            "transfer", "debug", "perf", "jfr", "setidletimeout", "publish", "unpublish", "reload", "fetchprofile", "seed",
+            // The world and its rules, functions.
+            "gamerule", "difficulty", "defaultgamemode", "gamemode", "worldborder", "forceload", "tick", "setworldspawn",
+            "spawnpoint", "datapack", "function", "schedule",
+            // Blocks, items and progress.
+            "fill", "fillbiome", "setblock", "clone", "place", "data", "clear", "item", "loot", "give", "enchant", "xp",
+            "experience", "advancement", "recipe",
+            // Entities.
+            "kill", "damage", "summon", "tp", "teleport", "spreadplayers", "ride", "effect", "attribute", "tag", "team",
+            "rotate", "spectate", "posteffect",
+            // Public speech, and the weather, time, places, particles and sounds.
+            "say", "me", "pray", "weather", "time", "locate", "particle", "playsound", "stopsound",
+            // Everything else a player or an operator may type.
+            "execute", "return", "scoreboard", "trigger", "waypoint", "random", "compute", "stopwatch", "swing", "help",
+            "list", "version",
+        )
     }
 }
 

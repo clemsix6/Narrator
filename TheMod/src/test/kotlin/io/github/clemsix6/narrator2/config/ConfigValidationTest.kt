@@ -32,6 +32,10 @@ class ConfigValidationTest {
         assertEquals(3, defaults.chaos)
         assertEquals(JournalConfig(1_000, 65_536, 512, 2, "", 5, 4_096), defaults.journal)
         assertEquals(listOf("login", "l", "register", "reg", "changepassword", "narrator"), defaults.observer.redactedCommands)
+        assertEquals(
+            listOf("msg", "tell", "w", "teammsg", "tm", "r", "reply", "whisper", "pm", "dm", "mail"),
+            defaults.observer.privateMessageCommands,
+        )
         with(defaults.director) {
             assertEquals(3..8, heartbeatRange)
             assertEquals(OperatorChannelMode.SYSTEM_MESSAGE, channelMode)
@@ -60,6 +64,8 @@ class ConfigValidationTest {
             defaults.copy(observer = ObserverConfig(listOf("login", "/register"))) to
                 "observer.redactedCommands[1] must be a command root in lowercase",
             defaults.copy(observer = ObserverConfig(listOf("Login"))) to "observer.redactedCommands[0] must be a command root",
+            defaults.copy(observer = ObserverConfig(privateMessageCommands = listOf("msg", "R"))) to
+                "observer.privateMessageCommands[1] must be a command root in lowercase",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(8, 3))) to "director.heartbeatMinutes must be [min, max]",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(0, 3))) to "director.heartbeatMinutes must be [min, max]",
             defaults.copy(director = DirectorConfig(heartbeatMinutes = listOf(3, 61))) to "director.heartbeatMinutes must be [min, max]",
