@@ -89,7 +89,7 @@ Nouveaux fichiers : `guard/DeathReport.kt`, tests `director/WakeBudgetScenariosT
 
 ## Vérifications
 
-- `gradlew build` après fusion de `main` (lot CD et T22 compris) : tests unitaires et **145 GameTests** verts ; `runGameTest` relancé 3 fois de plus, dont une fois avec le lot `director` en premier : vert.
+- `gradlew build` après fusion de `main` (lots CD et J, T22 compris) : **680 tests unitaires et 145 GameTests** verts, le lot `director` passé en premier ; `runGameTest` relancé 3 fois de plus avant la fusion du lot J, dans les deux ordres : vert.
 - Tests ajoutés, tous en temps virtuel pour le Directeur :
   - `WakeSchedulerTest` : chat entre joueurs jamais réveillant, budget (seuls les immédiats réveillent), `TurnBudget` sur l'heure glissante et relu à chaque fois, valeur du battement avec l'heuristique et avec Jev ;
   - `SalienceTest` : 6 réveils immédiats par joueur sur 10 min, prières et chat ensemble, autre joueur indépendant, fenêtre glissante ; décision `throttled` d'un événement saillant sous budget épuisé ;
