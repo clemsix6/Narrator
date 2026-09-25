@@ -92,6 +92,15 @@ class FakeAnthropicTest {
     }
 
     @Test
+    fun `strict mode rejects a cache marker from the second user turn on, like LLMGW`() {
+        val assistant = MessageParam.builder().role(MessageParam.Role.ASSISTANT).content("First.").build()
+        val oneHour = params(listOf(user("Hi"), assistant, user("More"))) {
+            cacheControl(CacheControlEphemeral.builder().ttl(CacheControlEphemeral.Ttl.TTL_1H).build())
+        }
+        assertContains(rejection(oneHour), "A maximum of 4 blocks with cache_control may be provided. Found 5.")
+    }
+
+    @Test
     fun `strict mode rejects a history that is not append-only within a session`() {
         fake.enqueue(reply { text("First.") }, reply { text("Second.") })
         send(params(listOf(user("Hi"))))

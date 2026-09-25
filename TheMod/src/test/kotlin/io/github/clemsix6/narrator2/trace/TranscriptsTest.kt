@@ -97,7 +97,7 @@ class TranscriptsTest {
         with(lines[2].path("data")) {
             assertEquals("claude-opus-5-5", path("model").asText())
             assertEquals("medium", path("output_config").path("effort").asText())
-            assertEquals("1h", path("cache_control").path("ttl").asText())
+            assertTrue(path("cache_control").isMissingNode, "no cache marker by default")
             assertEquals("adaptive", path("thinking").path("type").asText())
             assertEquals(conversation.id, path("headers").path("X-Session-ID").asText())
             assertEquals(1, path("message_count").asInt())

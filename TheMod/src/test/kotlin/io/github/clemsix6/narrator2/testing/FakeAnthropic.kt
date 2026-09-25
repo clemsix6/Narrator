@@ -46,12 +46,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * message, before consuming any script: an empty message or text block; a `tool_use` without its
  * `tool_result` in the next message; a forced `tool_choice`; a history that is not an append-only
  * continuation of the previous request with the same `X-Session-ID` (system prompt and tools
- * included); a `cache_control` whose TTL is not `1h` (LLMGW already marks the prompt with `1h`).
+ * included); a top-level `cache_control` whose TTL is not `1h`, or sent with two user turns or more
+ * (LLMGW places its own `1h` markers, and the API allows 4 at most: behaviour seen on 25/09/2026).
  *
  * A request that finds the script empty gets an HTTP 400 `invalid_request_error` saying so, and is
  * counted in [unscripted].
  */
-class FakeAnthropic(val strict: Boolean = true) : AutoCloseable {
+class FakeAnthropic(
+    val strict: Boolean = true,
+    /** Response header carrying the request's id: `request-id` like the API, or `X-Cpa-Trace-Id` like LLMGW. */
+    private val requestIdHeader: String = "request-id",
+) : AutoCloseable {
     private val script = ConcurrentLinkedQueue<(RecordedRequest) -> FakeResponse>()
     private val sessionScripts = ConcurrentHashMap<String, ConcurrentLinkedQueue<(RecordedRequest) -> FakeResponse>>()
     private val recorded = CopyOnWriteArrayList<RecordedRequest>()
@@ -133,6 +138,7 @@ class FakeAnthropic(val strict: Boolean = true) : AutoCloseable {
                 }
                 else -> nextResponse(request)
             }
+            exchange.responseHeaders.add(requestIdHeader, nextId("req"))
             response.writeTo(exchange, request)
         } catch (e: InterruptedException) {
             // close() while a reply was held.
@@ -191,6 +197,10 @@ class FakeAnthropic(val strict: Boolean = true) : AutoCloseable {
             if (ttl != "1h") {
                 return "Top-level cache_control has ttl='$ttl' but the target block already has cache_control with ttl='1h'. " +
                     "When both are specified on the same block, they must have matching TTLs."
+            }
+            // LLMGW marks the system prompt and the latest user turns: from the second user turn on, ours is the fifth.
+            if (messages.count { it.path("role").asText() == "user" } >= 2) {
+                return "A maximum of 4 blocks with cache_control may be provided. Found 5."
             }
         }
         return appendOnlyViolation(request)
@@ -474,10 +484,8 @@ private class StreamErrorResponse(val type: String, val message: String) : FakeR
 
 private class HttpErrorResponse(val status: Int, val body: ObjectNode, val headers: Map<String, String>) : FakeResponse() {
     override fun writeTo(exchange: HttpExchange, request: RecordedRequest) {
-        val requestId = nextId("req")
-        val bytes = MAPPER.writeValueAsBytes(body.deepCopy().put("request_id", requestId))
+        val bytes = MAPPER.writeValueAsBytes(body)
         exchange.responseHeaders.add("Content-Type", "application/json")
-        exchange.responseHeaders.add("request-id", requestId)
         headers.forEach { (name, value) -> exchange.responseHeaders.add(name, value) }
         exchange.sendResponseHeaders(status, bytes.size.toLong())
         exchange.responseBody.write(bytes)
@@ -487,7 +495,6 @@ private class HttpErrorResponse(val status: Int, val body: ObjectNode, val heade
 /** Sends the SSE response headers and returns a writer for its events. */
 private fun openStream(exchange: HttpExchange): SseWriter {
     exchange.responseHeaders.add("Content-Type", "text/event-stream; charset=utf-8")
-    exchange.responseHeaders.add("request-id", nextId("req"))
     exchange.sendResponseHeaders(200, 0)
     return SseWriter(exchange.responseBody)
 }

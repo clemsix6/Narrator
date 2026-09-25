@@ -4,6 +4,7 @@ import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.core.RequestOptions
 import com.anthropic.core.Timeout
+import com.anthropic.core.http.Headers
 import com.anthropic.core.jsonMapper
 import com.anthropic.errors.AnthropicServiceException
 import com.anthropic.errors.SseException
@@ -177,7 +178,11 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.of(role.effort)).build())
             .systemOfTextBlockParams(conversation.system)
             .messages(history)
-            .cacheControl(CacheControlEphemeral.builder().ttl(CacheControlEphemeral.Ttl.of(gateway.cacheTtl)).build())
+            .apply {
+                if (gateway.cacheTtl != NarratorConfig.NO_CACHE_MARKER) {
+                    cacheControl(CacheControlEphemeral.builder().ttl(CacheControlEphemeral.Ttl.of(gateway.cacheTtl)).build())
+                }
+            }
             .putAdditionalHeader("X-Session-ID", conversation.id)
             .apply { if (conversation.tools.isNotEmpty()) tools(conversation.tools) }
             .build()
@@ -220,8 +225,14 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             .apply { initCause(error) }
     }
 
-    private fun requestIdOf(error: Throwable): String? =
-        (error as? AnthropicServiceException)?.headers()?.values("request-id")?.firstOrNull()
+    private fun requestIdOf(error: Throwable): String? = (error as? AnthropicServiceException)?.headers()?.let(::requestIdOf)
+
+    /**
+     * The id to quote to the gateway's operator: Anthropic's `request-id`, else CLIProxyAPI's
+     * `X-Cpa-Trace-Id` (LLMGW does not relay `request-id`, verified 25/09/2026).
+     */
+    private fun requestIdOf(headers: Headers): String? =
+        (headers.values("request-id") + headers.values("x-cpa-trace-id")).firstOrNull()
 
     private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
 
@@ -284,7 +295,7 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
 
         suspend fun run(params: MessageCreateParams, options: RequestOptions): Message {
             val response = client.messages().withRawResponse().createStreaming(params, options)
-            requestId = response.requestId().orElse(null)
+            requestId = requestIdOf(response.headers())
             response.parse().use { stream -> closeOnCancel(stream) { stream.stream().forEach(::accept) } }
             if (!stopped) throw TruncatedStreamException(sawContent)
             return accumulator.message()

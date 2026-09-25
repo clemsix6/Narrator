@@ -43,8 +43,11 @@ class ClaudeClientTest {
     @AfterEach
     fun closeFake() = fake.close()
 
-    private fun send(conversation: Conversation, roles: Map<Role, RoleConfig> = emptyMap(), cacheTtl: String = "1h"): SendResult =
-        fake.client(roles = roles, cacheTtl = cacheTtl).use { client -> runBlocking { client.send(conversation) } }
+    private fun send(
+        conversation: Conversation,
+        roles: Map<Role, RoleConfig> = emptyMap(),
+        cacheTtl: String = NarratorConfig.NO_CACHE_MARKER,
+    ): SendResult = fake.client(roles = roles, cacheTtl = cacheTtl).use { client -> runBlocking { client.send(conversation) } }
 
     private fun transcriptLines(conversation: Conversation): List<JsonNode> {
         val file = Files.walk(dir).use { paths -> paths.filter { it.name == "${conversation.id}.jsonl" }.findFirst().orElseThrow() }
@@ -52,7 +55,7 @@ class ClaudeClientTest {
     }
 
     @Test
-    fun `sends model, effort, summarized adaptive thinking, a 1h cache marker, the session header and the key`() {
+    fun `sends model, effort, summarized adaptive thinking, the session header and the key, and no cache marker by default`() {
         fake.enqueue(reply { text("Pong.") })
         val conversation = testConversation(user = "Ping?")
         send(conversation)
@@ -70,8 +73,7 @@ class ClaudeClientTest {
         assertEquals("adaptive", body.path("thinking").path("type").asText())
         assertEquals("summarized", body.path("thinking").path("display").asText())
         assertEquals("medium", body.path("output_config").path("effort").asText())
-        assertEquals("ephemeral", body.path("cache_control").path("type").asText())
-        assertEquals("1h", body.path("cache_control").path("ttl").asText())
+        assertTrue(body.path("cache_control").isMissingNode, "LLMGW places its own cache markers")
         assertEquals("You are the Narrator.", body.path("system").path(0).path("text").asText())
         assertEquals("user", body.path("messages").path(0).path("role").asText())
         assertEquals("Ping?", body.path("messages").path(0).path("content").asText())
@@ -80,13 +82,29 @@ class ClaudeClientTest {
     }
 
     @Test
-    fun `the cache TTL comes from the configuration, and the gateway rejects 5m`() {
+    fun `the cache marker comes from the configuration, and LLMGW rejects 5m`() {
         val conversation = testConversation()
         val error = assertFailsWith<BadRequestException> { send(conversation, cacheTtl = "5m") }
 
+        assertEquals("ephemeral", fake.requests.single().json.path("cache_control").path("type").asText())
         assertEquals("5m", fake.requests.single().json.path("cache_control").path("ttl").asText())
         assertContains(error.message.orEmpty(), "ttl='5m'")
         assertEquals(1, conversation.size)
+    }
+
+    @Test
+    fun `LLMGW accepts a 1h marker on a first turn, not on a longer conversation`() {
+        fake.enqueue(reply { text("First.") })
+        val conversation = testConversation()
+        fake.client(cacheTtl = "1h").use { client ->
+            runBlocking {
+                client.send(conversation)
+                conversation.appendUser("And then?")
+                val error = assertFailsWith<BadRequestException> { client.send(conversation) }
+                assertContains(error.message.orEmpty(), "A maximum of 4 blocks with cache_control may be provided")
+            }
+        }
+        assertEquals("1h", fake.requests.first().json.path("cache_control").path("ttl").asText())
     }
 
     @ParameterizedTest
@@ -165,6 +183,15 @@ class ClaudeClientTest {
         assertEquals(2, conversation.size)
         assertEquals(MessageParam.Role.ASSISTANT, conversation.messages[1].role())
         assertEquals(1_080, conversation.contextTokens)
+    }
+
+    @Test
+    fun `LLMGW's trace id stands in for the request-id it does not relay`() {
+        FakeAnthropic(requestIdHeader = "X-Cpa-Trace-Id").use { gateway ->
+            gateway.enqueue(reply { text("Traced.") })
+            val result = gateway.client().use { client -> runBlocking { client.send(testConversation()) } }
+            assertTrue(result.stats.requestId!!.startsWith("req_fake_"), "id: ${result.stats.requestId}")
+        }
     }
 
     @Test

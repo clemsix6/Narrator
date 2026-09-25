@@ -144,7 +144,7 @@ class ConfigStoreTest {
 
         listOf(
             "gateway.baseUrl must be an http:// or https:// URL",
-            "gateway.cacheTtl must be one of 5m, 1h",
+            "gateway.cacheTtl must be one of 5m, 1h, off",
             "gateway.maxRetries must not be negative",
             "roles.scout.effort must be one of low, medium, high, xhigh, max",
             "roles.scout.readTimeoutSeconds must be positive",
@@ -157,7 +157,7 @@ class ConfigStoreTest {
     @Test
     fun `the accepted efforts are the SDK's`() {
         assertEquals(listOf("low", "medium", "high", "xhigh", "max"), NarratorConfig.EFFORTS)
-        assertEquals(listOf("5m", "1h"), NarratorConfig.CACHE_TTLS)
+        assertEquals(listOf("5m", "1h", "off"), NarratorConfig.CACHE_TTLS)
     }
 
     @Test

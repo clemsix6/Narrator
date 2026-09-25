@@ -155,7 +155,7 @@ class NarratorGameTests {
 
         output.lines.clear()
         commands.performPrefixedCommand(source, "narrator status")
-        helper.assertTrue(output.lines.any { fake.baseUrl in it && "cache TTL 1h" in it }, "status: ${output.lines}")
+        helper.assertTrue(output.lines.any { fake.baseUrl in it && "cache marker off" in it }, "status: ${output.lines}")
         helper.assertTrue(output.lines.any { "Key: present (environment variable $KEY_ENV)" in it }, "status: ${output.lines}")
         helper.assertTrue(output.lines.any { "director: claude-opus-5-5 · effort medium" in it }, "status: ${output.lines}")
 

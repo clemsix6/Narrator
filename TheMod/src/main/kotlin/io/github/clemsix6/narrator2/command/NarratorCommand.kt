@@ -101,7 +101,7 @@ object NarratorCommand {
         val transcripts = if (runtime.transcripts.enabled) "on" else "off"
         val lines = buildList {
             add(narrator("status"))
-            add(detail("Gateway: ${config.gateway.baseUrl} · cache TTL ${config.gateway.cacheTtl} · ${config.gateway.maxRetries} retries"))
+            add(detail("Gateway: ${config.gateway.baseUrl} · cache marker ${config.gateway.cacheTtl} · ${config.gateway.maxRetries} retries"))
             add(detail("Key: $key (${NarratorRuntime.keySource(config)})"))
             add(detail("Config: ${NarratorRuntime.configDir}"))
             add(detail("Data: ${runtime.dataDir}"))

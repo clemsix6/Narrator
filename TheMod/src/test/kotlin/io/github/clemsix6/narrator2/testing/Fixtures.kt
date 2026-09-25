@@ -24,7 +24,7 @@ const val TEST_API_KEY = "test-key-3c9e7b"
 fun testConfig(
     baseUrl: String,
     maxRetries: Int = 0,
-    cacheTtl: String = "1h",
+    cacheTtl: String = NarratorConfig.NO_CACHE_MARKER,
     roles: Map<Role, RoleConfig> = emptyMap(),
 ): NarratorConfig = NarratorConfig(
     gateway = GatewayConfig(
@@ -38,8 +38,11 @@ fun testConfig(
 )
 
 /** A client of this fake server, with the test key. */
-fun FakeAnthropic.client(maxRetries: Int = 0, cacheTtl: String = "1h", roles: Map<Role, RoleConfig> = emptyMap()): ClaudeClient =
-    ClaudeClient(testConfig(baseUrl, maxRetries, cacheTtl, roles), TEST_API_KEY)
+fun FakeAnthropic.client(
+    maxRetries: Int = 0,
+    cacheTtl: String = NarratorConfig.NO_CACHE_MARKER,
+    roles: Map<Role, RoleConfig> = emptyMap(),
+): ClaudeClient = ClaudeClient(testConfig(baseUrl, maxRetries, cacheTtl, roles), TEST_API_KEY)
 
 /** A conversation with a one-line system prompt and a first user message. */
 fun testConversation(

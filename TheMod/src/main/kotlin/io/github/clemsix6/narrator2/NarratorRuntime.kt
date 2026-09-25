@@ -42,7 +42,7 @@ class NarratorRuntime private constructor(
     }
 
     companion object {
-        val configDir: Path = FabricLoader.getInstance().configDir.resolve("narrator2")
+        val configDir: Path = FabricLoader.getInstance().configDir.resolve("narrator2").toAbsolutePath().normalize()
         val configFile: Path = configDir.resolve(ConfigStore.FILE_NAME)
         val promptsDir: Path = configDir.resolve("prompts")
 

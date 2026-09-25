@@ -31,9 +31,12 @@ data class NarratorConfig(
             OutputConfig.Effort.XHIGH, OutputConfig.Effort.MAX,
         ).map { it.asString() }
 
-        /** Prompt-cache lifetimes the API accepts (`CacheControlEphemeral.Ttl`). */
+        /** `gateway.cacheTtl` value that sends no cache marker at all. */
+        const val NO_CACHE_MARKER = "off"
+
+        /** Values of `gateway.cacheTtl`: the lifetimes the API accepts (`CacheControlEphemeral.Ttl`), or [NO_CACHE_MARKER]. */
         val CACHE_TTLS: List<String> =
-            listOf(CacheControlEphemeral.Ttl.TTL_5M, CacheControlEphemeral.Ttl.TTL_1H).map { it.asString() }
+            listOf(CacheControlEphemeral.Ttl.TTL_5M, CacheControlEphemeral.Ttl.TTL_1H).map { it.asString() } + NO_CACHE_MARKER
 
         val DEFAULT_ROLES: Map<Role, RoleConfig> = mapOf(
             Role.DIRECTOR to RoleConfig(effort = "medium", totalTimeoutSeconds = 300),
@@ -54,10 +57,14 @@ data class GatewayConfig(
     /** Environment variable holding the LLMGW project key. The key itself never goes in this file. */
     val apiKeyEnv: String = "NARRATOR_LLMGW_KEY",
     /**
-     * Lifetime of the prompt-cache marker sent with every call: `1h` or `5m`. LLMGW already marks the
-     * system prompt with `1h`, and the API rejects (HTTP 400) a marker with another TTL on that block.
+     * The automatic prompt-cache marker sent with every call: `off` (none), `1h` or `5m`.
+     *
+     * `off` suits the owner's LLMGW (verified 25/09/2026): it places its own `1h` markers, on the
+     * system prompt and the latest turns, and caching works. A marker of ours is then the fifth of a
+     * multi-turn conversation, which the API rejects (HTTP 400, at most 4), and `5m` also clashes with
+     * the gateway's `1h` (HTTP 400). Use `1h` or `5m` behind a gateway that adds no marker.
      */
-    val cacheTtl: String = "1h",
+    val cacheTtl: String = NarratorConfig.NO_CACHE_MARKER,
     /** Retries after a transient failure (429, 529, 5xx, connection error, stream cut before any content). */
     val maxRetries: Int = 3,
     /** First retry delay; it doubles on each attempt (with jitter) up to [retryMaxDelayMs]. */

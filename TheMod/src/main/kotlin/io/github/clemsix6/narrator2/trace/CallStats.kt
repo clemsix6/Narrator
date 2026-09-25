@@ -9,7 +9,8 @@ import java.util.Locale
  *
  * @property startedAt when the call started, with the server's time zone.
  * @property attempts HTTP requests sent, retries included.
- * @property requestId the gateway's `request-id` response header of the last attempt, when known.
+ * @property requestId id of the last attempt, when known: the `request-id` response header, or
+ *   `X-Cpa-Trace-Id` behind LLMGW, which does not relay the former.
  * @property messageId id of the message Claude returned.
  * @property timeToFirstTokenMs from the start of the last attempt to the first streamed content.
  * @property durationMs whole call, retries and waits included.
