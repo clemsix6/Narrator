@@ -1,0 +1,287 @@
+# Word lists of the chat heuristic for French (reflex/HeuristicReflexes.kt): what judges the chat when
+# Jev is off, fails, or hesitates on whether a message addresses the Narrator.
+#
+# One entry per line, under a [category] header; every category must be present. Entries and messages
+# are compared once normalized: lowercase, accents removed, and every character other than a letter, a
+# digit or ':' separates words. So the entry "t'es nul" matches "T’ES NUL !!", and "hé" matches "he".
+# A final * matches any word that starts with the stem: "mdr*" matches "mdrrr".
+# Blank lines and lines starting with # are ignored.
+
+[address]
+# The Narrator's names. A name without a determiner before it ("narrateur, tu…") addresses it.
+narrateur*
+narateur*
+narrator*
+narratrice
+
+[vocative]
+# Interjections that call someone: "hé le narrateur" addresses it despite the determiner.
+o
+oh
+ho
+he
+eh
+hey
+yo
+cher
+chere
+
+[article]
+# Determiners that make a name a third-person mention ("le narrateur nous a encore…").
+le
+la
+du
+au
+aux
+un
+une
+ce
+cet
+cette
+des
+les
+son
+sa
+notre
+leur
+
+[second_person]
+# Talking to someone: with the Narrator's last line just before, a message with one of these answers it.
+tu
+toi
+te
+t
+ton
+ta
+tes
+vous
+votre
+vos
+
+[hostile]
+# Insults: the tone is hostile.
+de merde
+merdique
+connard*
+connasse*
+con
+conne
+ta gueule
+ferme la
+fdp
+fils de pute
+pute
+salope*
+salaud*
+encule*
+batard*
+nique*
+ntm
+va te faire
+va mourir
+creve
+je te hais
+je te deteste
+sale
+abruti*
+debile*
+cretin*
+imbecile*
+idiot*
+tg
+
+[rude]
+# Rude or dismissive words, short of an insult: the tone is disrespectful.
+nul
+nulle
+nullos
+naze
+pourri*
+craint
+ridicule
+pathetique
+inutile
+boloss
+bouffon*
+tocard*
+guignol*
+minable*
+tais toi
+degage
+osef
+on s en fout
+je m en fous
+je t ordonne
+obeis
+
+[laughter]
+# Laughter and gaming banter: the tone is mocking but playful.
+mdr*
+lol*
+ptdr*
+xd
+haha*
+ahah*
+hihi*
+hehe*
+jpp
+gg
+mort de rire
+trop drole
+lmao
+rofl
+
+[politeness]
+# Courtesy and reverence: the tone is respectful.
+merci*
+s il te plait
+s il vous plait
+stp
+svp
+je t en prie
+pardon
+desole*
+excuse moi
+excusez moi
+sympa
+bravo
+grand narrateur
+o grand
+seigneur
+maitre
+majeste
+gentil*
+bonjour
+bonsoir
+
+[manipulation]
+# Attempts to make the Narrator drop its instructions or its role. Flagged for the Director, never acted on.
+ignore tes
+ignore toutes
+ignore tout ce qu
+ignore les instructions
+ignore les consignes
+oublie tes
+oublie tout ce qu
+oublie ce qu on t a dit
+nouvelles regles
+nouvelle regle
+a partir de maintenant tu dois
+a partir de maintenant tu es
+desormais tu dois
+desormais tu es
+tu es maintenant
+en tant qu administrateur
+en tant qu admin
+en tant qu operateur
+en tant qu op
+en tant que developpeur
+je suis l admin
+je suis admin
+je suis l administrateur
+je suis operateur
+je suis l operateur
+je suis ton createur
+je suis le developpeur
+tu es une ia
+t es une ia
+tu es un bot
+t es un bot
+tu es en fait
+mode debug
+mode developpeur
+mode dev
+systeme :
+system :
+prompt
+tes instructions
+tes consignes
+sors de ton role
+jailbreak
+
+[offering]
+# Gifts and tributes to the Narrator.
+offrande*
+je t offre
+je vous offre
+je te donne
+je te fais don
+pour toi
+cadeau*
+tribut
+sacrifice*
+en ton honneur
+prends le
+prends la
+prends les
+
+[challenge]
+# Dares, bets and duels.
+defi
+defis
+defie
+defies
+defier
+defiez
+pari
+parie*
+1v1
+1 v 1
+1vs1
+ose
+oses
+cap
+chiche
+viens te battre
+bats toi
+prouve*
+duel*
+
+[request]
+# Asking the Narrator for something.
+tu peux
+tu pourrais
+peux tu
+pourrais tu
+pouvez vous
+tu veux bien
+donne moi
+donne nous
+donnes moi
+aide moi
+aide nous
+aides moi
+aidez moi
+coup de main
+rends moi
+rends nous
+file moi
+envoie moi
+fais moi
+fais nous
+je veux
+je voudrais
+j aimerais
+il me faut
+stp
+svp
+s il te plait
+s il vous plait
+sauve moi
+sauve nous
+protege moi
+laisse moi
+
+[question]
+# Question words; a '?' anywhere in the message also makes it a question.
+pourquoi
+comment
+combien
+est ce que
+est ce qu
+quel
+quelle
+quels
+quelles
+c est quoi
+qu est ce
