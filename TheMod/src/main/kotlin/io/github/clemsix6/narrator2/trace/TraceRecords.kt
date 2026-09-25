@@ -160,7 +160,7 @@ data class ToolCallRecord(
  * Row of `engine_decisions`. Write it through [Decisions], which also logs it.
  *
  * @property decision what was decided, a short lowercase verb: `woke`, `queued`, `batched`, `skipped`,
- *   `denied`, `allowed`, `prevented`, `counted`, `returned`, `expired`, `opened`, `closed`, `blocked`,
+ *   `denied`, `allowed`, `rescued`, `counted`, `died`, `returned`, `expired`, `opened`, `closed`, `blocked`,
  *   `resumed`…
  * @property subject what it is about: a player's name, a tool, a conversation id…
  * @property reason one English sentence.
@@ -191,7 +191,7 @@ data class DecisionRecord(
         /** A guard refused or allowed an action. */
         GUARD,
 
-        /** A death attributed to the Narrator was counted or prevented. */
+        /** A death: attributed to the Narrator and counted, refused beyond the quota and the player rescued, or explained (`died`). */
         DEATH_GUARD,
 
         /** An attribute modifier or a confiscation was applied, expired, reapplied or returned. */

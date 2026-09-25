@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.command
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
+import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.TraceDataset
 import net.minecraft.ChatFormatting
 import net.minecraft.network.chat.ClickEvent
@@ -123,6 +124,15 @@ class TraceTextTest {
             listOf("Thought: Nothing worth a word.", "Did nothing: no speech, world or task tool was called"),
             strings(text.capped(text.why(data.read { it.turn(43) }!!))).filter { it.startsWith("Thought") || it.startsWith("Did") },
         )
+    }
+
+    @Test
+    fun `a death guard's rescue is told in red, like the other refusals`() {
+        val detail = data.read { it.turn(42) }!!
+        val rescue = DecisionLine(detail.summary.startedAt, "death_guard", "rescued", "Mimosa", "minecraft:lava: the Narrator's quota of deaths (1 per played hour) is spent")
+        val lines = text.capped(text.why(detail.copy(decisions = detail.decisions + rescue)))
+        val told = lines.single { it.string.startsWith("Engine: death_guard rescued Mimosa: ") }
+        assertEquals(TextColor.fromLegacyFormat(ChatFormatting.RED), colorOf(told))
     }
 
     @Test

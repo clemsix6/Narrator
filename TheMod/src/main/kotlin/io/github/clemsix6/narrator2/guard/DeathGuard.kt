@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.action.Teleports
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
@@ -153,8 +154,8 @@ class DeathGuard(
                 (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
                 ", fire put out, air given" +
                 (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
-                ", ${"%.1f".format(Locale.ROOT, player.health)} health, no fall damage for $CUSHION_SECONDS s; nothing armed" +
-                (nextFree?.let { " (the quota comes back in $it s of play)" } ?: "") +
+                ", ${"%.1f".format(Locale.ROOT, player.health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}; nothing armed" +
+                (nextFree?.let { " (the quota comes back in ${ToolText.wait(it * 1_000)} of play)" } ?: "") +
                 (if (often) "; rescued ${state.rescues.size} times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""),
             detail = buildJsonObject {
                 put("cause", cause)
@@ -274,7 +275,7 @@ class DeathGuard(
 
     /** `x 12.5, y 64, z -7.5 in overworld`, for decisions. */
     private fun where(player: ServerPlayer, at: Vec3): String =
-        "x %.1f, y %.1f, z %.1f in %s".format(Locale.ROOT, at.x, at.y, at.z, player.level().dimension().identifier().path)
+        "x %.1f, y %.1f, z %.1f in %s".format(Locale.ROOT, at.x, at.y, at.z, ToolText.dimension(player.level().dimension().identifier().toString()))
 
     companion object {
         const val TICKS_PER_SECOND = 20

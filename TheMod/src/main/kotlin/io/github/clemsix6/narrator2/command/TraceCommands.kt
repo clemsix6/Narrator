@@ -574,7 +574,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         private val QUIET_OUTCOMES = setOf("acted", "idle")
 
         /** Decisions that stopped something, shown in red. */
-        private val REFUSALS = setOf("denied", "refused", "prevented", "dropped", "closed", "backed off", "blocked", "resent")
+        private val REFUSALS = setOf("denied", "refused", "rescued", "dropped", "closed", "backed off", "blocked", "resent")
 
         /** `sql ×2, say`: tools in order of first use, with their count. */
         fun toolList(tools: List<String>): String =

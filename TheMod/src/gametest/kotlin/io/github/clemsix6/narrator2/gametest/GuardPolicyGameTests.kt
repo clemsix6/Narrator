@@ -173,6 +173,10 @@ class GuardPolicyGameTests {
                 scene.assertUntouched("the Narrator's creeper")
                 ordinary.snapTo(helper.absoluteVec(Vec3(4.5, 1.0, 4.5)))
                 ordinary.isNoAi = true
+                // Or it despawns at its first tick whenever the mock player of another test is more than 128
+                // blocks away, and never goes off: the planks were left whole once (M2-fix-A2). The Narrator's is
+                // persistent already (NarratorMobs.mark).
+                ordinary.setPersistenceRequired()
                 helper.level.addFreshEntity(ordinary)
                 ordinary.ignite()
             }
