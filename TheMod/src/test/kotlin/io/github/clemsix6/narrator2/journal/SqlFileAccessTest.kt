@@ -56,11 +56,13 @@ class SqlFileAccessTest {
     @BeforeAll
     fun open(@TempDir dir: Path) {
         this.dir = dir
-        fixture = JournalFixture(file = dir.resolve(DuckDatabase.FILE_NAME), config = JournalConfig(queueCapacity = 1_048_576))
-        repeat(WHISPERS) {
-            if (it % 10_000 == 0) fixture.sync()
-            fixture.publish(ChatMessage(bartok, ChatChannel.WHISPER, "$SECRET #$it", listOf(mimosa.name)))
-        }
+        // A low memory limit lets a small query spill without loading the shared test JVM.
+        fixture = JournalFixture(
+            file = dir.resolve(DuckDatabase.FILE_NAME),
+            config = JournalConfig(queueCapacity = 1_048_576),
+            options = DuckDatabase.Options(memoryLimitMb = 64, threads = 2, timeZone = java.time.ZoneId.of("UTC")),
+        )
+        repeat(WHISPERS) { fixture.publish(ChatMessage(bartok, ChatChannel.WHISPER, "$SECRET #$it", listOf(mimosa.name))) }
         fixture.publish(ChatMessage(bartok, ChatChannel.PUBLIC, "hello", emptyList()))
         fixture.sync()
         runner = SqlRunner(fixture.journal, fixture.clock)
@@ -69,20 +71,21 @@ class SqlFileAccessTest {
         db = slashes(file.toString())
         wal = "$db.wal"
         tmp = "$db.tmp"
-        // Sorting 20 million rows cannot fit the 256 MB of the test database: DuckDB spills its blocks under
-        // memory pressure, and among them it evicts the recently written private_messages blocks to <db>.tmp/,
-        // where their bytes stay after the query. The evicted table blocks land in the small size-classed
-        // files (a few hundred kB), the sort's own data in the large one. A second read connection then reads
-        // the small files' bytes back: that is where the private message leaked in the M2 review.
+        // Grouping 3 million distinct keys cannot fit the 64 MB of the test database: the hash aggregate spills
+        // its partitions, and under that pressure DuckDB evicts the recently written private_messages blocks to
+        // <db>.tmp/, where their bytes stay after the query. A second read connection then reads the spilled
+        // files' bytes back: that is where the private message leaked in the M2 review. (The aggregate returns
+        // one row, so no large result is materialised; the whole thing stays within the memory limit.)
         fixture.db.readers[0].createStatement().use { statement ->
-            statement.executeQuery("SELECT count(*) FROM (SELECT range, random() AS r, repeat('x', 50) AS s FROM range(20000000) ORDER BY r)")
-                .use { rows -> while (rows.next()) rows.getObject(1) }
+            statement.executeQuery(
+                "SELECT count(*) FROM (SELECT g, min(s) AS m FROM (SELECT range AS g, repeat('x', 50) AS s FROM range(3000000)) GROUP BY g)",
+            ).use { rows -> while (rows.next()) rows.getObject(1) }
         }
         val files = Files.list(file.resolveSibling("${file.name}.tmp")).use { stream -> stream.filter { it.isRegularFile() }.toList() }
         assertTrue(files.isNotEmpty(), "DuckDB spilled nothing")
         spilled = slashes(files.maxBy { Files.size(it) }.toString())
         fixture.db.readers[1].createStatement().use { statement ->
-            files.filter { Files.size(it) < SMALL_FILE_BYTES }.forEach { spill ->
+            files.forEach { spill ->
                 if (spilledSecret != null) return@forEach
                 statement.executeQuery(
                     "SELECT regexp_extract(CAST(content AS VARCHAR), '$SECRET #[0-9]+') AS hit " +
@@ -215,10 +218,7 @@ class SqlFileAccessTest {
     }
 
     private companion object {
-        /** Enough private messages that some of their blocks are evicted to the spill files. */
-        const val WHISPERS = 100_000
-
-        /** Read back only the small size-classed spill files (evicted table blocks); the big one would need too much memory. */
-        const val SMALL_FILE_BYTES = 8_000_000L
+        /** Private messages, enough that some of their blocks are evicted to the spill files under the 64 MB limit. */
+        const val WHISPERS = 5_000
     }
 }
