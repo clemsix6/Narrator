@@ -72,6 +72,10 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 ## EULA de Minecraft
 Le propriétaire a donné son accord (25/09/2026) : on peut accepter l'EULA de Minecraft (`eula=true`) pour tout serveur de dev ou de test (`TheServer/`, spikes, dossiers temporaires), sans lui redemander. On lance donc `runServer` librement pour les tests manuels ou de bout en bout ; les GameTests restent le moyen privilégié pour les tests automatisés.
 
+## Passation entre tâches
+- Avant de coder, lis `docs/design/handoff/` : au minimum les fichiers des tâches dont tu dépends. Ils décrivent les écarts entre le design et le code réel. **En cas de contradiction, le code et la passation font foi**, pas le design.
+- En fin de tâche, écris `docs/design/handoff/<TÂCHE>.md` : tes écarts par rapport au design, les décisions que tu as prises, et ce que les tâches suivantes doivent savoir. C'est le seul endroit où la connaissance circule entre agents.
+
 ## Travail en parallèle (worktrees)
 Pendant les vagues parallèles, chaque agent travaille dans son propre worktree git, sur sa propre branche.
 - Les dossiers non versionnés n'existent que dans le checkout principal : utilise `C:\Users\Clément\Desktop\Narrator2\.research\` et `C:\Users\Clément\Desktop\Narrator2\.secrets\` en chemins absolus.
