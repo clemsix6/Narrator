@@ -122,8 +122,11 @@ data class JournalConfig(
 /** The Observer, which turns what players do into events. */
 @Serializable
 data class ObserverConfig(
-    /** Command roots whose text is never journaled (passwords of login plugins). */
-    val redactedCommands: List<String> = listOf("login", "l", "register", "reg", "changepassword"),
+    /**
+     * Command roots whose text is never journaled: passwords of login plugins, and `/narrator`, whose
+     * whispers, lines and SQL queries of the operators must never reach the model through the Journal.
+     */
+    val redactedCommands: List<String> = listOf("login", "l", "register", "reg", "changepassword", "narrator"),
 )
 
 /** How the Director passes operator and engine notes to the model (`director.operatorChannel`). */

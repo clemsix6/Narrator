@@ -31,7 +31,7 @@ class ConfigValidationTest {
         assertEquals("fr", defaults.language)
         assertEquals(3, defaults.chaos)
         assertEquals(JournalConfig(1_000, 65_536, 512, 2, "", 5, 4_096), defaults.journal)
-        assertEquals(listOf("login", "l", "register", "reg", "changepassword"), defaults.observer.redactedCommands)
+        assertEquals(listOf("login", "l", "register", "reg", "changepassword", "narrator"), defaults.observer.redactedCommands)
         with(defaults.director) {
             assertEquals(3..8, heartbeatRange)
             assertEquals(OperatorChannelMode.SYSTEM_MESSAGE, channelMode)

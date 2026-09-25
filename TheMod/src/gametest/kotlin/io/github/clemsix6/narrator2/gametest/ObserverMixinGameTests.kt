@@ -248,7 +248,8 @@ class ObserverMixinGameTests {
 
     /**
      * A private message: the command's text is withheld, the message goes to the `whisper` channel.
-     * A redacted root keeps its text out too; any other command is recorded as typed.
+     * A redacted root keeps its text out too (a password, an operator's `/narrator` instruction); any
+     * other command is recorded as typed.
      */
     @GameTest(maxTicks = TICKS)
     fun privateMessagesAndRedactedCommandsKeepTheirTextOut(helper: GameTestHelper) {
@@ -259,12 +260,17 @@ class ObserverMixinGameTests {
                 val connection = watched.player.connection
                 connection.handleChatCommand(ServerboundChatCommandPacket("msg ${friend.player.plainTextName} meet me at the portal"))
                 connection.handleChatCommand(ServerboundChatCommandPacket("login hunter2"))
+                connection.handleChatCommand(ServerboundChatCommandPacket("narrator whisper Be nicer to Bartok."))
                 connection.handleChatCommand(ServerboundChatCommandPacket("list uuids"))
                 helper.startSequence()
-                    .thenWaitUntil { helper.assertValueEqual(3, watched.events<CommandIssued>().size, "three commands") }
+                    .thenWaitUntil { helper.assertValueEqual(4, watched.events<CommandIssued>().size, "four commands") }
                     .thenExecute {
                         val commands = watched.events<CommandIssued>().associate { it.root to it.text }
-                        helper.assertValueEqual(mapOf("msg" to null, "login" to null, "list" to "list uuids"), commands, "texts")
+                        helper.assertValueEqual(
+                            mapOf("msg" to null, "login" to null, "narrator" to null, "list" to "list uuids"),
+                            commands,
+                            "texts (an operator's whisper never reaches the Journal)",
+                        )
                         val whisper = watched.events<ChatMessage>().single()
                         helper.assertValueEqual(ChatChannel.WHISPER, whisper.channel, "channel")
                         helper.assertValueEqual("meet me at the portal", whisper.text, "the message alone")
