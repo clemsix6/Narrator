@@ -140,6 +140,15 @@ Aucun contrat de T01 n'est modifié :
 - `JournalWriter` gagne un paramètre, qui a une valeur par défaut ;
 - `Upsert` gagne une propriété, qui a elle aussi une valeur par défaut.
 
+## Vérifications
+
+- **Avant le correctif**, sur la même branche : la course de GameTests finit par deux `CHECKPOINT failed` et `closing: not checkpointed`, comme dans T07.
+- **Après fusion de `main`** (T15, T21, T09c compris) :
+  - `gradlew build` passe : 601 tests unitaires et 127 GameTests, sans échec ;
+  - `runGameTest` a été relancé deux fois de plus, avec le même résultat ;
+  - dans les trois courses, la fin du log montre `[Journal] closing: checkpointed in 1–2 ms, 0 records lost` et aucun `CHECKPOINT failed`, ni après la dernière sauvegarde, ni à la fermeture.
+- Pas de `runServer`, comme demandé.
+
 ## Pour les tâches suivantes
 
 - **Toute lecture passe par `journal.read`.** Une instruction exécutée directement sur `db.readers` échappe à `endQuery`, et peut de nouveau bloquer les `CHECKPOINT` jusqu'à l'arrêt.
