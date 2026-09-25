@@ -27,6 +27,7 @@ import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.nbt.NbtOps
 import net.minecraft.server.level.ServerPlayer
@@ -40,12 +41,20 @@ import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.EntityTypes
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
+import net.minecraft.world.entity.ai.attributes.Attributes
+import net.minecraft.world.entity.ai.goal.RemoveBlockGoal
 import net.minecraft.world.entity.ai.targeting.TargetingConditions
 import net.minecraft.world.entity.monster.cubemob.Slime
+import net.minecraft.world.entity.projectile.Projectile
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.CampfireBlock
+import net.minecraft.world.level.block.FarmlandBlock
+import net.minecraft.world.level.block.SpeleothemBlock
+import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
 import java.time.Clock
@@ -57,7 +66,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  * In-game tests of the holes T09c closed in the guards (`docs/design/handoff/T09c.md`): a recent death
  * that survives a reconnection, the Narrator's creatures that spare protected and recently dead players,
  * conversions and splits that keep the Narrator's mark, what players entrusted to a creature coming
- * back when it expires, the Observer's flag on the explosion tool's blasts, and the deaths left.
+ * back when it expires, the Observer's flag on the explosion tool's blasts, and the deaths left. Then
+ * those of the M2 review (`docs/design/reviews/M2_REVIEW.md`, findings 4 and 6): a mount that stays under
+ * its rider, and the Narrator's creatures that trample no farmland, crack no turtle egg and break no block
+ * with their projectiles.
  *
  * The Narrator's creatures are marked with a long expiry, and expired through a registry of the test's
  * own: the server's would also remove the creatures of the tests running alongside.
@@ -291,6 +303,252 @@ class GuardGapGameTests {
         }
     }
 
+    // ── M2 review, finding 4: a mount never vanishes under its rider ────────────────────────────────
+
+    /**
+     * A strider of the Narrator's crossing a lava lake with a player on it stays past its time while ridden;
+     * 10 minutes later, the rider is set down on the shore, under the death guard and with no fall damage,
+     * and only then does the strider go.
+     */
+    @GameTest
+    fun aMountStaysUnderItsRiderThenSetsThemDownOnTheShore(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        // A lava pool of 2 × 2 blocks in a stone rim, on a stone floor.
+        for (x in 0..7) for (z in 0..7) {
+            helper.setBlock(x, 0, z, Blocks.STONE)
+            helper.setBlock(x, 1, z, if (x in 3..4 && z in 3..4) Blocks.LAVA else Blocks.STONE)
+        }
+        val rim = helper.absolutePos(BlockPos(1, 2, 1))
+        player.teleportTo(rim.x + 0.5, rim.y.toDouble(), rim.z + 0.5)
+        val expiresAt = System.currentTimeMillis() + 600_000
+        val strider = narratorMob(helper, EntityTypes.STRIDER, Vec3(4.0, 2.0, 4.0), player.uuid, expiresAt)
+        try {
+            helper.assertTrue(player.startRiding(strider, true, true), "the player rides the strider")
+            val mobs = NarratorMobs(guards.items)
+            mobs.onLoad(strider)
+            helper.assertValueEqual(0, mobs.expire(expiresAt), "due, but ridden")
+            helper.assertValueEqual(0, mobs.expire(expiresAt + NarratorMobs.MAX_OVERTIME_MS - 1_000), "still ridden, within 10 minutes")
+            helper.assertTrue(!strider.isRemoved && player.vehicle === strider, "the strider stays under its rider")
+
+            helper.assertValueEqual(1, mobs.expire(expiresAt + NarratorMobs.MAX_OVERTIME_MS), "10 minutes past its time, it goes")
+            helper.assertTrue(strider.isRemoved && player.vehicle == null, "the strider is gone, the player off it")
+            helper.assertTrue(
+                helper.level.getBlockState(player.blockPosition().below()).`is`(Blocks.STONE) && player.y == rim.y.toDouble(),
+                "set down on the rim, not in the lava: ${player.position()}",
+            )
+            helper.assertTrue(guards.death.isArmed(player), "under the death guard")
+            helper.assertValueEqual(0.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
+        } finally {
+            guards.attributes.resetAll(player)
+            for (x in 3..4) for (z in 3..4) helper.setBlock(x, 1, z, Blocks.STONE)
+            helper.killAllEntities()
+        }
+    }
+
+    /**
+     * A happy ghast of the Narrator's high in the air: past the 10 minutes, its rider is set down on the first
+     * ground right below it (here, the barrier roof the GameTest framework encases the test in), never dropped.
+     */
+    @GameTest
+    fun aRiderHighUpIsSetDownOnTheGroundBelow(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+        val expiresAt = System.currentTimeMillis() + 600_000
+        val ghast = narratorMob(helper, EntityTypes.HAPPY_GHAST, Vec3(4.0, 20.0, 4.0), player.uuid, expiresAt)
+        val column = ghast.blockPosition()
+        val ground = BlockPos(column.x, helper.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column.x, column.z), column.z)
+        try {
+            helper.assertTrue(ground.y < ghast.y - 3, "the ghast is high above the ground: ${ghast.y} over $ground")
+            helper.assertTrue(player.startRiding(ghast, true, true), "the player rides the happy ghast")
+            val mobs = NarratorMobs(guards.items)
+            mobs.onLoad(ghast)
+            helper.assertValueEqual(0, mobs.expire(expiresAt), "due, but ridden")
+            helper.assertTrue(!ghast.isRemoved && player.vehicle === ghast, "the ghast stays under its rider")
+
+            helper.assertValueEqual(1, mobs.expire(expiresAt + NarratorMobs.MAX_OVERTIME_MS), "10 minutes past its time, it goes")
+            helper.assertTrue(ghast.isRemoved && player.vehicle == null, "the ghast is gone, the player off it")
+            helper.assertTrue(player.blockPosition() == ground, "set down on the ground right below the ghast ($ground): ${player.position()}")
+            helper.assertTrue(guards.death.isArmed(player), "under the death guard")
+            helper.assertValueEqual(0.0, player.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
+        } finally {
+            guards.attributes.resetAll(player)
+            helper.killAllEntities()
+        }
+    }
+
+    // ── M2 review, finding 6: the Narrator's creatures spare the players' blocks ────────────────────
+
+    /**
+     * A zombie of the Narrator's that drops onto farmland leaves it farmland, wheat included; an ordinary
+     * zombie dropped the same way tramples it back into dirt.
+     */
+    @GameTest(maxTicks = 200)
+    fun theNarratorsCreaturesTrampleNoFarmland(helper: GameTestHelper) {
+        val level = helper.level
+        val farmland = Blocks.FARMLAND.defaultBlockState().setValue(FarmlandBlock.MOISTURE, FarmlandBlock.MAX_MOISTURE)
+        val narrators = BlockPos(2, 1, 4)
+        val ordinary = BlockPos(5, 1, 4)
+        for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+        for (field in listOf(narrators, ordinary)) {
+            // A shaft of one block over wet farmland and its wheat: the zombie can only fall onto it.
+            helper.setBlock(field, farmland)
+            helper.setBlock(field.above(), Blocks.WHEAT)
+            for (dx in -1..1) for (dz in -1..1) for (y in 1..5) {
+                if (dx != 0 || dz != 0) helper.setBlock(field.offset(dx, y - 1, dz), Blocks.STONE)
+            }
+        }
+        // Adults both (no finalizeSpawn): a baby zombie is too light to trample anything.
+        fun zombieOver(field: BlockPos) = EntityTypes.ZOMBIE.create(level, EntitySpawnReason.COMMAND)!!.apply {
+            snapTo(helper.absoluteVec(Vec3(field.x + 0.5, 4.0, field.z + 0.5)))
+            setPersistenceRequired()
+        }
+        val zombie = zombieOver(narrators)
+        guards(helper).mobs.mark(zombie, System.currentTimeMillis() + 600_000, null, harmful = false)
+        val other = zombieOver(ordinary)
+        helper.assertTrue(level.addFreshEntity(zombie) && level.addFreshEntity(other), "the zombies are added, 3 blocks up")
+        helper.startSequence()
+            .thenWaitUntil {
+                helper.assertTrue(zombie.onGround() && other.onGround(), "both zombies landed")
+                helper.assertBlockPresent(Blocks.DIRT, ordinary)
+            }
+            .thenIdle(5)
+            .thenExecute {
+                helper.assertBlockPresent(Blocks.FARMLAND, narrators)
+                helper.assertBlockPresent(Blocks.WHEAT, narrators.above())
+                helper.killAllEntities()
+            }
+            .thenSucceed()
+    }
+
+    /**
+     * Walking and falling on turtle eggs crack them now and then (one step in 100, one fall in 3): not when
+     * it is the Narrator's zombie that walks, or its skeleton that falls, however many times. An ordinary
+     * zombie cracks the egg.
+     */
+    @GameTest
+    fun theNarratorsCreaturesCrackNoTurtleEgg(helper: GameTestHelper) {
+        val level = helper.level
+        for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+        val expiresAt = System.currentTimeMillis() + 600_000
+        val zombie = narratorMob(helper, EntityTypes.ZOMBIE, Vec3(1.5, 1.0, 1.5), null, expiresAt)
+        val skeleton = narratorMob(helper, EntityTypes.SKELETON, Vec3(6.5, 1.0, 1.5), null, expiresAt)
+        val ordinary = helper.spawnWithNoFreeWill(EntityTypes.ZOMBIE, BlockPos(6, 1, 6))
+        val egg = BlockPos(4, 1, 4)
+        val at = helper.absolutePos(egg)
+        try {
+            helper.setBlock(egg, Blocks.TURTLE_EGG)
+            repeat(TRAMPLE_TRIES) { Blocks.TURTLE_EGG.stepOn(level, at, level.getBlockState(at), zombie) }
+            repeat(TRAMPLE_TRIES) { Blocks.TURTLE_EGG.fallOn(level, level.getBlockState(at), at, skeleton, 3.0) }
+            helper.assertBlockPresent(Blocks.TURTLE_EGG, egg)
+            var steps = 0
+            while (level.getBlockState(at).`is`(Blocks.TURTLE_EGG) && steps < TRAMPLE_TRIES) {
+                Blocks.TURTLE_EGG.stepOn(level, at, level.getBlockState(at), ordinary)
+                steps++
+            }
+            helper.assertBlockNotPresent(Blocks.TURTLE_EGG, egg)
+        } finally {
+            helper.setBlock(egg, Blocks.AIR)
+            helper.killAllEntities()
+        }
+        helper.succeed()
+    }
+
+    /**
+     * A zombie seeks out the turtle eggs within 24 blocks to crush them (`ZombieAttackTurtleEggGoal`): the
+     * Narrator's never starts to; an ordinary one does.
+     */
+    @GameTest
+    fun theNarratorsZombiesSeekNoTurtleEgg(helper: GameTestHelper) {
+        for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+        val egg = BlockPos(4, 1, 4)
+        val zombie = narratorMob(helper, EntityTypes.ZOMBIE, Vec3(1.5, 1.0, 1.5), null, System.currentTimeMillis() + 600_000)
+        // Without AI but with its goals (spawnWithNoFreeWill would remove them).
+        val ordinary = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!.apply {
+            snapTo(helper.absoluteVec(Vec3(6.5, 1.0, 6.5)))
+            isNoAi = true
+        }
+        helper.assertTrue(helper.level.addFreshEntity(ordinary), "an ordinary zombie added")
+        try {
+            helper.setBlock(egg, Blocks.TURTLE_EGG)
+            helper.assertTrue(eggGoal(ordinary).canUse(), "an ordinary zombie goes for the egg")
+            helper.assertFalse(eggGoal(zombie).canUse(), "the Narrator's zombie leaves it alone")
+        } finally {
+            helper.setBlock(egg, Blocks.AIR)
+            helper.killAllEntities()
+        }
+        helper.succeed()
+    }
+
+    /**
+     * The Narrator's projectiles change no block: its skeleton's flaming arrow does not light a campfire; an
+     * arrow and a trident whose shooters are gone (expired while they flew) break neither a decorated pot
+     * nor pointed dripstone. The same projectiles, not the Narrator's, light and break them.
+     */
+    @GameTest(maxTicks = 200)
+    fun theNarratorsProjectilesBreakNoBlock(helper: GameTestHelper) {
+        val level = helper.level
+        // A floor, and a roof: rain would put out the flaming arrows.
+        for (x in 0..7) for (z in 0..7) {
+            helper.setBlock(x, 0, z, Blocks.STONE)
+            helper.setBlock(x, 5, z, Blocks.STONE)
+        }
+        val fires = BlockPos(1, 1, 1) to BlockPos(6, 1, 1)
+        val pots = BlockPos(1, 1, 4) to BlockPos(6, 1, 4)
+        val stalagmites = BlockPos(1, 1, 7) to BlockPos(6, 1, 7)
+        val blocks = listOf(
+            fires to Blocks.CAMPFIRE.defaultBlockState().setValue(CampfireBlock.LIT, false),
+            pots to Blocks.DECORATED_POT.defaultBlockState(),
+            stalagmites to Blocks.POINTED_DRIPSTONE.defaultBlockState().setValue(SpeleothemBlock.TIP_DIRECTION, Direction.UP),
+        )
+        for ((pair, block) in blocks) {
+            helper.setBlock(pair.first, block)
+            helper.setBlock(pair.second, block)
+        }
+        val expiresAt = System.currentTimeMillis() + 600_000
+        val archer = narratorMob(helper, EntityTypes.SKELETON, Vec3(3.5, 1.0, 1.5), null, expiresAt)
+        val gone = narratorMob(helper, EntityTypes.SKELETON, Vec3(3.5, 1.0, 4.5), null, expiresAt)
+        val drowned = narratorMob(helper, EntityTypes.DROWNED, Vec3(3.5, 1.0, 6.5), null, expiresAt)
+
+        val flaming = shot(helper, EntityTypes.ARROW, archer, fires.first).apply { igniteForSeconds(10f) }
+        val arrow = shot(helper, EntityTypes.ARROW, gone, pots.first)
+        val trident = shot(helper, EntityTypes.TRIDENT, drowned, stalagmites.first)
+        gone.discard()
+        drowned.discard()
+        helper.assertTrue(arrow.owner == null && trident.owner == null, "their shooters are gone")
+        for (projectile in listOf(flaming, arrow, trident)) {
+            val at = projectile.blockPosition()
+            helper.assertFalse(projectile.mayInteract(level, at) || projectile.mayBreak(level, at), "${projectile.type.toShortString()} may not touch a block")
+        }
+        val ordinary = listOf(
+            shot(helper, EntityTypes.ARROW, null, fires.second).apply { igniteForSeconds(10f) },
+            shot(helper, EntityTypes.ARROW, null, pots.second),
+            shot(helper, EntityTypes.TRIDENT, null, stalagmites.second),
+        )
+        helper.assertTrue(ordinary.all { it.mayInteract(level, it.blockPosition()) && it.mayBreak(level, it.blockPosition()) }, "the others may")
+        (ordinary + listOf(flaming, arrow, trident)).forEach { level.addFreshEntity(it) }
+        helper.startSequence()
+            .thenWaitUntil {
+                helper.assertBlockProperty(fires.second, CampfireBlock.LIT, true)
+                helper.assertBlockNotPresent(Blocks.DECORATED_POT, pots.second)
+                helper.assertBlockNotPresent(Blocks.POINTED_DRIPSTONE, stalagmites.second)
+            }
+            .thenIdle(10)
+            .thenExecute {
+                val changed = listOfNotNull(
+                    "the campfire is lit".takeIf { helper.getBlockState(fires.first).getValue(CampfireBlock.LIT) },
+                    "the pot is broken".takeUnless { helper.getBlockState(pots.first).`is`(Blocks.DECORATED_POT) },
+                    "the dripstone is broken".takeUnless { helper.getBlockState(stalagmites.first).`is`(Blocks.POINTED_DRIPSTONE) },
+                )
+                helper.assertTrue(changed.isEmpty(), "the Narrator's projectiles changed blocks: ${changed.joinToString()}")
+                for ((pair, _) in blocks) {
+                    helper.setBlock(pair.first, Blocks.AIR)
+                    helper.setBlock(pair.second, Blocks.AIR)
+                }
+                helper.killAllEntities()
+            }
+            .thenSucceed()
+    }
+
     @GameTest
     fun theNewFieldsSurviveTheirCodecs(helper: GameTestHelper) {
         val state = GuardState(lastDeathAt = 1_234)
@@ -303,7 +561,26 @@ class GuardGapGameTests {
     private companion object {
         val CALLER = Caller(Role.DIRECTOR, "guard-gap-test", turnId = 909, taskId = null)
 
+        /** Steps or falls on a turtle egg: a step cracks it once in 100, so an ordinary walker leaves it whole after 2 000 steps once in 500 million. */
+        const val TRAMPLE_TRIES = 2_000
+
         fun guards(helper: GameTestHelper): GuardsImpl = helper.narrator().guards as GuardsImpl
+
+        /** [zombie]'s goal of crushing turtle eggs, `ZombieAttackTurtleEggGoal`, the game's only `RemoveBlockGoal`. */
+        fun eggGoal(zombie: Mob): RemoveBlockGoal =
+            zombie.getGoalSelector().availableGoals.map { it.goal }.filterIsInstance<RemoveBlockGoal>().single()
+
+        /**
+         * A projectile of [type] shot by [owner] (none when null), 2.5 blocks above [target] and heading straight
+         * down onto it, not yet in the level.
+         */
+        fun <T : Projectile> shot(helper: GameTestHelper, type: EntityType<T>, owner: Entity?, target: BlockPos): T {
+            val projectile = type.create(helper.level, EntitySpawnReason.COMMAND)!!
+            owner?.let(projectile::setOwner)
+            projectile.snapTo(helper.absoluteVec(Vec3(target.x + 0.5, target.y + 2.5, target.z + 0.5)))
+            projectile.deltaMovement = Vec3(0.0, -2.0, 0.0)
+            return projectile
+        }
 
         /**
          * A survival player at [at] whom mobs can target: GameTest's mock players answer `gameMode()`
