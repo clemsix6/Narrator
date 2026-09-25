@@ -27,6 +27,7 @@ import io.github.clemsix6.narrator2.event.ProjectileHit
 import io.github.clemsix6.narrator2.event.RespawnPointSet
 import io.github.clemsix6.narrator2.event.StatAwarded
 import io.github.clemsix6.narrator2.event.Traded
+import io.github.clemsix6.narrator2.guard.NarratorMobs
 import net.fabricmc.fabric.api.entity.FakePlayer
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents
@@ -111,9 +112,6 @@ object ObserverHooks {
 
     /** Listeners that must run after the other modules'. */
     private val AFTER_OTHERS: Identifier = Identifier.fromNamespaceAndPath("narrator2", "observer_after")
-
-    /** Tag of the Narrator's entities (its creatures, its explosives): their explosions are the Narrator's. */
-    const val NARRATOR_TAG = "narrator2"
 
     /** Players within this distance of an explosion, in blocks, are "nearby". */
     private const val NEARBY_BLOCKS = 32.0
@@ -573,7 +571,8 @@ object ObserverHooks {
                 blocksHit = blocks?.get(0) ?: 0,
                 playerBlocksHit = playerBlocksHit,
                 nearby = nearby,
-                narrator = direct?.entityTags()?.contains(NARRATOR_TAG) == true || author?.entityTags()?.contains(NARRATOR_TAG) == true,
+                // The Narrator's entities carry its tag: its creatures, and whatever its tools spawn (TNT, fireworks…).
+                narrator = NarratorMobs.isNarrators(direct) || NarratorMobs.isNarrators(author),
             ),
         )
     }
