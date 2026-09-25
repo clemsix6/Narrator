@@ -140,6 +140,9 @@ data class OpenEpisode(val turnId: Long?, val until: Long) {
  *   the death is allowed, cleared when they respawn. Read by the keep-inventory mixins.
  * @property narratorKills the player's `PLAY_TIME` at each death the Narrator caused within the last
  *   played hour.
+ * @property lastDeathAt when the player last died, whatever killed them, epoch milliseconds (real time,
+ *   like the no-piling-on rule); forgotten once that rule no longer applies. Saved with the player, so a
+ *   player who dies, leaves and comes back within the 5 minutes is still spared.
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -149,6 +152,7 @@ data class GuardState(
     val armedUntil: Long = 0,
     val protectedDeath: Boolean = false,
     val narratorKills: List<Long> = emptyList(),
+    val lastDeathAt: Long? = null,
 ) {
     companion object {
         val EMPTY = GuardState()
@@ -163,8 +167,9 @@ data class GuardState(
                 Codec.LONG.optionalFieldOf("armed_until", 0L).forGetter(GuardState::armedUntil),
                 Codec.BOOL.optionalFieldOf("protected_death", false).forGetter(GuardState::protectedDeath),
                 Codec.LONG.listOf().optionalFieldOf("narrator_kills", emptyList()).forGetter(GuardState::narratorKills),
-            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills ->
-                GuardState(modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills)
+                Codec.LONG.optionalFieldOf("last_death_at").forGetter { Optional.ofNullable(it.lastDeathAt) },
+            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt ->
+                GuardState(modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null))
             }
         }
 

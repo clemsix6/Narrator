@@ -25,7 +25,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Guards for tests: every hostile action gets [verdict], the caps are those of [chaos], the protected
- * players are [protectedPlayers], `activeOn` answers [active], and death guards are recorded. The
+ * players are [protectedPlayers], `activeOn` answers [active], `deathsLeft` [deaths], and death guards are recorded. The
  * ledgers and policies are the real ones (their decisions go to [traces]); they need a live player,
  * so unit tests without Minecraft never call them.
  */
@@ -38,6 +38,9 @@ class FakeGuards(
     val protectedPlayers: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     val armed = CopyOnWriteArrayList<Pair<UUID, Int>>()
     val active = ConcurrentHashMap<UUID, List<ActiveEffect>>()
+
+    /** What `deathsLeft` answers for a player; the cap of [chaos] for the others (0 when protected). */
+    val deaths = ConcurrentHashMap<UUID, Int>()
 
     private val states = GuardStates()
     private val decisions = Decisions(traces, clock)
@@ -69,4 +72,6 @@ class FakeGuards(
     }
 
     override fun caps(): Caps = Caps.of(chaos)
+
+    override fun deathsLeft(player: UUID): Int = if (player in protectedPlayers) 0 else deaths[player] ?: caps().narratorKillsPerHour
 }

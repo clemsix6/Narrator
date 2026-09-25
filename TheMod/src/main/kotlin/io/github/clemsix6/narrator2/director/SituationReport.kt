@@ -42,8 +42,9 @@ data class DirectorAction(val at: Long, val tool: String, val targets: List<Stri
 
 /**
  * The `<situation>` block that ends every wake-up message (M1_M2 §12.6): the world, one line per player
- * online, the Narrator's active effects, its tasks and reminders, and its last actions. Every section
- * is written even when empty, so that the model never mistakes a missing source for an empty one.
+ * online, the Narrator's active effects, the deaths it may still cause each player, its tasks and
+ * reminders, and its last actions. Every section is written even when empty, so that the model never
+ * mistakes a missing source for an empty one.
  */
 class SituationReport(private val services: NarratorServices, private val digest: ActivityDigest, zone: ZoneId) {
     private val formatter = EventFormatter(zone)
@@ -64,6 +65,7 @@ class SituationReport(private val services: NarratorServices, private val digest
             if (online.isEmpty()) append("No player online.\n")
             online.forEach { append(player(it, now)).append('\n') }
             append("Your active effects: ").append(effects(online)).append('\n')
+            append("Deaths you may still cause: ").append(deathsLeft(online)).append('\n')
             append("Tasks: ").append(tasks(now)).append(" · Reminders: ").append(reminders(reminders)).append('\n')
             append("Your last actions: ").append(actions(actions, now)).append('\n')
             append("</situation>")
@@ -100,6 +102,10 @@ class SituationReport(private val services: NarratorServices, private val digest
         }
         return if (effects.isEmpty()) "none" else effects.joinToString(", ")
     }
+
+    /** The death guard's quota left for each player online (`Guards.deathsLeft`): `Bartok 1, Mimosa 0`. */
+    private fun deathsLeft(online: List<LivePlayer>): String =
+        if (online.isEmpty()) "none" else online.joinToString(", ") { "${it.ref.name} ${services.guards.deathsLeft(it.ref.uuid)}" }
 
     private fun tasks(now: Long): String {
         val open = services.workers.list().filter { !it.status.finished }
