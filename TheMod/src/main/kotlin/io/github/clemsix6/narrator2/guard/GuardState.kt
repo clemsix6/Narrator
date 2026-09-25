@@ -146,8 +146,8 @@ data class OpenEpisode(val turnId: Long?, val until: Long) {
  *   player who dies, leaves and comes back within the 5 minutes is still spared.
  * @property perils what the death guard covers: for each [Peril] id, until which value of the `PLAY_TIME`
  *   stat; [armedUntil] is the latest of them.
- * @property revivedUntil beyond the quota, a death was prevented, and no other is until this value of the
- *   `PLAY_TIME` stat (the end of the armed stretch it happened in): one revival per episode.
+ * @property rescues when the death guard rescued the player beyond the quota, epoch milliseconds (real
+ *   time), within the last [DeathGuard.RESCUE_WINDOW_MS]: too many is a warning for the operators.
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -159,7 +159,7 @@ data class GuardState(
     val narratorKills: List<Long> = emptyList(),
     val lastDeathAt: Long? = null,
     val perils: Map<String, Long> = emptyMap(),
-    val revivedUntil: Long = 0,
+    val rescues: List<Long> = emptyList(),
 ) {
     companion object {
         val EMPTY = GuardState()
@@ -176,11 +176,11 @@ data class GuardState(
                 Codec.LONG.listOf().optionalFieldOf("narrator_kills", emptyList()).forGetter(GuardState::narratorKills),
                 Codec.LONG.optionalFieldOf("last_death_at").forGetter { Optional.ofNullable(it.lastDeathAt) },
                 Codec.unboundedMap(Codec.STRING, Codec.LONG).optionalFieldOf("perils", emptyMap()).forGetter(GuardState::perils),
-                Codec.LONG.optionalFieldOf("revived_until", 0L).forGetter(GuardState::revivedUntil),
-            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, revivedUntil ->
+                Codec.LONG.listOf().optionalFieldOf("rescues", emptyList()).forGetter(GuardState::rescues),
+            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, rescues ->
                 GuardState(
                     modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null),
-                    perils, revivedUntil,
+                    perils, rescues,
                 )
             }
         }

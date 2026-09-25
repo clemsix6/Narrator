@@ -93,6 +93,10 @@ class AttributeLedger(private val states: GuardStates, private val decisions: De
     /** Removes every modifier of the Narrator from [player]; returns the attributes it changed. */
     fun resetAll(player: ServerPlayer): List<AttributeKey> = AttributeKey.entries.filter { reset(player, it) }
 
+    /** Removes the Narrator's harmful modifiers from [player] (a rescue by the death guard); returns their attributes. */
+    fun resetHarmful(player: ServerPlayer): List<AttributeKey> =
+        on(player).filter { it.harmful }.mapNotNull(::keyOf).filter { reset(player, it) }
+
     /** The Narrator's modifiers on [player], from the ledger. */
     fun on(player: ServerPlayer): List<LedgerModifier> = states.of(player).modifiers
 
