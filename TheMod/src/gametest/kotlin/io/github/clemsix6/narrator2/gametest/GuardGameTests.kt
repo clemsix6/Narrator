@@ -115,6 +115,21 @@ class GuardGameTests {
         helper.assertTrue(player.isDeadOrDying && DeathGuard.keepsInventory(player), "a protected death again: ${GuardStates.read(player)}")
     }
 
+    /** A spent arming and the kills older than a played hour are forgotten; an empty state leaves the player's file. */
+    @GameTest
+    fun aSpentDeathGuardIsForgotten(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        guards.states.update(player) {
+            it.copy(armedUntil = PLAY_TIME - 1, narratorKills = listOf(PLAY_TIME - DeathGuard.HOUR_TICKS - 1, PLAY_TIME - 10))
+        }
+        guards.death.tidy(player)
+        helper.assertValueEqual(GuardState(narratorKills = listOf(PLAY_TIME - 10)), GuardStates.read(player), "only the recent kill stays")
+
+        setPlayTime(player, PLAY_TIME + DeathGuard.HOUR_TICKS)
+        guards.death.tidy(player)
+        helper.assertFalse(player.hasAttached(GuardState.TYPE), "nothing left: the attachment is removed")
+    }
+
     @GameTest
     fun anOrdinaryDeathDropsTheInventory(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = guards(helper)

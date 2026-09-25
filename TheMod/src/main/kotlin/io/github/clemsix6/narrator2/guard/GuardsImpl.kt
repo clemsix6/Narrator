@@ -163,8 +163,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     }
 
     /**
-     * Undoes what is due at [now] (epoch milliseconds): modifiers, confiscations, finished punishments of
-     * [players], and the Narrator's creatures. Server thread.
+     * Undoes what is due at [now] (epoch milliseconds): modifiers, confiscations, finished punishments and
+     * death guards of [players], and the Narrator's creatures. Server thread.
      */
     fun check(players: List<ServerPlayer>, now: Long) {
         for (player in players) {
@@ -172,6 +172,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 attributes.expire(player, now)
                 effects.prune(player)
                 items.giveBack(player, now)
+                death.tidy(player)
                 if ((states.of(player).episode?.until ?: Long.MAX_VALUE) <= now) states.update(player) { it.copy(episode = null) }
             } catch (e: Exception) {
                 log.error("the guards' check failed for ${player.plainTextName}", e)

@@ -51,7 +51,11 @@ interface Guards {
      */
     fun hostile(target: ServerPlayer, caller: Caller, until: Long): Verdict
 
-    /** Deaths of [target] in the next [seconds] are attributed to the Narrator (any action that can kill arms it). */
+    /**
+     * Deaths of [target] in the next [seconds] of their play time are attributed to the Narrator (any
+     * action that can kill arms it, before acting). On the server thread; from another thread, it is
+     * queued there. Nothing happens for a player offline.
+     */
     fun armDeathGuard(target: UUID, seconds: Int)
 
     /** Whether a death is the Narrator's doing and the inventory is kept, for the `PlayerDied` event. Server thread only. */

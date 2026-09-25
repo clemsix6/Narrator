@@ -126,6 +126,18 @@ class DeathGuard(
         )
     }
 
+    /** Forgets an arming that ran out and the kills older than a played hour: the saved state stays small. Once a second. */
+    fun tidy(player: ServerPlayer) {
+        val state = states.of(player)
+        if (state.armedUntil == 0L && state.narratorKills.isEmpty()) return
+        val now = playTime(player)
+        val armedUntil = if (state.armedUntil > now) state.armedUntil else 0L
+        val kills = recentKills(state.narratorKills, now)
+        if (armedUntil != state.armedUntil || kills != state.narratorKills) {
+            states.update(player) { it.copy(armedUntil = armedUntil, narratorKills = kills) }
+        }
+    }
+
     /** A player joined: a mark left on a living player (a totem saved them) is stale. */
     fun onJoin(player: ServerPlayer) {
         if (!player.isDeadOrDying) clearMark(player)
