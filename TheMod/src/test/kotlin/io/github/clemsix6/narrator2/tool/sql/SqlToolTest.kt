@@ -2,10 +2,14 @@ package io.github.clemsix6.narrator2.tool.sql
 
 import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.event.BlockPlaced
+import io.github.clemsix6.narrator2.event.PlaceKind
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.journal.SchemaDoc
 import io.github.clemsix6.narrator2.journal.SqlLimits
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.testing.SampleEvents.here
+import io.github.clemsix6.narrator2.testing.SampleEvents.steve
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
@@ -86,6 +90,18 @@ class SqlToolTest {
         assertEquals(ToolStatus.OK, result.status, result.text)
         assertContains(result.text, "\nn\n0\n1\n2\n")
         assertContains(result.text, "3 of 10 rows shown")
+    }
+
+    /** The writer writes about once a second: the tool waits for the facts still queued (T07). */
+    @Test
+    fun `a query sees the facts published just before it`() = JournalFixture(config = JournalConfig(flushIntervalMs = 3_600_000)).use { journal ->
+        journal.sync() // from now on, the writer only writes on a barrier: once an hour otherwise
+        journal.publish(BlockPlaced(steve, here, "minecraft:oak_planks", "minecraft:oak_planks", PlaceKind.BLOCK))
+
+        val result = query("SELECT player, block FROM building", services = TestServices(clock = journal.clock, journal = journal.journal))
+
+        assertEquals(ToolStatus.OK, result.status, result.text)
+        assertContains(result.text, "\nplayer|block\nSteve|oak_planks")
     }
 
     @Test

@@ -42,10 +42,12 @@ data class SqlArgs(
  * same bytes in every conversation with the same schema, so the cached prefix holds. Shown to the model
  * only when the Journal opened.
  *
- * A query stops after `journal.sqlTimeoutSeconds` for the Director and [SqlLimits.ANALYST_TIMEOUT_SECONDS]
- * for the Analyst. [SqlRunner] may take that long plus 2 s (waiting for a connection), so the tool's own
- * delay is [MARGIN_SECONDS] more than the longest of the two, taken when the tool is built; a reload that
- * raises the Director's limit afterwards is capped to it until the next conversation.
+ * [SqlRunner] first waits for the facts still queued to be written (`barrier()`), so that the query
+ * sees the last second too. A query stops after `journal.sqlTimeoutSeconds` for the Director and
+ * [SqlLimits.ANALYST_TIMEOUT_SECONDS] for the Analyst. [SqlRunner] may take that long plus 2.5 s (the
+ * barrier, then waiting for a connection), so the tool's own delay is [MARGIN_SECONDS] more than the
+ * longest of the two, taken when the tool is built; a reload that raises the Director's limit
+ * afterwards is capped to it until the next conversation.
  *
  * @param directorSeconds `journal.sqlTimeoutSeconds` when the tool is built.
  */
@@ -77,7 +79,7 @@ class SqlTool(directorSeconds: Int) : NarratorTool<SqlArgs>(
     }
 
     companion object {
-        /** The tool's delay beyond the query's: [SqlRunner] waits up to 2 s for a connection. */
+        /** The tool's delay beyond the query's: [SqlRunner] waits up to 0.5 s for the barrier and 2 s for a connection. */
         const val MARGIN_SECONDS = 3
     }
 }

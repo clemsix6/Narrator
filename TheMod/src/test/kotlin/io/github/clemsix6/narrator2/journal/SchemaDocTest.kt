@@ -50,6 +50,16 @@ class SchemaDocTest {
         assertTrue("\nhotspots(p, t, cell) — " in doc)
     }
 
+    /** Facts of one tick share their millisecond (T07): the model is told to order by `ts, id`, and every view of facts has `id`. */
+    @Test
+    fun `it tells how to order facts that share a timestamp`() {
+        assertTrue("Rows may share a ts: ORDER BY ts, id." in doc)
+        listOf(
+            "timeline", "chat_log", "narrator_actions", "mining", "building", "deaths", "kills", "damage", "trades", "meals", "crafts",
+            "advancements", "visits", "travels", "griefs",
+        ).forEach { view -> assertTrue("\n$view(id, ts, " in doc, "$view starts with id, ts") }
+    }
+
     @Test
     fun `it never mentions a hidden table`() {
         Journal.HIDDEN_FROM_MODEL.forEach { table -> assertFalse(table in doc.lowercase(), table) }
