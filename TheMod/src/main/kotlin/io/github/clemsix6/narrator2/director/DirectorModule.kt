@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.command.narratorLine
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.ToolCatalog
 import io.github.clemsix6.narrator2.tool.speech.Speech
@@ -33,6 +34,11 @@ private class ServerGameView(private val services: NarratorServices) : GameView 
             val level = server.overworld()
             WorldTime.of(level.defaultClockTime, level.isRaining, level.isThundering)
         }
+    }
+
+    override suspend fun worldSnapshot(): WorldSnapshot {
+        val server = services.server
+        return server.onServerThread(WORLD_TIMEOUT_MS) { WorldSnapshot.capture(server) }
     }
 
     override fun actionbar(text: String, to: () -> Collection<UUID>) {

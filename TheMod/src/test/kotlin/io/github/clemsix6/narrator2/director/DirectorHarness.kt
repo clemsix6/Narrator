@@ -18,6 +18,7 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.reflex.ChatIntent
 import io.github.clemsix6.narrator2.reflex.Tone
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -214,6 +215,9 @@ class DirectorHarness(
     /** The text blocks of the last `user` message of request [request], joined. */
     fun userText(request: Int): String = blocks(lastUser(request)).filter { it.path("type").asText() == "text" }.joinToString("\n") { it.path("text").asText() }
 
+    /** The last text block of the last `user` message of request [request]: the wake-up message, after a chapter's briefing. */
+    fun wakeText(request: Int): String = blocks(lastUser(request)).last { it.path("type").asText() == "text" }.path("text").asText()
+
     /** The block types of the last `user` message of request [request]. */
     fun userBlocks(request: Int): List<String> = blocks(lastUser(request)).map { it.path("type").asText() }
 
@@ -275,6 +279,12 @@ class DirectorHarness(
         val toldOperators = CopyOnWriteArrayList<String>()
 
         override suspend fun worldTime(): WorldTime = world ?: throw IllegalStateException("the server thread did not answer in time")
+
+        /** What the briefing reads of the world: day 37, 20:00, clear, and no player (the briefing then uses the players' samples). */
+        @Volatile
+        var snapshot: WorldSnapshot? = WorldSnapshot(37, 14_000, "clear", emptyList())
+
+        override suspend fun worldSnapshot(): WorldSnapshot = snapshot ?: throw IllegalStateException("the server thread did not answer in time")
 
         override fun actionbar(text: String, to: () -> Collection<UUID>) {
             val players = to().toList()

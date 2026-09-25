@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.director.EventFormatter.Companion.ago
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -47,6 +48,9 @@ import kotlin.random.Random
 interface GameView {
     /** The overworld's clock and weather, read on the server thread; fails when it does not answer in time. */
     suspend fun worldTime(): WorldTime
+
+    /** The world and every player online, for a chapter's briefing; read on the server thread, fails when it does not answer in time. */
+    suspend fun worldSnapshot(): WorldSnapshot
 
     /**
      * Shows [text] above the hotbar of the players online that [to] returns when it is shown: they may
@@ -85,6 +89,11 @@ interface GameView {
  *   While paused, backing off or blocked, addressed chat, prayers, task results, reminders and whispers
  *   are kept, the rest is left to the activity digest, and the next wake-up says how long the
  *   Narrator was silent and why.
+ * - **Chapters** ([Chapters]): the conversation is cut into chapters of bounded context. A chapter
+ *   closes (`CLOSING`) with a factual summary when its context reaches the limits, when nobody has been
+ *   online for a while, at a quiet moment after `/narrator chapter close` or a reload that changed its
+ *   prompt, and after a runaway turn; without one after the errors that break its conversation and when
+ *   the server stops. The next chapter's first message starts with a [Briefing].
  *
  * @param toolSet the tools of a new chapter, given what is wired: `ToolCatalog.toolSetFor` in production.
  */
@@ -116,7 +125,7 @@ class Director(
             }
         }
     }
-    private val chapters = Chapters(turnServices, toolSet)
+    private val chapters = Chapters(turnServices, toolSet, Briefing(turnServices, { game.worldSnapshot() }) { digest.recent(it, SituationReport.RECENT_MINUTES) })
     private val agent = AgentLoop(turnServices, ToolRunner(turnServices))
 
     // Published for status(), any thread.
@@ -137,6 +146,7 @@ class Director(
     private var notBefore: Long? = null
     private var carry: List<ContentBlockParam> = emptyList()
     private var closeAtQuiet: ConversationRecord.EndReason? = null
+    private var closeAfterTurn: Closing? = null
     private var lastTurnEnd = clock.millis()
     private var heartbeatFrom = clock.millis()
     private var nextHeartbeat: Long? = null
@@ -258,14 +268,19 @@ class Director(
             closeAtQuietMoment()
             return
         }
+        val emptyAt = chapters.emptyServerCloseAt(now)
+        if (wakeAt == null && emptyAt != null && emptyAt <= now) {
+            closeWithSummary(ConversationRecord.EndReason.SERVER_EMPTY, "no player online for ${config.emptyServerCloseMinutes} minutes")
+            return
+        }
         val beatAt = if (wakeAt == null) heartbeatAt(config.heartbeatRange) else null
         if (beatAt != null && beatAt <= now) {
             heartbeat(scope, now)
             return
         }
         publish(if (wakeAt != null) DirectorState.WAITING else DirectorState.IDLE, wakeAt, null)
-        // A quiet moment already due waits for the scheduled wake-up to pass: it is not a deadline then.
-        val next = listOfNotNull(wakeAt, quietAt?.takeIf { it > now }, beatAt, nextReminderAt(), now + RECHECK_MS).min()
+        // A quiet moment or an empty server already due waits for the scheduled wake-up to pass: it is not a deadline then.
+        val next = listOfNotNull(wakeAt, quietAt?.takeIf { it > now }, emptyAt?.takeIf { it > now }, beatAt, nextReminderAt(), now + RECHECK_MS).min()
         inbox.await(next - now)
     }
 
@@ -283,14 +298,14 @@ class Director(
                     resumeWake = true
                     log.info("resumed")
                 }
-                is DirectorSignal.CloseChapter -> {
-                    closeAtQuiet = signal.reason
-                    log.info("chapter to close at the next quiet moment (${signal.reason.id})")
-                }
-                is DirectorSignal.SettingsChanged -> block?.let {
-                    block = null
-                    resumeWake = resumeWake || carry.isNotEmpty()
-                    log.info("no longer blocked: the settings were reloaded")
+                is DirectorSignal.CloseChapter -> markChapter(signal.reason, "asked by an operator")
+                is DirectorSignal.SettingsChanged -> {
+                    block?.let {
+                        block = null
+                        resumeWake = resumeWake || carry.isNotEmpty()
+                        log.info("no longer blocked: the settings were reloaded")
+                    }
+                    chapters.reloadChange(signal.old, signal.new)?.let { markChapter(ConversationRecord.EndReason.RELOAD, it) }
                 }
                 else -> Unit
             }
@@ -313,12 +328,45 @@ class Director(
         if (gone.isNotEmpty()) log.debug { "${gone.size} events left to the activity digest while silent" }
     }
 
-    private fun closeAtQuietMoment() {
+    private suspend fun closeAtQuietMoment() {
         val reason = closeAtQuiet ?: return
-        closeAtQuiet = null
-        chapters.close(reason, "closed at a quiet moment")
+        closeWithSummary(reason, "closed at a quiet moment")
+    }
+
+    /** Marks the open chapter to close at the next quiet moment; the first reason stays. */
+    private fun markChapter(reason: ConversationRecord.EndReason, why: String) {
+        if (chapters.current == null) {
+            log.info("no chapter to close (${reason.id}: $why)")
+            return
+        }
+        if (closeAtQuiet != null) return
+        closeAtQuiet = reason
+        chapters.mark(reason, why)
+    }
+
+    /** Closes the open chapter with its summary (`CLOSING`); [carried] are the tool results its history waits for. */
+    private suspend fun closeWithSummary(reason: ConversationRecord.EndReason, why: String, carried: List<ContentBlockParam> = carry) {
+        publish(DirectorState.CLOSING, null, "chapter closing (${reason.id})")
+        chapters.closeWithSummary(reason, why, carried)
         chapter = null
         carry = emptyList()
+        closeAtQuiet = null
+    }
+
+    /**
+     * After a turn: the closing it asked for (hard step limit), or the context limits (M1_M2 §12.10). A
+     * turn whose request failed keeps its chapter until a turn gets through.
+     */
+    private suspend fun afterTurn() {
+        closeAfterTurn?.let { closing ->
+            closeAfterTurn = null
+            closeWithSummary(closing.reason, closing.why, closing.carry)
+            return
+        }
+        val open = chapters.current ?: return
+        if (carry.isNotEmpty() || backoffUntil != null || block != null) return
+        val limit = chapters.limit(open) ?: return
+        if (limit.reason == ConversationRecord.EndReason.TOKEN_LIMIT) closeWithSummary(limit.reason, limit.why) else markChapter(limit.reason, limit.why)
     }
 
     // ── Heartbeats ──────────────────────────────────────────────────────────────────────────────────
@@ -376,10 +424,13 @@ class Director(
             append(situation.render(now, worldTime(), pendingReminders(), recentActions()))
         }
         val notes = whispers(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
-        val opening = Pending(carry + ContentBlockParam.ofText(text), notes)
+        // A new chapter's first message starts with its briefing, which tells the chat up to these events.
+        val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders())
+        val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
         carry = emptyList()
         val trigger = triggerOf(items, beat, resumed)
         Turn(scope, open, trigger, items, beat).run(opening)
+        afterTurn()
     }
 
     /**
@@ -471,7 +522,8 @@ class Director(
                     }
                     is TurnOutcome.StepLimit -> {
                         commit(sent)
-                        closeChapter(ConversationRecord.EndReason.RUNAWAY_TURN, "the turn reached its hard step limit")
+                        // Closed with its summary once the turn is over, the refused tool results first.
+                        closeAfterTurn = Closing(ConversationRecord.EndReason.RUNAWAY_TURN, "the turn reached its hard step limit", outcome.carry)
                         return TurnRecord.Outcome.STEP_LIMIT
                     }
                     is TurnOutcome.Refused, is TurnOutcome.Truncated, is TurnOutcome.Empty -> {
@@ -602,6 +654,7 @@ class Director(
             chapters.close(reason, why)
             this@Director.chapter = null
             carry = emptyList()
+            closeAtQuiet = null
         }
 
         private fun record(outcome: TurnRecord.Outcome?, endedAt: Instant? = null) = TurnRecord(
@@ -725,6 +778,9 @@ class Director(
 
     /** A heartbeat: what the players did during [windowMs], and the reflexes' [hint]. */
     private data class Beat(val summary: List<String>, val windowMs: Long, val hint: String?)
+
+    /** A chapter to close with its summary once the turn is over; [carry] are the tool results its history waits for. */
+    private class Closing(val reason: ConversationRecord.EndReason, val why: String, val carry: List<ContentBlockParam>)
 
     companion object {
         /** A refused or cut-off answer to a wake-up waits this long before the events go again. */
