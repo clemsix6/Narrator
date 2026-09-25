@@ -36,7 +36,8 @@ import java.util.UUID
  * - `<recent_chat>`: the last lines of public chat and prayers **with their text**, the Narrator's own
  *   lines included (never a private message: it reads the `chat_log` view);
  * - `<your_recent_actions>`: the Narrator's last speech and world tool calls that took effect;
- * - `<engine_state>`: its effects on the players online, the protections, its tasks and reminders.
+ * - `<engine_state>`: its effects on the players online, the protections, the deaths it may still cause
+ *   each of them, its tasks and reminders.
  *
  * Every section is always there. A source that fails is never passed over in silence: its section says
  * `(unavailable: <reason>)` and an `ERROR` is logged; the other sections are still written. An empty
@@ -271,6 +272,7 @@ class Briefing(
                 }
                 list(protected, ONLINE_MAX)
             },
+            line("Deaths you may still cause") { list(online.map { "${it.ref.name} ${services.guards.deathsLeft(it.ref.uuid)}" }, ONLINE_MAX) },
             line("Tasks") {
                 val open = services.workers.list().filter { !it.status.finished }.map { task ->
                     val state = if (task.status == TaskRecord.Status.RUNNING) "running ${ago(now - (task.startedAt ?: task.createdAt).toEpochMilli())}" else task.status.id
