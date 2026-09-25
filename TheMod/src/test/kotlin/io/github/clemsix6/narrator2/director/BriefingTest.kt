@@ -114,6 +114,7 @@ class BriefingTest {
         assertContains(text, "<players_recent window=\"24h\">\nCarl: last seen 2h20m ago, played 1h40m\n</players_recent>")
         assertContains(text, "Your active effects: Bartok slowness II (effect) until 21:01\n")
         assertContains(text, "Protected: Mimosa from every hostile action (operators)\n")
+        assertTrue(Regex("Deaths you may still cause: (Bartok 1, Mimosa 0|Mimosa 0, Bartok 1)\n").containsMatchIn(text), text)
         assertContains(text, "Reminders: R-3 at 21:10 \"check that Bartok kept his word\"\n")
         assertFalse("unavailable" in text, text)
         assertTrue(text.length <= Briefing.MAX_CHARS)
@@ -179,6 +180,7 @@ class BriefingTest {
         assertContains(text, "<your_recent_actions>\n(none yet)\n</your_recent_actions>")
         assertContains(text, "<players_recent window=\"24h\">\n(no other player in the last 24 hours)\n</players_recent>")
         assertContains(text, "Tasks: none\nReminders: none\n")
+        assertContains(text, "Deaths you may still cause: Bartok ")
     }
 
     // ── Budget ──────────────────────────────────────────────────────────────────────────────────────
@@ -266,6 +268,7 @@ class BriefingTest {
         online(mimosa, idle = true)
         guards.active[bartok.uuid] = listOf(ActiveEffect("effect", "slowness II", now.toEpochMilli() + 60_000, harmful = true))
         guards.protectedPlayers += mimosa.uuid
+        guards.deaths[bartok.uuid] = 1
     }
 
     private fun render(
