@@ -82,7 +82,7 @@ Pendant les vagues parallèles, chaque agent travaille dans son propre worktree 
 - Ne modifie que les fichiers que ta tâche possède (voir `docs/design/`). Un fichier partagé en ajout reçoit seulement ta ligne.
 - Avant de finir : `git merge main` dans ta branche, résous les éventuels conflits, relance `build` (tests unitaires et GameTests) jusqu'au vert, puis commite.
 - **Ne fusionne jamais toi-même dans `main`** : le superviseur s'en charge. Donne le nom de ta branche dans ton rapport.
-- Ferme les serveurs et démons que tu as lancés : `.\gradlew.bat --stop` à la fin si tu as utilisé Gradle.
+- Ferme les serveurs de jeu que tu as lancés. **N'utilise jamais `gradlew --stop`** : il arrête les démons Gradle de TOUS les agents et casse leurs builds en cours. Les démons inactifs s'arrêtent seuls au bout de 3 h.
 
 ## Git
 - Dépôt local sur la branche `main`, sans remote : **ne jamais pousser**.
