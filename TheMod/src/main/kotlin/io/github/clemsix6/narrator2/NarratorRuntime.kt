@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2
 
 import io.github.clemsix6.narrator2.agent.WorkersControl
 import io.github.clemsix6.narrator2.agent.createWorkers
+import io.github.clemsix6.narrator2.command.narratorLine
 import io.github.clemsix6.narrator2.config.ConfigException
 import io.github.clemsix6.narrator2.config.ConfigStore
 import io.github.clemsix6.narrator2.core.Log
@@ -12,6 +13,7 @@ import io.github.clemsix6.narrator2.event.EventBus
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.createGuards
 import io.github.clemsix6.narrator2.journal.DisabledJournal
+import io.github.clemsix6.narrator2.journal.DuckJournal
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.openJournal
@@ -38,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import net.fabricmc.loader.api.FabricLoader
+import net.minecraft.ChatFormatting
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.level.storage.LevelResource
 import java.nio.file.Path
@@ -119,6 +122,7 @@ class NarratorRuntime private constructor(
         journal = openJournalOrDisable()
         bus = EventBus(clock, ticks::gameTime, journal.nextIdSeed(IdKind.EVENT))
         journal.attach(bus)
+        (journal as? DuckJournal)?.tellOperators = ::tellOperatorsOnline
         players = PlayerStates().also { it.subscribe(bus) { uuid -> server.playerList.getPlayer(uuid) } }
         guards = createGuards(this)
         observer = installObserver(this)
@@ -138,6 +142,12 @@ class NarratorRuntime private constructor(
         }
         if (!journal.available) log.warn("the Journal is unavailable: ${journal.health().lastError}")
         return journal
+    }
+
+    /** A yellow `[Narrator]` line in the chat of the operators online (the Journal's outages). Any thread. */
+    private fun tellOperatorsOnline(text: String) = server.execute {
+        val line = narratorLine(text, ChatFormatting.YELLOW)
+        server.playerList.players.filter { server.playerList.isOp(it.nameAndId()) }.forEach { it.sendSystemMessage(line) }
     }
 
     /** Undoes a [wire] that failed halfway. */

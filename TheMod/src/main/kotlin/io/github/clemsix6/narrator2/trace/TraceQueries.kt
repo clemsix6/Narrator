@@ -112,6 +112,18 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
         )
     }
 
+    /**
+     * [player]'s latest death as the death guard explained it (name ignoring case): its `death_guard died`
+     * decision, whose `detail` holds the whole report (M2 review, finding 18). Null when none is known.
+     */
+    fun lastDeath(player: String): DeathLine? = single(
+        """
+        SELECT ts, subject, reason, CAST(detail AS VARCHAR) FROM engine_decisions
+        WHERE kind = 'death_guard' AND decision = 'died' AND lower(subject) = lower(?) ORDER BY id DESC LIMIT 1
+        """.trimIndent(),
+        player,
+    ) { DeathLine(instant(1)!!, getString(2), getString(3), getString(4)) }
+
     /** Model calls since [since] (epoch milliseconds), per provider and role, the busiest first. */
     fun usage(since: Long): List<Usage> = rows(
         """
@@ -406,6 +418,9 @@ data class MessageFate(
     val atWake: Boolean,
     val dropped: DecisionLine?,
 )
+
+/** A player's death as the death guard explained it: its decision's time, subject, reason and `detail` (JSON text). */
+data class DeathLine(val ts: Instant, val player: String, val reason: String?, val detail: String?)
 
 /** Model calls of one provider (`anthropic`, `jev`) and role over a period; [failed] ended with an error. */
 data class Usage(
