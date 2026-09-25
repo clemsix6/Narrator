@@ -114,7 +114,8 @@ D'où le troisième point d'injection, **ajouté** à la décision : à la fin d
 
 ## Vérifications
 
-- `gradlew build` passe **après fusion de `main`** (T22 et le lot CD compris) : **657 tests unitaires et 152 GameTests**, sans échec.
+- `gradlew build` passe **après fusion de `main`** (T22, lots CD et J compris) : **663 tests unitaires et 152 GameTests**, sans échec.
+- **Test instable, hors de ce lot** : depuis la fusion du lot J, `DirectorEndToEndTests.aChatWakesTheDirectorWhoAnswersWithItsRealTools` (T22) échoue par intermittence, 2 fois sur 5 courses, toujours sur les courses rapides (8 s au lieu de 35 s). Message : `status counts the fake gateway's calls`. La ligne `Usage (24 h)` compte 2 appels ; le test en exige au moins 3, mais n'attend que l'apparition de la ligne, pas son total. C'est probablement une course entre la requête de `status` et l'écriture des `llm_calls` dans le Journal, dont le lot J a changé le rythme. Ce lot ne touche ni au Directeur, ni au Journal, ni à `status`. Il était vert à chaque course avant la fusion du lot J. À confier au propriétaire de T22 ou du lot J.
 - Nouveaux GameTests :
   - `aMountStaysUnderItsRiderThenSetsThemDownOnTheShore` : un arpenteur du Narrateur sur un lac de lave de 2 × 2, un joueur en selle. Dû, puis dû depuis 9 min 59 s : il reste. À 10 min, le joueur est posé sur la rive (pierre, pas lave), sous la garde, sans dégât de chute, et l'arpenteur est parti ;
   - `aRiderHighUpIsSetDownOnTheGroundBelow` : un happy ghast du Narrateur à 20 blocs de hauteur. À 10 min, le cavalier est posé sur le premier sol sous lui (le toit de barrières du test), sous la garde, sans dégât de chute ;
