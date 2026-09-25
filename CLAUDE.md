@@ -38,7 +38,10 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - Le JDK est installé dans `C:\Program Files\Java\jdk-25`.
 
 ## Conventions de code
-- Kotlin pour le mod, Java uniquement pour les mixins. La KDoc et les commentaires sont en anglais. Les textes vus par les joueurs et les messages de log sont en français.
+- Kotlin pour le mod, Java uniquement pour les mixins.
+- **Tout ce qui est dans le code est en anglais** : identifiants, commentaires, KDoc, messages de log, textes des commandes d'administration, messages d'erreur, noms de fichiers et de tables, en-têtes des transcriptions, noms des tests.
+- Le français est réservé à ce qui est hors du code : les prompts (`src/main/resources/narrator2/prompts/`), la documentation (`docs/`) et les échanges avec le propriétaire. Ce que le Narrateur dit aux joueurs est en français parce que c'est Claude qui l'écrit, guidé par les prompts, pas parce qu'il y a du texte français dans le code.
+- Les définitions d'outils (noms, descriptions, schémas), les résultats d'outils et les messages d'événements générés par le moteur pour Claude sont eux aussi en anglais : ce sont des sorties du code.
 - **Logs** : passe par `core/Log` (`Log.of("Tag")`), avec un tag par sous-système. On journalise tout ce qui aide à déboguer : décisions du moteur, appels d'outils avec leurs arguments et résultats, erreurs avec leur contexte, durées. Les conversations avec Claude sont intégralement transcrites par `trace/Transcripts`.
 - **Threads** : tout accès au monde passe par le thread serveur (`server.onServerThread { }`). Le thread serveur ne doit jamais attendre le réseau ni la base de données.
 - **Claude** : SDK Java officiel d'Anthropic, pointé sur LLMGW. Les conversations sont en ajout seul : on ne modifie jamais les tours précédents, le prompt système ni la liste d'outils. `tool_choice` n'est jamais forcé (Opus 5.5 renvoie une erreur 400).
