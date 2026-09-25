@@ -22,8 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
  * - **Arming**: any action that can kill arms the guard for the player ([arm]), for a number of seconds
  *   of the player's own play time (the `PLAY_TIME` stat), saved with the player: it covers the same
  *   ticks as the effects it protects from, even across a restart.
- * - **Attribution**: a death is the Narrator's when the guard is armed, or when the source or direct
- *   entity carries the `narrator2` tag. An operator's `/kill` (`generic_kill`) never is.
+ * - **Attribution**: a death is the Narrator's when the source or direct entity carries the `narrator2`
+ *   tag, or when the guard is armed and no other player dealt the blow. An operator's `/kill`
+ *   (`generic_kill`) never is.
  * - **At `ALLOW_DEATH`** (before the totem): quota left → the death goes on and the player is marked
  *   ([GuardState.protectedDeath], on disk); quota spent → the death is refused, the player keeps 1 health
  *   and the guard stays armed 5 more seconds, so a lasting hazard (lava, fire) cannot finish the job.
@@ -55,10 +56,17 @@ class DeathGuard(
     /** Whether the guard is armed for [player] now. */
     fun isArmed(player: ServerPlayer): Boolean = states.of(player).armedUntil > playTime(player)
 
-    /** Whether a death of [player] by [source] is the Narrator's doing. */
-    fun attributed(player: ServerPlayer, source: DamageSource): Boolean =
-        !source.`is`(DamageTypes.GENERIC_KILL) &&
-            (isArmed(player) || NarratorMobs.isNarrators(source.entity) || NarratorMobs.isNarrators(source.directEntity))
+    /**
+     * Whether a death of [player] by [source] is the Narrator's doing. Killed by another player, it is
+     * that player's doing, armed or not: the death guard never shields anyone from PvP.
+     */
+    fun attributed(player: ServerPlayer, source: DamageSource): Boolean {
+        if (source.`is`(DamageTypes.GENERIC_KILL)) return false
+        val killer = source.entity
+        if (NarratorMobs.isNarrators(killer) || NarratorMobs.isNarrators(source.directEntity)) return true
+        if (killer is Player && killer !== player) return false
+        return isArmed(player)
+    }
 
     /**
      * `ALLOW_DEATH` for a player about to die: whether the death may happen. A death attributed to the

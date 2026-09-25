@@ -18,6 +18,9 @@ import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.netty.channel.embedded.EmbeddedChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.core.component.DataComponents
@@ -50,6 +53,7 @@ import net.minecraft.world.level.GameType
 import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.phys.Vec3
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * In-game tests of the guards (M1_M2 §17.3): the death guard (a protected death, the quota, the mark
@@ -121,6 +125,23 @@ class GuardGameTests {
         helper.assertValueEqual(0, count(player, Items.DIAMOND), "the inventory is dropped as usual")
         helper.assertFalse(guards.deathAttribution(player, helper.level.damageSources().magic()).narrator, "attribution")
         helper.assertValueEqual(emptyList<Long>(), GuardStates.read(player).narratorKills, "nothing counted")
+    }
+
+    /** Armed or not, a blow from another player is that player's doing: the guard never shields from PvP. An operator's `/kill` neither. */
+    @GameTest
+    fun aKillByAPlayerOrAnOperatorIsNeverTheNarrators(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val guards = guards(helper)
+        @Suppress("DEPRECATION")
+        val other = helper.makeMockServerPlayerInLevel()
+        try {
+            guards.armDeathGuard(player.uuid, 10)
+            val sources = helper.level.damageSources()
+            helper.assertTrue(guards.death.attributed(player, sources.magic()), "armed: a magic death is the Narrator's")
+            helper.assertFalse(guards.death.attributed(player, sources.playerAttack(other)), "not a blow from another player")
+            helper.assertFalse(guards.death.attributed(player, sources.genericKill()), "nor an operator's /kill")
+        } finally {
+            helper.level.server.playerList.remove(other)
+        }
     }
 
     /**
@@ -282,6 +303,44 @@ class GuardGameTests {
         guards.items.giveBack(player, now + 60_000)
         helper.assertValueEqual(5, count(player, Items.DIAMOND), "the diamonds come back")
         helper.assertValueEqual(emptyList<Confiscation>(), guards.items.held(player), "the ledger is empty")
+    }
+
+    /** A confiscation and its return are decisions in the Journal, linked by the confiscation's id. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aConfiscationAndItsReturnAreTraced(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val guards = guards(helper)
+        val now = System.currentTimeMillis()
+        @Suppress("DEPRECATION")
+        val player = helper.makeMockServerPlayerInLevel()
+        val taken = try {
+            player.inventory.setItem(0, ItemStack(Items.DIAMOND, 4))
+            val confiscation = guards.items.confiscate(player, { it.`is`(Items.DIAMOND) }, 4, now, "a test", turnId = null)!!
+            guards.items.giveBack(player, now)
+            confiscation
+        } finally {
+            helper.level.server.playerList.remove(player)
+        }
+        val decisions = AtomicReference<Any>()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                runtime.journal.barrier()
+                decisions.set(
+                    runtime.journal.read(5_000) { connection ->
+                        connection.prepareStatement(
+                            "SELECT decision FROM engine_decisions WHERE kind = 'ledger' AND (id = ? OR json_extract_string(detail, '\$.confiscation') = ?) ORDER BY id",
+                        ).use { statement ->
+                            statement.setLong(1, taken.id)
+                            statement.setString(2, taken.id.toString())
+                            statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+                        }
+                    },
+                )
+            } catch (e: Exception) {
+                decisions.set("read failed: $e")
+            }
+        }
+        helper.awaitAsync { helper.assertValueEqual(listOf("confiscated", "returned"), decisions.get(), "decisions of confiscation ${taken.id}") }
     }
 
     /** A crash after the confiscation was saved and before the return: the player's file has the ledger without the items. */
