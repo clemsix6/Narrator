@@ -1,19 +1,181 @@
 package io.github.clemsix6.narrator2.guard
 
 import com.mojang.brigadier.ParseResults
+import com.mojang.brigadier.context.CommandContextBuilder
+import com.mojang.brigadier.tree.CommandNode
 import net.minecraft.commands.CommandSourceStack
+import java.util.IdentityHashMap
 
 /**
- * What `run_command` may run (M1_M2 §10.6): the command is parsed first, then the heads of all its
- * segments (behind `execute … run` too) are checked against the forbidden roots, the built-in list plus
- * [extra] (`safety.extraForbiddenCommands`, read at each check: `/narrator reload` may change it).
+ * What `run_command` may run (M1_M2 §10.6). The command is parsed first (by `run_command`, with the
+ * source that will run it); then every command it would run is checked, behind `execute … run` and
+ * `return run` too, against the forbidden roots: the built-in list [FORBIDDEN], written here, plus
+ * [extra] (`safety.extraForbiddenCommands`, read at each check: `/narrator reload` may change it), which
+ * can only add roots. A few `execute` subcommands are forbidden as well ([FORBIDDEN_EXECUTE]).
  *
- * Written by T02 as the contract between T09a (consumer) and T09b (owner). Provisional body: every
- * command is refused. T09b writes it.
+ * A command is caught three ways, so that neither an alias, a redirect nor a missing permission hides
+ * it: by the first word of each command in the text (a command the source may not even see, like
+ * `stop` at the gamemaster level, is refused rather than reported unknown), by every parsed node that
+ * belongs to a forbidden command's tree, and by every redirect that lands in one (`tp` → `teleport`).
+ * A root this list does not know (a new vanilla command, another mod's) is allowed: `run_command` is
+ * the last resort for what the typed tools do not cover (`scoreboard`, `playsound`, `particle`,
+ * `recipe`, `waypoint`, `execute if …` probes). `GuardPolicyGameTests` fails on any vanilla command
+ * that is neither forbidden nor reviewed, so that a new one is a decision, not an accident.
  */
-class CommandPolicy(@Suppress("unused") private val extra: () -> List<String>) {
-    /** Whether the parsed command may run. */
-    @Suppress("UNUSED_PARAMETER")
-    fun check(parse: ParseResults<CommandSourceStack>): Verdict =
-        Verdict.Denied(Rules.FORBIDDEN_COMMAND, "commands are not allowed until the engine's rules are in place.")
+class CommandPolicy(private val extra: () -> List<String>) {
+    /**
+     * Whether the parsed command may run. Valid or not: what was parsed is checked, so a forbidden command
+     * is refused as such even when it is also malformed. Any thread (only the parse is read).
+     */
+    fun check(parse: ParseResults<CommandSourceStack>): Verdict = verdict(parse)
+
+    /** [check] for any source type, so that it can be tested on a dispatcher of its own. */
+    internal fun <S> verdict(parse: ParseResults<S>): Verdict {
+        val input = parse.reader.string
+        val root = parse.context.rootNode
+        val extras = extras()
+        val owners = owners(root, extras)
+        var context: CommandContextBuilder<S>? = parse.context
+        while (context != null) {
+            val word = if (context.rootNode === root) commandWord(input, context.range.start) else null
+            val owner = word?.takeIf { it in FORBIDDEN || it in extras }
+                ?: owners[context.rootNode]
+                ?: context.nodes.firstNotNullOfOrNull { owners[it.node] }
+            if (owner != null) return Verdict.Denied(Rules.FORBIDDEN_COMMAND, message(owner, extras))
+            context = context.child
+        }
+        return Verdict.Allowed
+    }
+
+    private fun extras(): Set<String> = extra().map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+
+    /** Why a command is refused, and what to do instead. */
+    enum class Reason(val text: String) {
+        ADMIN("server administration is for the operators alone"),
+        DEV("a development and debugging command, never for the Narrator"),
+        WORLD("it changes the rules or the setup of the world"),
+        CODE("it runs commands that were never checked"),
+        BLOCKS("it changes blocks, and the players' constructions are never modified"),
+        ITEMS("it creates, changes or destroys items, experience or progress outside the Narrator's ledgers"),
+        ENTITIES("it acts on players or creatures outside the guarded tools"),
+        SPEECH("the Narrator speaks through its speech tools (say, show_title, actionbar, give_book), which are recorded"),
+        TOOL("a tool with its own limits does it"),
+    }
+
+    /**
+     * A forbidden command.
+     *
+     * @property instead what to use instead, when a tool does it.
+     */
+    data class Forbidden(val reason: Reason, val instead: String? = null)
+
+    companion object {
+        /**
+         * The built-in forbidden roots, vanilla 26.3 and this mod, with the reason of each. Commands of
+         * permission level 3 and 4 are also invisible to the gamemaster source of `run_command`; they
+         * are listed anyway, so that the rule does not depend on how the source is built.
+         */
+        val FORBIDDEN: Map<String, Forbidden> = buildMap {
+            fun forbid(reason: Reason, vararg roots: String, instead: String? = null) =
+                roots.forEach { put(it, Forbidden(reason, instead)) }
+
+            // Server administration: stopping or saving, operators, bans, the whitelist, kicks,
+            // transfers to another server, profilers, the idle timeout, LAN publishing, datapack
+            // reloads, lookups of player profiles at Mojang, the world seed (a map of every
+            // structure). `narrator` is the operators' control of the Narrator itself (chaos,
+            // protections, whispers to the Director); `pray` is the players' channel to it.
+            forbid(
+                Reason.ADMIN,
+                "stop", "save-all", "save-off", "save-on", "op", "deop", "ban", "ban-ip", "banlist", "pardon",
+                "pardon-ip", "whitelist", "kick", "transfer", "debug", "perf", "jfr", "setidletimeout", "publish",
+                "unpublish", "reload", "fetchprofile", "seed", "narrator",
+            )
+            // Registered only in a development environment, which is where the dev server and the
+            // GameTests run: `raid` starts a raid, `warden_spawn_tracker` can summon a warden,
+            // `spawn_armor_trims` spawns armor stands, `serverpack` pushes resource packs, `chase`
+            // opens network connections, `debugconfig` changes a client's options, `test` builds,
+            // runs and clears GameTest structures.
+            forbid(
+                Reason.DEV,
+                "test", "raid", "chase", "debugpath", "debugmobspawning", "warden_spawn_tracker", "spawn_armor_trims",
+                "serverpack", "debugconfig",
+            )
+            // The rules of the game for everyone (keepInventory, pvp, mobGriefing…), the difficulty, game
+            // modes, the world border (it hurts players outside), chunks kept loaded, the tick rate,
+            // spawn points, datapacks.
+            forbid(
+                Reason.WORLD,
+                "gamerule", "difficulty", "defaultgamemode", "gamemode", "worldborder", "forceload", "tick",
+                "setworldspawn", "spawnpoint", "datapack",
+            )
+            // Functions and schedules run commands this policy never sees.
+            forbid(Reason.CODE, "function", "schedule")
+            // Blocks: filling, placing, cloning, biomes, structures and features, block entity data.
+            // No command writes blocks: nothing could restore them.
+            forbid(Reason.BLOCKS, "fill", "fillbiome", "setblock", "clone", "place", "data")
+            // Items and progress: inventories and containers (`item`, `loot`), gifts outside give_item's
+            // checks, enchantments, experience levels, advancements.
+            forbid(Reason.ITEMS, "clear", "item", "loot", "enchant", "xp", "experience", "advancement")
+            forbid(Reason.ITEMS, "give", instead = "use the give_item tool")
+            // Players and creatures, outside the protection, the no-piling-on rule, the ledgers and the
+            // caps: killing, damaging, tags (`narrator2` marks the Narrator's creatures), teams (friendly
+            // fire: PvP is never forced), mounts, view and camera, screen shaders.
+            forbid(Reason.ENTITIES, "kill", "damage", "spreadplayers", "ride", "tag", "team", "rotate", "spectate", "posteffect")
+            forbid(Reason.ENTITIES, "summon", instead = "use the spawn tool")
+            forbid(Reason.ENTITIES, "tp", "teleport", instead = "use the teleport tool")
+            forbid(Reason.ENTITIES, "effect", instead = "use apply_effect or remove_effect")
+            forbid(Reason.ENTITIES, "attribute", instead = "use set_attribute or reset_attribute")
+            // Speech and displays outside the speech tools; `tellraw` and `dialog` can also make a click
+            // run a command. Boss bars come with challenges (M4).
+            forbid(Reason.SPEECH, "say", "tellraw", "tell", "msg", "w", "me", "teammsg", "tm", "title", "dialog", "bossbar", "pray")
+            // What a tool with its own limits already does.
+            forbid(Reason.TOOL, "weather", instead = "use the set_weather tool")
+            forbid(Reason.TOOL, "time", instead = "use the set_time tool")
+            forbid(Reason.TOOL, "locate", instead = "use the locate tool")
+        }
+
+        /** Forbidden subcommands of `execute`, by path under it. */
+        val FORBIDDEN_EXECUTE: Map<List<String>, Forbidden> = mapOf(
+            // Writes a command's result into blocks, entities, storage, scores or boss bars.
+            listOf("store") to Forbidden(Reason.BLOCKS, "run the command without store"),
+            // Summons a creature, outside the spawn tool's rules.
+            listOf("summon") to Forbidden(Reason.ENTITIES, "use the spawn tool"),
+            // Runs a function.
+            listOf("if", "function") to Forbidden(Reason.CODE),
+            listOf("unless", "function") to Forbidden(Reason.CODE),
+        )
+
+        private val EXTRA = Forbidden(Reason.ADMIN)
+
+        /** The first word of a command at [start] in [input], lowercase, without a leading `/`. */
+        private fun commandWord(input: String, start: Int): String {
+            val text = input.substring(start.coerceIn(0, input.length)).trimStart().removePrefix("/")
+            return text.substringBefore(' ').lowercase()
+        }
+
+        /** Every node of a forbidden command's tree, with the name it is refused under (`fill`, `execute store`). */
+        private fun <S> owners(root: CommandNode<S>, extras: Set<String>): Map<CommandNode<S>, String> {
+            val owners = IdentityHashMap<CommandNode<S>, String>()
+            for (name in FORBIDDEN.keys + extras) root.getChild(name)?.let { collect(it, name, owners) }
+            val execute = root.getChild("execute")
+            for (path in FORBIDDEN_EXECUTE.keys) {
+                val node = path.fold(execute) { node, child -> node?.getChild(child) } ?: continue
+                collect(node, (listOf("execute") + path).joinToString(" "), owners)
+            }
+            return owners
+        }
+
+        /** Adds [node] and its descendants (redirects are not followed: they lead to other commands). */
+        private fun <S> collect(node: CommandNode<S>, name: String, owners: MutableMap<CommandNode<S>, String>) {
+            if (owners.putIfAbsent(node, name) != null) return
+            node.children.forEach { collect(it, name, owners) }
+        }
+
+        private fun message(owner: String, extras: Set<String>): String {
+            val path = owner.split(' ')
+            val forbidden = if (path.size > 1) FORBIDDEN_EXECUTE.getValue(path.drop(1)) else FORBIDDEN[owner] ?: EXTRA
+            val why = if (owner !in FORBIDDEN && owner in extras) "the operators forbid it (safety.extraForbiddenCommands)" else forbidden.reason.text
+            return "`$owner` is forbidden: $why" + (forbidden.instead?.let { "; $it instead." } ?: ".")
+        }
+    }
 }
