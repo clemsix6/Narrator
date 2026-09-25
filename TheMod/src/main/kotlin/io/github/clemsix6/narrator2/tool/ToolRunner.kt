@@ -27,7 +27,8 @@ import java.time.Clock
  * - Each run is bounded by the tool's `timeoutMs`. Past it, a read answers `TIMEOUT`; any other tool
  *   answers `UNKNOWN`, as its action may still happen (a task already started on the server thread
  *   cannot be stopped).
- * - An exception answers `FAILED` with its message and is logged as an `ERROR` with its stack trace.
+ * - An exception answers `FAILED` with its message and is logged as an `ERROR` with its stack trace
+ *   (a `WARN` without it when the server thread did not run the task, or has stopped).
  * - The model gets at most [MODEL_RESULT_MAX_CHARS] characters; anything but `OK` is an error.
  * - Each call is audited: one `tool_calls` row and one log line
  *   `[Tool] <role> <tool> <status> <ms>ms targets=[…] <result, first 80 characters>`.
