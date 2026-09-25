@@ -5,14 +5,25 @@ import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.director.DirectorStatus
+import io.github.clemsix6.narrator2.journal.JournalHealth
 import io.github.clemsix6.narrator2.llm.BudgetExceededException
 import io.github.clemsix6.narrator2.llm.Conversation
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.llm.SendResult
+import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.runtime.Phase
+import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
+import io.github.clemsix6.narrator2.trace.TraceQueries
+import kotlinx.coroutines.withTimeoutOrNull
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
+import net.minecraft.network.chat.Component
+import java.nio.file.Path
+import java.time.Instant
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** `/narrator ping`, `status` and `reload` (M1_M2 §14.5). */
@@ -21,11 +32,17 @@ object AdminCommands {
 
     private const val DEFAULT_PING = "Ping! Can you hear me?"
 
+    /** The model calls of `status` cover this many hours. */
+    private const val USAGE_HOURS = 24
+
+    private const val USAGE_BARRIER_MS = 1_000L
+    private const val USAGE_READ_MS = 5_000L
+
     /** One ping at a time: a second one while the first waits for Claude is refused. */
     private val pingInFlight = AtomicBoolean(false)
 
-    /** One reload at a time. */
-    private val reloadInFlight = AtomicBoolean(false)
+    /** One reload at a time, whoever asks for it (`reload`, `chaos <level>`). */
+    internal val reloadInFlight = AtomicBoolean(false)
 
     fun attach(root: LiteralArgumentBuilder<CommandSourceStack>) {
         root.then(
@@ -86,36 +103,53 @@ object AdminCommands {
         return 1
     }
 
-    /** Phase, settings, gateway, key presence (never its value), Journal, Director, folders, roles. */
+    /**
+     * What runs and how well (M1_M2 §14.4): phase, settings, gateway, key presence (never its value),
+     * Director, chapter, tasks, Journal, reflexes, guards, folders, roles; then, read from the Journal
+     * off the server thread, the model calls of the last 24 hours.
+     */
     private fun status(source: CommandSourceStack): Int {
         val runtime = NarratorRuntime.current
         if (runtime == null) {
             source.sendFailure(errorLine("the Narrator is not running, see the server log."))
             return 0
         }
-        val settings = runtime.settings.get()
+        statusLines(runtime, NarratorRuntime.configDir).forEach { line -> source.sendSuccess({ line }, false) }
+        if (runtime.phase != Phase.RUNNING) return 1
+        if (!runtime.journal.available) {
+            source.sendSuccess({ detailLine("Usage: unknown, the Journal is unavailable") }, false)
+            return 1
+        }
+        replyLater(source, runtime, "usage") {
+            withTimeoutOrNull(USAGE_BARRIER_MS) { runtime.journal.barrier() }
+            val text = TraceText(runtime.clock.zone, runtime.clock.millis())
+            val usage = runtime.journal.read(USAGE_READ_MS) { TraceQueries(it).usage(text.now - USAGE_HOURS * 3_600_000L) }
+            listOf(detailLine(text.usageSummary(usage, USAGE_HOURS)))
+        }
+        return 1
+    }
+
+    /** The lines of `/narrator status` that come from memory, in the order of [status]. Any thread. */
+    internal fun statusLines(services: NarratorServices, configDir: Path): List<Component> {
+        val settings = services.settings.get()
         val config = settings.config
         val key = if (settings.claude != null) "present" else "missing"
-        val health = runtime.journal.health()
-        val director = runtime.director.status()
-        val lines = buildList {
+        val text = TraceText(services.clock.zone, services.clock.millis())
+        val director = services.director.status()
+        return buildList {
             add(narratorLine("status"))
-            add(detailLine("Phase: ${runtime.phase.name.lowercase()} · settings: ${settings.loadError?.let { "defaults ($it)" } ?: "loaded"}"))
+            add(detailLine("Phase: ${services.phase.name.lowercase()} · settings: ${settings.loadError?.let { "defaults ($it)" } ?: "loaded"}"))
             add(detailLine("Gateway: ${config.gateway.baseUrl} · cache marker ${config.gateway.cacheTtl} · ${config.gateway.maxRetries} retries"))
             add(detailLine("Key: $key (${SettingsLoader.keySource(config)})"))
-            add(
-                detailLine(
-                    if (health.available) {
-                        "Journal: available · ${health.queued} queued · ${health.droppedEvents} lost"
-                    } else {
-                        "Journal: unavailable (${health.lastError})"
-                    },
-                ),
-            )
-            add(detailLine("Director: ${director.state.name.lowercase()}${director.reason?.let { " ($it)" } ?: ""}"))
-            add(detailLine("Config: ${NarratorRuntime.configDir}"))
-            add(detailLine("Data: ${runtime.dataDir}"))
-            add(detailLine("Transcripts (${if (runtime.transcripts.enabled) "on" else "off"}): ${runtime.transcripts.root}"))
+            add(detailLine(directorLine(director, text)))
+            add(detailLine(chapterLine(director)))
+            add(detailLine(tasksLine(services, text)))
+            add(detailLine(journalLine(services.journal.health())))
+            add(detailLine(reflexesLine(settings)))
+            add(detailLine(guardsLine(services)))
+            add(detailLine("Config: $configDir"))
+            add(detailLine("Data: ${services.dataDir}"))
+            add(detailLine("Transcripts (${if (services.transcripts.enabled) "on" else "off"}): ${services.transcripts.root}"))
             add(detailLine("Roles:"))
             config.roles.forEach { (role, settings) ->
                 add(
@@ -126,9 +160,64 @@ object AdminCommands {
                 )
             }
         }
-        lines.forEach { line -> source.sendSuccess({ line }, false) }
-        return 1
     }
+
+    /** `Director: waiting until 21:32:04 · turn #42 running · inbox 3 (1 dropped) · reminders R-3 21:40`. */
+    private fun directorLine(director: DirectorStatus, text: TraceText): String = buildString {
+        append("Director: ").append(director.state.name.lowercase())
+        director.until?.let { append(" until ").append(text.time(Instant.ofEpochMilli(it))) }
+        director.reason?.let { append(" (").append(it).append(')') }
+        director.turnId?.let { append(" · turn #").append(it).append(" running") }
+        append(" · inbox ").append(director.inbox)
+        if (director.droppedSignals > 0) append(" (").append(director.droppedSignals).append(" dropped)")
+        append(" · reminders ")
+        append(if (director.reminders.isEmpty()) "none" else director.reminders.joinToString { "R-${it.id} ${text.time(Instant.ofEpochMilli(it.at))}" })
+    }
+
+    /** `Chapter: #3 · context 61k tokens · operator channel system_message`. */
+    private fun chapterLine(director: DirectorStatus): String {
+        val chapter = director.chapter?.let { "#$it · context ${TraceText.tokens(director.contextTokens)} tokens" } ?: "none open"
+        return "Chapter: $chapter · operator channel ${director.operatorChannel.id}"
+    }
+
+    /** `Tasks: T-13 analyst running 12 s, T-14 analyst queued`: the tasks not finished. */
+    private fun tasksLine(services: NarratorServices, text: TraceText): String {
+        val open = services.workers.list().filterNot { it.status.finished }
+        val tasks = open.joinToString { task ->
+            val since = task.startedAt?.let { " ${TraceText.duration(text.now - it.toEpochMilli())}" }.orEmpty()
+            "T-${task.taskId} ${task.role.id} ${task.status.id}$since"
+        }
+        return "Tasks: ${tasks.ifEmpty { "none running" }}"
+    }
+
+    /** `Journal: available · 12.3 MB + 0.4 MB WAL · 1520 rows/min · last flush 12 ms (340 rows) · 0 queued · 0 lost`. */
+    private fun journalLine(health: JournalHealth): String {
+        if (!health.available) return "Journal: unavailable (${health.lastError}) · ${health.droppedEvents} lost"
+        return "Journal: available · ${megabytes(health.fileBytes)} + ${megabytes(health.walBytes)} WAL · ${health.rowsPerMinute} rows/min · " +
+            "last flush ${health.lastFlushMs} ms (${health.lastFlushRows} rows) · ${health.queued} queued · ${health.droppedEvents} lost"
+    }
+
+    /** `Reflexes: Jev jev-1.13.0, active`, or the heuristic and why. */
+    private fun reflexesLine(settings: Settings): String {
+        val jev = settings.jev
+        val config = settings.config.jev
+        return when {
+            jev != null -> "Reflexes: Jev ${jev.model}, ${jev.status()}"
+            !config.enabled -> "Reflexes: heuristic (Jev is disabled in the configuration)"
+            else -> "Reflexes: heuristic (no Jev key in the environment variable ${config.apiKeyEnv})"
+        }
+    }
+
+    /** `Guards: chaos 3 · creatures 2 of 16 · protected online: clemsix6`. */
+    private fun guardsLine(services: NarratorServices): String {
+        val guards = services.guards
+        val caps = guards.caps()
+        val protectedOnline = services.players.online.filter { guards.isProtected(it.ref.uuid) }.joinToString { it.ref.name }
+        return "Guards: chaos ${services.settings.get().config.chaos} · creatures ${guards.mobs.count()} of ${caps.livingMobs} · " +
+            "protected online: ${protectedOnline.ifEmpty { "nobody" }}"
+    }
+
+    private fun megabytes(bytes: Long): String = String.format(Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)
 
     /**
      * Loads the configuration, prompts and texts again, off the server thread, and installs them; the
