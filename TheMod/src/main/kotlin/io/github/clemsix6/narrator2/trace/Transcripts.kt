@@ -25,7 +25,11 @@ import java.util.concurrent.ConcurrentHashMap
  * Tracing never breaks a call: a transcript that cannot be written is logged and skipped. The LLMGW
  * key is never written: it is not part of a conversation or of a request's parameters.
  */
-class Transcripts(val root: Path, val enabled: Boolean) {
+class Transcripts(val root: Path, enabled: Boolean) {
+    /** Whether transcripts are written; `/narrator reload` updates it from `logging.transcripts`. */
+    @Volatile
+    var enabled: Boolean = enabled
+
     private val mapper = jsonMapper()
     private val log = Log.trace
 

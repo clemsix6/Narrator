@@ -12,7 +12,7 @@
       { "value": "io.github.clemsix6.narrator2.Narrator2", "adapter": "kotlin" }
     ]
   },
-  "mixins": ["narrator2.mixins.json"],
+  "mixins": ["narrator2.observer.mixins.json", "narrator2.guard.mixins.json", "narrator2.policy.mixins.json"],
   "depends": {
     "fabricloader": ">=0.19.5",
     "minecraft": "~26.3",

@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
+import java.util.UUID
 
 /** How soon an event should reach the Director. */
 enum class Urgency {
@@ -131,4 +132,11 @@ interface DirectorControl {
     fun scheduleReminder(inSeconds: Int, note: String, caller: Caller): Result<Long>
 
     fun status(): DirectorStatus
+
+    /**
+     * One English line (at most 200 characters) on what [player] did in the last [minutes] minutes,
+     * from the activity digest (M1_M2 §12.4), e.g. `mined 140 (3 diamond_ore y=-54..-51)`; null when
+     * nothing is known. Read by `list_players` and the situation report. Any thread.
+     */
+    fun recentActivity(player: UUID, minutes: Int): String?
 }

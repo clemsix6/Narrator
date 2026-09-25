@@ -5,7 +5,21 @@
   "name": "The Narrator 2 - in-game tests",
   "environment": "*",
   "entrypoints": {
-    "fabric-gametest": ["io.github.clemsix6.narrator2.gametest.NarratorGameTests"]
+    "fabric-gametest": [
+      "io.github.clemsix6.narrator2.gametest.NarratorGameTests",
+      "io.github.clemsix6.narrator2.gametest.ObserverFabricGameTests",
+      "io.github.clemsix6.narrator2.gametest.ObserverMixinGameTests",
+      "io.github.clemsix6.narrator2.gametest.JournalEndToEndTests",
+      "io.github.clemsix6.narrator2.gametest.GuardGameTests",
+      "io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests",
+      "io.github.clemsix6.narrator2.gametest.OracleGameTests",
+      "io.github.clemsix6.narrator2.gametest.SpeechGameTests",
+      "io.github.clemsix6.narrator2.gametest.PlayerActionGameTests",
+      "io.github.clemsix6.narrator2.gametest.WorldActionGameTests",
+      "io.github.clemsix6.narrator2.gametest.CommandToolGameTests",
+      "io.github.clemsix6.narrator2.gametest.CommandGameTests",
+      "io.github.clemsix6.narrator2.gametest.DirectorEndToEndTests"
+    ]
   },
   "depends": {
     "narrator2": "*",

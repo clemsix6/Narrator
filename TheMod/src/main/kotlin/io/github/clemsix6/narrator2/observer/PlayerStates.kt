@@ -1,7 +1,16 @@
 package io.github.clemsix6.narrator2.observer
 
+import io.github.clemsix6.narrator2.event.Envelope
+import io.github.clemsix6.narrator2.event.EventBus
+import io.github.clemsix6.narrator2.event.GameEvent
+import io.github.clemsix6.narrator2.event.PlayerDied
+import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.event.PlayerRespawned
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.event.Subscription
+import net.minecraft.server.level.ServerPlayer
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -35,6 +44,9 @@ data class LivePlayer(
 /**
  * The live state of the players online, read by the Director, the tools and the guards from any
  * thread, written on the server thread only.
+ *
+ * Joins, leaves, deaths and respawns come from the bus ([subscribe]); the position sampler (T05) writes
+ * the position fields with [update] and refreshes [online] at most once a second.
  */
 class PlayerStates {
     private val players = ConcurrentHashMap<UUID, LivePlayer>()
@@ -42,7 +54,7 @@ class PlayerStates {
     @Volatile
     private var snapshot: List<LivePlayer> = emptyList()
 
-    /** Immutable snapshot of the players online, refreshed by [republish]. Any thread. */
+    /** Immutable snapshot of the players online, in order of arrival, refreshed by [republish]. Any thread. */
     val online: List<LivePlayer> get() = snapshot
 
     /** The latest state of a player online. Any thread. */
@@ -68,8 +80,73 @@ class PlayerStates {
         players.computeIfPresent(uuid) { _, player -> change(player) }
     }
 
-    /** Refreshes [online] from the latest states (joins and leaves do it at once; the sampler at most once a second). */
+    /** Refreshes [online] from the latest states (joins, leaves, deaths and respawns do it at once; the sampler at most once a second). */
     fun republish() {
         snapshot = players.values.sortedBy { it.joinedAt }
+    }
+
+    /**
+     * Follows joins, leaves, deaths and respawns on [bus], inline on the server thread. [online] finds
+     * the live player, for what events do not carry (game mode, health, food); null when not found.
+     */
+    fun subscribe(bus: EventBus, online: (UUID) -> ServerPlayer?): Subscription =
+        bus.subscribeSync(SUBSCRIBER, OWNER, { follows(it) }) { envelope -> apply(envelope, online) }
+
+    /** Applies one event of [subscribe]. Server thread only. */
+    fun apply(envelope: Envelope, online: (UUID) -> ServerPlayer?) {
+        val at = envelope.ts
+        when (val event = envelope.event) {
+            is PlayerJoined -> put(joined(event, at, online(event.player.uuid)))
+            is PlayerLeft -> remove(event.player.uuid)
+            is PlayerDied -> {
+                update(event.player.uuid) { it.copy(pos = event.pos, health = 0f, lastDeathAt = at, lastMoveAt = at, idle = false) }
+                republish()
+            }
+            is PlayerRespawned -> {
+                val live = online(event.player.uuid)
+                update(event.player.uuid) {
+                    it.copy(
+                        pos = event.pos,
+                        health = live?.health ?: it.maxHealth,
+                        maxHealth = live?.maxHealth ?: it.maxHealth,
+                        food = live?.foodData?.foodLevel ?: it.food,
+                        vehicle = null,
+                        lastMoveAt = at,
+                        idle = false,
+                    )
+                }
+                republish()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun joined(event: PlayerJoined, at: Long, live: ServerPlayer?) = LivePlayer(
+        ref = event.player,
+        sessionId = event.sessionId,
+        joinedAt = at,
+        isOp = event.isOp,
+        gameMode = live?.gameMode()?.serializedName ?: "survival",
+        pos = event.pos,
+        biome = null,
+        structure = null,
+        underground = false,
+        health = live?.health ?: DEFAULT_HEALTH,
+        maxHealth = live?.maxHealth ?: DEFAULT_HEALTH,
+        food = live?.foodData?.foodLevel ?: DEFAULT_FOOD,
+        vehicle = live?.vehicle?.typeId,
+        lastDeathAt = null,
+        lastMoveAt = at,
+        idle = false,
+    )
+
+    private companion object {
+        const val SUBSCRIBER = "player_states"
+        const val OWNER = "runtime"
+        const val DEFAULT_HEALTH = 20f
+        const val DEFAULT_FOOD = 20
+
+        fun follows(event: GameEvent): Boolean =
+            event is PlayerJoined || event is PlayerLeft || event is PlayerDied || event is PlayerRespawned
     }
 }
