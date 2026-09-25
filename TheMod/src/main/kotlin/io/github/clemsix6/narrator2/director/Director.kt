@@ -258,7 +258,8 @@ class Director(
             return
         }
         publish(if (wakeAt != null) DirectorState.WAITING else DirectorState.IDLE, wakeAt, null)
-        val next = listOfNotNull(wakeAt, quietAt, beatAt, nextReminderAt(), now + RECHECK_MS).min()
+        // A quiet moment already due waits for the scheduled wake-up to pass: it is not a deadline then.
+        val next = listOfNotNull(wakeAt, quietAt?.takeIf { it > now }, beatAt, nextReminderAt(), now + RECHECK_MS).min()
         inbox.await(next - now)
     }
 

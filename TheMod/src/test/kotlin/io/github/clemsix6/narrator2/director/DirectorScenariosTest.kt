@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -608,6 +609,29 @@ class DirectorScenariosTest {
         h.awaitTurns(2)
         assertNotEquals(h.sessionOf(0), h.sessionOf(1))
         assertEquals(2, h.director.status().chapter)
+        h.assertInvariants()
+    }
+
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    fun `a quiet moment due while a wake-up is scheduled waits for that wake-up, without spinning`() = harness().use { h ->
+        h.online("Bartok")
+        h.fake.enqueue(reply { text("…") })
+        h.fake.enqueue(reply { text("…") })
+
+        h.chat("Bartok", "narrateur ?")
+        h.advance(1_500)
+        h.awaitTurns(1)
+        h.director.post(DirectorSignal.CloseChapter(ConversationRecord.EndReason.OPERATOR))
+        h.advance(10_000)
+        h.chat("Bartok", "on parle entre nous", toNarrator = 0.1)
+        h.advance(20_000)
+        assertEquals(1, h.director.status().chapter, "not quiet: a chat between players waits for its wake-up")
+        h.advance(25_000)
+        h.awaitTurns(2)
+        assertEquals(h.sessionOf(0), h.sessionOf(1))
+        h.advance(20_000)
+        assertEquals(null, h.director.status().chapter)
         h.assertInvariants()
     }
 

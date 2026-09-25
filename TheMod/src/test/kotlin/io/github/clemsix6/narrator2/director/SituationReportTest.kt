@@ -61,7 +61,7 @@ class SituationReportTest {
             ),
         )
         guards.protectedPlayers += ref("clemsix6").uuid
-        guards.effects[ref("Bartok").uuid] = listOf(ActiveEffect("effect", "slowness II", now + 80_000, harmful = true))
+        guards.active[ref("Bartok").uuid] = listOf(ActiveEffect("effect", "slowness II", now + 80_000, harmful = true))
         listOf(-54, -51, -52).forEach { y -> digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, y, 0), "minecraft:diamond_ore", null, false, true, null))) }
         repeat(2) { digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, -50, 0), "minecraft:stone", null, false, true, null))) }
         tasks += TaskRecord(13, Role.ANALYST, "where does Bartok mine?", TaskRecord.Status.RUNNING, Instant.ofEpochMilli(now - 15_000), Instant.ofEpochMilli(now - 12_000), null, 40, "analyst-1", null, null)
