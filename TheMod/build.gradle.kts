@@ -37,6 +37,8 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:${property("junit_version")}"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Virtual time for debounces, heartbeats and deadlines.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${property("kotlinx_coroutines_version")}")
 }
 
 // Loom's `include` is not transitive: nest every resolved library jar explicitly, except what the

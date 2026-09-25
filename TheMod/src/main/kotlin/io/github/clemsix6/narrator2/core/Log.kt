@@ -38,12 +38,22 @@ class Log private constructor(val tag: String) {
 
         fun of(tag: String): Log = loggers.computeIfAbsent(tag) { Log(it) }
 
-        // Every subsystem is declared here, so that a tag in `logging.levels` can be checked.
+        // Every subsystem is declared here, so that a tag in `logging.levels` can be checked (and set)
+        // before the subsystem's first line.
         val main = of("Narrator")
         val llm = of("LLM")
         val config = of("Config")
         val command = of("Command")
         val trace = of("Trace")
+        val bus = of("Bus")
+        val observer = of("Observer")
+        val journal = of("Journal")
+        val sql = of("Sql")
+        val director = of("Director")
+        val tool = of("Tool")
+        val guard = of("Guard")
+        val jev = of("Jev")
+        val worker = of("Worker")
 
         /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
         fun applyLevels(levels: Map<String, String>) {
