@@ -339,7 +339,7 @@ Mécanismes concrets contre la répétition et la dérive :
 Tout doit pouvoir s'expliquer après coup : pourquoi le Narrateur a dit ça, pourquoi il n'a rien fait, pourquoi ce module a planté. Trois niveaux de traces.
 
 ### 12.1 Les conversations avec Claude
-- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, tour, rôle, but (tour, résumé de chapitre, tâche), modèle, effort, identifiants de requête et de message, durée et temps jusqu'au premier token, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt et catégorie de refus, erreurs et tentatives. Les appels à Jev y figurent aussi (`provider = 'jev'`).
+- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, tour, rôle, but (tour, résumé de chapitre, tâche), modèle, effort, identifiants de requête et de message, durée et temps jusqu'au premier token, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt et catégorie de refus, erreurs et tentatives. Les appels à Jev y figurent aussi (`provider = 'jev'`). L'identifiant de requête vient de l'en-tête `request-id`, sinon de `X-Cpa-Trace-Id` posé par CLIProxyAPI : LLMGW ne relaie pas `request-id` (vérifié par `liveTest`, `docs/research/LLMGW.md` §3). Le temps jusqu'au premier token représente typiquement 70 à 100 % de la durée totale d'un appel (vérifié par `liveTest`) : le flux SSE arrive presque en bloc à la fin plutôt qu'étalé.
 - **Le raisonnement** : les requêtes demandent `thinking.display: "summarized"`, qui renvoie un résumé lisible de la réflexion du modèle (Opus 5.5 ne renvoie jamais son raisonnement brut). Ces résumés sont stockés dans `llm_calls.thinking` et dans les transcriptions.
 - **Chaque conversation** (chapitre du Directeur, tâche d'un assistant, rêve) a sa transcription complète, append-only, dans `world/narrator2/logs/conversations/<date>/` : un `.jsonl` exact (pour rejouer ou analyser) et un `.md` lisible où l'on suit, dans l'ordre, les événements reçus, le résumé de réflexion, chaque appel d'outil avec ses arguments et son résultat, et ce qui a été dit aux joueurs. Les envois non validés (refus, réponse tronquée, erreur) y apparaissent comme tels. Les tables `conversations`, `turns` et `tasks` relient chapitres, tours, tâches et transcriptions.
 
@@ -397,51 +397,53 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 - **Effort** : le Directeur démarre à `medium`. Sur Opus 5.5, `medium` dépasse le `high` d'Opus 5 et répond plus vite ; `high` reste disponible dans la configuration. Le Forgeron et le Rêveur travaillent en `high` : ils sont asynchrones, la latence n'y coûte rien.
 - **Contraintes d'Opus 5.5 prises en compte** : réflexion toujours active (l'effort est le seul réglage), pas de `tool_choice` forcé, historique append-only, gestion du `stop_reason: refusal`.
 - **Affinité de session** : chaque conversation envoie un en-tête `X-Session-ID` stable. CLIProxyAPI s'en sert pour garder une conversation sur le même compte amont, là où vit son cache de prompt.
-- **Cache de prompt** : outils, prompt système et briefing sont stables pendant un chapitre ; les noms d'outils restent courts (LLMGW les préfixe en `mcp__llmgw__…` et laisse tels quels ceux de plus de 52 caractères).
+- **Cache de prompt** : outils, prompt système et briefing sont stables pendant un chapitre. `gateway.cacheTtl` (`off` par défaut, `1h` ou `5m` sinon) contrôle le marqueur `cache_control` que le mod pose lui-même. **Vérifié par `liveTest` (25/09/2026)** : le serveur LLMGW du propriétaire pose déjà ses propres marqueurs `ttl=1h` (prompt système, derniers tours), et le cache fonctionne sans marqueur de notre part (5 344 tokens écrits puis relus) ; un marqueur de plus des nôtres est refusé (400 « A maximum of 4 blocks with cache_control ») à partir du deuxième tour, et un `5m` l'est toujours (conflit de `ttl`) — d'où le défaut `off`. `1h`/`5m` restent utiles derrière une passerelle qui ne poserait pas son propre marqueur. Les noms d'outils restent courts (LLMGW les préfixe en `mcp__llmgw__…` et laisse tels quels ceux de plus de 52 caractères).
+- **Messages `system` en cours de conversation** : **acceptés et suivis, vérifié par `liveTest` (25/09/2026)** — c'est ce qui permet à `director.operatorChannel` de rester en mode `system_message` par défaut ; le repli `user_tag` reste disponible en configuration et par bascule automatique sur une 400 (voir [design M1/M2](design/M1_M2.md) §12.7, acquis vérifié à son §20 point 1).
 - **Quotas** : les budgets de LLMGW (appels, tokens, coût par heure ou par jour) protègent le compte. Le mod suit aussi sa consommation par rôle et espace les battements quand le budget se tend.
 
 ### Credentials OAuth ou clé API
 Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » chaque requête en Claude Code : il remplace le prompt système par l'identité de Claude Code (le nôtre est déplacé dans des messages système), reconstruit les en-têtes bêta et réécrit les marqueurs de cache. Le mod fonctionne quand même, mais de façon moins prévisible. Surtout, les conditions d'Anthropic réservent l'OAuth des abonnements Free/Pro/Max à Claude Code et aux applications d'Anthropic : alimenter un serveur multijoueur avec n'entre pas dans ce cadre. **Recommandation : une clé API Anthropic déclarée dans LLMGW pour le projet du Narrateur.** Rien ne change côté mod.
 
+**Constaté par `liveTest` (25/09/2026)** : la passerelle réécrit nos requêtes avant de les transmettre — elle insère un bloc avant notre texte et pose elle-même les marqueurs de cache décrits ci-dessus. D'après la lecture du code de LLMGW (`docs/research/LLMGW.md` §2), ce comportement est le signe d'un cloaking CLIProxyAPI actif, donc **vraisemblablement d'un compte d'abonnement (OAuth) en amont plutôt que d'une clé API**. Ce n'est qu'un faisceau d'indices côté client, pas une confirmation du credential réellement configuré côté serveur : à vérifier avec le propriétaire. Cela renforce l'enjeu de la recommandation ci-dessus (conditions d'utilisation d'Anthropic).
+
 ## 15. Configuration
 
-`config/narrator2/narrator2.json` (valeurs par défaut créées au premier lancement, jamais de clé dans le fichier) et `config/narrator2/prompts/` (surcharges des prompts du jar, rechargées par `/narrator reload`). Chaque section arrive avec son jalon ; valeurs et règles de validation de M1/M2 : [design M1/M2](design/M1_M2.md) §15.
+`config/narrator2/narrator2.json` : écrit une seule fois, de façon atomique, avec toutes les valeurs par défaut au premier lancement (jamais de clé LLMGW dans le fichier — elle vient uniquement de la variable d'environnement nommée par `gateway.apiKeyEnv`, `NARRATOR_LLMGW_KEY` par défaut). Les chargements suivants relisent le fichier de l'opérateur et le fusionnent avec les défauts **clé par clé** : une section ou un réglage absent du fichier prend sa valeur par défaut sans que le fichier soit réécrit. `config/narrator2/prompts/` surcharge les prompts du jar et est relu par `/narrator reload`.
+
+**M0 ne livre que `gateway`, `roles` et `logging` ci-dessous** (contenu exact du fichier créé par `ConfigStore`, `NarratorConfig.kt`) : `jev`, `language`, `chaos`, `journal`, `observer`, `director`, `workers` et `safety` **arrivent avec M1 et M2** — une section non encore utilisée est retirée du fichier plutôt que d'y traîner sans effet, et revient avec son jalon. Valeurs et règles de validation de ces sections futures : [design M1/M2](design/M1_M2.md) §15.
 
 ```json
 {
-  "gateway": { "baseUrl": "http://localhost:8088", "apiKeyEnv": "NARRATOR_LLMGW_KEY" },
-  "jev": { "enabled": true, "baseUrl": "https://api.typesafe.ai", "apiKeyEnv": "TYPESAFE_API_KEY", "model": "jev-1.13.0", "timeoutMs": 1500 },
-  "language": "fr",
-  "chaos": 3,
-  "journal": { "flushIntervalMs": 1000, "queueCapacity": 65536, "memoryLimitMb": 512, "threads": 2, "timeZone": "", "sqlTimeoutSeconds": 5, "warnSizeMb": 4096 },
-  "observer": { "redactedCommands": ["login", "l", "register", "reg", "changepassword"] },
+  "gateway": {
+    "baseUrl": "http://127.0.0.1:8088",
+    "apiKeyEnv": "NARRATOR_LLMGW_KEY",
+    "cacheTtl": "off",
+    "maxRetries": 3,
+    "retryInitialDelayMs": 1000,
+    "retryMaxDelayMs": 30000
+  },
   "roles": {
-    "director":  { "model": "claude-opus-5-5", "effort": "medium" },
-    "forger":    { "model": "claude-opus-5-5", "effort": "high" },
-    "analyst":   { "model": "claude-opus-5-5", "effort": "low" },
-    "scout":     { "model": "claude-opus-5-5", "effort": "low" },
-    "storyteller":{ "model": "claude-opus-5-5", "effort": "medium" },
-    "chronicler":{ "model": "claude-opus-5-5", "effort": "low" },
-    "dreamer":   { "model": "claude-opus-5-5", "effort": "high" }
+    "director":    { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 300 },
+    "analyst":     { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "scout":       { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "forger":      { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 },
+    "storyteller": { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "chronicler":  { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "dreamer":     { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 }
   },
-  "director": {
-    "enabled": true, "heartbeatMinutes": [3, 8], "chatDebounceMs": 1500,
-    "chapterTokenLimit": 150000, "chapterHardLimit": 180000, "maxStepsPerTurn": 12,
-    "operatorChannel": "system_message", "emptyServerCloseMinutes": 10, "thinkingIndicator": true
-  },
-  "workers": { "maxConcurrent": 3, "maxSteps": 15, "timeoutSeconds": 180 },
-  "safety": { "protectedPlayers": [], "extraForbiddenCommands": [] },
-  "logging": { "transcripts": true, "levels": { "Director": "INFO", "LLM": "INFO", "Forge": "INFO" } }
+  "logging": { "transcripts": true, "levels": {} }
 }
 ```
 
-Les plafonds (puissance d'explosion, invocations, durées, quota de morts…) ne sont plus des réglages séparés : ils découlent du niveau de chaos (tableau dans le design M1/M2 §10.4). La liste de base des commandes interdites est codée en dur ; `safety.extraForbiddenCommands` ne peut qu'en ajouter.
+`gateway.cacheTtl` (`off` | `1h` | `5m`, `off` par défaut) et les timeouts par rôle (`readTimeoutSeconds` : silence toléré de la passerelle ; `totalTimeoutSeconds` : tout l'appel, retries compris) sont vérifiés contre le vrai serveur LLMGW (`docs/research/LLMGW.md`, § *Vérifié par liveTest*). La politique de retry (`gateway.maxRetries`, `retryInitialDelayMs`, `retryMaxDelayMs`) est propre au mod : les retries du SDK Anthropic sont désactivés pour ne pas s'empiler sur ceux de CLIProxyAPI en amont (§14).
+
+Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, durées, quota de morts…) ne seront pas des réglages séparés : ils découleront du niveau de chaos (tableau dans le design M1/M2 §10.4). La liste de base des commandes interdites sera codée en dur ; `safety.extraForbiddenCommands` ne pourra qu'en ajouter.
 
 ## 16. Feuille de route
 
 | Étape | Contenu | Résultat visible |
 |---|---|---|
-| **M0 — Fondations** | Projet Gradle Fabric/Kotlin 26.3, serveur de dev, configuration, client LLMGW, traces des appels, `/narrator ping` | Le mod démarre et parle à Claude |
+| **M0 — Fondations** — **terminé (25/09/2026)** | Projet Gradle Fabric/Kotlin 26.3, serveur de dev, configuration, client LLMGW, traces des appels, `/narrator ping` | Le mod démarre et parle à Claude — vérifié contre le vrai serveur LLMGW (`gradlew liveTest`) et de bout en bout (`/narrator ping` sur le serveur de dev, réponse en 4,5 s) |
 | **M1 — Journal** | Observateur (hooks, statistiques, mixins, positions), DuckDB, outil `sql` | Tout est enregistré et interrogeable |
 | **M2 — Directeur v1** | Boucle événementielle, saillance, parole, Oracle, actions typées, validation des commandes, prompt de voix, transcriptions | Le Narrateur réagit au chat et au jeu |
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures |
@@ -474,3 +476,4 @@ Tranché le 25/09/2026 :
 5. **Jev** est intégré aux réflexes et s'active automatiquement dès que `TYPESAFE_API_KEY` est présente. Sans clé, des heuristiques locales le remplacent. Le chat part déjà vers les États-Unis (Anthropic) : Jev n'ajoute pas de nouvelle catégorie de risque.
 
 6. **EULA de Minecraft** : le propriétaire autorise son acceptation pour tous les serveurs de dev et de test.
+7. **Vie privée** : les messages privés entre joueurs sont journalisés, mais **jamais exposés au modèle, y compris par l'outil `sql` en lecture seule** — pas seulement écartés du flux d'événements qui réveille le Directeur (§7.2). Le schéma et les vues exposées au modèle (M1, [design M1/M2](design/M1_M2.md) §5 et §6.4) doivent en tenir compte.

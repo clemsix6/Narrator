@@ -91,21 +91,26 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
   ([`effort/apply.go`](https://github.com/clemsix6/LLMGW/blob/main/internal/domain/effort/apply.go)).
   Comme `ClaudeClient.kt` pose toujours `OutputConfig.Effort` explicitement par rôle, cette injection ne
   se déclenche jamais pour nos appels.
-- **`cache_control` au niveau racine** — **comportement réel différent de l'hypothèse initiale, voir §
-  *Vérifié en réel*.** L'API Messages Anthropic n'a pas de champ `cache_control` de premier niveau au sens
-  strict — c'est un marqueur qui finit par s'appliquer à un bloc de contenu (« top-level auto-caching »).
-  Testé en réel le 25/09/2026 : envoyer `cache_control: {"type": "ephemeral"}` sans `ttl` explicite (ce
-  que fait `.cacheControl(CacheControlEphemeral.builder().build())` dans `ClaudeClient.kt` aujourd'hui,
-  qui laisse le SDK sur son défaut implicite `ttl=5m`) est **rejeté avec une 400** : un bloc — probablement
-  le prompt système — porte déjà côté serveur un `cache_control` avec `ttl=1h`, posé **avant** que le
-  marqueur du client ne s'applique, et Anthropic exige que les deux correspondent quand les deux existent
-  sur le même bloc. Avec `cache_control: {"type": "ephemeral", "ttl": "1h"}` explicite côté client, la
-  requête passe. Ceci contredit l'hypothèse de la recherche initiale selon laquelle, avec un compte amont
-  **clé API** (sans cloaking), rien ne pose de marqueur de cache avant le nôtre — soit le compte amont
-  configuré n'est pas (ou plus) une simple clé API, soit LLMGW/CLIProxyAPI pose ce marqueur par défaut
-  indépendamment du type de credential. Aucune des deux causes n'a pu être confirmée depuis ce test seul
-  (pas d'accès à la configuration serveur). **Voir « Exigences pour ClaudeClient » ci-dessous : c'est le
-  changement le plus important trouvé par ce test.**
+- **`cache_control` au niveau racine** — **comportement réel confirmé par `liveTest`, voir § *Vérifié par
+  liveTest (25/09/2026)*.** L'API Messages Anthropic n'a pas de champ `cache_control` de premier niveau au
+  sens strict — c'est un marqueur qui finit par s'appliquer à un bloc de contenu (« top-level auto-caching »).
+  Le serveur LLMGW du propriétaire pose **lui-même** des marqueurs `cache_control` avec `ttl=1h` sur le
+  prompt système et les derniers tours, **avant** qu'un marqueur du client ne s'applique. Conséquence :
+  - **Sans marqueur de notre part, le cache fonctionne déjà** : un appel écrit dans le cache, l'appel
+    suivant sur la même conversation (même `X-Session-ID`) le relit — mesuré à 5 344 tokens écrits puis
+    5 344 relus.
+  - **Un marqueur `1h` de notre part est accepté au premier tour** (il coïncide avec celui déjà posé par la
+    passerelle) **mais rejeté par une 400 à partir du deuxième tour utilisateur** : le marqueur de la
+    passerelle plus le nôtre dépassent la limite de l'API (« A maximum of 4 blocks with cache_control…
+    Found 5 »).
+  - **Un marqueur `5m` de notre part est toujours rejeté** (400, conflit de `ttl` avec le `1h` déjà posé
+    côté serveur sur le même bloc).
+  - `gateway.cacheTtl` vaut donc **`off` par défaut** (aucun marqueur envoyé) : voir § *Vérifié par liveTest*
+    et « Exigences pour ClaudeClient » ci-dessous. `1h` et `5m` restent disponibles dans la configuration
+    pour une passerelle qui ne poserait pas son propre marqueur.
+  - Ce comportement (un bloc portant déjà un `cache_control` `ttl=1h` avant l'application du nôtre) est,
+    d'après la lecture du code (§ *Résumé compte amont clé API vs OAuth* ci-dessous), un signe de cloaking
+    OAuth côté compte amont, pas d'un compte clé API nu.
 - **`tools` et leurs noms** : **toujours** réécrits par LLMGW lui-même, sur les deux routes, indépendamment
   du type de compte amont
   ([`internal/adapter/cliproxy/request_rewrite.go`](https://github.com/clemsix6/LLMGW/blob/main/internal/adapter/cliproxy/request_rewrite.go)).
@@ -120,13 +125,13 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
   (JSON et SSE) sont dépréfixées avant de repartir vers le client, qui ne voit jamais `mcp__llmgw__` —
   **confirmé en réel** : `roll_dice` est revenu sous son nom exact, sans préfixe.
 - **Messages `system` au milieu de la conversation** (`{"role":"system", ...}` dans `messages[]`) : LLMGW
-  lui-même n'y touche jamais d'après le code source. Avec un compte amont OAuth, CLIProxyAPI rejette avec
-  400 un tour `role:"system"` si le modèle cible fait partie de sa liste de modèles « legacy » sans support
-  du tour mi-conversation, mais `claude-opus-5-5` n'y figurait pas d'après la lecture initiale du module
-  CLIProxyAPI embarqué. **Non re-testé en réel** : le test prévu pour ce point a été bloqué avant d'aboutir
-  (§ *Vérifié en réel*, point f). À traiter en priorité lors d'un prochain test, car c'est le point le plus
-  structurant pour l'architecture (consignes du moteur injectées en cours de conversation sans toucher au
-  prompt système initial).
+  lui-même n'y touche jamais d'après le code source. **Confirmé par `liveTest` (25/09/2026, § *Vérifié par
+  liveTest*)** : un tour `role:"system"` inséré en cours de conversation, juste après un message `user`, est
+  **accepté et suivi** par `claude-opus-5-5` derrière ce serveur — pas de 400, la consigne du tour système
+  l'emporte sur les tours précédents. C'était le point le plus structurant pour l'architecture, et il valide
+  `director.operatorChannel = system_message` comme mode par défaut (`docs/design/M1_M2.md` §12.7) ; le
+  repli `director.operatorChannel = user_tag` reste disponible en configuration et via la bascule
+  automatique sur 400 décrite au même paragraphe, mais n'est plus nécessaire contre ce serveur.
 - **En-têtes `anthropic-beta`** : avec un compte amont clé API, les en-têtes `Anthropic-Beta` du client
   sont conservés tels quels (« mode `preserveCallerFingerprint` » d'après la lecture initiale du module
   CLIProxyAPI embarqué) ; avec OAuth, la liste est remplacée par un jeu de betas assemblés pour imiter
@@ -135,10 +140,9 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
   `docs/ARCHITECTURE.md`). Consommé par le réglage natif CLIProxyAPI `routing.session-affinity: true` :
   « Sticky sessions pin every turn of one conversation to the same upstream account. Anthropic's prompt
   cache lives per account, so without this a multi-turn agent loop round-robins across accounts and
-  re-pays its whole context as a cache write on almost every turn. » Le test de lecture de cache prévu
-  (deux appels identiques avec le même `X-Session-ID`, point e) **n'a pas pu être mené à son terme** (§
-  *Vérifié en réel*) — un seul appel a réussi, confirmant une écriture de cache (`cache_creation`) mais pas
-  encore une lecture (`cache_read_input_tokens > 0`).
+  re-pays its whole context as a cache write on almost every turn. » **Confirmé par `liveTest`** (§ *Vérifié
+  par liveTest*, point c) : deux appels identiques avec le même `X-Session-ID` montrent une écriture de
+  cache au premier appel puis une lecture au second (5 344 tokens écrits, 5 344 relus).
 - **Modèles acceptés** : LLMGW ne maintient aucune liste blanche de modèles. Le champ `model` traverse sans
   modification. **Confirmé en réel** : `GET /v1/models` liste bien `claude-opus-5-5` et
   `claude-haiku-4-5-20251001` (ainsi que l'ID canonique `claude-haiku-4-5` sans suffixe de date) — voir §
@@ -147,11 +151,17 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
 **Résumé compte amont clé API vs OAuth** : d'après la lecture initiale du code, seul un compte amont OAuth
 déclenche le cloaking (réécriture du prompt système, marqueurs de cache maison, betas remplacés) ; avec une
 clé API, seuls le préfixage des noms d'outils et l'injection d'effort par défaut (permanents, non liés au
-cloaking) s'appliquent. **Le test réel du 25/09/2026 nuance ce résumé** sur un point précis : un marqueur
-`cache_control` avec `ttl=1h` était déjà présent sur un bloc avant l'application du nôtre, ce qui ne devrait
-pas arriver avec un compte amont clé API d'après cette même lecture. `docs/ARCHITECTURE.md` recommande
-toujours la clé API pour cette raison ; le point mérite d'être vérifié avec l'opérateur (quel type de
-credential est réellement configuré côté serveur aujourd'hui).
+cloaking) s'appliquent. **Le `liveTest` du 25/09/2026 rend ce cloaking vraisemblable** : la passerelle
+réécrit nos requêtes avant de les transmettre — elle insère un bloc avant notre texte et pose elle-même les
+marqueurs `cache_control` (`ttl=1h`, sur le prompt système et les derniers tours) — un comportement qui,
+d'après la lecture du code, ne devrait apparaître qu'en mode cloaking OAuth, jamais avec un compte amont clé
+API nu. Rien ne le confirme au niveau HTTP de façon certaine (pas d'accès à la configuration serveur), mais
+le faisceau d'indices pointe vers un **compte d'abonnement (OAuth) en amont plutôt qu'une clé API**.
+`docs/ARCHITECTURE.md` §14 recommande toujours une clé API Anthropic pour le projet du Narrateur : les
+conditions d'utilisation d'Anthropic réservent l'OAuth des abonnements Free/Pro/Max à Claude Code et aux
+applications d'Anthropic, et un serveur multijoueur n'entre pas dans ce cadre. **Ce point reste à clarifier
+avec l'opérateur** — ce que le mod observe n'est qu'un faisceau d'indices côté client, pas une confirmation
+du type de credential réellement configuré côté serveur.
 
 ## 3. Erreurs et limites
 
@@ -161,32 +171,49 @@ credential est réellement configuré côté serveur aujourd'hui).
   ([`internal/adapter/cliproxy/middleware.go`](https://github.com/clemsix6/LLMGW/blob/main/internal/adapter/cliproxy/middleware.go)).
   **Aucun en-tête `Retry-After` n'est posé** sur cette réponse — seul le `reset_at` JSON donne l'heure de
   réinitialisation. Avec `action=warn`, la requête passe et seul un log serveur est émis — le client n'a
-  aucun moyen HTTP de voir un warning. **Non déclenché en réel** (pas de budget dépassé pendant ce test).
-- **Autres codes propres à LLMGW** (d'après la lecture du code, non tous déclenchés en réel) : `401
-  authentication_error` (credential manquant, mal formé, dupliqué ou incohérent entre `Authorization` et
-  `x-api-key`) ; `503 service_unavailable` (panne DB transitoire, SDK pas encore prêt, permis de génération
-  épuisés, ou bridge « empoisonné ») ; `413 request_too_large` (corps > 32 MiB) ; `400
-  invalid_request_error` (le client a coupé l'envoi du corps en cours de route, ou requête malformée —
-  **une vraie 400 a bien été observée en réel**, voir § *Vérifié en réel* point h, sur le conflit de `ttl`
-  de `cache_control` plutôt que sur le scénario prévu).
+  aucun moyen HTTP de voir un warning. `ClaudeClient.kt` transforme ce 402 en `BudgetExceededException`, ne
+  le réessaie jamais, et porte `resetAt`. **Toujours non déclenché en réel** (pas de budget dépassé pendant
+  aucun des tests menés à ce jour) : la forme du corps reste celle lue dans le code, pas observée en HTTP.
+- **Autres codes propres à LLMGW** : `401 authentication_error` (credential manquant, mal formé, dupliqué ou
+  incohérent entre `Authorization` et `x-api-key`) — **confirmé par `liveTest`** avec une mauvaise clé : corps
+  `{"error":{"type":"authentication_error"}}`, **sans `message`** ; `503 service_unavailable` (panne DB
+  transitoire, SDK pas encore prêt, permis de génération épuisés, ou bridge « empoisonné » — non déclenché
+  en réel) ; `413 request_too_large` (corps > 32 MiB, non déclenché en réel) ; `400 invalid_request_error`
+  (requête malformée) — **confirmé par `liveTest`** sur un message vide : `cache_control cannot be set for
+  empty text blocks` (le SDK pose toujours un bloc `cache_control` sur le dernier bloc de texte quand
+  `gateway.cacheTtl` n'est pas `off`, y compris sur un texte vide) ; voir aussi les deux 400 de conflit de
+  `ttl` de `cache_control` au § *Vérifié par liveTest* ci-dessous.
 - **429 / 529 / compte amont indisponible** : viennent d'Anthropic lui-même (ou de la logique de
   cooldown/rotation de comptes amont de CLIProxyAPI), pas du middleware LLMGW — frontière de
   responsabilité explicite du `CLAUDE.md` du repo LLMGW (« The embedded SDK owns provider protocols,
   provider authentication, routing, cooldowns, and retries »). Leviers configurables :
   `request-retry: 1`, `max-retry-credentials: 2`, `max-retry-interval: 5`,
-  `transient-error-cooldown-seconds: -1`, `disable-cooling: false`. **Non déclenché en réel.**
+  `transient-error-cooldown-seconds: -1`, `disable-cooling: false`. **Toujours non déclenché en réel.**
 - **Timeouts côté passerelle** : aucun réglage de timeout de réponse propre à LLMGW trouvé dans le code. Le
   streaming étant relayé sans tampon, une génération longue ne devrait pas buter sur un timeout HTTP
-  non-streaming fixe côté LLMGW. Le seul timeout garanti reste celui du client
-  (`.timeout(Duration.ofSeconds(600))`, `.maxRetries(2)` dans `ClaudeClient.kt`/`NarratorConfig.kt`).
-- **Ce que le client doit réessayer ou non** (inchangé) :
-  - `401`/`400`/`413` : erreurs de configuration ou de requête, jamais à réessayer tel quel.
-  - `402 budget_exceeded` : jamais de retry immédiat — attendre `reset_at`.
-  - `503 service_unavailable` : transitoire par construction côté LLMGW — un retry avec backoff est
-    raisonnable.
-  - Erreurs forwardées depuis Anthropic (429/529/5xx après épuisement du budget de retry CLIProxyAPI) :
-    laisser le SDK Java gérer via sa politique de retry par défaut (`maxRetries = 2`), sans l'empiler
-    par-dessus les retries déjà faits par CLIProxyAPI.
+  non-streaming fixe côté LLMGW. Le seul timeout garanti reste celui du client, **par rôle** depuis le
+  correctif de M0 (`roles.<rôle>.readTimeoutSeconds` = 90 s de silence toléré, `totalTimeoutSeconds` = 300 s
+  pour le Directeur, 600 s par défaut, 1 200 s pour le Forgeron et le Rêveur — `RoleConfig` dans
+  `NarratorConfig.kt`) ; les retries automatiques du SDK Anthropic sont **désactivés**
+  (`.maxRetries(0)` dans `ClaudeClient.kt`), c'est le client qui réessaie lui-même (voir ci-dessous).
+- **Temps jusqu'au premier token (TTFT)** : **mesuré par `liveTest`**, le TTFT représente **70 à 100 % de la
+  durée totale** d'un appel — le contenu streamé arrive presque en bloc à la fin plutôt qu'étalé, malgré le
+  streaming SSE sans tampon (§2). À prendre en compte pour l'indicateur « le Narrateur réfléchit… » (§7.5 de
+  `ARCHITECTURE.md`) : il reste affiché l'essentiel de l'attente.
+- **Identifiant de requête** : LLMGW **ne relaie pas** l'en-tête `request-id` d'Anthropic — **confirmé par
+  `liveTest`**. `ClaudeClient.kt` retombe sur l'en-tête `X-Cpa-Trace-Id` posé par CLIProxyAPI
+  (`requestIdOf(Headers)`), qui alimente `CallStats.requestId` et les logs d'échec ; c'est cet identifiant
+  qu'il faut donner à l'opérateur pour qu'il retrouve un appel côté serveur, pas `request-id`.
+- **Ce que le client fait réellement** (`ClaudeClient.kt`, revu par le correctif M0) :
+  - `401`/`400`/`413`/`402` : jamais de retry immédiat. Le 402 devient `BudgetExceededException` (`resetAt`
+    lu dans `error.reset_at`, jamais dans un en-tête).
+  - `503 service_unavailable`, `429`, `529`, toute 5xx, une erreur de connexion, ou un flux coupé avant tout
+    contenu : le client réessaie lui-même, jusqu'à `gateway.maxRetries` (3 par défaut), avec un backoff
+    exponentiel et une marge aléatoire (jitter), en respectant `retry-after`/`retry-after-ms` quand la
+    réponse en porte un. Un flux coupé **après** du contenu déjà reçu n'est **pas** réessayé (le tour serait
+    rejoué en double).
+  - Ce budget de retry est propre au mod : les retries du SDK Java sont coupés (`maxRetries(0)`) pour ne pas
+    s'empiler sur ceux déjà faits par CLIProxyAPI en amont.
 
 ## 4. Suivi de consommation (`/narrator usage`)
 
@@ -207,7 +234,13 @@ ephemeral_1h_input_tokens}` — voir § *Vérifié en réel*, point d. Si l'on v
 reflète le grand livre budgétaire de LLMGW lui-même, il faudrait une nouvelle route HTTP authentifiée côté
 LLMGW (demande d'évolution amont) ou un rapport hors-bande via `llmgw usage show` lancé par l'opérateur.
 
-## Vérifié en réel (25/09/2026)
+## Vérifié en réel (25/09/2026) — test manuel initial, complété depuis
+
+**Ce test manuel (`curl`, hors du mod) a été bloqué avant terme sur les points e, f, g et h** (voir « Note
+sur le blocage » ci-dessous) : ces points ont depuis été **repris et terminés par les tests de fumée
+automatisés `gradlew liveTest`** (`LiveGatewayTest.kt`), voir § *Vérifié par liveTest (25/09/2026)*
+ci-après, qui fait foi pour ces points. Cette section reste comme trace de la première exploration ; elle
+n'est plus mise à jour au-delà de cette note.
 
 Test de fumée mené contre le serveur LLMGW réel du propriétaire, via le tunnel SSH
 `ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -N -L 8088:localhost:8088
@@ -267,19 +300,59 @@ par `CLAUDE.md`. Ce n'est pas une propriété de LLMGW ni du mod : c'est une res
 session d'exécution, qui nécessite soit une règle de permission explicite ajoutée par l'opérateur pour ce
 type d'appel, soit de relancer ces points précis depuis un environnement sans cette restriction.
 
+## Vérifié par liveTest (25/09/2026)
+
+Suite de fumée automatisée (`gradlew liveTest`, tag JUnit `live`, hors de `test`/`build`/`check`), qui
+tourne contre le serveur LLMGW réel du propriétaire via le même tunnel SSH que ci-dessus, avec la clé de
+`.secrets/llmgw.key` ou `NARRATOR_LLMGW_KEY`. Source : `LiveGatewayTest.kt`
+(`TheMod/src/test/kotlin/io/github/clemsix6/narrator2/live/LiveGatewayTest.kt`, tests `a)` à `f)`), ajoutée
+par le correctif de M0. Reprend et termine les points e, f, g et h laissés bloqués par le test manuel
+ci-dessus.
+
+- **a) ping via `ClaudeClient`** — **Confirmé.** Un aller-retour complet avec la configuration réelle
+  (`ConfigStore.load`, rôle Directeur, effort `low`) rend une réponse utilisable (`SendResult.Reply`,
+  `stop_reason: end_turn`).
+- **b) résumé de réflexion (`thinking`) non vide** — **Confirmé à l'effort `medium`.** Une tâche de
+  raisonnement (arithmétique à plusieurs contraintes) produit un bloc `thinking` avec un résumé non vide,
+  contrairement au test manuel à l'effort `low` (point b, non conclusif) où la réflexion adaptative avait
+  jugé la tâche trop triviale pour y passer du budget.
+- **c) lecture de cache au 2ᵉ appel, même `X-Session-ID`** — **Confirmé.** Deux appels identiques sur la
+  même conversation : le premier écrit **5 344 tokens** dans le cache, le second en relit **5 344**
+  (`cache_read_input_tokens > 0`), **sans marqueur `cache_control` envoyé par le client**
+  (`gateway.cacheTtl = "off"`, §2). C'est le point qui a fait passer le défaut de `gateway.cacheTtl` de
+  `"1h"` à `"off"` (commit « Send no cache marker by default »).
+- **d) message `role: "system"` en cours de conversation** — **Confirmé, accepté et suivi.** Inséré juste
+  après un message `user`, avec une consigne contradictoire au ton du système initial (« answer every
+  question with the single word BANANA »), le modèle le respecte à partir du tour suivant. Pas de 400.
+  C'était le point le plus structurant laissé ouvert par le test manuel (point f).
+- **e) appel d'outil, aller-retour** — **Confirmé.** Le nom d'outil déclaré par le client (`roll_dice`)
+  revient non préfixé dans l'appel du modèle (cohérent avec le point c du test manuel) ; le `tool_result`
+  renvoyé est bien lu et intégré à la réponse finale.
+- **f) erreurs** — **Confirmé** pour la mauvaise clé et le message vide, restés non testés par le test
+  manuel (son point h) : mauvaise clé → **401**, corps `{"error":{"type":"authentication_error"}}`, sans
+  `message` ; message utilisateur vide → **400**, `cache_control cannot be set for empty text blocks` ; un
+  marqueur `5m` de notre part → **400**, `ttl='5m'` contre le `ttl='1h'` déjà posé par le serveur ; un
+  marqueur `1h` de notre part sur un deuxième tour utilisateur → **400**, « A maximum of 4 blocks with
+  cache_control… Found 5 » (voir §2).
+
+**Test de bout en bout complémentaire (manuel, hors `liveTest`)** : sur le serveur de dev (`runServer`,
+EULA acceptée avec l'accord du propriétaire pour les serveurs de dev et de test — voir `CLAUDE.md`),
+`/narrator ping Bonjour, qui es-tu ?` a obtenu une réponse dans le personnage en 4,5 s, confirmant la
+chaîne complète mod → tunnel SSH → LLMGW → Claude → mod → chat en conditions quasi réelles.
+
 ## Exigences pour ClaudeClient
 
-Ce qui doit être fait ou évité, en s'appuyant sur ce qui précède :
+Ce qui doit être fait ou évité, en s'appuyant sur ce qui précède (mis à jour après `liveTest`, voir
+§ *Vérifié par liveTest* ci-dessus — l'exigence n°1 de la version précédente de cette section, « fixer
+`cache_control.ttl` à `1h` explicitement », s'est révélée **fausse** contre ce serveur et est remplacée) :
 
-1. **Fixer explicitement `cache_control.ttl` à `"1h"` sur le marqueur racine — changement le plus
-   important trouvé par ce test.** `ClaudeClient.kt` appelle aujourd'hui
-   `.cacheControl(CacheControlEphemeral.builder().build())`, sans `ttl`, ce qui laisse le SDK sur son
-   défaut implicite `5m`. Contre le serveur réel du propriétaire, cela produit une **400
-   invalid_request_error** systématique (« ttl mismatch », voir § *Vérifié en réel* point h) car un bloc
-   porte déjà côté serveur un `cache_control` avec `ttl="1h"`. Il faut positionner ce `ttl` explicitement
-   sur le builder (à vérifier dans l'API du SDK Java — `CacheControlEphemeral.builder().ttl(...)` ou
-   équivalent) pour que chaque appel Messages réussisse. **Sans ce changement, aucun appel réel via ce
-   gateway ne peut aboutir.**
+1. **Ne poser aucun marqueur `cache_control` de notre part par défaut (`gateway.cacheTtl = "off"`).** Le
+   serveur LLMGW du propriétaire pose déjà ses propres marqueurs `ttl=1h` (prompt système, derniers tours) ;
+   le cache fonctionne sans notre marqueur (5 344 tokens écrits puis relus, point c ci-dessus), et un
+   marqueur de notre part est soit rejeté dès le deuxième tour (`1h`, « maximum 4 blocks »), soit toujours
+   rejeté (`5m`, conflit de `ttl`). `gateway.cacheTtl` accepte encore `1h` et `5m` pour une passerelle qui ne
+   poserait pas son propre marqueur (pas celle-ci). **C'est l'inverse de la recommandation initiale de cette
+   section, corrigée après le test complet.**
 2. **Continuer à toujours streamer** (déjà le cas) — confirmé nécessaire et suffisant en réel : le flux SSE
    arrive complet sans tampon côté gateway.
 3. **Continuer à toujours fixer `output_config.effort` explicitement par rôle** (déjà le cas) — empêche
@@ -287,30 +360,36 @@ Ce qui doit être fait ou évité, en s'appuyant sur ce qui précède :
    source de vérité.
 4. **Continuer à envoyer un `X-Session-ID` stable et unique par conversation** (déjà le cas) —
    indispensable à l'affinité de session/cache amont d'après la configuration attendue
-   (`routing.session-affinity: true`). La lecture de cache (`cache_read_input_tokens > 0` au 2ᵉ appel)
-   reste à confirmer empiriquement (point e, non terminé).
+   (`routing.session-affinity: true`). **La lecture de cache est confirmée** : `cache_read_input_tokens > 0`
+   au 2ᵉ appel d'une même conversation, 5 344 tokens relus sur 5 344 écrits (point c ci-dessus).
 5. **Garder les noms d'outils du mod à 52 caractères ou moins** (ou déjà préfixés `mcp__`) pour que le
    préfixage `mcp__llmgw__` de LLMGW s'applique systématiquement — confirmé en réel que le préfixe est bien
    retiré avant de revenir au client.
 6. **Ne jamais s'appuyer sur un en-tête `Retry-After` pour le 402 `budget_exceeded`** — lire
-   `error.reset_at` (RFC3339 UTC) dans le corps JSON.
-7. **Classer les erreurs correctement** : `401`/`400`/`413`/`402` → jamais de retry immédiat ; `503` →
-   retry avec backoff ; codes forwardés depuis Anthropic (429/529/5xx) → laisser la politique de retry par
-   défaut du SDK Java faire son travail sans l'empiler excessivement.
+   `error.reset_at` (RFC3339 UTC) dans le corps JSON. **Fait** : `ClaudeClient.kt` le lit ainsi et ne
+   réessaie jamais un 402.
+7. **Classer les erreurs correctement** : `401`/`400`/`413`/`402` → jamais de retry immédiat ; `503`, `429`,
+   `529`, toute 5xx, erreur de connexion ou flux coupé avant tout contenu → retry avec backoff exponentiel,
+   jitter et `retry-after`, **propre au client** (`gateway.maxRetries`, 3 par défaut) — les retries du SDK
+   Java sont coupés (`maxRetries(0)`) pour ne pas s'empiler sur ceux déjà faits par CLIProxyAPI en amont
+   (correction par rapport à la version précédente de ce point, qui envisageait de s'appuyer sur la
+   politique de retry par défaut du SDK).
 8. **Ne pas ajouter de couple d'en-têtes `X-Project`/`X-Tags`** — schéma de la conception V1 abandonnée ;
    l'architecture actuelle authentifie uniquement par clé projet.
 9. **Ne pas tenter d'implémenter une requête d'usage vers LLMGW** — aucun endpoint à appeler (§4).
 10. **Vérifier auprès de l'opérateur le type de credential amont réellement configuré.** La recommandation
-    d'une clé API Anthropic (plutôt qu'un compte OAuth) reste valable (`docs/ARCHITECTURE.md` §14), mais le
-    test réel du 25/09/2026 a observé un comportement (marqueur `cache_control` `ttl=1h` déjà présent sur
-    un bloc) qui, d'après la lecture du code, ne devrait se produire qu'en mode cloaking OAuth. À clarifier
-    avec le propriétaire plutôt qu'à supposer.
-11. **Points encore à vérifier empiriquement** (non conclus par ce test, voir § *Vérifié en réel*) :
-    - un bloc `thinking` avec résumé rempli, sur une tâche moins triviale qu'un simple lancer de dé ;
-    - la lecture de cache (`cache_read_input_tokens > 0`) au 2ᵉ appel d'une même conversation/`X-Session-ID` ;
-    - l'acceptation et la prise en compte d'un message `role: "system"` inséré au milieu de `messages[]` —
-      **le point le plus structurant pour l'architecture**, à refaire en priorité ;
-    - les en-têtes de réponse (id de requête, limites de débit) ;
-    - le comportement sur une mauvaise clé (401) ;
+    d'une clé API Anthropic (plutôt qu'un compte OAuth) reste valable (`docs/ARCHITECTURE.md` §14). Le
+    `liveTest` du 25/09/2026 rend l'hypothèse OAuth **plus probable** qu'au premier test : la passerelle
+    réécrit nos requêtes (elle insère un bloc avant notre texte et pose elle-même les marqueurs de cache),
+    ce qui, d'après la lecture du code, est le signe d'un cloaking CLIProxyAPI actif — donc d'un compte
+    d'abonnement en amont. Ce n'est encore qu'un faisceau d'indices côté client : **à confirmer avec le
+    propriétaire**, pas à trancher depuis ce dépôt.
+11. **Points encore ouverts** (non résolus par `liveTest`, voir § *Vérifié par liveTest* ci-dessus pour tout
+    le reste, désormais confirmé) :
+    - les en-têtes `Anthropic-Beta` avec ce compte amont (remplacés ou conservés ? non capturé) ;
+    - les en-têtes de limite de débit (rate limit), non capturés ;
     - le code/corps/en-têtes exacts renvoyés pour un 429/529 Anthropic une fois le budget de retry de
-      CLIProxyAPI épuisé.
+      CLIProxyAPI épuisé (non déclenché à ce jour) ;
+    - la forme réelle du corps d'un 402 `budget_exceeded` (toujours lue dans le code, jamais observée en
+      HTTP faute de budget dépassé pendant un test) ;
+    - le type de credential amont réellement configuré (point 10 ci-dessus) — à demander au propriétaire.
