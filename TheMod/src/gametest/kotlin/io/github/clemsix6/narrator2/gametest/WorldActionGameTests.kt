@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.guard.NarratorMob
 import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
+import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
@@ -48,13 +49,17 @@ import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket
 import net.minecraft.resources.Identifier
 import net.minecraft.util.ProblemReporter
+import net.minecraft.world.InteractionHand
 import net.minecraft.world.clock.ClockTimeMarkers
+import net.minecraft.world.entity.ConversionParams
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntityTypes
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
+import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.entity.ai.attributes.Attributes
+import net.minecraft.world.entity.monster.zombie.Zombie
 import net.minecraft.world.entity.projectile.FireworkRocketEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
@@ -246,6 +251,95 @@ class WorldActionGameTests {
     }
 
     /**
+     * A creature on its fuse goes like any creature of the Narrator's (M2 review, finding 4): Bob, who rides
+     * it, is set down first, under the death guard and with no fall damage, and what he gave it (a saddle, and
+     * the lead he holds it by) comes back to him.
+     */
+    @GameTest(maxTicks = 200)
+    fun aCreatureOnItsFuseSetsDownItsRiderAndGivesBackWhatItWasGiven(helper: GameTestHelper) {
+        floor(helper)
+        val bob = TestPlayer(helper)
+        helper.runAfterDelay(199) { bob.close() }
+        bob.standAt(BlockPos(4, 1, 4))
+        bob.makeVulnerable()
+        val guards = guards(helper)
+        val result = call(helper, SpawnTool(), SpawnArgs(entity = "pig", near = bob.name, distance = 2, explode = ExplodeSpec(afterSeconds = 1, power = 1.0, hurts = false)))
+        val pig = summonedFor(helper, bob.uuid).single()
+        helper.assertEquals(ToolStatus.OK, result.status, result.text)
+        bob.live.setItemInHand(InteractionHand.MAIN_HAND, ItemStack(Items.SADDLE))
+        helper.assertTrue(bob.live.interactOn(pig, InteractionHand.MAIN_HAND, Vec3.ZERO).consumesAction(), "Bob saddles the pig")
+        pig.setLeashedTo(bob.live, true)
+        helper.assertTrue(bob.live.startRiding(pig, true, true), "Bob rides the pig")
+        helper.startSequence()
+            .thenWaitUntil { helper.assertTrue(pig.isRemoved, "the pig went off") }
+            .thenExecute {
+                helper.assertEquals(null, bob.live.vehicle, "Bob is off the pig")
+                helper.assertTrue(guards.death.isArmed(bob.live), "under the death guard")
+                helper.assertEquals(0.0, bob.live.getAttributeValue(Attributes.FALL_DAMAGE_MULTIPLIER), "no fall damage")
+                helper.assertEquals(1, GuardGameTests.count(bob.live, Items.SADDLE), "the saddle is back in Bob's inventory")
+                helper.assertEquals(1, GuardGameTests.count(bob.live, Items.LEAD), "and the lead")
+                guards.attributes.resetAll(bob.live)
+                bob.close()
+            }
+            .thenSucceed()
+    }
+
+    /**
+     * Summoning a creature that can hurt is a punishment, monster or not (M2 review, finding 9): a polar bear
+     * opens one against Bob, bees summoned by another turn are refused (`already_punished`), and cows, harmless,
+     * are no punishment even then. Every harmless creature exists, may be summoned, and is not forbidden.
+     */
+    @GameTest
+    fun everyCreatureThatCanHurtIsAPunishment(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val tool = SpawnTool()
+        try {
+            val bear = call(helper, tool, SpawnArgs(entity = "polar_bear", near = bob.name, distance = 3))
+            helper.assertTrue(bear.status == ToolStatus.OK && bear.text.endsWith("a punishment of ${bob.name}"), bear.text)
+            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+            val bees = call(helper, tool, SpawnArgs(entity = "bee", count = 2, near = bob.name, distance = 3), OTHER_TURN)
+            helper.assertTrue(bees.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}):"), bees.text)
+            val cows = call(helper, tool, SpawnArgs(entity = "cow", near = bob.name, distance = 3), OTHER_TURN)
+            helper.assertTrue(cows.status == ToolStatus.OK && "punishment" !in cows.text, cows.text)
+            for (id in SpawnPolicy.HARMLESS) {
+                val type = BuiltInRegistries.ENTITY_TYPE.get(Identifier.parse(id)).orElse(null)?.value()
+                helper.assertTrue(type != null && SpawnPolicy.isHarmless(type), "$id exists")
+                helper.assertEquals(Verdict.Allowed, SpawnPolicy.check(type!!, helper.level), "$id may be summoned")
+            }
+        } finally {
+            summonedFor(helper, bob.uuid).forEach { it.discard() }
+        }
+    }
+
+    /**
+     * The Narrator's zombies call no reinforcements (M2 review, finding 9): their chance is 0, and stays 0 when
+     * one converts, although the conversion rolls it again. The game's own zombies roll one.
+     */
+    @GameTest
+    fun theNarratorsZombiesCallNoReinforcements(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val result = call(helper, SpawnTool(), SpawnArgs(entity = "zombie", count = 2, near = bob.name, distance = 3))
+        val zombies = summonedFor(helper, bob.uuid)
+        try {
+            helper.assertEquals(ToolStatus.OK, result.status, result.text)
+            helper.assertEquals(2, zombies.size, "zombies summoned")
+            zombies.forEach { assertNoReinforcements(helper, it) }
+            // As Zombie.convertToZombieType does: the new creature's chance is rolled, then it enters the level.
+            val drowned = zombies[0].convertTo(EntityTypes.DROWNED, ConversionParams.single(zombies[0], true, true)) { converted ->
+                val chance = converted.getAttribute(Attributes.SPAWN_REINFORCEMENTS_CHANCE)!!
+                chance.baseValue = 0.1
+                chance.addPermanentModifier(AttributeModifier(Identifier.withDefaultNamespace("leader_zombie_bonus"), 0.5, AttributeModifier.Operation.ADD_VALUE))
+            }!!
+            assertNoReinforcements(helper, drowned)
+
+            val ordinary = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
+            val adult = Zombie.ZombieGroupData(false, false) // no chicken jockey: the game would add a chicken to the world
+            ordinary.finalizeSpawn(helper.level, helper.level.getCurrentDifficultyAt(bob.live.blockPosition()), EntitySpawnReason.COMMAND, adult)
+            helper.assertTrue(ordinary.getAttributeValue(Attributes.SPAWN_REINFORCEMENTS_CHANCE) > 0.0, "the game's zombies roll a chance")
+        } finally {
+            summonedFor(helper, bob.uuid).forEach { it.discard() }
+        }
+    }
+
+    /**
      * The mounts and riders the game gives a creature (a zombie's new chicken, already in the world as
      * `Zombie.finalizeSpawn` leaves it; a spider jockey's skeleton, not yet in it) are the Narrator's too:
      * marked with the same expiry, registered, counted for the player.
@@ -429,7 +523,11 @@ class WorldActionGameTests {
 
     // ── set_weather, set_time ───────────────────────────────────────────────────────────────────
 
-    /** Weather and time change once in their cooldown; both are put back at once, for the other tests. */
+    /**
+     * There is no thunderstorm to set (M2 review, finding 5: its bolts are real): the model's `thunder` is refused
+     * and changes nothing, not even the cooldown. Weather and time change once in their cooldown; both are put back
+     * at once, for the other tests.
+     */
     @GameTest
     fun weatherAndTimeChangeOnceInTheirCooldown(helper: GameTestHelper) {
         val server = helper.level.server
@@ -440,9 +538,22 @@ class WorldActionGameTests {
         val clock = server.overworld().dimensionType().defaultClock().get()
         val ticks = server.clockManager().getInstance(clock).totalTicks()
         try {
-            val storm = call(helper, SetWeatherTool(limits), SetWeatherArgs(WeatherKind.THUNDER, minutes = 5))
-            helper.assertTrue(storm.text.startsWith("ok: thunder for 5 min (until "), storm.text)
-            helper.assertTrue(weather.isRaining && weather.isThundering && weather.thunderTime == 6_000, "a storm of 5 minutes")
+            val thunder = runBlocking {
+                ToolRunner(helper.narrator()).runAll(
+                    listOf(toolUse("toolu_storm", "set_weather", """{"weather":"thunder","minutes":5}""")),
+                    ToolSet.of(listOf(SetWeatherTool(limits))), CALLER, 0,
+                )
+            }.single().text()
+            helper.assertEquals("Invalid arguments: weather must be one of: clear, rain (got \"thunder\")", thunder, "the model's thunder")
+            helper.assertEquals(
+                listOf(saved, wasRaining to wasThundering),
+                listOf(listOf(weather.clearWeatherTime, weather.rainTime, weather.thunderTime), weather.isRaining to weather.isThundering),
+                "the weather, untouched",
+            )
+
+            val rain = call(helper, SetWeatherTool(limits), SetWeatherArgs(WeatherKind.RAIN, minutes = 5))
+            helper.assertTrue(rain.text.startsWith("ok: rain for 5 min (until "), rain.text)
+            helper.assertTrue(weather.isRaining && !weather.isThundering && weather.rainTime == 6_000, "5 minutes of rain, no storm")
             val again = call(helper, SetWeatherTool(limits), SetWeatherArgs(WeatherKind.CLEAR))
             helper.assertTrue(again.text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed "), again.text)
 
@@ -530,5 +641,14 @@ class WorldActionGameTests {
             helper.level.getEntitiesOfClass(Mob::class.java, AABB(helper.absolutePos(BlockPos.ZERO)).inflate(40.0)) {
                 it.getAttached(NarratorMob.TYPE)?.player == player
             }
+
+        /** [mob]'s chance to call reinforcements is 0 for good: base value, no bonus. */
+        fun assertNoReinforcements(helper: GameTestHelper, mob: Mob) {
+            val chance = mob.getAttribute(Attributes.SPAWN_REINFORCEMENTS_CHANCE)!!
+            helper.assertTrue(
+                chance.baseValue == 0.0 && chance.modifiers.isEmpty() && chance.value == 0.0,
+                "${mob.type.toShortString()} calls no reinforcements: base ${chance.baseValue}, modifiers ${chance.modifiers}",
+            )
+        }
     }
 }

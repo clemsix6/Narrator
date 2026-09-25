@@ -12,13 +12,36 @@ import net.minecraft.world.entity.Mob
  * of [FORBIDDEN], the creatures that change blocks, start fires, carry items away, or hurt everyone
  * around whatever the rules.
  *
+ * Summoning anything but a [HARMLESS] creature is hostile ([isHarmless]): a punishment of the player it
+ * appears around, with every guard of a hostile action.
+ *
  * What the Narrator's creatures do once in the world is guarded elsewhere, by their `narrator2` tag:
- * their explosions touch no block, no item and no bystander (`ExplosionGuard`), they never break doors
- * and never pick up items (`mixin.policy`).
+ * their explosions touch no block, no item and no bystander (`ExplosionGuard`), they never break doors,
+ * never pick up items, never trample farmland or turtle eggs and their projectiles break no block
+ * (`mixin.policy`).
  */
 object SpawnPolicy {
     /** The rule of a refused creature, in `DENIED (<rule>): …`. */
     const val FORBIDDEN_CREATURE = "forbidden_creature"
+
+    /**
+     * The creatures that hurt neither a player nor what players own, by type id: summoning them is no
+     * punishment. A whitelist, so that a creature nobody reviewed (a new one of 26.x, another mod's) is
+     * hostile. Left out on purpose: whatever strikes back or defends its kind (wolves, bees, polar bears,
+     * iron golems, goats, llamas, dolphins, pandas, pufferfish, nautiluses), the hunters of the players'
+     * animals (cats, ocelots, foxes, axolotls), and every monster.
+     */
+    val HARMLESS: Set<String> = setOf(
+        "minecraft:armadillo", "minecraft:bat", "minecraft:camel", "minecraft:chicken", "minecraft:cod",
+        "minecraft:cow", "minecraft:donkey", "minecraft:frog", "minecraft:glow_squid", "minecraft:happy_ghast",
+        "minecraft:horse", "minecraft:mooshroom", "minecraft:mule", "minecraft:parrot", "minecraft:pig",
+        "minecraft:salmon", "minecraft:sheep", "minecraft:skeleton_horse", "minecraft:sniffer", "minecraft:squid",
+        "minecraft:strider", "minecraft:tadpole", "minecraft:tropical_fish", "minecraft:turtle",
+        "minecraft:wandering_trader", "minecraft:zombie_horse",
+    )
+
+    /** Whether summoning [type] is no punishment: one of [HARMLESS]. */
+    fun isHarmless(type: EntityType<*>): Boolean = EntityType.getKey(type).toString() in HARMLESS
 
     /** Creatures the Narrator never summons, by type id, with the reason. */
     val FORBIDDEN: Map<String, String> = mapOf(

@@ -4,11 +4,15 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "BreakDoorGoalGuardMixin",
+    "FarmlandTrampleGuardMixin",
     "LivingEntityEffectGuardMixin",
     "MobPickUpGuardMixin",
     "MobTargetGuardMixin",
+    "ProjectileBlockGuardMixin",
+    "RemoveBlockGoalGuardMixin",
     "ServerExplosionGuardMixin",
-    "TargetingConditionsGuardMixin"
+    "TargetingConditionsGuardMixin",
+    "TurtleEggTrampleGuardMixin"
   ],
   "injectors": {
     "defaultRequire": 1
