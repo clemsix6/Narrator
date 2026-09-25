@@ -8,3 +8,6 @@ TheServer/
 .kotlin/
 .idea/
 *.log
+
+# Local secrets (LLMGW key, Jev key): never versioned
+.secrets/

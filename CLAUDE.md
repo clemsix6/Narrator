@@ -6,7 +6,14 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 - `docs/ARCHITECTURE.md` : l'architecture, la feuille de route (§16) et les décisions prises (§17).
 - `docs/MEMOIRE.md` : la mémoire du Narrateur, dont la fiche joueur (§3).
 - `docs/research/` : les notes de recherche vérifiées (signatures d'API 26.3, LLMGW, Jev, Forge…).
-- `.research/` (non versionné) : des références brutes. `porting/` contient les guides de migration 26.1 à 26.3, `jev/` la doc de Jev et `LLMGW/` le code de la passerelle.
+- `.research/` (non versionné) : des références brutes. `porting/` contient les guides de migration 26.1 à 26.3 et `jev/` la doc de Jev.
+
+## LLMGW (accès à Claude)
+- On utilise **le serveur LLMGW existant du propriétaire** : **on ne clone ni n'installe jamais LLMGW en local**.
+- On y accède par un tunnel SSH : `ssh -o BatchMode=yes -N -L 8088:localhost:8088 <ssh-host>` (alias de `clement@192.168.1.20`, sur le réseau local).
+- URL de base : `http://localhost:8088/`. Authentification : en-tête `x-api-key: <clé>` (`Authorization: Bearer` marche aussi). Test : `GET /v1/models`.
+- La clé se trouve dans `.secrets/llmgw.key` (non versionné). Pour le mod, elle passe par la variable d'environnement `NARRATOR_LLMGW_KEY`. **Ne jamais l'afficher, la logger, la commiter ni la recopier ailleurs.**
+- Les tests automatisés n'appellent jamais le vrai serveur. Les appels réels servent seulement aux tests de fumée, avec des requêtes minimales.
 
 ## On repart de zéro
 La v2 est une réécriture complète. Les leçons de la v1 sont résumées dans `docs/ARCHITECTURE.md` §1, et c'est tout ce qu'on en garde.
