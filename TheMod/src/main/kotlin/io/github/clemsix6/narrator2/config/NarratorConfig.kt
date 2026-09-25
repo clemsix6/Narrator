@@ -49,6 +49,13 @@ data class GatewayConfig(
     val maxRetries: Int = 2,
 ) {
     fun resolveApiKey(): String? = apiKey.ifBlank { System.getenv(apiKeyEnv).orEmpty() }.ifBlank { null }
+
+    /** Where the key comes from, for status displays (never the key itself); null when there is none. */
+    fun apiKeySource(): String? = when {
+        apiKey.isNotBlank() -> ConfigStore.FILE_NAME
+        !System.getenv(apiKeyEnv).isNullOrBlank() -> "environment variable $apiKeyEnv"
+        else -> null
+    }
 }
 
 @Serializable
@@ -108,24 +115,29 @@ data class LoggingConfig(
 
 /** Reads and writes `config/narrator2/narrator2.json`. */
 object ConfigStore {
+    const val FILE_NAME = "narrator2.json"
+
     private val json = Json {
         prettyPrint = true
         prettyPrintIndent = "  "
         encodeDefaults = true
         ignoreUnknownKeys = true
+        coerceInputValues = true
     }
 
     /**
-     * Loads the configuration, creating it with defaults on first run. The file is rewritten after a
-     * successful load so that settings added in newer versions appear with their default value. A file
-     * that fails to parse is left untouched and the error propagates.
+     * Loads the configuration, creating it with defaults on first run. Unknown keys are ignored, and
+     * missing or null values take their default; roles missing from `roles` get their default too. The
+     * file is rewritten after a successful load so that settings added in newer versions appear with
+     * their default value. A file that fails to parse is left untouched and the error propagates.
      */
     fun load(dir: Path): NarratorConfig {
-        val file = dir.resolve("narrator2.json")
+        val file = dir.resolve(FILE_NAME)
         val config = if (Files.exists(file)) {
-            json.decodeFromString(NarratorConfig.serializer(), Files.readString(file))
+            val loaded = json.decodeFromString(NarratorConfig.serializer(), Files.readString(file))
+            loaded.copy(roles = NarratorConfig.DEFAULT_ROLES + loaded.roles)
         } else {
-            Log.config.info("création de ${file.toAbsolutePath()} avec les valeurs par défaut")
+            Log.config.info("created ${file.toAbsolutePath()} with default values")
             NarratorConfig()
         }
         Files.createDirectories(dir)

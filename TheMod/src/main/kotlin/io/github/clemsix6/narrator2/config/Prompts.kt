@@ -10,11 +10,11 @@ import java.nio.file.Path
  */
 class Prompts private constructor(private val texts: Map<String, String>) {
 
-    fun get(name: String): String = texts[name] ?: error("prompt inconnu : $name")
+    fun get(name: String): String = texts[name] ?: error("unknown prompt: $name")
 
     companion object {
         /** Every prompt the mod ships. Adding a prompt means adding its file name here. */
-        val NAMES = listOf("director")
+        val NAMES = listOf("director", "ping")
 
         fun load(dir: Path): Prompts {
             Files.createDirectories(dir)
@@ -22,7 +22,7 @@ class Prompts private constructor(private val texts: Map<String, String>) {
                 val file = dir.resolve("$name.md")
                 if (!Files.exists(file)) {
                     Files.writeString(file, bundled(name))
-                    Log.config.info("prompt par défaut copié : ${file.fileName}")
+                    Log.config.info("copied default prompt ${file.fileName}")
                 }
                 Files.readString(file)
             }
@@ -31,7 +31,7 @@ class Prompts private constructor(private val texts: Map<String, String>) {
 
         private fun bundled(name: String): String {
             val stream = Prompts::class.java.getResourceAsStream("/narrator2/prompts/$name.md")
-                ?: error("prompt absent du jar : $name")
+                ?: error("prompt missing from the jar: $name")
             return stream.use { String(it.readAllBytes(), Charsets.UTF_8) }
         }
     }

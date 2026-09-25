@@ -2,6 +2,12 @@ package io.github.clemsix6.narrator2.llm
 
 import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
+import com.anthropic.errors.AnthropicIoException
+import com.anthropic.errors.AnthropicServiceException
+import com.anthropic.errors.PermissionDeniedException
+import com.anthropic.errors.RateLimitException
+import com.anthropic.errors.SseException
+import com.anthropic.errors.UnauthorizedException
 import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.Message
@@ -69,8 +75,9 @@ class ClaudeClient(private val config: NarratorConfig, private val transcripts: 
             accumulator.message()
         } catch (e: Exception) {
             val latency = (System.nanoTime() - started) / 1_000_000
-            transcripts.afterError(conversation, e, latency)
-            log.warn("${conversation.id} · échec après $latency ms : ${e.message}")
+            val description = describeFailure(e)
+            transcripts.afterError(conversation, e, description, latency)
+            log.warn("${conversation.id} · failed after $latency ms: $description")
             throw e
         }
 
@@ -90,12 +97,23 @@ class ClaudeClient(private val config: NarratorConfig, private val transcripts: 
         transcripts.afterResponse(conversation, message, stats)
         log.info("${conversation.id} · ${role.model}/${role.effort} · ${stats.summary()}")
         if (message.stopReason().orElse(null) == StopReason.REFUSAL) {
-            log.warn("${conversation.id} · refus du modèle : ${message.stopDetails().map { it.toString() }.orElse("?")}")
+            log.warn("${conversation.id} · the model refused: ${message.stopDetails().map { it.toString() }.orElse("?")}")
         }
         Reply(message, stats)
     }
 
     override fun close() = client.close()
+}
+
+/** A short explanation of a failed call, for logs, transcripts and operators. */
+fun describeFailure(error: Throwable): String = when (error) {
+    is UnauthorizedException -> "key rejected by the gateway (HTTP 401)"
+    is PermissionDeniedException -> "access denied by the gateway (HTTP 403)"
+    is RateLimitException -> "rate limit reached (HTTP 429)"
+    is SseException -> "error in the response stream: ${error.message}"
+    is AnthropicServiceException -> "HTTP ${error.statusCode()}: ${error.message}"
+    is AnthropicIoException -> "gateway unreachable: ${error.message}"
+    else -> "${error.javaClass.simpleName}: ${error.message}"
 }
 
 /** Claude's reply and what it cost. */

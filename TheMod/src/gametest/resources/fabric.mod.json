@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "narrator2-gametest",
+  "version": "0.0.0",
+  "name": "The Narrator 2 - in-game tests",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": ["io.github.clemsix6.narrator2.gametest.NarratorGameTests"]
+  },
+  "depends": {
+    "narrator2": "*",
+    "fabric-gametest-api-v1": "*"
+  }
+}

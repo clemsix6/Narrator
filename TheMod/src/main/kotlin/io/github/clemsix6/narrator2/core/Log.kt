@@ -6,7 +6,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A subsystem logger. Minecraft's log pattern hides logger names, so every line carries its
- * subsystem tag, e.g. `[Directeur] réveil : chat de Thawyn`. Levels are set per subsystem from
+ * subsystem tag, e.g. `[Director] woken up: chat from Steve`. Levels are set per subsystem from
  * the configuration (`logging.levels`).
  */
 class Log private constructor(val tag: String) {
@@ -47,7 +47,7 @@ class Log private constructor(val tag: String) {
             }
         }
 
-        val main = of("Narrateur")
+        val main = of("Narrator")
         val llm = of("LLM")
         val config = of("Config")
     }

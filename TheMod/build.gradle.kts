@@ -32,6 +32,11 @@ dependencies {
 
     bundled("com.anthropic:anthropic-java:${property("anthropic_java_version")}")
     bundled("org.duckdb:duckdb_jdbc:${property("duckdb_version")}")
+
+    testImplementation(kotlin("test"))
+    testImplementation(platform("org.junit:junit-bom:${property("junit_version")}"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 // Loom's `include` is not transitive: nest every resolved library jar explicitly. Kotlin itself
@@ -57,6 +62,11 @@ val asciiTempDir: File? =
     }
 
 loom {
+    mods {
+        register("narrator2") {
+            sourceSet(sourceSets.main.get())
+        }
+    }
     runs {
         named("server") {
             runDirectory = layout.projectDirectory.dir("../TheServer")
@@ -67,6 +77,53 @@ loom {
                 environmentVars.put("TMP", it.absolutePath)
             }
         }
+    }
+}
+
+// In-game tests (Fabric GameTest). `src/gametest` is a separate test mod; `runGameTest` runs it on a
+// headless GameTest server in build/run/gameTest, and `check` depends on it.
+// Must come after the "server" run above: the gameTest run inherits its JVM arguments and TEMP.
+// Fabric API's GameTest server starts without an accepted EULA, so Loom's `eula` option stays off.
+fabricApi {
+    configureTests {
+        createSourceSet = true
+        modId = "narrator2-gametest"
+        enableGameTests = true
+        enableClientGameTests = false
+        eula = false
+    }
+}
+
+// One JUnit XML report per run, listing every in-game test with its result.
+loom.runs.named("gameTest") {
+    val report = layout.buildDirectory.file("reports/gametest/TEST-gametest.xml").get().asFile
+    systemProperties.put("fabric-api.gametest.report-file", report.absolutePath)
+}
+
+// Each in-game run starts from an empty world and config (Loom 1.18 only clears client test runs).
+val cleanGameTestRun = tasks.register<Delete>("cleanGameTestRun") {
+    delete(layout.buildDirectory.dir("run/gameTest"))
+}
+tasks.matching { it.name == "runGameTest" }.configureEach { dependsOn(cleanGameTestRun) }
+
+// The in-game tests reuse the fake Anthropic server of the unit tests.
+sourceSets.named("gametest") {
+    compileClasspath += sourceSets.test.get().output
+    runtimeClasspath += sourceSets.test.get().output
+}
+
+tasks.test {
+    useJUnitPlatform()
+    // Minecraft's log4j configuration writes logs/ into the working directory: keep it under build/.
+    workingDir = layout.buildDirectory.dir("test-run").get().asFile
+    doFirst { workingDir.mkdirs() }
+    asciiTempDir?.let {
+        environment("TEMP", it.absolutePath)
+        environment("TMP", it.absolutePath)
+    }
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
 }
 

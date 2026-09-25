@@ -1,14 +1,18 @@
 package io.github.clemsix6.narrator2
 
+import io.github.clemsix6.narrator2.command.NarratorCommand
+import io.github.clemsix6.narrator2.core.Log
 import net.fabricmc.api.ModInitializer
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
 
 object Narrator2 : ModInitializer {
     const val MOD_ID = "narrator2"
-    val log: Logger = LoggerFactory.getLogger("Narrator2")
 
     override fun onInitialize() {
-        log.info("The Narrator 2 — initialisation")
+        ServerLifecycleEvents.SERVER_STARTED.register { server -> NarratorRuntime.start(server) }
+        ServerLifecycleEvents.SERVER_STOPPING.register { NarratorRuntime.stop() }
+        CommandRegistrationCallback.EVENT.register { dispatcher, _, _ -> NarratorCommand.register(dispatcher) }
+        Log.main.info("mod initialized")
     }
 }

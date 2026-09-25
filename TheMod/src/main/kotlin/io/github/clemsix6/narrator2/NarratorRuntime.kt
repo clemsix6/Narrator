@@ -34,6 +34,7 @@ class NarratorRuntime private constructor(
     val transcripts = Transcripts(dataDir.resolve("logs").resolve("conversations"), config.logging.transcripts)
     val claude = ClaudeClient(config, transcripts)
 
+    /** Cancels background work, including model calls still in flight. */
     override fun close() {
         scope.cancel()
         claude.close()
@@ -41,36 +42,58 @@ class NarratorRuntime private constructor(
 
     companion object {
         val configDir: Path = FabricLoader.getInstance().configDir.resolve("narrator2")
+        val configFile: Path = configDir.resolve(ConfigStore.FILE_NAME)
 
         @Volatile
         var current: NarratorRuntime? = null
             private set
 
+        /**
+         * Starts the Narrator for [server]. A broken configuration is logged and leaves the Narrator
+         * off: the Minecraft server keeps running, and `/narrator reload` can try again.
+         */
         fun start(server: MinecraftServer) {
-            val config = ConfigStore.load(configDir)
-            Log.applyLevels(config.logging.levels)
-            val prompts = Prompts.load(configDir.resolve("prompts"))
-            val runtime = NarratorRuntime(server, config, prompts)
-            current = runtime
-            Log.main.info("prêt · données dans ${runtime.dataDir}")
-            if (!runtime.claude.isConfigured) {
-                Log.main.warn(
-                    "aucune clé LLMGW : renseigne gateway.apiKey dans ${configDir.resolve("narrator2.json")} " +
-                        "ou la variable d'environnement ${config.gateway.apiKeyEnv}",
-                )
+            current = try {
+                create(server)
+            } catch (e: Exception) {
+                Log.main.error("cannot start, the Narrator stays off: ${e.message}", e)
+                null
             }
         }
 
         fun stop() {
-            current?.close()
+            val runtime = current ?: return
             current = null
-            Log.main.info("arrêté")
+            runtime.close()
+            Log.main.info("stopped")
         }
 
-        /** Closes the running instance and starts a new one with freshly loaded config and prompts. */
-        fun reload(server: MinecraftServer) {
-            stop()
-            start(server)
+        /**
+         * Starts a new instance from freshly loaded config and prompts, then closes the running one
+         * (cancelling its calls in flight). If loading fails, the running instance is kept and the
+         * error propagates.
+         */
+        fun reload(server: MinecraftServer): NarratorRuntime {
+            val fresh = create(server)
+            current?.close()
+            current = fresh
+            Log.main.info("configuration and prompts reloaded")
+            return fresh
+        }
+
+        private fun create(server: MinecraftServer): NarratorRuntime {
+            val config = ConfigStore.load(configDir)
+            val prompts = Prompts.load(configDir.resolve("prompts"))
+            Log.applyLevels(config.logging.levels)
+            val runtime = NarratorRuntime(server, config, prompts)
+            Log.main.info("ready · gateway ${config.gateway.baseUrl} · data in ${runtime.dataDir}")
+            if (!runtime.claude.isConfigured) {
+                Log.main.warn(
+                    "no LLMGW key: set gateway.apiKey in $configFile " +
+                        "or the environment variable ${config.gateway.apiKeyEnv}",
+                )
+            }
+            return runtime
         }
     }
 }
