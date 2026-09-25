@@ -473,4 +473,4 @@ Tranché le 25/09/2026 :
    - Les commandes d'administration sont interdites (§6.3).
 5. **Jev** est intégré aux réflexes et s'active automatiquement dès que `TYPESAFE_API_KEY` est présente. Sans clé, des heuristiques locales le remplacent. Le chat part déjà vers les États-Unis (Anthropic) : Jev n'ajoute pas de nouvelle catégorie de risque.
 
-Reste ouvert : l'acceptation de l'EULA Minecraft pour le serveur de dev (`TheServer/`), qui revient au propriétaire du serveur. En attendant, les tests en jeu passent par le serveur GameTest.
+6. **EULA de Minecraft** : le propriétaire autorise son acceptation pour tous les serveurs de dev et de test.
