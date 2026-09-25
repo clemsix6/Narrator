@@ -43,11 +43,18 @@ import java.util.concurrent.atomic.AtomicInteger
  * ```
  *
  * In strict mode (the default) it rejects, like the real API or LLMGW, with an HTTP 400 and an explicit
- * message, before consuming any script: an empty message or text block; a `tool_use` without its
- * `tool_result` in the next message; a forced `tool_choice`; a history that is not an append-only
- * continuation of the previous request with the same `X-Session-ID` (system prompt and tools
- * included); a top-level `cache_control` whose TTL is not `1h`, or sent with two user turns or more
- * (LLMGW places its own `1h` markers, and the API allows 4 at most: behaviour seen on 25/09/2026).
+ * message, before consuming any script: an empty message or a blank text block; a `tool_use` without
+ * its `tool_result` in the next message, or a `tool_result` after another block of its message; a
+ * `system` message that does not follow a user message, or is followed by anything but an assistant
+ * turn; a forced `tool_choice`; a top-level `cache_control` whose TTL is not `1h`, or sent with two
+ * user turns or more (LLMGW places its own `1h` markers, and the API allows 4 at most: behaviour seen on
+ * 25/09/2026).
+ *
+ * It also checks that each session (`X-Session-ID`) is append-only: the system prompt and the tools
+ * never change, and a request starts with the messages of the session's **last successful exchange**
+ * (the last request answered by a complete, usable reply), followed by that reply unchanged (blank text
+ * blocks aside). A request that got no usable reply (refused, truncated, failed) leaves nothing to
+ * extend: the next one may carry different messages after the same history.
  *
  * A request that finds the script empty gets an HTTP 400 `invalid_request_error` saying so, and is
  * counted in [unscripted].
@@ -60,7 +67,7 @@ class FakeAnthropic(
     private val script = ConcurrentLinkedQueue<(RecordedRequest) -> FakeResponse>()
     private val sessionScripts = ConcurrentHashMap<String, ConcurrentLinkedQueue<(RecordedRequest) -> FakeResponse>>()
     private val recorded = CopyOnWriteArrayList<RecordedRequest>()
-    private val histories = HashMap<String, History>() // guarded by itself
+    private val sessions = HashMap<String, Session>() // guarded by itself
     private val unscriptedCount = AtomicInteger()
     private val closed = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newCachedThreadPool { task ->
@@ -139,7 +146,8 @@ class FakeAnthropic(
                 else -> nextResponse(request)
             }
             exchange.responseHeaders.add(requestIdHeader, nextId("req"))
-            response.writeTo(exchange, request)
+            val session = request.header("X-Session-ID")?.takeIf { strict && violation == null }
+            response.writeTo(exchange, request) { reply -> session?.let { succeeded(it, request, reply) } }
         } catch (e: InterruptedException) {
             // close() while a reply was held.
         } catch (e: Exception) {
@@ -167,11 +175,29 @@ class FakeAnthropic(
             if ((content.isTextual && content.asText().isEmpty()) || (content.isArray && content.isEmpty)) {
                 return "messages.$i: all messages must have non-empty content except for the optional final assistant message"
             }
+            if (content.isTextual && content.asText().isBlank()) {
+                return "messages.$i: text content blocks must contain non-whitespace text"
+            }
             for (j in 0 until content.size()) {
                 val block = content[j]
                 if (block.path("type").asText() == "text" && block.path("text").asText().isEmpty()) {
                     return "messages.$i.content.$j.text: text content blocks must be non-empty"
                 }
+                if (block.path("type").asText() == "text" && block.path("text").asText().isBlank()) {
+                    return "messages.$i.content.$j.text: text content blocks must contain non-whitespace text"
+                }
+                if (block.path("type").asText() == "tool_result" && j > 0 && content[j - 1].path("type").asText() != "tool_result") {
+                    return "messages.$i.content.$j: tool_result blocks must come first in the message, before any other content"
+                }
+            }
+        }
+        for (i in 0 until messages.size()) {
+            if (messages[i].path("role").asText() != "system") continue
+            if (messages.path(i - 1).path("role").asText() != "user") {
+                return "messages.$i: a system message must follow a user message"
+            }
+            if (i + 1 < messages.size() && messages[i + 1].path("role").asText() != "assistant") {
+                return "messages.$i: a system message must be the last message or be followed by an assistant message"
             }
         }
         for (i in 0 until messages.size()) {
@@ -206,27 +232,69 @@ class FakeAnthropic(
         return appendOnlyViolation(request)
     }
 
-    /** Checks [request] against the previous accepted request of its session, then remembers it. */
+    /**
+     * Checks [request] against its session: same system prompt and tools as its first request, and
+     * the messages of the last successful exchange followed by its reply.
+     */
     private fun appendOnlyViolation(request: RecordedRequest): String? {
-        val session = request.header("X-Session-ID") ?: return null
+        val id = request.header("X-Session-ID") ?: return null
         val body = request.json
-        val history = History(body.path("system"), body.path("tools"), body.path("messages"))
-        synchronized(histories) {
-            val previous = histories[session]
-            if (previous != null) {
-                val prefix = "FakeAnthropic (strict): session $session is not append-only:"
-                if (previous.system != history.system) return "$prefix the system prompt changed"
-                if (previous.tools != history.tools) return "$prefix the tools changed"
-                for (i in 0 until previous.messages.size()) {
-                    if (previous.messages[i] != history.messages.path(i)) return "$prefix messages.$i differs from the previous request"
-                }
+        val messages = body.path("messages")
+        synchronized(sessions) {
+            val session = sessions.getOrPut(id) { Session(body.path("system"), body.path("tools")) }
+            val prefix = "FakeAnthropic (strict): session $id is not append-only:"
+            if (session.system != body.path("system")) return "$prefix the system prompt changed"
+            if (session.tools != body.path("tools")) return "$prefix the tools changed"
+            val last = session.lastSuccess ?: return null
+            for (i in 0 until last.messages.size()) {
+                if (last.messages[i] != messages.path(i)) return "$prefix messages.$i differs from the last successful exchange"
             }
-            histories[session] = history
+            val reply = messages.path(last.messages.size())
+            if (reply.path("role").asText() != "assistant" || normalized(reply.path("content")) != last.reply) {
+                return "$prefix messages.${last.messages.size()} must be the reply of the last successful exchange, unchanged"
+            }
         }
         return null
     }
 
-    private class History(val system: JsonNode, val tools: JsonNode, val messages: JsonNode)
+    /**
+     * Remembers that [request] got the complete, usable [reply]; called before `message_stop` is
+     * written, so that the next request of the session cannot overtake it. Returns how to forget it
+     * again, should `message_stop` not reach the client.
+     */
+    private fun succeeded(id: String, request: RecordedRequest, reply: List<JsonNode>): () -> Unit {
+        val exchange = SuccessfulExchange(request.json.path("messages"), reply)
+        val (session, previous) = synchronized(sessions) {
+            val session = sessions.getValue(id)
+            (session to session.lastSuccess).also { session.lastSuccess = exchange }
+        }
+        return {
+            synchronized(sessions) { if (session.lastSuccess === exchange) session.lastSuccess = previous }
+        }
+    }
+
+    private class Session(val system: JsonNode, val tools: JsonNode) {
+        var lastSuccess: SuccessfulExchange? = null
+    }
+
+    private class SuccessfulExchange(val messages: JsonNode, val reply: List<JsonNode>)
+}
+
+/**
+ * The blocks of an assistant turn as the fake compares them: blank text left out, and only the fields
+ * that make the turn (text; thinking and signature; tool call id, name and input).
+ */
+private fun normalized(content: JsonNode): List<JsonNode> {
+    val blocks = if (content.isTextual) listOf(obj("text").put("text", content.asText())) else content.toList()
+    return blocks.mapNotNull { block ->
+        when (block.path("type").asText()) {
+            "text" -> block.path("text").asText().takeIf { it.isNotBlank() }?.let { obj("text").put("text", it) }
+            "thinking" -> obj("thinking").put("thinking", block.path("thinking").asText()).put("signature", block.path("signature").asText())
+            "tool_use" -> obj("tool_use").put("id", block.path("id").asText()).put("name", block.path("name").asText())
+                .also { it.set<JsonNode>("input", block.path("input")) }
+            else -> block
+        }
+    }
 }
 
 /** A request received by [FakeAnthropic]. */
@@ -251,7 +319,11 @@ class RecordedRequest(
 
 /** What [FakeAnthropic] answers to one request. Built with [reply], [httpError], [budgetExceeded] or [streamError]. */
 sealed class FakeResponse {
-    internal abstract fun writeTo(exchange: HttpExchange, request: RecordedRequest)
+    /**
+     * Writes the response. A complete, usable reply calls [succeeded] with its content blocks just
+     * before `message_stop`, and the function it returns if `message_stop` could not be written.
+     */
+    internal abstract fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?)
 }
 
 /**
@@ -423,38 +495,44 @@ private class ReplyResponse(
     val stopDetails: ObjectNode?,
     val usage: Usage,
 ) : FakeResponse() {
-    override fun writeTo(exchange: HttpExchange, request: RecordedRequest) {
+    override fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         val holds = steps.filterIsInstance<Step.Pause>().map { it.hold }
         try {
-            write(openStream(exchange), request)
+            write(openStream(exchange), request, succeeded)
             holds.forEach { it.finish(clientGone = false) }
         } catch (e: IOException) {
             holds.forEach { it.finish(clientGone = true) }
         }
     }
 
-    private fun write(sse: SseWriter, request: RecordedRequest) {
+    private fun write(sse: SseWriter, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         sse.messageStart(request, usage)
         sse.event("ping", obj("ping"))
+        val content = MAPPER.createArrayNode() // the blocks as the API would return them whole
         var index = 0
         for (step in steps) {
             when (step) {
                 is Step.Pause -> step.hold.pause()
                 Step.Cut -> return
                 is Step.Thinking -> {
+                    val signature = nextId("sig")
                     sse.blockStart(index, obj("thinking").put("thinking", "").put("signature", ""))
                     chunks(step.summary).forEach { sse.blockDelta(index, obj("thinking_delta").put("thinking", it)) }
-                    sse.blockDelta(index, obj("signature_delta").put("signature", nextId("sig")))
+                    sse.blockDelta(index, obj("signature_delta").put("signature", signature))
+                    content.add(obj("thinking").put("thinking", step.summary).put("signature", signature))
                 }
                 is Step.Text -> {
                     sse.blockStart(index, obj("text").put("text", ""))
                     chunks(step.text).forEach { sse.blockDelta(index, obj("text_delta").put("text", it)) }
+                    content.add(obj("text").put("text", step.text))
                 }
                 is Step.ToolUse -> {
                     val start = obj("tool_use").put("id", step.id).put("name", step.name)
                     start.putObject("input")
                     sse.blockStart(index, start)
                     chunks(step.input).forEach { sse.blockDelta(index, obj("input_json_delta").put("partial_json", it)) }
+                    val input = runCatching { MAPPER.readTree(step.input) }.getOrNull()
+                    content.add(obj("tool_use").put("id", step.id).put("name", step.name).also { it.set<JsonNode>("input", input) })
                 }
             }
             if (step is Step.Thinking || step is Step.Text || step is Step.ToolUse) {
@@ -468,12 +546,29 @@ private class ReplyResponse(
         messageDelta.set<JsonNode>("delta", delta)
         messageDelta.set<JsonNode>("usage", usageNode(usage, output = usage.output))
         sse.event("message_delta", messageDelta)
-        sse.event("message_stop", obj("message_stop"))
+        val forget = if (isUsable(content)) succeeded(normalized(content)) else null
+        try {
+            sse.event("message_stop", obj("message_stop"))
+        } catch (e: IOException) {
+            forget?.invoke()
+            throw e
+        }
+    }
+
+    /** Whether the client commits this reply: a usable stop reason, whole tool calls, and something besides blank text. */
+    private fun isUsable(content: JsonNode): Boolean {
+        val calls = content.filter { it.path("type").asText() == "tool_use" }
+        return stopReason in USABLE_STOP_REASONS &&
+            (stopReason != "tool_use" || calls.isNotEmpty()) &&
+            calls.all { it.path("input").isObject } &&
+            normalized(content).isNotEmpty()
     }
 }
 
+private val USABLE_STOP_REASONS = setOf("end_turn", "tool_use", "pause_turn", "stop_sequence")
+
 private class StreamErrorResponse(val type: String, val message: String) : FakeResponse() {
-    override fun writeTo(exchange: HttpExchange, request: RecordedRequest) {
+    override fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         val sse = openStream(exchange)
         sse.messageStart(request, Usage())
         val error = obj("error")
@@ -483,7 +578,7 @@ private class StreamErrorResponse(val type: String, val message: String) : FakeR
 }
 
 private class HttpErrorResponse(val status: Int, val body: ObjectNode, val headers: Map<String, String>) : FakeResponse() {
-    override fun writeTo(exchange: HttpExchange, request: RecordedRequest) {
+    override fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         val bytes = MAPPER.writeValueAsBytes(body)
         exchange.responseHeaders.add("Content-Type", "application/json")
         headers.forEach { (name, value) -> exchange.responseHeaders.add(name, value) }

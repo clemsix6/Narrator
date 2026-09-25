@@ -45,6 +45,10 @@ import kotlin.random.Random
  * sends a stable `X-Session-ID` so the gateway keeps the conversation on the same upstream account,
  * where its prompt cache lives.
  *
+ * A request is the conversation's committed history followed by the *pending* messages of this call;
+ * the pending messages join the history with the reply, and only when the reply is usable (see
+ * [send] and [Conversation]).
+ *
  * Timeouts are per role: a short read timeout (silence from the gateway) and a long total timeout for
  * the whole call, retries included. The SDK's own retries are off: [send] retries 429, 529, 5xx,
  * connection errors and streams cut before any content, with exponential backoff and jitter, honouring
@@ -77,27 +81,41 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
     val inFlight: Int get() = synchronized(lifecycle) { callsInFlight }
 
     /**
-     * Sends [conversation] to Claude and appends the reply to it when the reply is usable (see
-     * [SendResult]). Blocking network I/O runs on [Dispatchers.IO].
+     * Sends [conversation]'s history followed by [pending], the messages of this request. When the
+     * reply is usable (a [SendResult.Reply]), [pending] and the reply join the history together;
+     * otherwise nothing does, and the next request may carry different messages. Blocking network I/O
+     * runs on [Dispatchers.IO].
      *
-     * Cancelling the caller closes the response stream at once and leaves the conversation unchanged;
-     * the [CancellationException] is rethrown as is. A failure is thrown after the last attempt, with
-     * the conversation unchanged. A second `send` on the same conversation while this one is in flight
-     * fails with an [IllegalStateException]. Once the client is closed, fails with a
-     * [ClientClosedException] before sending anything.
+     * Cancelling the caller closes the response stream at once and commits nothing; the
+     * [CancellationException] is rethrown as is. A failure is thrown after the last attempt, with
+     * nothing committed (see [exchange] to get its measurements too). A second `send` on the same
+     * conversation while this one is in flight fails with an [IllegalStateException]. Once the client
+     * is closed, fails with a [ClientClosedException] before sending anything.
      */
-    suspend fun send(conversation: Conversation): SendResult {
+    suspend fun send(conversation: Conversation, pending: List<MessageParam> = emptyList()): SendResult =
+        when (val exchange = exchange(conversation, pending)) {
+            is Exchange.Answered -> exchange.result
+            is Exchange.Failed -> throw exchange.error
+        }
+
+    /**
+     * Like [send], but a failure after the last attempt is returned with its measurements (a row of
+     * `llm_calls`) instead of thrown. Cancellation, a closed client and a conversation already in
+     * flight still throw.
+     */
+    suspend fun exchange(conversation: Conversation, pending: List<MessageParam> = emptyList()): Exchange {
         enter()
         try {
             return withContext(Dispatchers.IO) {
                 val history = conversation.beginCall()
-                var reply: MessageParam? = null
+                var committed: List<MessageParam>? = null
                 try {
-                    execute(conversation, history).also { result ->
-                        if (result is SendResult.Reply) reply = result.message.toParam()
+                    execute(conversation, history, pending).also { exchange ->
+                        val result = (exchange as? Exchange.Answered)?.result
+                        if (result is SendResult.Reply) committed = pending + replayOf(result.message)
                     }
                 } finally {
-                    conversation.endCall(reply)
+                    conversation.endCall(committed)
                 }
             }
         } finally {
@@ -135,15 +153,17 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
         if (closeNow) closeClient("replaced client closed after its last call")
     }
 
-    private suspend fun execute(conversation: Conversation, history: List<MessageParam>): SendResult {
+    private suspend fun execute(conversation: Conversation, history: List<MessageParam>, pending: List<MessageParam>): Exchange {
         val role = config.role(conversation.role)
-        val params = params(conversation, role, history)
+        val messages = history + pending
+        val params = params(conversation, role, messages)
         val call = CallContext(conversation, role)
         log.info(
             "${conversation.id} · call · role ${conversation.role.id} · ${role.model} · effort ${role.effort} · " +
-                "${history.size} messages",
+                "${messages.size} messages${if (pending.isEmpty()) "" else " (${pending.size} pending)"}",
         )
-        conversation.transcripts?.request(conversation, params, history.size)
+        conversation.transcripts?.sent(conversation, pending)
+        conversation.transcripts?.request(conversation, params, messages.size)
 
         var number = 0
         try {
@@ -162,7 +182,7 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
                         val stats = call.stats(number, attempt.requestId ?: requestIdOf(e)).copy(error = describeFailure(failure))
                         log.warn("${conversation.id} · failed · ${stats.ids()} · ${stats.durationMs} ms: ${stats.error}", failure)
                         conversation.transcripts?.error(conversation, failure, stats)
-                        throw failure
+                        return Exchange.Failed(failure, stats)
                     }
                     log.warn(
                         "${conversation.id} · attempt $number/${gateway.maxRetries + 1} failed ($reason), " +
@@ -173,11 +193,11 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
                     continue
                 }
                 currentCoroutineContext().ensureActive()
-                return finish(call, number, attempt, message)
+                return Exchange.Answered(finish(call, number, attempt, message))
             }
         } catch (e: CancellationException) {
             log.info("${conversation.id} · cancelled after ${call.elapsedMs()} ms, during attempt $number")
-            conversation.transcripts?.note(conversation, "call cancelled after ${call.elapsedMs()} ms")
+            conversation.transcripts?.note(conversation, "call cancelled after ${call.elapsedMs()} ms — NOT COMMITTED (cancelled)")
             throw e
         }
     }
@@ -202,32 +222,38 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             attempt.incompleteToolUse -> SendResult.Incomplete(message, stats, "a tool call was cut off (${stats.stopReason})")
             stopReason == StopReason.TOOL_USE && message.content().none { it.isToolUse() } ->
                 SendResult.Incomplete(message, stats, "stop reason tool_use without any tool call")
+            stopReason != null && stopReason in USABLE && isEmptyReply(message) -> SendResult.Incomplete(message, stats, EMPTY_REPLY)
             stopReason != null && stopReason in USABLE -> SendResult.Reply(message, stats)
             stopReason == StopReason.MAX_TOKENS -> SendResult.Incomplete(message, stats, "max_tokens (${call.role.maxTokens}) reached")
             else -> SendResult.Incomplete(message, stats, "unexpected stop reason ${stats.stopReason}")
         }
         conversation.contextTokens = stats.contextTokens
-        conversation.transcripts?.response(conversation, message, stats, appended = result is SendResult.Reply)
+        val notCommitted = when (result) {
+            is SendResult.Refused -> "refusal"
+            is SendResult.Incomplete -> result.reason
+            is SendResult.Reply -> null
+        }
+        conversation.transcripts?.response(conversation, message, stats, notCommitted)
         log.info("${conversation.id} · ${stats.summary()} · ${stats.ids()}")
         when (result) {
             is SendResult.Refused -> log.warn(
                 "${conversation.id} · refused (${result.category ?: "no category"}): " +
-                    "${result.explanation ?: "no explanation"}; not appended",
+                    "${result.explanation ?: "no explanation"}; nothing committed",
             )
-            is SendResult.Incomplete -> log.warn("${conversation.id} · incomplete reply, not appended: ${result.reason}")
+            is SendResult.Incomplete -> log.warn("${conversation.id} · incomplete reply, nothing committed: ${result.reason}")
             is SendResult.Reply -> Unit
         }
         return result
     }
 
-    private fun params(conversation: Conversation, role: RoleConfig, history: List<MessageParam>): MessageCreateParams =
+    private fun params(conversation: Conversation, role: RoleConfig, messages: List<MessageParam>): MessageCreateParams =
         MessageCreateParams.builder()
             .model(role.model)
             .maxTokens(role.maxTokens)
             .thinking(ThinkingConfigAdaptive.builder().display(ThinkingConfigAdaptive.Display.SUMMARIZED).build())
             .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.of(role.effort)).build())
             .systemOfTextBlockParams(conversation.system)
-            .messages(history)
+            .messages(messages)
             .apply {
                 if (gateway.cacheTtl != NarratorConfig.NO_CACHE_MARKER) {
                     cacheControl(CacheControlEphemeral.builder().ttl(CacheControlEphemeral.Ttl.of(gateway.cacheTtl)).build())
@@ -384,10 +410,39 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             json.isBlank() || runCatching { mapper.readTree(json).isObject }.getOrDefault(false)
     }
 
-    private companion object {
-        val USABLE = setOf(StopReason.END_TURN, StopReason.TOOL_USE, StopReason.PAUSE_TURN, StopReason.STOP_SEQUENCE)
+    companion object {
+        /** [SendResult.Incomplete.reason] of a usable stop reason with nothing to commit, see [isEmptyReply]. */
+        const val EMPTY_REPLY = "empty reply: no text, no tool call"
+
+        private val USABLE = setOf(StopReason.END_TURN, StopReason.TOOL_USE, StopReason.PAUSE_TURN, StopReason.STOP_SEQUENCE)
     }
 }
+
+/** What [ClaudeClient.exchange] got back. */
+sealed interface Exchange {
+    /** Claude answered; only a [SendResult.Reply] was committed. */
+    class Answered(val result: SendResult) : Exchange
+
+    /** The call failed after its last attempt, with nothing committed; [stats] carries its error. */
+    class Failed(val error: Throwable, val stats: CallStats) : Exchange
+}
+
+/**
+ * The reply as it joins the history: its blocks, minus blank text blocks, which the API rejects in a
+ * request (a streamed text block can end up empty).
+ */
+internal fun replayOf(message: Message): MessageParam =
+    MessageParam.builder()
+        .role(MessageParam.Role.ASSISTANT)
+        .contentOfBlockParams(message.content().filterNot { it.isText() && it.asText().text().isBlank() }.map { it.toParam() })
+        .build()
+
+/**
+ * True when [message] has nothing to commit: no block but blank text. The API rejects an empty
+ * assistant turn, so such a reply is never committed (it happens after tool results, when the model
+ * considers the turn over). A reply with only thinking is not empty.
+ */
+fun isEmptyReply(message: Message): Boolean = message.content().all { it.isText() && it.asText().text().isBlank() }
 
 /**
  * Runs the blocking [block] on this thread and closes [resource] as soon as the calling coroutine is
