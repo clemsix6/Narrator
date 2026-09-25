@@ -27,7 +27,7 @@ La v2 est une réécriture complète. Les leçons de la v1 sont résumées dans 
 
 ## Build — à lire absolument
 Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_UNIX de Java dans `%TEMP%` (« Unable to establish loopback connection »). `gradlew.bat` redirige `TEMP` vers `C:\Users\Public\narrator2-tmp`.
-- Depuis PowerShell : `cd TheMod; .\gradlew.bat build` (ou `test`, `runServer`, `runGametest`…).
+- Depuis PowerShell : `cd TheMod; .\gradlew.bat build` (ou `test`, `runServer`, `runGameTest`…).
 - Depuis Bash : `cd TheMod && cmd //c gradlew.bat build`. **Jamais `./gradlew`** : ce script n'a pas le correctif.
 - **Un seul build Gradle à la fois par dossier.** Si tu travailles dans un worktree, il a son propre dossier `build/`.
 - Avertissement Loom inoffensif : « 1.5.5.1 is not valid semver » (DuckDB).
@@ -64,12 +64,13 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 
 ## Tests
 - `.\gradlew.bat test` lance les tests unitaires (JUnit 5).
-- `.\gradlew.bat runGametest` lance les tests en jeu (Fabric GameTest, sur un serveur de test sans EULA).
+- `.\gradlew.bat runGameTest` lance les tests en jeu (Fabric GameTest, sur un serveur de test sans EULA).
+- `.\gradlew.bat liveTest` lance les tests de fumée réels (tag JUnit `live`, hors de `test`, `build` et `check`) contre LLMGW via le tunnel ouvert sur `localhost:8088` ; clé lue dans `NARRATOR_LLMGW_KEY` ou `.secrets/llmgw.key`, tests ignorés sans clé ni tunnel.
 - **Aucun appel réel à Claude ni à Jev dans les tests automatisés** : ils utilisent le faux serveur Anthropic des tests.
 - Une tâche n'est finie que si le build et les tests passent. Le rapport indique ce qui a été vérifié et comment.
 
 ## EULA de Minecraft
-**Ne jamais créer ni modifier un `eula.txt` avec `eula=true`**, où que ce soit : `TheServer/`, spikes, dossiers temporaires. Accepter l'EULA revient au propriétaire seul, et il ne l'a pas encore fait. Pour tester en jeu, utilise les GameTests (`runGameTest`), qui n'ont pas besoin de l'EULA. Si un vrai serveur dédié est indispensable, arrête-toi et demande-le dans ton rapport.
+Le propriétaire a donné son accord (25/09/2026) : on peut accepter l'EULA de Minecraft (`eula=true`) pour tout serveur de dev ou de test (`TheServer/`, spikes, dossiers temporaires), sans lui redemander. On lance donc `runServer` librement pour les tests manuels ou de bout en bout ; les GameTests restent le moyen privilégié pour les tests automatisés.
 
 ## Git
 - Dépôt local sur la branche `main`, sans remote : **ne jamais pousser**.
