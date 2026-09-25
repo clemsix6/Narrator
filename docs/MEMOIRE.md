@@ -45,7 +45,7 @@ Inspirations : le *memory stream* et la *réflexion* des Generative Agents (Park
 - **Couche 0 — Journal** : tous les événements de jeu, tout le chat, toutes les actions du Narrateur. Immuable, requêtable en SQL. C'est la source de vérité (détails dans [ARCHITECTURE.md](ARCHITECTURE.md)).
 - **Couche 1 — Mémoire de travail** : la conversation du Directeur avec l'API, *append-only* (exigence d'Opus 5.5 pour préserver sa réflexion et le cache de prompt). Au-delà d'un seuil (~150k tokens, configurable) ou à la fin d'une session de jeu, le chapitre est clos, consolidé (la « sieste », §5), et un nouveau chapitre démarre avec le prompt système figé et un **briefing** reconstruit depuis les couches 2 à 4. On ne rejoue rien de l'ancien chapitre, donc aucun conflit avec la réflexion préservée du modèle.
 - **Couche 2 — Souvenirs** : des épisodes marquants rédigés en langage naturel, par exemple :
-  > *3 oct., 21h40 — Thawyn a exigé des diamants « en guise de salut ». Châtiment : gravité lunaire pendant 5 min. Il a passé le châtiment à insulter le ciel ; clemsix6 filmait.*
+  > *3 oct., 21h40 — Bartok a exigé des diamants « en guise de salut ». Châtiment : gravité lunaire pendant 5 min. Il a passé le châtiment à insulter le ciel ; clemsix6 filmait.*
 
   Chaque souvenir porte une importance (1–10), une valence par joueur (−3 à +3), des joueurs, des entités (lieux, objets, mobs), des tags (thèmes, arc), des liens vers les événements bruts, et une force (§7).
 - **Couche 3 — Connaissances** : les **fiches joueurs** (§3), le **canon** (tout ce que le Narrateur a affirmé, décrété, promis ou inventé : lois, prophéties, titres, menaces, promesses et leur statut, lore, running gags, opinions — le canon fait loi), les **lieux** nommés, les **récits** (arcs passés et actifs) et la **Chronique** hiérarchique (§6).
@@ -95,14 +95,14 @@ Les stats vanilla (`world/stats/<uuid>.json`) permettent aussi d'initialiser les
 Un journal append-only de chaque interaction marquante entre le Narrateur et le joueur : date, type (conversation, défi, châtiment, bénédiction, pari, provocation, excuse, aide…), résumé en une ligne, **valence −3 à +3**, effet sur la faveur, lien vers le souvenir, le défi ou le châtiment concerné.
 
 - **Faveur** = somme des valences avec décroissance (les vieilles fautes pèsent moins, sans disparaître), bornée.
-- **Dette d'attention** : temps depuis la dernière interaction — pour que personne ne soit oublié (Clowew, dans la v1).
+- **Dette d'attention** : temps depuis la dernière interaction — pour que personne ne soit oublié.
 - Dans le prompt : les ~8 dernières interactions + les plus marquantes de toujours (|valence| maximale).
 
 ### 3.6 Rendu dans le prompt
 La fiche est stockée en tables et **rendue** en texte compact (budget ~600 tokens par joueur en ligne), par exemple :
 
 ```
-═══ FICHE — Thawyn ═══
+═══ FICHE — Bartok ═══
 Surnom : « le Pilleur de Chambres » (12/05) · Titre : aucun
 Joueur depuis le 26/04 · 23 sessions · 61 h · vu hier 22h14
 
@@ -116,7 +116,7 @@ PERSONNALITÉ
 Traits : téméraire ●●●●○ (sûr) · provocateur ●●●○○ (probable) · rancunier ●●○○○ (incertain)
 Style : explorateur 60 % · combattant 30 % · bâtisseur 10 %
 Envers le Narrateur : provocateur puis quémandeur (respect 35/100)
-Relations : duo inséparable avec clemsix6 · croise rarement Clowew
+Relations : duo inséparable avec clemsix6 · croise rarement Mimosa
 Aime : butin rare, combats · Agacé par : les téléportations
 Hameçons : sa désinvolture ; le duo avec clemsix6 comme cible collective
 
@@ -157,7 +157,7 @@ Le Narrateur « dort » quand personne ne joue, et c'est là qu'il fait son trav
 - Régénérer le « Depuis la dernière fois » des joueurs dont la session s'est terminée.
 
 ### Le rêve profond — serveur vide depuis ~20 min, ou une fois par jour
-1. **Réflexion sur chaque joueur** : à partir des nouveaux souvenirs, des interactions et des stats, mettre à jour récap et personnalité. Détecter les changements plutôt que d'empiler : *« Thawyn, ex-trouillard, est devenu téméraire depuis sa victoire au duel »*.
+1. **Réflexion sur chaque joueur** : à partir des nouveaux souvenirs, des interactions et des stats, mettre à jour récap et personnalité. Détecter les changements plutôt que d'empiler : *« Bartok, ex-trouillard, est devenu téméraire depuis sa victoire au duel »*.
 2. **Bilan du Narrateur** (factuel, pas d'introspection dans sa voix) : les tics sont **calculés par le code** à partir des répliques réellement envoyées (expressions et structures surutilisées) ; le Rêveur évalue ce qui a marché (les joueurs ont ri, répondu, joué le jeu) et ce qui est tombé à plat, met à jour les running gags (frais / usé / retraité) et les notes de jeu.
 3. **Chronique** : remonter les résumés d'un niveau (chapitres → session → saison → saga).
 4. **Réécrire le Grimoire** dans son budget fixe.
@@ -165,7 +165,7 @@ Le Narrateur « dort » quand personne ne joue, et c'est là qu'il fait son trav
 6. **Préparer la suite** : prévoir des défis adaptés à la progression réelle, préparer un rebondissement d'arc, commander un module à la Forge, repérer des lieux. Quand les joueurs reviennent, le Narrateur a un plan, et le chat reste réactif.
 
 ### Le réveil — à la connexion d'un joueur
-Le Directeur reçoit, avec l'événement de connexion, la fiche condensée du joueur et son « Depuis la dernière fois ». Il accueille avec continuité, et peut raconter un rêve : *« Cette nuit, j'ai rêvé de Thawyn. Il tombait. Encore. »* Ces rêves racontés sont du contenu de jeu, écrits pour les joueurs : ils ne sont jamais réinjectés comme mémoire.
+Le Directeur reçoit, avec l'événement de connexion, la fiche condensée du joueur et son « Depuis la dernière fois ». Il accueille avec continuité, et peut raconter un rêve : *« Cette nuit, j'ai rêvé de Bartok. Il tombait. Encore. »* Ces rêves racontés sont du contenu de jeu, écrits pour les joueurs : ils ne sont jamais réinjectés comme mémoire.
 
 ## 6. La Chronique hiérarchique
 
@@ -188,7 +188,7 @@ Chaque souvenir a une **force** entre 0 et 1 :
 score de rappel = pertinence × (a + b·importance + c·récence) × force
 ```
 
-Un peu de hasard contrôlé fait parfois remonter un vieux souvenir important — anniversaires, retours sur les lieux d'un drame : *« Il y a exactement un mois, Clowew tombait de sa canopée. Même heure, même vent. »*
+Un peu de hasard contrôlé fait parfois remonter un vieux souvenir important — anniversaires, retours sur les lieux d'un drame : *« Il y a exactement un mois, Mimosa tombait de sa canopée. Même heure, même vent. »*
 
 ## 8. Relire : comment la mémoire arrive au Directeur
 
@@ -203,7 +203,7 @@ Un peu de hasard contrôlé fait parfois remonter un vieux souvenir important �
    | Souvenirs pertinents pour les joueurs en ligne | ~2k |
    | Notes de cohérence et plans préparés pendant les rêves | ~1k |
 
-2. **Les réminiscences automatiques** : quand un événement arrive (Thawyn entre dans le Nether, Clowew retourne là où elle est tombée), le harness cherche un ou deux souvenirs très pertinents et les attache à l'événement. Recherche locale sans LLM, avec anti-répétition (un souvenir récemment remonté ne remonte pas tout de suite).
+2. **Les réminiscences automatiques** : quand un événement arrive (Bartok entre dans le Nether, Mimosa retourne là où elle est tombée), le harness cherche un ou deux souvenirs très pertinents et les attache à l'événement. Recherche locale sans LLM, avec anti-répétition (un souvenir récemment remonté ne remonte pas tout de suite).
 3. **Les outils à la demande** : `player_profile`, `recall` (souvenirs et canon), `sql` (Journal et tables de mémoire), ou une analyse déléguée à l'Analyste.
 
 ## 9. Le RAG : recherche hybride

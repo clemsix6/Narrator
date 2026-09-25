@@ -6,7 +6,12 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 - `docs/ARCHITECTURE.md` : l'architecture, la feuille de route (§16) et les décisions prises (§17).
 - `docs/MEMOIRE.md` : la mémoire du Narrateur, dont la fiche joueur (§3).
 - `docs/research/` : les notes de recherche vérifiées (signatures d'API 26.3, LLMGW, Jev, Forge…).
-- `.research/` (non versionné) : des références brutes. `v1/` est l'ancienne version : **on lit les idées, on ne copie jamais son code ni ses prompts**. `porting/` contient les guides de migration 26.1 à 26.3, `jev/` la doc de Jev et `LLMGW/` le code de la passerelle.
+- `.research/` (non versionné) : des références brutes. `porting/` contient les guides de migration 26.1 à 26.3, `jev/` la doc de Jev et `LLMGW/` le code de la passerelle.
+
+## On repart de zéro
+La v2 est une réécriture complète. Les leçons de la v1 sont résumées dans `docs/ARCHITECTURE.md` §1, et c'est tout ce qu'on en garde.
+- **Aucune migration** ni reprise de données : pas de mémoire, de fiches, de journaux, de configuration ou de monde de la v1. Aucune compatibilité avec ses formats.
+- **Les structures de données sont libres.** Si un format, un schéma ou une structure des docs peut être meilleur, améliore-le, puis mets la doc à jour et signale-le dans ton rapport. Chaque fois qu'on peut faire mieux que la v1, on le fait.
 
 ## Arborescence
 - `TheMod/` : le mod (Gradle). Le code est sous `src/main/kotlin/io/github/clemsix6/narrator2/`, les mixins Java sous `src/main/java/.../mixin/` et les prompts sous `src/main/resources/narrator2/prompts/`.

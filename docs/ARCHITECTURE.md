@@ -111,8 +111,8 @@ narrator_actions (ts, tool, target, params JSON, reason, ref_kind, ref_id)
 Plus des **vues** lisibles pour le modèle (`mining`, `building`, `kills`, `deaths`, `trades`, `meals`, `crafts`…) et des **macros SQL** pour les questions fréquentes :
 
 ```sql
-SELECT * FROM hotspots('Thawyn', 'block_break', 32);   -- où mine-t-il le plus ?
-SELECT * FROM sleep_spots('Clowew');                   -- où dort-elle ?
+SELECT * FROM hotspots('Bartok', 'block_break', 32);   -- où mine-t-il le plus ?
+SELECT * FROM sleep_spots('Mimosa');                   -- où dort-elle ?
 SELECT * FROM kill_stats('clemsix6', INTERVAL 7 DAY);  -- que tue-t-il ?
 ```
 
@@ -171,18 +171,18 @@ Exemple de message reçu :
 
 ```
 <événements de="21:32:05" à="21:32:41">
-[21:32:07] CHAT Thawyn : « narrateur t'es nul »
-[21:32:10] MORT Clowew — tombée de sa canopée (y=218 → 64), bambouseraie
+[21:32:07] CHAT Bartok : « narrateur t'es nul »
+[21:32:10] MORT Mimosa — tombée de sa canopée (y=218 → 64), bambouseraie
 [21:32:30] PROGRÈS clemsix6 — premier ancient debris (Nether, y=15)
   ↳ réminiscence : il y a 12 jours, clemsix6 avait juré « la netherite avant dimanche »
 </événements>
 <situation heure="21:32:41" jour_mc="37, nuit">
-Joueurs : Thawyn (grotte y=-58, ♥14, faveur −12) · Clowew (réapparition, faveur +8) · clemsix6 (Nether, ♥20, faveur +2)
-Défis : #12 course « premier à trouver une ancient city » (Thawyn vs clemsix6, reste 22 min)
+Joueurs : Bartok (grotte y=-58, ♥14, faveur −12) · Mimosa (réapparition, faveur +8) · clemsix6 (Nether, ♥20, faveur +2)
+Défis : #12 course « premier à trouver une ancient city » (Bartok vs clemsix6, reste 22 min)
 Châtiments : aucun · Modules : m-7 « creepers sous caféine » (reste 4 min)
-Cooldowns : châtiment Thawyn disponible dans 6 min
+Cooldowns : châtiment Bartok disponible dans 6 min
 Tâches : T-31 (Forgeron) « vaches volantes » — compilation, essai 2/5
-Tes dernières interventions : 21:20 défi (#12) · 21:24 moquerie clemsix6 (registre : commentaire sportif) · 21:29 faveur Clowew
+Tes dernières interventions : 21:20 défi (#12) · 21:24 moquerie clemsix6 (registre : commentaire sportif) · 21:29 faveur Mimosa
 Tics à éviter : « pathétique », « quelle surprise »
 </situation>
 ```
@@ -194,7 +194,7 @@ Tics à éviter : « pathétique », « quelle surprise »
 | Chat entre joueurs | Accumulé ; réveil après quelques messages ou ~45 s, pour qu'il puisse s'en mêler |
 | Mort, PvP, vie critique, première fois (diamant, Nether, End, élytres…), boss, fin de défi | Réveil rapide |
 | Entrée dans une structure ou un biome rare, trouvaille notable | Regroupé, réveil en quelques secondes |
-| Tout le reste (minage, construction, combats ordinaires…) | Résumé dans le **battement** périodique : « depuis 5 min, Thawyn a miné 143 blocs dont 3 diamants à y=-54 » |
+| Tout le reste (minage, construction, combats ordinaires…) | Résumé dans le **battement** périodique : « depuis 5 min, Bartok a miné 143 blocs dont 3 diamants à y=-54 » |
 
 Le battement a lieu toutes les 3 à 8 minutes (intervalle aléatoire) tant que des joueurs sont en ligne. C'est là que le Narrateur décide de lancer un défi ou de faire avancer un récit.
 
@@ -203,7 +203,7 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 
 | Rôle | Mission | Outils |
 |---|---|---|
-| **Analyste** | Questions sur l'historique : « où mine Thawyn ? », « profil de Clowew sur ses trois dernières sessions » | SQL, Oracle, mémoire |
+| **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
 | **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, SQL (positions) |
 | **Forgeron** | Écrire, compiler et tester un module de la Forge | Outils de la Forge (§10) |
 | **Scénariste** | Proposer trois idées originales (défi, châtiment, rebondissement) notées sur la nouveauté, le fun et l'équité, en évitant ce qui a déjà été fait | Mémoire, historique des interventions, `inspire` |
@@ -235,7 +235,7 @@ Claude est la **réflexion** du Narrateur ; **Jev** (TypeSafe AI) en est le **r�
 
 Précautions :
 - **Jev ne décide jamais seul d'une conséquence importante.** Ses réponses sont non déterministes et peuvent être influencées par un texte écrit pour le tromper (un joueur qui se fait passer pour gentil). Les jugements sur les joueurs sont **agrégés dans le temps** par le code, et Claude reste le décideur.
-- **Le français n'est pas encore évalué** (Jev est entraîné surtout en anglais). Avant de s'y fier, on mesure sa précision sur de vrais messages français, par exemple ceux du chat de la v1.
+- **Le français n'est pas encore évalué** (Jev est entraîné surtout en anglais). Avant de s'y fier, on mesure sa précision sur un jeu de messages français constitué pour l'occasion.
 - **Le chat part vers des serveurs aux États-Unis** : à mentionner dans les règles du serveur.
 - Client HTTP maison (il n'y a pas de SDK Java officiel), tracé comme les appels à Claude, avec **repli** sur des heuristiques si Jev est indisponible ou non configuré. Version épinglée (`jev-1.13.0`) une fois les seuils réglés.
 
@@ -268,7 +268,7 @@ Un catalogue paramétrable, avec une sévérité de 1 à 5 : joueur minuscule, g
 La carotte : objets nommés avec une histoire (« La Pioche du Pardon »), effets bénéfiques, titres honorifiques, protection temporaire, jokers (annuler un châtiment), indices vers un trésor.
 
 ### 9.4 Pièges et intentions
-Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur — « quand Thawyn entrera dans le Nether, fais apparaître un comité d'accueil », « si Clowew descend sous y=0, félicite-la ». Il prépare ainsi des surprises sans surveiller en boucle.
+Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur — « quand Bartok entrera dans le Nether, fais apparaître un comité d'accueil », « si Mimosa descend sous y=0, félicite-la ». Il prépare ainsi des surprises sans surveiller en boucle.
 
 ### 9.5 Récits
 Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée maximale. Un arc actif à la fois (deux au plus). Un thème clos entre en « jachère » et ne revient pas tout de suite.
@@ -308,7 +308,7 @@ Principes :
 6. **Garde-fous.** Java n'a plus de bac à sable intégré : on filtre à la compilation (pas de fichiers, réseau, processus, threads ni réflexion), on chronomètre chaque gestionnaire, on désactive automatiquement un module qui plante ou ralentit le serveur, et tout expire par défaut.
 7. **Un arsenal qui grandit.** Les règles et modules réussis sont conservés, réutilisables et paramétrables. Le mod en livre une quinzaine écrits à la main, qui servent aussi d'exemples au Forgeron.
 
-Le Directeur n'écrit pas de code Java : il crée des règles lui-même, et commande les modules au Forgeron (« un mini-jeu de chaises musicales avec des minecarts autour de Thawyn »), continue à jouer, puis déploie au moment le plus dramatique.
+Le Directeur n'écrit pas de code Java : il crée des règles lui-même, et commande les modules au Forgeron (« un mini-jeu de chaises musicales avec des minecarts autour de Bartok »), continue à jouer, puis déploie au moment le plus dramatique.
 
 ## 11. Le ton et le renouvellement
 
