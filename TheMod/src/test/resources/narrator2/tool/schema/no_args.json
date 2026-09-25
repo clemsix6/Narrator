@@ -1,0 +1,9 @@
+{
+  "input_schema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "name": "no_args",
+  "description": "A test tool."
+}
