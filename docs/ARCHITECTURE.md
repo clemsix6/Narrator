@@ -166,7 +166,7 @@ La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retou
 Les attributs de 26.x offrent des châtiments et récompenses spectaculaires, visibles par tous les clients, sans une ligne de code : `scale` (joueur minuscule ou géant), `gravity` (gravité lunaire), `jump_strength`, `movement_speed`, `block_break_speed`, `safe_fall_distance`, `step_height`, `block_interaction_range`, `entity_interaction_range`, `max_health`, `attack_speed`, `knockback_resistance`, `oxygen_bonus`, `burning_time`… Chaque modification porte un identifiant et une durée : elle est retirée automatiquement, même après un redémarrage.
 
 ### 6.3 Garde-fous
-Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets ou des entités, y compris derrière `execute … run`), puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables, aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10.
+Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets, la progression ou des entités, y compris derrière `execute … run`) ; seules les commandes relues pour le Narrateur passent, celles des autres mods sont refusées tant qu'un opérateur ne les a pas autorisées. Puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables (ses créatures ne les blessent pas plus que les joueurs morts depuis peu), aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10.
 
 ## 7. Le Cerveau
 
@@ -437,7 +437,7 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
 
 `gateway.cacheTtl` (`off` | `1h` | `5m`, `off` par défaut) et les timeouts par rôle (`readTimeoutSeconds` : silence toléré de la passerelle ; `totalTimeoutSeconds` : tout l'appel, retries compris) sont vérifiés contre le vrai serveur LLMGW (`docs/research/LLMGW.md`, § *Vérifié par liveTest*). La politique de retry (`gateway.maxRetries`, `retryInitialDelayMs`, `retryMaxDelayMs`) est propre au mod : les retries du SDK Anthropic sont désactivés pour ne pas s'empiler sur ceux de CLIProxyAPI en amont (§14).
 
-Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, durées, quota de morts…) ne seront pas des réglages séparés : ils découleront du niveau de chaos (tableau dans le design M1/M2 §10.4). La liste de base des commandes interdites sera codée en dur ; `safety.extraForbiddenCommands` ne pourra qu'en ajouter.
+Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, durées, quota de morts…) ne seront pas des réglages séparés : ils découleront du niveau de chaos (tableau dans le design M1/M2 §10.4). La liste de base des commandes interdites sera codée en dur ; `safety.extraForbiddenCommands` ne pourra qu'en ajouter. Les commandes permises sont une liste blanche, elle aussi codée en dur ; `safety.extraAllowedCommands` y ajoute les commandes relues des autres mods, jamais une commande de la liste interdite.
 
 ## 16. Feuille de route
 
