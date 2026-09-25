@@ -319,6 +319,31 @@ class ChapterScenariosTest {
     }
 
     @Test
+    fun `a chapter where nothing was exchanged closes without asking for a summary`() = harness().use { h ->
+        h.online("Bartok")
+        h.fake.enqueue(reply { refusal("cyber") }, reply { refusal("cyber") })
+
+        // Refused twice, the chat is dropped: the chapter is open, and its conversation empty.
+        h.chat("Bartok", "narrateur ?")
+        h.advance(1_500)
+        h.awaitTurns(1)
+        h.advance(30_000)
+        h.awaitTurns(2)
+        assertEquals(1, h.director.status().chapter)
+        h.director.post(DirectorSignal.CloseChapter(EndReason.OPERATOR))
+        h.advance(20_000)
+        h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+
+        assertEquals(2, h.fake.requests.size, "no summary request: there was nothing to summarize")
+        val chapter = assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!))
+        assertEquals(EndReason.OPERATOR, chapter.endReason)
+        assertNull(chapter.summary)
+        assertContains(h.decisions(DecisionRecord.Kind.CHAPTER, "closed").single().reason.orEmpty(), "no summary: nothing was exchanged")
+        assertTrue(h.traces.llmCalls.none { it.purpose == LlmCallRecord.Purpose.CHAPTER_SUMMARY })
+        h.assertInvariants()
+    }
+
+    @Test
     fun `a close asked while no chapter is open is ignored`() = harness().use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })

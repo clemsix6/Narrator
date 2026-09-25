@@ -52,6 +52,28 @@ class AttributeTableTest {
     }
 
     @Test
+    fun `a jump strength above 0_6 is hostile, since every jump then hurts`() {
+        assertFalse(AttributeKey.JUMP_STRENGTH.harmful(0.42, 0.6), "up to 0.6, a gift")
+        assertTrue(AttributeKey.JUMP_STRENGTH.harmful(0.42, 0.61), "above, a punishment")
+        assertTrue(AttributeKey.JUMP_STRENGTH.harmful(0.42, 1.5), "the bound itself: 14 blocks up")
+        assertTrue(AttributeKey.JUMP_STRENGTH.harmful(0.42, 0.2), "lower is a punishment too")
+        assertEquals(listOf(AttributeKey.JUMP_STRENGTH), AttributeKey.entries.filter { it.favorableUpTo < Double.MAX_VALUE }, "the only capped favor")
+    }
+
+    @Test
+    fun `each attribute arms the death guard for what it can kill with`() {
+        val byPeril = AttributeKey.entries.groupBy({ it.peril }, { it.id })
+        assertEquals(listOf("gravity", "jump_strength", "safe_fall_distance", "fall_damage_multiplier", "bounciness", "air_drag_modifier"), byPeril[Peril.FALL])
+        assertEquals(listOf("oxygen_bonus"), byPeril[Peril.DROWNING])
+        assertEquals(listOf("burning_time"), byPeril[Peril.FIRE])
+        assertEquals(
+            listOf("block_break_speed", "step_height", "block_interaction_range", "mining_efficiency", "luck", "sneaking_speed"),
+            byPeril[null],
+            "they cannot kill",
+        )
+    }
+
+    @Test
     fun `a value out of the bounds is refused with the bounds, never clipped`() {
         assertNull(AttributeKey.SCALE.outOfBounds(0.25), "the lower bound is allowed")
         assertNull(AttributeKey.SCALE.outOfBounds(3.0), "the upper bound is allowed")

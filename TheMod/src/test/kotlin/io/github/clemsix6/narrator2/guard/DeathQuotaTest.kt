@@ -3,10 +3,11 @@ package io.github.clemsix6.narrator2.guard
 import io.github.clemsix6.narrator2.guard.DeathGuard.Companion.HOUR_TICKS
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The quota of deaths the Narrator may cause (M1_M2 §10.3): counted in the player's own play time (the
- * `PLAY_TIME` stat, in ticks), never in wall-clock time.
+ * `PLAY_TIME` stat, in ticks), never in wall-clock time; and how long the falls it cushions last.
  */
 class DeathQuotaTest {
     private val start = 500_000L
@@ -55,5 +56,16 @@ class DeathQuotaTest {
     @Test
     fun `the quota is never negative`() {
         assertEquals(0, DeathGuard.quotaLeft(listOf(start - 3, start - 2, start - 1), start, cap = 1))
+    }
+
+    @Test
+    fun `a fall lasts as the game makes it last, so the cushion outlasts it`() {
+        assertEquals(0, DeathGuard.fallSeconds(0.0, 0.08), "no fall")
+        // The M2 review's case: a levitation II of 300 s leaves the player some 540 blocks up, 9 s of fall.
+        assertTrue(DeathGuard.fallSeconds(540.0, 0.08) in 9..10, "540 blocks: ${DeathGuard.fallSeconds(540.0, 0.08)} s")
+        // A levitation IV of 900 s (chaos 5): 3 600 blocks up, a fall far longer than the 30 s of the cushion alone.
+        assertTrue(DeathGuard.fallSeconds(3_664.0, 0.08) in 45..55, "3 664 blocks: ${DeathGuard.fallSeconds(3_664.0, 0.08)} s")
+        assertTrue(DeathGuard.fallSeconds(100.0, 0.01) > DeathGuard.fallSeconds(100.0, 0.08), "moon gravity falls slower")
+        assertEquals(900, DeathGuard.fallSeconds(100.0, 0.0), "no gravity: bounded")
     }
 }

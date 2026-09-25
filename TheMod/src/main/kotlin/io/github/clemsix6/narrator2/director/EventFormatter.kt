@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.AdvancementEarned
 import io.github.clemsix6.narrator2.event.BiomeEntered
 import io.github.clemsix6.narrator2.event.BlockBroken
@@ -18,6 +19,7 @@ import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerDied
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.PlayerRespawned
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
@@ -32,10 +34,11 @@ import java.util.Locale
  * Writes what the Director reads about the game (M1_M2 §12.6): English, compact, one line per event,
  * dated relative to the `now` of the block that holds it (`[-36s]`).
  *
- * Whatever a player or a model wrote is quoted and escaped ([quote]): between double quotes, with `"`
- * and `\` escaped, line breaks turned into spaces, at most [QUOTE_MAX] characters, and `<` `>` replaced
- * by `‹` `›`, so that no one can forge an `<operator>` or `<engine>` tag. Names that are not player
- * names (a mob's name tag) are escaped the same way, without quotes ([plain]). Ids lose their
+ * Whatever a player or a model wrote goes through the common escape, `core/ModelText`, so that no one
+ * can forge an `<operator>` or `<engine>` tag nor start a line of their own: texts are quoted ([quote]:
+ * between double quotes, with `"` and `\` escaped, line breaks turned into spaces, at most [QUOTE_MAX]
+ * characters, `<` `>` replaced by `‹` `›`); player names ([who]), a mob's name tag, the triage's
+ * annotation and a grief's count are escaped the same way, without quotes. Ids lose their
  * `minecraft:` prefix; dimensions are `overworld`, `nether` and `end`.
  *
  * @param taskStartedAt when a task started (epoch milliseconds), to say how long it took; null when unknown.
@@ -46,23 +49,29 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
     /** `21:32:41`, in the server's time zone. */
     fun time(ms: Long): String = clock.format(Instant.ofEpochMilli(ms))
 
-    /** The `<events now=… since=…>` block of a wake-up: one line per item, oldest first; `since` is the oldest item's time. */
-    fun events(items: List<Item>, now: Long): String {
+    /**
+     * The `<events now=… since=…>` block of a wake-up: one line per item, oldest first; `since` is the
+     * oldest item's time. [skipped] counts by kind the older items the inbox could not keep: they come
+     * first, as one line ([Inbox]).
+     */
+    fun events(items: List<Item>, now: Long, skipped: Map<String, Int> = emptyMap()): String {
         val since = items.minOfOrNull { it.at } ?: now
-        return block("events now=\"${time(now)}\" since=\"${time(since)}\"", "events", lines(items, now))
+        return block("events now=\"${time(now)}\" since=\"${time(since)}\"", "events", skippedLines(skipped) + lines(items, now))
     }
 
-    /** The `<new_events now=…>` block placed after the tool results, during a turn. */
-    fun newEvents(items: List<Item>, now: Long): String = block("new_events now=\"${time(now)}\"", "new_events", lines(items, now))
+    /** The `<new_events now=…>` block placed after the tool results, during a turn; [skipped] as in [events]. */
+    fun newEvents(items: List<Item>, now: Long, skipped: Map<String, Int> = emptyMap()): String =
+        block("new_events now=\"${time(now)}\"", "new_events", skippedLines(skipped) + lines(items, now))
 
     /**
      * The `<heartbeat now=… window=… hint=…>` block: what the players did during [windowMs], one line per
-     * player; [hint] is what the reflexes found worth a word, left out when they found nothing.
+     * player (escaped: it holds their names); [hint] is what the reflexes found worth a word, left out
+     * when they found nothing.
      */
     fun heartbeat(summary: List<String>, windowMs: Long, hint: String?, now: Long): String {
         val minutes = ((windowMs + 30_000) / 60_000).coerceAtLeast(1)
         val attributes = "heartbeat now=\"${time(now)}\" window=\"${minutes}m\"" + (hint?.let { " hint=\"${plain(it)}\"" } ?: "")
-        return block(attributes, "heartbeat", summary)
+        return block(attributes, "heartbeat", summary.map(ModelText::escape))
     }
 
     /** The lines of [items] that are events (whispers are notes, not lines), oldest first. */
@@ -83,46 +92,46 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
     fun event(envelope: Envelope, annotation: String?): String = when (val event = envelope.event) {
         is ChatMessage -> {
             val kind = if (event.channel == ChatChannel.PRAY) "PRAY" else "CHAT"
-            "$kind ${event.player.name}${annotation?.let { " $it" }.orEmpty()}: ${quote(event.text)}"
+            "$kind ${who(event.player)}${annotation?.let { " ${ModelText.escape(it)}" }.orEmpty()}: ${quote(event.text)}"
         }
         is NarratorSpoke -> {
             val by = if (event.channel == NarratorChannel.OPERATOR) "through operator ${plain(event.operator ?: "?")}" else "yourself"
-            val to = event.recipients?.joinToString { it.name } ?: "all"
+            val to = event.recipients?.joinToString { who(it) } ?: "all"
             "YOU SAID ($by) to $to: ${quote(event.text)}"
         }
         is PlayerDied -> buildString {
-            append("DEATH ${event.player.name}: ${id(event.cause)}")
+            append("DEATH ${who(event.player)}: ${id(event.cause)}")
             event.killer?.let { append(" by ${entity(it)}") }
             event.weapon?.let { append(" with ${id(it)}") }
             append(" (${pos(event.pos)}), inventory ${if (event.keptInventory) "kept" else "dropped"}")
             if (event.narrator) append(", caused by you")
         }
         is EntityKilled ->
-            (if (event.pvp) "PVP" else "KILL") + " ${event.player.name} killed ${entity(event.victim)}" +
+            (if (event.pvp) "PVP" else "KILL") + " ${who(event.player)} killed ${entity(event.victim)}" +
                 (event.weapon?.let { " with ${id(it)}" }.orEmpty()) + " (${pos(event.pos)})"
-        is HealthCritical -> "LOW HEALTH ${event.player.name}: ${number(event.health)} hp (${pos(event.pos)})"
+        is HealthCritical -> "LOW HEALTH ${who(event.player)}: ${number(event.health)} hp (${pos(event.pos)})"
         is PlayerJoined -> {
             val notes = listOfNotNull("first time".takeIf { event.firstTime }, "operator".takeIf { event.isOp })
-            "JOIN ${event.player.name}${if (notes.isEmpty()) "" else " (${notes.joinToString()})"} (${pos(event.pos)})"
+            "JOIN ${who(event.player)}${if (notes.isEmpty()) "" else " (${notes.joinToString()})"} (${pos(event.pos)})"
         }
-        is PlayerLeft -> "LEAVE ${event.player.name} after ${ago(event.sessionSeconds * 1_000)}"
+        is PlayerLeft -> "LEAVE ${who(event.player)} after ${ago(event.sessionSeconds * 1_000)}"
         is AdvancementEarned -> {
             val frame = event.frame.takeIf { it != "task" }?.let { "$it, " }.orEmpty()
-            "ADVANCEMENT ${event.player.name}: ${quote(event.title, TITLE_MAX)} ($frame${pos(event.pos)})"
+            "ADVANCEMENT ${who(event.player)}: ${quote(event.title, TITLE_MAX)} ($frame${pos(event.pos)})"
         }
         is StructureEntered ->
-            "STRUCTURE ${event.player.name} entered ${id(event.structure)}${if (event.firstVisit) ", first visit" else ""} (${pos(event.pos)})"
-        is BiomeEntered -> "BIOME ${event.player.name} entered ${id(event.biome)}${if (event.firstVisit) ", first visit" else ""} (${pos(event.pos)})"
+            "STRUCTURE ${who(event.player)} entered ${id(event.structure)}${if (event.firstVisit) ", first visit" else ""} (${pos(event.pos)})"
+        is BiomeEntered -> "BIOME ${who(event.player)} entered ${id(event.biome)}${if (event.firstVisit) ", first visit" else ""} (${pos(event.pos)})"
         is BlockBroken ->
             if (annotation != null) {
-                "GRIEF ${event.player.name} $annotation (${pos(event.pos)})"
+                "GRIEF ${who(event.player)} ${ModelText.escape(annotation)} (${pos(event.pos)})"
             } else {
-                "MINED ${event.player.name} ${id(event.block)} (${pos(event.pos)})"
+                "MINED ${who(event.player)} ${id(event.block)} (${pos(event.pos)})"
             }
         is ExplosionHappened -> buildString {
             append("EXPLOSION ${event.source?.let(::id) ?: "block"}")
             event.author?.let { append(" by ${entity(it)}") }
-            if (event.nearby.isNotEmpty()) append(" near ${event.nearby.joinToString { it.name }}")
+            if (event.nearby.isNotEmpty()) append(" near ${event.nearby.joinToString { who(it) }}")
             append(
                 if (event.blocksHit == 0) {
                     ": no block destroyed"
@@ -132,15 +141,15 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             )
             append(" (${pos(event.pos)})")
         }
-        is LootChestOpened -> "LOOT ${event.player.name} opened ${id(event.lootTable)} (${pos(event.pos)})"
-        is Teleported -> "TELEPORT ${event.player.name} jumped ${event.distance.toLong()} blocks to (${pos(event.pos)})"
-        is DimensionChanged -> "DIMENSION ${event.player.name} ${dim(event.from.dim)} → ${dim(event.pos.dim)} via ${event.via} (${pos(event.pos)})"
-        is PlayerRespawned -> "RESPAWN ${event.player.name}${if (event.alive) " left the End" else ""} (${pos(event.pos)})"
+        is LootChestOpened -> "LOOT ${who(event.player)} opened ${id(event.lootTable)} (${pos(event.pos)})"
+        is Teleported -> "TELEPORT ${who(event.player)} jumped ${event.distance.toLong()} blocks to (${pos(event.pos)})"
+        is DimensionChanged -> "DIMENSION ${who(event.player)} ${dim(event.from.dim)} → ${dim(event.pos.dim)} via ${event.via} (${pos(event.pos)})"
+        is PlayerRespawned -> "RESPAWN ${who(event.player)}${if (event.alive) " left the End" else ""} (${pos(event.pos)})"
         else -> generic(event)
     }
 
     private fun generic(event: GameEvent): String =
-        event.type.uppercase(Locale.ROOT) + (event.player?.let { " ${it.name}" }.orEmpty()) + (event.pos?.let { " (${pos(it)})" }.orEmpty())
+        event.type.uppercase(Locale.ROOT) + (event.player?.let { " ${who(it)}" }.orEmpty()) + (event.pos?.let { " (${pos(it)})" }.orEmpty())
 
     private fun task(done: DirectorSignal.TaskDone): String {
         val head = "TASK T-${done.taskId} ${done.role.id}"
@@ -160,6 +169,16 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             TaskRecord.Status.TIMEOUT -> "$head timed out$took"
             else -> "$head failed$took: ${quote(done.result)}"
         }
+    }
+
+    /** `(412 older events were left out: too many were waiting; MINED 300, CHAT 100, BIOME 12)`, or nothing. */
+    private fun skippedLines(skipped: Map<String, Int>): List<String> {
+        val total = skipped.values.sum()
+        if (total <= 0) return emptyList()
+        val kinds = skipped.entries.filter { it.value > 0 }
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .joinToString(", ") { "${it.key} ${it.value}" }
+        return listOf("($total older ${if (total == 1) "event was" else "events were"} left out: too many were waiting; $kinds)")
     }
 
     private fun block(open: String, close: String, lines: List<String>): String =
@@ -182,20 +201,53 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         private const val INDENT = "    "
 
         /**
-         * [text] as a quote: between double quotes, `\` and `"` escaped, line breaks and control
-         * characters turned into spaces, `<` `>` replaced by `‹` `›`, cut to [max] characters with `…`.
+         * [text] as a quote ([ModelText.quote]): between double quotes, `\` and `"` escaped, line breaks
+         * and control characters turned into spaces, `<` `>` replaced by `‹` `›`, cut to [max] characters with `…`.
          */
-        fun quote(text: String, max: Int = QUOTE_MAX): String {
-            val escaped = cut(flat(text), max).replace("\\", "\\\\").replace("\"", "\\\"")
-            return "\"${angles(escaped)}\""
+        fun quote(text: String, max: Int = QUOTE_MAX): String = ModelText.quote(text, max)
+
+        /** [text] on one line, escaped ([ModelText.escape]), at most [TITLE_MAX] characters: for names and words that are not quoted. */
+        fun plain(text: String): String = ModelText.escape(ModelText.cut(text, TITLE_MAX))
+
+        /** A player's name, escaped ([ModelText.name]): `<engine>` is a valid name on an offline server. */
+        fun who(player: PlayerRef): String = ModelText.name(player.name)
+
+        /** [text] as indented lines under a line, each escaped ([ModelText.escape]): a long report. */
+        fun indented(text: String): String = text.lines().joinToString("\n") { INDENT + ModelText.escape(it) }
+
+        /**
+         * The kind of [item], as its line starts (`CHAT`, `PRAY`, `MINED`, `TASK`…; addressed chat is
+         * `CHAT to you`): how the inbox counts the items it could not keep.
+         */
+        fun kind(item: Item): String = when (val signal = item.signal) {
+            is DirectorSignal.Event -> when (val event = signal.envelope.event) {
+                is ChatMessage -> when {
+                    event.channel == ChatChannel.PRAY -> "PRAY"
+                    item.isAddressedChat -> "CHAT to you"
+                    else -> "CHAT"
+                }
+                is NarratorSpoke -> "YOU SAID"
+                is PlayerDied -> "DEATH"
+                is EntityKilled -> if (event.pvp) "PVP" else "KILL"
+                is HealthCritical -> "LOW HEALTH"
+                is PlayerJoined -> "JOIN"
+                is PlayerLeft -> "LEAVE"
+                is AdvancementEarned -> "ADVANCEMENT"
+                is StructureEntered -> "STRUCTURE"
+                is BiomeEntered -> "BIOME"
+                is BlockBroken -> if (signal.annotation != null) "GRIEF" else "MINED"
+                is ExplosionHappened -> "EXPLOSION"
+                is LootChestOpened -> "LOOT"
+                is Teleported -> "TELEPORT"
+                is DimensionChanged -> "DIMENSION"
+                is PlayerRespawned -> "RESPAWN"
+                else -> event.type.uppercase(Locale.ROOT)
+            }
+            is DirectorSignal.TaskDone -> "TASK"
+            is DirectorSignal.ReminderDue -> "REMINDER"
+            is DirectorSignal.OperatorWhisper -> "WHISPER"
+            else -> "OTHER"
         }
-
-        /** [text] on one line, with `<` `>` replaced by `‹` `›`: for names and words that are not quoted. */
-        fun plain(text: String): String = angles(cut(flat(text), TITLE_MAX))
-
-        /** [text] as indented lines under a line, `<` `>` replaced: a long report. */
-        fun indented(text: String): String =
-            text.lines().joinToString("\n") { INDENT + angles(it.map { c -> if (c.isISOControl()) ' ' else c }.joinToString("")) }
 
         /** An id without its `minecraft:` namespace, e.g. `diamond_ore`; other namespaces are kept. */
         fun id(id: String): String = id.removePrefix("minecraft:")
@@ -212,7 +264,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
 
         /** A player by name; a mob by type, with its name tag quoted. */
         fun entity(entity: EntityRef): String =
-            entity.player?.name ?: (id(entity.type) + (entity.name?.let { " ${quote(it, TITLE_MAX)}" }.orEmpty()))
+            entity.player?.let(::who) ?: (id(entity.type) + (entity.name?.let { " ${quote(it, TITLE_MAX)}" }.orEmpty()))
 
         /** A duration: `36s`, `1m30s`, `12m`, `1h05m`. */
         fun ago(ms: Long): String {
@@ -228,14 +280,5 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         /** A health or damage number: `3`, `3.5`. */
         fun number(value: Double): String =
             if (value == Math.rint(value)) value.toLong().toString() else String.format(Locale.ROOT, "%.1f", value)
-
-        private fun flat(text: String): String = text.map { if (it.isISOControl()) ' ' else it }.joinToString("")
-
-        private fun angles(text: String): String = text.replace('<', '‹').replace('>', '›')
-
-        private fun cut(text: String, max: Int): String {
-            if (text.codePointCount(0, text.length) <= max) return text
-            return text.substring(0, text.offsetByCodePoints(0, max - 1)) + "…"
-        }
     }
 }

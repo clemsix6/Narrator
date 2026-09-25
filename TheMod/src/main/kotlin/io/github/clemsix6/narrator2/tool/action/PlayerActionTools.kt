@@ -6,6 +6,8 @@ import io.github.clemsix6.narrator2.guard.AttributeLedger
 import io.github.clemsix6.narrator2.guard.Caps
 import io.github.clemsix6.narrator2.guard.EffectLedger
 import io.github.clemsix6.narrator2.guard.ItemLedger
+import io.github.clemsix6.narrator2.guard.Peril
+import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.TargetingPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
@@ -31,6 +33,7 @@ import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.world.effect.MobEffect
 import net.minecraft.world.effect.MobEffectCategory
+import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.phys.Vec3
@@ -50,13 +53,14 @@ import kotlin.math.sin
  *
  * Every tool follows the guards' order (`handoff/T09a.md`): arguments and the caps of the chaos level
  * first, then `Guards.hostile` for a hostile action (protection, chaos 0, no piling on, one punishment at
- * a time, fairness), then the death guard for anything that can kill, then the change itself through a
- * ledger, so that it is undone when due. Whether an action is hostile is decided here from what it does,
- * never declared by the model:
+ * a time, fairness), then the death guard for a harmful change and any teleport, armed for what it can
+ * kill with (`Peril`), then the change itself through a ledger, so that it is undone when due. Whether an
+ * action is hostile is decided here from what it does, never declared by the model:
  * - a harmful effect, an attribute moved the wrong way, a teleport of more than 32 blocks, a launch, a
  *   confiscation (M1_M2 §10.3);
  * - also, beyond the design: taking away a beneficial effect or a beneficial attribute change (the fire
- *   resistance of a player in lava, the fall protection of a launched one), which can kill as surely.
+ *   resistance of a player in lava, the fall protection of a launched one), which can kill as surely, and
+ *   replacing a beneficial effect by a shorter or weaker one (M2 review, finding 2).
  */
 fun playerActionTools(services: NarratorServices): List<NarratorTool<*>> = listOf(
     ApplyEffectTool(),
@@ -100,8 +104,10 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
     name = "apply_effect",
     description = "Puts a status effect on players for a while, replacing the one of that kind they have. A harmful effect " +
         "is a punishment: refused for a protected player, one who died a few minutes ago or one already punished by an " +
-        "earlier turn, and capped in length and level by the chaos level. Effects that act on the world (omens, infested, " +
-        "oozing, weaving, wind_charged) are never given.",
+        "earlier turn, and capped in length and level by the chaos level. A beneficial effect never replaces a longer and " +
+        "stronger one the player has; replacing one that is longer or stronger takes something away, so it is a " +
+        "punishment too. Resistance goes up to level 3. Effects that act on the world (omens, infested, oozing, weaving, " +
+        "wind_charged) are never given.",
     args = ApplyEffectArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -127,6 +133,14 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
                 ),
             )
         }
+        if (effect.value() === MobEffects.RESISTANCE.value() && args.level > Effects.MAX_RESISTANCE_LEVEL) {
+            refuse(
+                ToolResult.invalid(
+                    "resistance goes up to level ${Effects.MAX_RESISTANCE_LEVEL}: level 4 makes a player nearly immune to damage, " +
+                        "level 5 wholly (asked level ${args.level})",
+                ),
+            )
+        }
         val shown = "$id ${roman(args.level)}"
         val now = ctx.clock.millis()
         val seconds = if (instant) Effects.INSTANT_SECONDS else args.seconds
@@ -135,18 +149,21 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
             targets.map { ref ->
                 outcome(ref) {
                     val player = server.live(ref)
+                    var replaced = ""
                     if (harmful) {
                         ctx.punish(player, until)
-                        ctx.guards.armDeathGuard(player.uuid, seconds + Effects.GUARD_MARGIN_SECONDS)
+                        // The effect's own length and 30 s more: a levitation's fall outlasts it (M2 review, finding 1).
+                        Effects.perilOf(effect)?.let { ctx.guards.armDeathGuard(player.uuid, seconds + Effects.GUARD_MARGIN_SECONDS, it) }
                     } else {
                         player.requireAlive()
+                        if (!instant) replaced = ctx.replacing(player, ref, effect, args.level, args.seconds)
                     }
                     if (instant) {
                         effect.value().applyInstantaneousEffect(player.level(), null, null, player, args.level - 1, 1.0)
                         "${ref.name} (health ${health(player)})"
                     } else {
                         ctx.guards.effects.apply(player, effect, args.level, args.seconds, args.particles, ctx.caller.turnId)
-                        ref.name
+                        ref.name + replaced
                     }
                 }
             }
@@ -166,8 +183,41 @@ private object Effects {
     /** An instant effect is a punishment for this long, and the death guard covers it. */
     const val INSTANT_SECONDS = 5
 
-    /** The death guard of a harmful effect lasts this much longer than the effect (M1_M2 §10.3). */
-    const val GUARD_MARGIN_SECONDS = 5
+    /**
+     * The death guard of a harmful effect lasts this much longer than the effect: at least the 30 s the
+     * M2 review asks for (finding 1), since a levitation's fall outlasts it.
+     */
+    const val GUARD_MARGIN_SECONDS = 30
+
+    /** Resistance IV takes 80 % of the damage away, V all of it (M2 review, finding 13). */
+    const val MAX_RESISTANCE_LEVEL = 3
+
+    /**
+     * What an effect can kill with, when the Narrator gives it (a harmful one) or takes it away (a
+     * beneficial one): the peril its death guard covers. Those left out weaken the player against
+     * everything ([Peril.ANY]); null for those that cannot kill.
+     */
+    private val PERILS: Map<String, Peril?> = mapOf(
+        "minecraft:levitation" to Peril.FALL,
+        "minecraft:slow_falling" to Peril.FALL,
+        "minecraft:jump_boost" to Peril.FALL,
+        "minecraft:wither" to Peril.MAGIC,
+        "minecraft:poison" to Peril.MAGIC,
+        "minecraft:instant_damage" to Peril.MAGIC,
+        "minecraft:hunger" to Peril.HUNGER,
+        "minecraft:fire_resistance" to Peril.FIRE,
+        "minecraft:water_breathing" to Peril.DROWNING,
+        "minecraft:conduit_power" to Peril.DROWNING,
+        "minecraft:dolphins_grace" to Peril.DROWNING,
+        "minecraft:breath_of_the_nautilus" to Peril.DROWNING,
+        "minecraft:luck" to null,
+        "minecraft:unluck" to null,
+        "minecraft:hero_of_the_village" to null,
+        "minecraft:glowing" to null,
+    )
+
+    /** The peril [effect]'s death guard covers; null when it cannot kill. */
+    fun perilOf(effect: Holder<MobEffect>): Peril? = if (effect.registeredName in PERILS) PERILS[effect.registeredName] else Peril.ANY
 
     /**
      * Effects never given, with why: they act on the world (M1_M2 §9.3; `handoff/T09b.md` for the last
@@ -239,9 +289,10 @@ class RemoveEffectTool : NarratorTool<RemoveEffectArgs>(
                     }
                     if (removed.isEmpty()) return@outcome ""
                     val shown = removed.map { effect -> "${shortId(effect)} ${roman(player.getEffect(effect)!!.amplifier + 1)}" }
-                    if (removed.any { it.value().category == MobEffectCategory.BENEFICIAL }) {
+                    val benefits = removed.filter { it.value().category == MobEffectCategory.BENEFICIAL }
+                    if (benefits.isNotEmpty()) {
                         ctx.punish(player, until)
-                        ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS)
+                        benefits.mapNotNull { Effects.perilOf(it) }.distinct().forEach { ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS, it) }
                     }
                     if (only == null) ctx.guards.effects.removeAll(player) else ctx.guards.effects.remove(player, only)
                     "${shown.joinToString()} from ${ref.name}"
@@ -283,6 +334,34 @@ class RemoveEffectTool : NarratorTool<RemoveEffectArgs>(
  */
 private const val REMOVAL_GUARD_SECONDS = 30
 
+private const val TICKS_PER_SECOND = 20
+
+/**
+ * A beneficial [effect] at [level] for [seconds], given to [player] who may already have it (M2 review,
+ * finding 2): the Narrator's 30 seconds of fire resistance must not replace a potion of 8 minutes in the
+ * middle of the Nether's lava, even for a protected player.
+ * - what they have is at least as long and as strong: refused, there is nothing to give;
+ * - it is longer, or stronger: the call takes that away, so it is a punishment like `remove_effect`, and
+ *   the death guard covers what the effect protected from until the new one has ended, and 30 s more.
+ *
+ * Returns what the answer says of the effect replaced, "" when nothing is taken away. Server thread.
+ */
+private fun ToolContext.replacing(player: ServerPlayer, ref: PlayerRef, effect: Holder<MobEffect>, level: Int, seconds: Int): String {
+    val had = player.getEffect(effect) ?: return ""
+    val ticks = seconds * TICKS_PER_SECOND
+    val longer = !had.isInfiniteDuration && ticks > had.duration
+    val stronger = level - 1 > had.amplifier
+    val shorter = had.isInfiniteDuration || ticks < had.duration
+    val weaker = level - 1 < had.amplifier
+    val lasting = if (had.isInfiniteDuration) "with no end" else "for ${TargetingPolicy.span(had.duration * 1_000L / TICKS_PER_SECOND)}"
+    val what = "${shortId(effect)} ${roman(had.amplifier + 1)} $lasting"
+    if (!longer && !stronger) refuse(ToolResult.invalid("${ref.name} already has $what"))
+    if (!shorter && !weaker) return ""
+    punish(player, clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L)
+    Effects.perilOf(effect)?.let { guards.armDeathGuard(player.uuid, seconds + REMOVAL_GUARD_SECONDS, it) }
+    return " (in place of $what: a punishment)"
+}
+
 // ── set_attribute ───────────────────────────────────────────────────────────────────────────────
 
 @Serializable
@@ -316,8 +395,8 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
     name = "set_attribute",
     description = "Changes one attribute of a player for a while (a tiny or giant player, moon gravity, clumsy hands…), " +
         "replacing the Narrator's earlier change of that attribute. The resulting value must stay within the attribute's " +
-        "bounds. A change in the player's disfavor is a punishment: refused like any other when the player may not be " +
-        "punished, and capped in length by the chaos level.",
+        "bounds. A change in the player's disfavor (a jump_strength above 0.6 too: every jump then hurts) is a punishment: " +
+        "refused like any other when the player may not be punished, and capped in length by the chaos level.",
     args = SetAttributeArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -340,8 +419,14 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
                 refuse(ToolResult.invalid("this change of ${key.id} is in ${ref.name}'s disfavor: at chaos ${ctx.chaos} it lasts at most $maxSeconds s (asked ${args.seconds} s)"))
             }
             val until = ctx.clock.millis() + args.seconds * 1_000L
-            if (harmful) ctx.punish(player, until) else player.requireAlive()
-            ctx.guards.armDeathGuard(player.uuid, args.seconds)
+            // Only a change in the player's disfavor arms the death guard (M2 review, finding 11), for
+            // what it can kill with, until 30 s after it ends (a gravity that comes back mid-jump).
+            if (harmful) {
+                ctx.punish(player, until)
+                key.peril?.let { ctx.guards.armDeathGuard(player.uuid, args.seconds + Effects.GUARD_MARGIN_SECONDS, it) }
+            } else {
+                player.requireAlive()
+            }
             val value = ledger.apply(player, key, amount, operation, until, harmful, ctx.caller.turnId)
             ToolResult.ok("ok: ${ref.name}'s ${key.id} ${number(current)} → ${number(value)} for ${args.seconds} s (until ${ctx.at(until)})", listOf(ref))
         }
@@ -380,9 +465,10 @@ class ResetAttributeTool : NarratorTool<ResetAttributeArgs>(
                 val all = ledger.on(player).joinToString { AttributeLedger.describe(it) }.ifEmpty { "none" }
                 refuse(ToolResult.invalid("the Narrator did not change ${ref.name}'s ${args.attribute.id}; its changes on ${ref.name}: $all"))
             }
-            if (changes.any { !it.harmful }) {
+            val favors = changes.filter { !it.harmful }
+            if (favors.isNotEmpty()) {
                 ctx.punish(player, ctx.clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L)
-                ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS)
+                favors.mapNotNull { AttributeLedger.keyOf(it)?.peril }.distinct().forEach { ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS, it) }
             }
             val back = changes.mapNotNull { AttributeLedger.keyOf(it) }.map { key ->
                 val before = ledger.value(player, key)
@@ -425,9 +511,9 @@ data class TeleportArgs(
 class TeleportTool : NarratorTool<TeleportArgs>(
     name = "teleport",
     description = "Moves a player, within their own dimension, next to another player or to a column x, z: they land on " +
-        "safe ground (never in lava, water, a wall or the void), or nothing happens. Taking them more than 32 blocks away " +
-        "is a punishment, refused like any other when the player may not be punished, and its distance is capped by the " +
-        "chaos level. Slow: the destination loads first.",
+        "safe ground (never in lava, water, a wall or the void), or nothing happens. A protected player is never moved. " +
+        "Taking them more than 32 blocks away is a punishment, refused like any other when the player may not be punished, " +
+        "and its distance is capped by the chaos level. Slow: the destination loads first.",
     args = TeleportArgs.serializer(),
     effect = ToolEffect.WORLD,
     timeoutMs = 12_000,
@@ -443,6 +529,10 @@ class TeleportTool : NarratorTool<TeleportArgs>(
         val destination = ctx.onServer { server ->
             val player = server.live(ref)
             player.requireAlive()
+            // Near or far, a protected player stays where they are (M2 review, finding 12).
+            if (ctx.guards.isProtected(ref.uuid)) {
+                refuse(ToolResult.denied(Rules.PROTECTED, "${ref.name} is protected by the operators; the Narrator never teleports them."))
+            }
             val level = player.level()
             val (x, z, fromY) = if (toRef != null) {
                 val other = server.live(toRef)
@@ -484,6 +574,8 @@ class TeleportTool : NarratorTool<TeleportArgs>(
                 if (caps.hostileAllowed && distance > caps.teleportBlocks) refuse(tooFar(ctx, distance, caps))
                 ctx.punish(player, ctx.clock.millis() + TELEPORT_PUNISHMENT_SECONDS * 1_000L)
             }
+            // The landing is safe, what is around it may not be (M2 review, finding 12).
+            ctx.guards.armDeathGuard(player.uuid, TELEPORT_GUARD_SECONDS, Peril.ANY)
             if (!Teleports.move(player, spot)) refuse(ToolResult.failed("the game refused to move ${ref.name}"))
             val near = destination.near?.let { " next to $it" } ?: ""
             ToolResult.ok(
@@ -499,6 +591,9 @@ class TeleportTool : NarratorTool<TeleportArgs>(
     private companion object {
         /** A far teleport is a punishment for this long: no other turn piles on the stranded player. */
         const val TELEPORT_PUNISHMENT_SECONDS = 60
+
+        /** Any teleport arms the death guard this long. */
+        const val TELEPORT_GUARD_SECONDS = 30
     }
 }
 
@@ -544,7 +639,7 @@ class LaunchTool : NarratorTool<LaunchArgs>(
             val player = server.live(ref)
             val until = ctx.clock.millis() + LAUNCH_SECONDS * 1_000L
             ctx.punish(player, until)
-            ctx.guards.armDeathGuard(player.uuid, LAUNCH_SECONDS)
+            ctx.guards.armDeathGuard(player.uuid, LAUNCH_SECONDS, Peril.FALL)
             // The fall protection goes through the ledger: it ends by itself, even after a restart.
             ctx.guards.attributes.apply(
                 player, AttributeKey.FALL_DAMAGE_MULTIPLIER, -1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL, until,
@@ -619,7 +714,9 @@ class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs
     name = "give_item",
     description = "Gives an item to a player, possibly named, described, enchanted or unbreakable: a reward, a gag, a " +
         "cursed trinket. It goes into their inventory, or at their feet when it is full. Operator items, unbreakable " +
-        "blocks, spawners and spawn eggs are never given. At most 20 gifts per player per hour.",
+        "blocks, spawners and spawn eggs are never given. At most 20 gifts per player per hour, and few precious items: " +
+        "the Narrator slows progression down (4 diamonds an hour, or a single piece of netherite, diamond gear, elytra, " +
+        "totem, enchanted golden apple, beacon, shulker box…).",
     args = GiveItemArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -632,7 +729,8 @@ class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs
                 server.registryAccess(), player.level().enabledFeatures(),
                 args.item, args.count, args.name, args.lore, args.enchantments, args.unbreakable,
             )
-            limiter.take(ref).let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
+            val points = ItemSpecs.preciousness(spec.item) * spec.count
+            limiter.take(ref, points, "${spec.count}x ${shortId(spec.item)}").let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
             val dropped = give(player, ItemSpecs.build(spec, ctx.caller.turnId))
             val where = if (dropped) "dropped at ${ref.name}'s feet (inventory full)" else "to ${ref.name}"
             ToolResult.ok("ok: gave ${ItemSpecs.describe(spec)} $where", listOf(ref))
@@ -660,19 +758,26 @@ class GiveItemTool(private val limiter: GiftLimiter) : NarratorTool<GiveItemArgs
 }
 
 /**
- * `give_item`'s limit: [GIFTS_PER_HOUR] gifts per player in any hour, whatever the model asks. A gift is
- * counted when it is allowed; a refusal counts nothing. One limiter per server ([of]), so a new chapter
- * does not reset the counts; in memory only. Any thread.
+ * `give_item`'s limits, whatever the model asks: [GIFTS_PER_HOUR] gifts per player in any hour, and
+ * [PRECIOUS_POINTS_PER_HOUR] points of precious items ([ItemSpecs.preciousness]): the Narrator slows
+ * progression down (M2 review, finding 13). A gift is counted when it is allowed; a refusal counts
+ * nothing. One limiter per server ([of]), so a new chapter does not reset the counts; in memory only.
+ * Any thread.
  */
 class GiftLimiter(private val clock: Clock) {
     private val gifts = HashMap<UUID, ArrayDeque<Long>>()
 
-    /** One gift to [player]: allowed and counted, or refused with when the next is possible. */
+    /** When each precious point was given, per player: one entry per point. */
+    private val precious = HashMap<UUID, ArrayDeque<Long>>()
+
+    /**
+     * One gift to [player], [what] (`3x diamond`), worth [points] precious points (0 for an ordinary
+     * item): allowed and counted, or refused with when it is possible.
+     */
     @Synchronized
-    fun take(player: PlayerRef): Verdict {
+    fun take(player: PlayerRef, points: Int = 0, what: String = "this gift"): Verdict {
         val now = clock.millis()
-        val times = gifts.getOrPut(player.uuid) { ArrayDeque() }
-        while (times.isNotEmpty() && now - times.first() >= HOUR_MS) times.removeFirst()
+        val times = lastHour(gifts, player, now)
         if (times.size >= GIFTS_PER_HOUR) {
             val next = times.first() + HOUR_MS
             return Verdict.Denied(
@@ -681,9 +786,30 @@ class GiftLimiter(private val clock: Clock) {
                     "${clockTime(clock, next)} (in ${TargetingPolicy.span(next - now)})",
             )
         }
+        val spent = lastHour(precious, player, now)
+        if (points > 0 && spent.size + points > PRECIOUS_POINTS_PER_HOUR) {
+            val why = if (points > PRECIOUS_POINTS_PER_HOUR) {
+                "$what is worth $points precious points, more than the $PRECIOUS_POINTS_PER_HOUR a player may get in an hour"
+            } else {
+                // The points leave the hour oldest first: enough have left once this one has.
+                val next = spent[spent.size + points - PRECIOUS_POINTS_PER_HOUR - 1] + HOUR_MS
+                "${player.name} got ${spent.size} of the $PRECIOUS_POINTS_PER_HOUR precious points a player may get in an hour, and " +
+                    "$what is worth $points; it is possible at ${clockTime(clock, next)} (in ${TargetingPolicy.span(next - now)})"
+            }
+            return Verdict.Denied(
+                PRECIOUS_RULE,
+                "$why. The Narrator slows progression down: a diamond or a golden apple is 1 point; netherite, diamond gear, elytra, " +
+                    "totems, enchanted golden apples, beacons, shulker boxes and the like are $PRECIOUS_POINTS_PER_HOUR.",
+            )
+        }
+        repeat(points) { spent.addLast(now) }
         times.addLast(now)
         return Verdict.Allowed
     }
+
+    /** [player]'s entries of [log] within the last hour at [now], the older ones dropped. */
+    private fun lastHour(log: HashMap<UUID, ArrayDeque<Long>>, player: PlayerRef, now: Long): ArrayDeque<Long> =
+        log.getOrPut(player.uuid) { ArrayDeque() }.also { while (it.isNotEmpty() && now - it.first() >= HOUR_MS) it.removeFirst() }
 
     companion object {
         /** The rule of the limit: `DENIED (gift_limit): …`. */
@@ -691,6 +817,12 @@ class GiftLimiter(private val clock: Clock) {
 
         /** Gifts to one player in any hour, at most (M1_M2 §9.3). */
         const val GIFTS_PER_HOUR = 20
+
+        /** The rule of the precious items: `DENIED (precious_limit): …`. */
+        const val PRECIOUS_RULE = "precious_limit"
+
+        /** Points of precious items one player may get in any hour ([ItemSpecs.preciousness]). */
+        const val PRECIOUS_POINTS_PER_HOUR = 4
 
         private const val HOUR_MS = 3_600_000L
 
@@ -753,8 +885,9 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
             if (has == 0) refuse(ToolResult.invalid("${ref.name} has no $raw"))
             val returnAt = ctx.clock.millis() + args.minutes * 60_000L
             ctx.punish(player, returnAt)
-            // Taking the elytra of a gliding player, or the blocks of one bridging over lava, can kill.
-            ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS)
+            // Taking the elytra of a gliding player, the blocks of one bridging over lava, the armor of one
+            // at war with a horde, can kill in any way.
+            ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS, Peril.ANY)
             val taken = ctx.guards.items.confiscate(player, match, args.count, returnAt, reason, ctx.caller.turnId)
                 ?: refuse(ToolResult.invalid("${ref.name} has no $raw"))
             val all = if (has <= args.count) " (all they had)" else ""

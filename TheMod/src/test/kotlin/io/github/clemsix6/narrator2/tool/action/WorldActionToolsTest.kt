@@ -181,7 +181,14 @@ class WorldActionToolsTest {
         val refused = SetTimeTool(limits).call("""{"time":"night"}""")
         assertEquals("DENIED (${WorldLimits.TIME_LIMIT}): the time changed 19 min ago; the next change is possible in 1 min (one every 20 min)", refused.text)
         limits.weather.record()
-        assertTrue(SetWeatherTool(limits).call("""{"weather":"thunder"}""").text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed 0 s ago"))
+        assertTrue(SetWeatherTool(limits).call("""{"weather":"rain"}""").text.startsWith("DENIED (${WorldLimits.WEATHER_LIMIT}): the weather changed 0 s ago"))
+    }
+
+    @Test
+    fun `there is no thunderstorm to set, only clear and rain`() {
+        assertEquals("weather must be one of: clear, rain (got \"thunder\")", invalid(SetWeatherArgs.serializer(), """{"weather":"thunder"}"""))
+        assertEquals(WeatherKind.RAIN, decode(SetWeatherArgs.serializer(), """{"weather":"rain"}""").weather)
+        assertTrue("lightning" in SetWeatherTool(WorldLimits(TestClock())).description, "a storm is rain and the lightning tool")
     }
 
     @Test

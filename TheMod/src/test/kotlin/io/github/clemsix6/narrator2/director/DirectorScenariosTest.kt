@@ -229,7 +229,9 @@ class DirectorScenariosTest {
 
         h.fake.enqueue(reply { text("…") })
         h.chat("Bartok", "alors ?")
-        h.advance(1_500)
+        h.advance(29_999)
+        assertEquals(3, h.fake.requests.size, "a chapter closed on an error reopens after a backoff")
+        h.advance(1)
         h.awaitTurns(2)
         assertNotEquals(h.sessionOf(0), h.sessionOf(3), "a new chapter, a new session")
         assertEquals(2, h.traces.conversations.map { it.conversationId }.distinct().size)

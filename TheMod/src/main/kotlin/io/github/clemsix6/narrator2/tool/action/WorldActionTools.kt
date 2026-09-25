@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.Rules
+import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
 import io.github.clemsix6.narrator2.observer.ref
@@ -208,8 +209,9 @@ class SpawnTool : NarratorTool<SpawnArgs>(
     name = "spawn",
     description = "Summons creatures around a player: named, equipped, faster, bigger, targeting the player, raining from the " +
         "sky, thrown into the air, or set to explode. They vanish at the end of their lifetime and never break a block. " +
-        "Monsters, and any creature sent at the player, are a punishment of that player. Caps on how many, per call and " +
-        "alive at once, depend on the chaos level.",
+        "Every creature that can hurt (monsters, but also wolves, bees, bears, golems, goats, llamas, pufferfish…), and any " +
+        "creature sent at the player, is a punishment of that player; only harmless animals are not. Caps on how many, per " +
+        "call and alive at once, depend on the chaos level.",
     args = SpawnArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -272,7 +274,8 @@ class SpawnTool : NarratorTool<SpawnArgs>(
 
         val now = ctx.clock.millis()
         val expiresAt = now + args.lifetimeMinutes * 60_000L
-        val hostile = args.target || mobs.flatMap(::group).any { it.type.category == MobCategory.MONSTER }
+        // Anything but a harmless creature (a whitelist): a wolf, a bee or a pufferfish is a punishment too.
+        val hostile = args.target || mobs.flatMap(::group).any { !SpawnPolicy.isHarmless(it.type) }
         if (hostile) {
             val verdict = ctx.guards.hostile(player, ctx.caller, expiresAt)
             if (verdict is Verdict.Denied) {
@@ -524,9 +527,11 @@ class SpawnTool : NarratorTool<SpawnArgs>(
 
 /**
  * The creatures of `spawn` that explode ([ExplodeSpec]), on the server thread. When one's time comes, it
- * vanishes in one of the Narrator's explosions, capped by the chaos level in force then. A hurting blast
- * is hostile against each player near it, checked at that moment for the turn that summoned it: if one
- * of them may not be hurt (dead a moment ago, punished by another turn…), the blast is harmless.
+ * vanishes in one of the Narrator's explosions, capped by the chaos level in force then. It goes like any
+ * of the Narrator's creatures (`NarratorMobs.retire`): its riders are set down first, and what players
+ * entrusted to it comes back. A hurting blast is hostile against each player near it, checked at that
+ * moment for the turn that summoned it: if one of them may not be hurt (dead a moment ago, punished by
+ * another turn…), the blast is harmless.
  *
  * In memory only: after a restart, a creature that had not exploded yet stays until its lifetime ends. A
  * creature killed, unloaded or expired before its time never explodes.
@@ -573,7 +578,7 @@ internal object Fuses {
         val guards = fuse.services.guards
         val center = mob.position().add(0.0, mob.bbHeight / 2.0, 0.0)
         val power = min(fuse.power, guards.caps().explosionPower)
-        mob.discard()
+        guards.mobs.retire(mob, fuse.services.clock.millis())
         if (power <= 0.0) {
             level.sendParticles(ParticleTypes.POOF, center.x, center.y, center.z, 20, 0.3, 0.3, 0.3, 0.05)
             return
@@ -1004,22 +1009,26 @@ class ParticlesTool : NarratorTool<ParticlesArgs>(
 
 // ── set_weather, set_time ───────────────────────────────────────────────────────────────────────
 
+/**
+ * The weather the Narrator may set. No thunderstorm: its bolts are real ones, which start fires, hurt, and
+ * turn horses into skeleton traps, outside every rule; a storm is rain and the `lightning` tool.
+ */
 @Serializable
 enum class WeatherKind {
     @SerialName("clear") CLEAR,
     @SerialName("rain") RAIN,
-    @SerialName("thunder") THUNDER,
 }
 
 @Serializable
 data class SetWeatherArgs(
-    @Doc("The weather, everywhere (rain falls as snow where it is cold); thunder is a storm.") val weather: WeatherKind,
+    @Doc("The weather, everywhere: clear, or rain (snow where it is cold).") val weather: WeatherKind,
     @Doc("How long it lasts, in minutes; the usual weather comes back after.") @Range(1.0, 30.0) val minutes: Int = 10,
 )
 
 class SetWeatherTool(private val limits: WorldLimits) : NarratorTool<SetWeatherArgs>(
     name = "set_weather",
-    description = "Changes the weather of the whole server for a while: clear, rain or thunder. One change every 10 minutes.",
+    description = "Changes the weather of the whole server for a while: clear or rain. There is no thunderstorm: for one, " +
+        "bring the rain and strike with the lightning tool, whose bolts start no fire. One change every 10 minutes.",
     args = SetWeatherArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -1030,7 +1039,6 @@ class SetWeatherTool(private val limits: WorldLimits) : NarratorTool<SetWeatherA
             when (args.weather) {
                 WeatherKind.CLEAR -> server.setWeatherParameters(ticks, 0, false, false)
                 WeatherKind.RAIN -> server.setWeatherParameters(0, ticks, true, false)
-                WeatherKind.THUNDER -> server.setWeatherParameters(0, ticks, true, true)
             }
         }
         limits.weather.record()
