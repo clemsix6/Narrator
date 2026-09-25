@@ -53,13 +53,13 @@ complète ne va que dans le log du serveur, avec son empreinte. Le masquage de l
 
 ## Constat 27 (cellules `sql`)
 
-Nouvel échappement commun **`core/ModelText.escape`** (`<` → `‹`, `>` → `›`). `SqlFormat` l'applique à chaque cellule et
-chaque nom de colonne. Rien d'autre changé (guillemets, sauts de ligne, plafonds inchangés).
+`SqlFormat` échappe chaque cellule et chaque nom de colonne via l'échappement commun **`core/ModelText.escape`**
+(`<` → `‹`, `>` → `›`, caractères de contrôle → espace). Rien d'autre changé (`|` → `¦`, `\n` → `⏎`, plafonds inchangés).
 
-- **Pour le lot I** : `core/ModelText` est le fichier partagé demandé par le constat 27. `director/EventFormatter.kt` et
-  `director/Briefing.kt` ont déjà leur propre `angles()` (`‹›`) identique ; le lot I peut les faire pointer sur
-  `ModelText.escape` et l'appliquer aux **pseudos** et aux **textes de l'Oracle** (`oracle/*Text*`). Je n'y ai pas touché
-  (fichiers du lot I).
+- **`core/ModelText`** : j'avais créé ma propre version (le fichier partagé demandé par le constat 27) ; le **lot I** a
+  livré sa version, plus riche (`escape`, `lines`, `name`, `quote`, `attribute`, `cut`), en même temps. Au `git merge main`
+  j'ai **gardé celle du lot I** (une seule implémentation, comme demandé) — `SqlFormat` et `SqlRunner` appellent son
+  `escape`. Aucune divergence : les noms, le chat et les textes de l'Oracle passent par le lot I, les cellules SQL par moi.
 
 ## Fichiers
 
@@ -69,9 +69,11 @@ Du lot H :
 - `journal/SqlFormat.kt` : échappement `‹›` des cellules et en-têtes.
 - `journal/DuckDatabase.kt` : KDoc (les fichiers propres de DuckDB restent lisibles).
 - `command/SqlCommand.kt` : décision réduite à l'empreinte/taille/statut.
-- `core/ModelText.kt` (nouveau, partagé) : l'échappement commun.
+- `core/ModelText.kt` : échappement commun — **version du lot I gardée à la fusion**, la mienne écartée.
 - Tests : `journal/SqlFileAccessTest.kt` (nouveau, base **sur disque**), `journal/SqlRunnerTest.kt`,
-  `journal/SqlFormatTest.kt`, `journal/SqlViewsTest.kt`, `command/SqlCommandTest.kt`.
+  `journal/SqlFormatTest.kt`, `journal/SqlViewsTest.kt`, `command/SqlCommandTest.kt`,
+  `journal/JournalFixture.kt` (paramètre `options` optionnel, additif),
+  `gametest/JournalEndToEndTests.kt` (le test `/narrator sql` vérifie la décision réduite du constat 20).
 - Design : `docs/design/M1_M2.md` §5.1, §6.1, §6.6.
 
 Aucun contrat de T01 touché (`Journal`, `DuckDatabase`, `Upsert` intacts). `Journal.HIDDEN_FROM_MODEL` et
@@ -100,9 +102,10 @@ la requête/erreur/compte).
 
 ## Vérifications
 
-- `.\gradlew.bat build` : vert (voir le rapport final).
-- `SqlFileAccessTest` relancé 3× (`--rerun-tasks`) : stable (le déversement de 20 M lignes force la fuite de façon
-  déterministe ; on lit les petits fichiers size-classés, jamais le gros `DEFAULT` qui saturerait la mémoire).
+- `.\gradlew.bat build` : vert après fusion de `main` (tests unitaires + les 164 GameTests).
+- `SqlFileAccessTest` relancé 3× (`--rerun-tasks`) : stable. La fuite est forcée de façon déterministe avec une base à
+  limite mémoire **64 Mo** et un agrégat de 3 M clés distinctes (fichiers déversés minuscules, un seul résultat, donc pas
+  de gros tampon ni de risque pour la JVM de test partagée) ; on lit les fichiers déversés et le message privé en sort.
 - Pas de `runServer`. Aucune GameTest ajoutée (liste gelée) ; `JournalEndToEndTests` (T04) couvre déjà l'accès `MODEL`
   en jeu et n'est pas modifié.
 
