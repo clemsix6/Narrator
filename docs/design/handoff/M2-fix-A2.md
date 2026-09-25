@@ -51,7 +51,7 @@ Au-delà du quota (morts du Narrateur dans la dernière heure jouée ≥ plafond
 
 ## Vérifications
 
-- `gradlew build` (711 tests unitaires, 169 GameTests) passe avant la fusion de `main`. Le résultat après fusion est plus bas.
+- `gradlew build` passe avant la fusion de `main` (711 tests unitaires, 169 GameTests). Il passe aussi **après la fusion de `main`**, lots I et H compris, sans conflit : 721 tests unitaires et 169 GameTests, puis deux `runGameTest` de plus, tous verts.
 - **Nouveaux GameTests** (`GuardGameTests`) :
   - `aDeathBeyondTheQuotaIsARescueThatArmsNothing` : coup mortel. Le joueur est chez lui avec 6 PV. `max_health` × 0,5, lenteur et lévitation du Narrateur sont retirées, sa vitesse (faveur) et le poison d'une autre source restent. Il est nourri, l'inventaire est intact, sans marque, rien n'est compté, **rien n'est armé** (ni pour la fin de la lévitation). Une heure de jeu plus tard, le quota revient ;
   - `twoDeathsOfTheSameEpisodeAreTwoRescues` : deux morts dans le même armement, **deux sauvetages**, aucune mort ;
