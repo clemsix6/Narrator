@@ -181,7 +181,7 @@ class DuckMemoryStore(
     }
 
     override suspend fun addCanon(draft: CanonDraft, author: Author): Added<CanonEntry> {
-        if (draft.evidenceEvents.isNotEmpty() || draft.evidenceTools.isNotEmpty()) journal.barrier()
+        if (draft.evidenceEvents.isNotEmpty() || draft.evidenceTools.isNotEmpty() || draft.quote != null) journal.barrier()
         val kind = draft.kind
         val what = "canon ${kind.id}"
         val added = write<Added<CanonEntry>>(what, author) { job ->
@@ -284,7 +284,7 @@ class DuckMemoryStore(
     }
 
     override suspend fun addInteraction(draft: InteractionDraft, author: Author): Added<Interaction> {
-        if (draft.evidenceEvents.isNotEmpty() || draft.toolCalls.isNotEmpty()) journal.barrier()
+        if (draft.evidenceEvents.isNotEmpty() || draft.toolCalls.isNotEmpty() || draft.quote != null) journal.barrier()
         val what = "interaction ${draft.kind.id} ${draft.valence}"
         val added = write<Added<Interaction>>(what, author) { job ->
             val player = job.players(listOf(draft.player), "player").single()
