@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.ReceiveChannel
 import org.duckdb.DuckDBAppender
 import org.duckdb.DuckDBConnection
+import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.time.Clock
@@ -31,6 +32,7 @@ import java.util.concurrent.locks.LockSupport
  * @property reopenIntervalMs how often the writer tries to open a failed database again.
  * @property idBlock ids reserved on disk at a time, for each kind but events ([IdReservations]).
  * @property eventIdBlock event ids reserved on disk at a time.
+ * @property writeQueueCapacity write jobs ([Journal.write]) waiting for the writer at most.
  */
 internal data class JournalTuning(
     val pollMs: Long = 100,
@@ -39,6 +41,7 @@ internal data class JournalTuning(
     val reopenIntervalMs: Long = TimeUnit.MINUTES.toMillis(1),
     val idBlock: Long = 1_000,
     val eventIdBlock: Long = 100_000,
+    val writeQueueCapacity: Int = 1_024,
 ) {
     /** [reopenIntervalMs] for a log line: `60 s`. */
     val reopenInterval: String get() = if (reopenIntervalMs % 1000 == 0L) "${reopenIntervalMs / 1000} s" else "$reopenIntervalMs ms"
@@ -58,6 +61,11 @@ internal data class JournalTuning(
  * the Journal unavailable: what comes next is counted as lost, and the writer tries to open the
  * database again every [JournalTuning.reopenIntervalMs] through [recovery]. While it is down, facts
  * still go through the mapping, which keeps following the sessions.
+ *
+ * It also runs the write jobs of the memory ([submitWrite], M3 §4.1), from a third queue, after the
+ * batch of the turn if one was due: one transaction per job, in the order they came, each seeing every
+ * fact committed before it. A job that fails is rolled back and its exception handed to its caller; the
+ * writer goes on.
  *
  * @param onHealthDue called on this thread every [JournalTuning.healthIntervalMs].
  * @param onFinished called on this thread once the writer stopped: closes the reads and the database.
@@ -89,6 +97,9 @@ internal class JournalWriter(
 
         /** A batch was committed on the reopened database: the outage is over. */
         fun recovered()
+
+        /** The writer thread died of an unexpected error (a bug, not the database): nothing is recorded until the restart. */
+        fun died(error: String)
     }
 
     private val log = Log.journal
@@ -105,9 +116,23 @@ internal class JournalWriter(
     /** A `barrier()` call waiting for what was handed over before it. */
     private class Barrier(val done: CompletableDeferred<Unit> = CompletableDeferred())
 
+    /** A [submitWrite] call: [block] to run in a transaction of its own, its outcome to hand over. */
+    private class WriteJob<T>(private val block: (Connection) -> T) {
+        val result = CompletableDeferred<T>()
+
+        /** Runs [block]; what it returns is handed over by the returned function, once committed. */
+        fun run(connection: Connection): () -> Unit {
+            val value = block(connection)
+            return { result.complete(value) }
+        }
+    }
+
     // Handed over by any thread.
     private val traces = ConcurrentLinkedQueue<Any>()
     private val tracesQueued = AtomicInteger()
+    private val jobs = ConcurrentLinkedQueue<WriteJob<*>>()
+    private val jobsQueued = AtomicInteger()
+    private val lastJobQueueWarning = AtomicLong(Long.MIN_VALUE)
     private val lostCount = AtomicLong()
     private val factsLostWhileDownCount = AtomicLong()
     private val tracesLostWhileDownCount = AtomicLong()
@@ -167,8 +192,8 @@ internal class JournalWriter(
     @Volatile
     private var pendingCount = 0
 
-    /** Records waiting for the writer on its side (not counting the bus subscription's queue). */
-    val queued: Int get() = tracesQueued.get() + pendingCount
+    /** Records and write jobs waiting for the writer on its side (not counting the bus subscription's queue). */
+    val queued: Int get() = tracesQueued.get() + pendingCount + jobsQueued.get()
 
     /** Records lost since the start on the writer's side: full queue, faulty rows, unavailable or closed Journal. */
     val lost: Long get() = lostCount.get()
@@ -211,6 +236,28 @@ internal class JournalWriter(
         barrier.done.await()
     }
 
+    /**
+     * Queues [block] to run on the writer thread, in a transaction of its own, and returns its outcome:
+     * its result once committed, or its exception once rolled back. Never blocks. Fails at once with
+     * [JournalUnavailableException] when the writer stopped, the database is down or the queue holds
+     * [JournalTuning.writeQueueCapacity] jobs. Cancelling the outcome before the job starts drops the job.
+     */
+    fun <T> submitWrite(block: (Connection) -> T): CompletableDeferred<T> {
+        if (finished) throw JournalUnavailableException("the Journal is closed")
+        if (!available) throw JournalUnavailableException(lastError ?: "the database is down")
+        if (jobsQueued.incrementAndGet() > tuning.writeQueueCapacity) {
+            jobsQueued.decrementAndGet()
+            if (shouldWarn(lastJobQueueWarning)) log.warn("write queue full (${tuning.writeQueueCapacity} jobs): a memory write is refused")
+            throw JournalUnavailableException("the Journal's write queue is full")
+        }
+        val job = WriteJob(block)
+        jobs.add(job)
+        LockSupport.unpark(thread)
+        // The writer may have stopped between the check and the add; it fails what it finds, not what comes later.
+        if (finished) failJobs("the Journal is closed")
+        return job.result
+    }
+
     /** `CHECKPOINT` after the next batch. */
     fun requestCheckpoint() = checkpointRequested.set(true)
 
@@ -250,6 +297,7 @@ internal class JournalWriter(
                     nextFlush = now + flushNanos
                     if (checkpointRequested.getAndSet(false)) checkpoint()
                 }
+                val jobsDone = runJobs()
                 updateRowsPerMinute(now)
                 if (!available && !closing && now >= nextReopen) {
                     nextReopen = now + reopenNanos
@@ -265,15 +313,21 @@ internal class JournalWriter(
                     }
                 }
                 if (closing) {
-                    if (drained && pending.isEmpty() && (events == null || eventsClosed)) break
-                } else if (drained) {
+                    if (drained && jobsDone && pending.isEmpty() && (events == null || eventsClosed)) break
+                } else if (drained && jobsDone) {
                     LockSupport.parkNanos(pollNanos)
                 }
             }
         } catch (e: Throwable) {
-            log.error("the writer failed; the Journal stops recording", e)
-            lastError = "the writer failed: ${e.message ?: e.javaClass.simpleName}"
+            val cause = e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName
+            log.error("the writer failed: $cause. The writer thread died (a bug, not a database failure): the Journal records nothing until the server restarts", e)
+            lastError = "the writer failed: $cause"
             available = false
+            try {
+                recovery?.died(cause)
+            } catch (e2: Exception) {
+                log.error("could not report the writer's death", e2)
+            }
         } finally {
             finish()
         }
@@ -377,6 +431,73 @@ internal class JournalWriter(
         }
         lostCount.addAndGet(items.size.toLong())
     }
+
+    // ── Write jobs ──────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Runs the queued write jobs in order, for [JOBS_SLICE_NANOS] at most so that the bus queue is still
+     * drained during a burst of jobs (and not past the close deadline); true when the queue was emptied.
+     */
+    private fun runJobs(): Boolean {
+        val stop = minOf(System.nanoTime() + JOBS_SLICE_NANOS, drainDeadline)
+        while (true) {
+            if (System.nanoTime() >= stop) return jobs.isEmpty()
+            val job = jobs.poll() ?: return true
+            jobsQueued.decrementAndGet()
+            runJob(job)
+        }
+    }
+
+    /**
+     * One job, one transaction: `BEGIN`, the block, `COMMIT`. When the block or the commit fails, the
+     * transaction is rolled back and the failure handed to the caller, unless the database no longer
+     * answers: then the Journal turns unavailable ([degrade]) and the caller gets a
+     * [JournalUnavailableException]. A job whose caller gave up before it started is dropped.
+     */
+    private fun runJob(job: WriteJob<*>) {
+        if (job.result.isCompleted) {
+            log.debug { "a write job is dropped: its caller gave up before it started" }
+            return
+        }
+        if (!available) {
+            job.result.completeExceptionally(JournalUnavailableException(lastError ?: "the database is down"))
+            return
+        }
+        val start = System.nanoTime()
+        try {
+            execute("BEGIN TRANSACTION")
+            val complete = job.run(connection)
+            execute("COMMIT")
+            complete()
+        } catch (e: Throwable) {
+            try {
+                execute("ROLLBACK")
+            } catch (_: SQLException) {
+                // no transaction left to roll back
+            }
+            if (databaseAnswers()) {
+                log.debug { "a write job failed and was rolled back: $e" }
+                job.result.completeExceptionally(e)
+            } else {
+                degrade(e as? Exception ?: RuntimeException(e))
+                job.result.completeExceptionally(JournalUnavailableException(lastError ?: "the database is down").apply { initCause(e) })
+            }
+        }
+        val ms = (System.nanoTime() - start) / 1_000_000
+        if (ms > SLOW_JOB_MS) log.warn("a write job held the writer for $ms ms (more than $SLOW_JOB_MS ms)") else log.debug { "write job in $ms ms" }
+    }
+
+    /** Fails every job still queued with [reason]; returns how many. */
+    private fun failJobs(reason: String): Int {
+        var failed = 0
+        while (true) {
+            val job = jobs.poll() ?: break
+            jobsQueued.decrementAndGet()
+            if (job.result.completeExceptionally(JournalUnavailableException(reason))) failed++
+        }
+        return failed
+    }
+
     // ── Writing rows ────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -661,6 +782,8 @@ internal class JournalWriter(
             lostCount.addAndGet(left)
             log.warn("closing: $left records still queued are lost (the close timeout was reached)")
         }
+        val failedJobs = failJobs(if (closing) "the Journal is closed" else lastError ?: "the writer stopped")
+        if (failedJobs > 0) log.warn("$failedJobs write jobs still queued failed (the writer stopped)")
         discardAppenders()
         discardStatements()
         // A writer that died without a close keeps the database open for reads; close() ends it later.
@@ -689,6 +812,12 @@ internal class JournalWriter(
 
         /** Parameters bound to one bulk statement at most. */
         const val MAX_PARAMETERS = 10_000
+
+        /** A write job longer than this is logged as a warning (M3 §4.1). */
+        const val SLOW_JOB_MS = 500L
+
+        /** Time given to the write jobs in one turn of the loop, at most. */
+        val JOBS_SLICE_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(100)
         val WARN_INTERVAL_NANOS: Long = TimeUnit.MINUTES.toNanos(1)
         val MINUTE_NANOS: Long = TimeUnit.MINUTES.toNanos(1)
     }
