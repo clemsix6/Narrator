@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.agent.TurnOutcome
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.llm.Conversation
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.tool.Caller
@@ -42,9 +43,11 @@ import java.util.Locale
  *
  * @property seen ids of the events told to the model in this chapter and committed with its reply: the
  *   conversation's cursor. An event already seen is never told again as new.
+ * @property memory what the memory showed in this chapter (M3 §10.6): its briefing, sheets and reminiscences.
  */
 class Chapter(val number: Int, val conversation: Conversation, val startedAt: Instant, private val transcript: String?) {
     val seen = HashSet<Long>()
+    val memory = ChapterMemory(conversation.id, number)
 
     /** The row of `conversations`, ended with [endedAt], [endReason] and [summary] when given. */
     fun record(endedAt: Instant? = null, endReason: EndReason? = null, summary: String? = null) = ConversationRecord(
@@ -91,6 +94,10 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  *   exchanged has nothing to summarize: it closes without a request.
  * - **Closing without a summary** ([close]): after the errors that leave the conversation unusable
  *   (refusals, a malformed request, a full context, an engine failure) and when the server stops.
+ * - **Memory** (M3): the memory tools of a chapter are there when the memory is available at its
+ *   opening (`ToolEnv.memoryAvailable`); each chapter keeps what the memory showed in it
+ *   ([Chapter.memory]); every chapter that closes, with or without a summary, is told to the memory once
+ *   (`Memory.chapterClosed`).
  *
  * Used by the Director's coroutine only.
  *
@@ -110,8 +117,9 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     private var emptySince: Long? = null
 
     /**
-     * The chapters closed since the server started, oldest first: the last [Briefing.PREVIOUS_CHAPTERS]
-     * with a summary and as many without. The briefing reads them when the Journal lags or fails.
+     * The chapters closed since the server started, oldest first: the last
+     * [Briefing.PREVIOUS_CHAPTERS_WITHOUT_MEMORY] with a summary and as many without (the most the briefing
+     * shows). The briefing reads them when the Journal lags or fails.
      */
     private val closed = ArrayDeque<ConversationRecord>()
 
@@ -136,7 +144,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             }
         }
         val number = ++lastNumber
-        val env = ToolEnv(journalAvailable = services.journal.available, workerRoles = services.workers.roles)
+        val env = ToolEnv(journalAvailable = services.journal.available, workerRoles = services.workers.roles, memoryAvailable = services.memory.available)
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)
         val conversation = Conversation(
@@ -167,7 +175,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     suspend fun briefing(chapter: Chapter, now: Long, chatBefore: Long, reminders: List<PendingReminder>, reduced: Boolean = false): String? {
         if (chapter.conversation.size > 0) return null
         val text = try {
-            briefing.render(chapter.number, chapter.conversation.id, now, chatBefore, reminders, closed.toList(), reduced)
+            briefing.render(chapter.number, chapter.conversation.id, now, chatBefore, reminders, closed.toList(), chapter.memory, reduced)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -309,7 +317,8 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     }
 
     /**
-     * Ends [chapter]: its `conversations` row, a transcript note and a `chapter closed` decision.
+     * Ends [chapter]: its `conversations` row, a transcript note and a `chapter closed` decision; then the
+     * memory hears of it, once, with or without a summary (M3 §7.1: the Chronicler's nap).
      *
      * @param outcome what became of the summary, for the transcript and the decision.
      * @param problem a summary was asked for and none came: the decision is a warning.
@@ -330,13 +339,18 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             level = if (reason in USUAL && !problem) Log.Level.INFO else Log.Level.WARN,
         )
         chapter.conversation.close()
+        try {
+            services.memory.chapterClosed(record)
+        } catch (e: Exception) {
+            log.error("the memory could not take chapter ${chapter.number}, closed (${reason.id})", e)
+        }
     }
 
     /** Keeps [record] for the briefing: the last chapters with a summary, and as many without (their places are apart). */
     private fun remember(record: ConversationRecord) {
         closed.addLast(record)
         for (summarized in listOf(true, false)) {
-            while (closed.count { it.hasSummary == summarized } > Briefing.PREVIOUS_CHAPTERS) closed.remove(closed.first { it.hasSummary == summarized })
+            while (closed.count { it.hasSummary == summarized } > Briefing.PREVIOUS_CHAPTERS_WITHOUT_MEMORY) closed.remove(closed.first { it.hasSummary == summarized })
         }
     }
 

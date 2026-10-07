@@ -17,12 +17,17 @@ import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.BriefingSection
+import io.github.clemsix6.narrator2.memory.ChapterMemory
+import io.github.clemsix6.narrator2.memory.DisabledMemory
+import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.oracle.Enclosure
 import io.github.clemsix6.narrator2.oracle.PlayerSnapshot
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.ToolEffect
@@ -186,21 +191,10 @@ class BriefingTest {
     // ── Previous chapters (M2 review, finding 28) ───────────────────────────────────────────────────
 
     @Test
-    fun `the three places go to summarized chapters, and the chapters closed without a summary since are named after them`() {
-        val reasons = listOf(EndReason.TOKEN_LIMIT, EndReason.QUIET_LIMIT, EndReason.OPERATOR, EndReason.BAD_REQUEST, EndReason.REFUSAL, EndReason.INTERRUPTED, EndReason.BAD_REQUEST)
-        reasons.forEachIndexed { index, reason ->
-            val number = 5 + index
-            val summarized = index < 3
-            fixture.journal.conversation(
-                ConversationRecord(
-                    "director-c$number", Role.DIRECTOR, "Chapter $number", number, null, at(12 + index, 0), at(12 + index, 30), reason,
-                    if (summarized) "Résumé du chapitre $number : promesse faite à <Bartok>." else null, null,
-                ),
-            )
-        }
-        clock.now = now
-        fixture.sync()
-        val chapters = render(reminders = emptyList()).substringAfter("<previous_chapters>\n").substringBefore("</previous_chapters>")
+    fun `without a memory, the three places go to summarized chapters, and the chapters closed without a summary since are named after them`() {
+        pastChapters()
+        val chapters = render(reminders = emptyList(), services = services(memory = DisabledMemory("memory.enabled is false")))
+            .substringAfter("<previous_chapters>\n").substringBefore("</previous_chapters>")
 
         assertEquals(
             """
@@ -216,6 +210,41 @@ class BriefingTest {
             """.trimIndent() + "\n",
             chapters,
         )
+    }
+
+    @Test
+    fun `with a memory, whose chronicle covers the older chapters, two places go to summarized chapters`() {
+        pastChapters()
+        val chapters = render(reminders = emptyList()).substringAfter("<previous_chapters>\n").substringBefore("</previous_chapters>")
+
+        assertEquals(
+            """
+            #6 13:00–13:30 (quiet_limit):
+            Résumé du chapitre 6 : promesse faite à ‹Bartok›.
+            #7 14:00–14:30 (operator):
+            Résumé du chapitre 7 : promesse faite à ‹Bartok›.
+            #10 17:00–17:30 (interrupted): no summary; the recent chat and actions below cover what it said and did last
+            #11 18:00–18:30 (bad_request): no summary; the recent chat and actions below cover what it said and did last
+            """.trimIndent() + "\n",
+            chapters,
+        )
+    }
+
+    /** Chapters 5 to 11: three summarized, then four closed without a summary. */
+    private fun pastChapters() {
+        val reasons = listOf(EndReason.TOKEN_LIMIT, EndReason.QUIET_LIMIT, EndReason.OPERATOR, EndReason.BAD_REQUEST, EndReason.REFUSAL, EndReason.INTERRUPTED, EndReason.BAD_REQUEST)
+        reasons.forEachIndexed { index, reason ->
+            val number = 5 + index
+            val summarized = index < 3
+            fixture.journal.conversation(
+                ConversationRecord(
+                    "director-c$number", Role.DIRECTOR, "Chapter $number", number, null, at(12 + index, 0), at(12 + index, 30), reason,
+                    if (summarized) "Résumé du chapitre $number : promesse faite à <Bartok>." else null, null,
+                ),
+            )
+        }
+        clock.now = now
+        fixture.sync()
     }
 
     @Test
@@ -236,7 +265,7 @@ class BriefingTest {
         fun section(text: String, tag: String) = text.substringAfter("<$tag>\n").substringBefore("</$tag>").lines().filter { it.isNotEmpty() }
         assertTrue(reduced.startsWith("<briefing chapter=\"13\" now=\"2026-09-25 21:00:00\" reduced=\"true\">\n"), reduced)
         assertEquals(listOf("#12 17:00–17:30 (token_limit):", "Résumé 12."), section(reduced, "previous_chapters"))
-        assertEquals(6, section(full, "previous_chapters").size)
+        assertEquals(2 * Briefing.PREVIOUS_CHAPTERS, section(full, "previous_chapters").size, "the last two summaries, a line each")
         assertEquals(10, section(reduced, "recent_chat").size)
         assertEquals(20, section(full, "recent_chat").size)
         assertTrue(section(reduced, "recent_chat").last().endsWith("\"message 19\""), "the newest lines are kept")
@@ -265,7 +294,44 @@ class BriefingTest {
     // ── Budget ──────────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the briefing stays within its budget however long the history`() {
+    fun `the briefing stays within its budget however long the history, with every memory section full`() {
+        val crowd = longHistory()
+        val memory = FakeMemory(clock).apply { briefingSections = BriefingSection.TAGS.map { full(it, Briefing.MEMORY_BUDGETS.getValue(it)) } }
+        val reminders = (1..5).map { PendingReminder(it.toLong(), "x".repeat(600), now.toEpochMilli() + it * 60_000L) }
+        val text = render(reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" }, services = services(memory = memory))
+        println("budget: ${text.length} characters of ${Briefing.MAX_CHARS}, memory sections ${Briefing.MEMORY_BUDGETS.values.sum()}")
+
+        assertTrue(text.length <= Briefing.MAX_CHARS, "the briefing takes ${text.length} characters")
+        assertFalse("(cut:" in text, "no memory section went over its budget")
+        BriefingSection.TAGS.forEach { tag -> assertEquals(1, Regex("^<$tag[ >]", RegexOption.MULTILINE).findAll(text).count(), "one $tag section") }
+        assertEquals(Briefing.PREVIOUS_CHAPTERS, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "two previous chapters")
+        assertEquals(listOf(memory.briefed.single().conversationId), listOf(CURRENT), "the memory is asked for this chapter's sections")
+    }
+
+    @Test
+    fun `the briefing stays within its budget however long the history, without a memory`() {
+        val crowd = longHistory()
+        val long = "x".repeat(600)
+        val reminders = (1..5).map { PendingReminder(it.toLong(), long, now.toEpochMilli() + it * 60_000L) }
+        val text = render(
+            reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" },
+            services = services(memory = DisabledMemory("memory.enabled is false")),
+        )
+        println("budget: ${text.length} characters of ${Briefing.MAX_CHARS}")
+
+        assertTrue(text.length <= Briefing.MAX_CHARS, "the briefing takes ${text.length} characters")
+        val chat = text.substringAfter("<recent_chat>\n").substringBefore("</recent_chat>")
+        assertTrue(chat.length <= Briefing.CHAT_MAX_CHARS, "the chat takes ${chat.length} characters")
+        assertTrue(chat.lines().count { it.isNotEmpty() } in 20..Briefing.CHAT_LINES)
+        assertContains(chat, "\"réplique 59 ", message = "the newest lines are kept")
+        assertEquals(Briefing.ACTIONS, text.substringAfter("<your_recent_actions>\n").substringBefore("</your_recent_actions>").lines().count { it.isNotEmpty() })
+        assertEquals(3, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "three previous chapters")
+        assertContains(text, "NARRATOR→${crowd[0].name},${crowd[1].name} +6: ")
+        assertContains(text, "<grimoire>\n(memory unavailable: memory.enabled is false)\n</grimoire>\n")
+    }
+
+    /** Five long chapters, 20 players (10 online, with long effects), an hour of long chat and 30 long actions; returns the players. */
+    private fun longHistory(): List<PlayerRef> {
         val long = "x".repeat(600)
         repeat(5) { chapter ->
             fixture.journal.conversation(
@@ -293,19 +359,86 @@ class BriefingTest {
         }
         clock.now = now
         fixture.sync()
-        val reminders = (1..5).map { PendingReminder(it.toLong(), long, now.toEpochMilli() + it * 60_000L) }
-        val text = render(reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" })
-        println("budget: ${text.length} characters of ${Briefing.MAX_CHARS}")
-
-        assertTrue(text.length <= Briefing.MAX_CHARS, "the briefing takes ${text.length} characters")
-        val chat = text.substringAfter("<recent_chat>\n").substringBefore("</recent_chat>")
-        assertTrue(chat.length <= Briefing.CHAT_MAX_CHARS, "the chat takes ${chat.length} characters")
-        assertTrue(chat.lines().count { it.isNotEmpty() } in 20..Briefing.CHAT_LINES)
-        assertContains(chat, "\"réplique 59 ", message = "the newest lines are kept")
-        assertEquals(Briefing.ACTIONS, text.substringAfter("<your_recent_actions>\n").substringBefore("</your_recent_actions>").lines().count { it.isNotEmpty() })
-        assertEquals(3, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "three previous chapters")
-        assertContains(text, "NARRATOR→${crowd[0].name},${crowd[1].name} +6: ")
+        return crowd
     }
+
+    // ── Memory (M3 §11.1) ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `the memory sections take their places, from the steadiest to the most changing`() {
+        history()
+        val memory = FakeMemory(clock).apply {
+            briefingSections = BriefingSection.TAGS.map { tag ->
+                BriefingSection(tag, if (tag == "grimoire") "version=\"12\" written=\"10-03 04:10\"" else "", listOf("$tag line"), listOf("$tag reduced"))
+            }
+        }
+        val text = render(services = services(memory = memory))
+        println(text)
+
+        val order = listOf(
+            "<briefing ", "<grimoire version=\"12\" written=\"10-03 04:10\">\ngrimoire line\n</grimoire>\n", "<chronicle>\nchronicle line\n</chronicle>\n",
+            "<previous_chapters>", "<canon>\ncanon line\n</canon>\n", "<world ", "<players_online>", "<sheets>\nsheets line\n</sheets>\n",
+            "<players_recent ", "<memories>\nmemories line\n</memories>\n", "<notes>\nnotes line\n</notes>\n", "<recent_chat>",
+            "<your_recent_actions>", "<engine_state>", "</briefing>",
+        )
+        order.forEach { assertContains(text, it) }
+        assertEquals(order, order.sortedBy { text.indexOf(it) }, "the sections are in the order of M3 §11.1")
+        assertEquals(listOf(CURRENT), memory.briefed.map { it.conversationId })
+    }
+
+    @Test
+    fun `the reduced briefing keeps the grimoire and the canon whole, shrinks the other memory sections and leaves out those that go`() {
+        history()
+        val memory = FakeMemory(clock).apply {
+            briefingSections = BriefingSection.TAGS.map { tag ->
+                BriefingSection(tag, "", listOf("$tag line"), if (tag == "memories") null else listOf("$tag reduced"))
+            }
+        }
+        val text = render(services = services(memory = memory), reduced = true)
+
+        assertContains(text, "<grimoire>\ngrimoire line\n</grimoire>\n")
+        assertContains(text, "<canon>\ncanon line\n</canon>\n")
+        assertContains(text, "<chronicle>\nchronicle reduced\n</chronicle>\n")
+        assertContains(text, "<sheets>\nsheets reduced\n</sheets>\n")
+        assertContains(text, "<notes>\nnotes reduced\n</notes>\n")
+        assertFalse("<memories>" in text, "the memories go first")
+    }
+
+    @Test
+    fun `a memory section over its budget is cut, and says so`() {
+        history()
+        val budget = Briefing.MEMORY_BUDGETS.getValue("notes")
+        val memory = FakeMemory(clock).apply { briefingSections = listOf(BriefingSection("notes", "", List(100) { "note $it " + "y".repeat(90) })) }
+        val notes = render(services = services(memory = memory)).substringAfter("<notes>\n").substringBefore("</notes>")
+
+        assertTrue(notes.trimEnd('\n').length <= budget, "the notes take ${notes.length} characters")
+        assertTrue(notes.startsWith("note 0 "), notes)
+        assertTrue(notes.endsWith("(cut: this section went over its $budget characters)\n"), notes)
+    }
+
+    @Test
+    fun `a memory that fails says so in each of its sections, and the briefing is still there`() {
+        history()
+        val memory = object : Memory by FakeMemory(clock) {
+            override suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection> = throw IllegalStateException("the canon cannot be read")
+        }
+        val text = render(services = services(memory = memory))
+
+        BriefingSection.TAGS.forEach { tag -> assertContains(text, "<$tag>\n(unavailable: the canon cannot be read)\n</$tag>\n") }
+        assertContains(text, "#12 19:00–20:30 (token_limit):\n$summary\n")
+        assertContains(text, "Reminders: R-3 at 21:10")
+    }
+
+    @Test
+    fun `without a memory each of its sections says why`() {
+        history()
+        val text = render(services = services(memory = DisabledMemory("not wired yet")))
+
+        BriefingSection.TAGS.forEach { tag -> assertContains(text, "<$tag>\n(memory unavailable: not wired yet)\n</$tag>\n") }
+    }
+
+    /** A memory section whose lines take [budget] characters at most, the line breaks included. */
+    private fun full(tag: String, budget: Int) = BriefingSection(tag, "", List(budget / 100) { "$tag ".padEnd(99, 'z') })
 
     @Test
     fun `the chat keeps its last 40 lines, whole, and older ones than a day are left out`() {
@@ -361,11 +494,11 @@ class BriefingTest {
     ): String {
         players.forEach { online(it) }
         val briefing = Briefing(services, world, activity)
-        return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, reduced) }
+        return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, ChapterMemory(CURRENT, 13), reduced) }
     }
 
-    private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards) =
-        TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards)
+    private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards, memory: Memory = FakeMemory(clock)) =
+        TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory)
 
     private fun online(player: PlayerRef, idle: Boolean = false, activity: String? = null) {
         players.put(

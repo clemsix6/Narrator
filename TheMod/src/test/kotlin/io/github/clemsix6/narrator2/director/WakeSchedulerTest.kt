@@ -7,6 +7,9 @@ import io.github.clemsix6.narrator2.event.GameEvent
 import io.github.clemsix6.narrator2.event.PlayerDied
 import io.github.clemsix6.narrator2.event.Teleported
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.NoteKind
+import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.reflex.HeartbeatVerdict
 import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
 import io.github.clemsix6.narrator2.testing.SampleEvents.here
@@ -80,6 +83,25 @@ class WakeSchedulerTest {
         assertEquals(1_500, WakeScheduler.wakeAt(listOf(death(0), addressed(0)), debounce, throttled = true))
         assertEquals(1_500, WakeScheduler.wakeAt(listOf(Item.of(DirectorSignal.OperatorWhisper("Clement", "Be nice.", 0))), debounce, throttled = true))
         assertEquals(3_000, WakeScheduler.wakeAt(listOf(death(0)), debounce, throttled = false))
+    }
+
+    @Test
+    fun `a due commitment wakes like a salient event, even once the budget of turns is spent`() {
+        val due = Item.of(DirectorSignal.MemoryDue(Ref(RefKind.CANON, 45), "C-45 promise → Mimosa, set 1h ago: « je te rends tes bottes »", 0))
+        assertEquals(Urgency.SOON, due.urgency)
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(due), debounce))
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(due), debounce, throttled = true))
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(death(0), due), debounce, throttled = true), "the death goes with it")
+    }
+
+    @Test
+    fun `the memory's notes and cues never wake the Director, a cue is worth a heartbeat like a next event and a note nothing`() {
+        val note = Item.of(DirectorSignal.MemoryNote(Ref(RefKind.NOTE, 9), NoteKind.COHERENCE, "le Narrateur a dit…", 0))
+        val cue = Item.of(DirectorSignal.MemoryCue(CueKind.RETURN, Ref(RefKind.MEMORY, 77), steve, "Steve is where M-77 happened", 0))
+        assertNull(WakeScheduler.wakeAt(listOf(note, cue), debounce))
+        val heuristic = HeartbeatVerdict(1.0, null, HeuristicReflexes.SOURCE, 0)
+        assertEquals(WakeScheduler.HeartbeatWorth(0.0, "worth 0.00 by 0 salient items waiting"), WakeScheduler.heartbeatWorth(heuristic, listOf(note, note)))
+        assertEquals(WakeScheduler.HeartbeatWorth(0.5, "worth 0.50 by 2 salient items waiting"), WakeScheduler.heartbeatWorth(heuristic, listOf(cue, note, teleport(0))))
     }
 
     @Test
