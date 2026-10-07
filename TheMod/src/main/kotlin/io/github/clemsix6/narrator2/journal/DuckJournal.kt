@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import io.github.clemsix6.narrator2.trace.TurnRecord
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withTimeout
@@ -48,6 +49,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * then tries to open the database again every minute ([reopen]). Once it opens, reads and writes go on,
  * a `journal_health` decision `reopened` tells how long it lasted and what was lost, and the operators
  * are told again once the reopened database took its first batch.
+ *
+ * The memory writes through [write]: jobs run by the same writer, between its batches (M3 §4.1). If the
+ * writer thread itself dies (a bug), the Journal turns unavailable for good and the operators are told.
  */
 internal class DuckJournal private constructor(
     db: DuckDatabase,
@@ -130,7 +134,7 @@ internal class DuckJournal private constructor(
     override suspend fun barrier() = writer.barrier()
 
     override suspend fun <T> read(timeoutMs: Long, query: (Connection) -> T): T {
-        if (!available) throw JournalUnavailableException(health().lastError ?: "closed")
+        if (!available) throw JournalUnavailableException(unavailableReason())
         val result = CompletableFuture<T>()
         try {
             readThreads.execute {
@@ -192,9 +196,29 @@ internal class DuckJournal private constructor(
         }
     }
 
-    /** Provisional (M3-01): the writer's queue of jobs is M3-02's (design M3 §4.1). */
-    override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T =
-        throw JournalUnavailableException("memory writes are not wired yet")
+    /**
+     * Queues [block] on the writer thread (M3 §4.1) and waits for its outcome. Jobs run in the order they
+     * come, each in a transaction of its own, always on the current write connection (the reopened one
+     * after an outage). When [timeoutMs] runs out, a job that has not started is dropped; one already
+     * running still commits. Jobs queued before [close] still run while the writer drains its queues;
+     * those left at the close deadline fail. [block] must never wait on the Journal itself (`barrier`,
+     * `read`, `write`): it runs on the writer thread, which would wait for itself until the timeout.
+     */
+    override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T {
+        if (!available) throw JournalUnavailableException(unavailableReason())
+        val result = writer.submitWrite(block)
+        return try {
+            withTimeout(timeoutMs) { result.await() }
+        } catch (_: TimeoutCancellationException) {
+            result.cancel()
+            throw JournalTimeoutException(timeoutMs, "write")
+        } catch (e: CancellationException) {
+            result.cancel()
+            throw e
+        }
+    }
+
+    private fun unavailableReason(): String = if (closing) "the Journal is closed" else writer.lastError ?: "the Journal is closed"
 
     override fun checkpointAsync() = writer.requestCheckpoint()
 
@@ -331,6 +355,13 @@ internal class DuckJournal private constructor(
         val lost = lostSince(outage)
         log.info("recording again, after ${took(outage)} down: ${lost.total} records lost during the outage")
         tell("The Journal records again, after ${took(outage)}: ${lost.total} records were lost during the outage (see the server log).")
+    }
+
+    override fun died(error: String) {
+        tell(
+            "The Journal stopped recording: its writer failed ($error). Facts, traces and memory writes are lost, sql and the " +
+                "briefing are off until the server restarts. See the server log.",
+        )
     }
 
     private class Lost(val total: Long, val facts: Long, val traces: Long)
