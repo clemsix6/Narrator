@@ -26,8 +26,12 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * [EVENT] ids are handed out by the [EventBus] (seeded once with [Journal.nextIdSeed]) and shared by
  * `events`, `chat` and `private_messages`; the Journal reserves them as they are published.
+ *
+ * [MEMORY] is one sequence for every citable row of the memory (`memories`, `canon`, `interactions`,
+ * `chronicle`, `notes`, M3 §3.1): an id names one row whatever its table. [MEMORY_RUN] numbers the
+ * memory jobs (`memory_runs`).
  */
-enum class IdKind { EVENT, SESSION, TURN, TASK, LLM_CALL, TOOL_CALL, DECISION }
+enum class IdKind { EVENT, SESSION, TURN, TASK, LLM_CALL, TOOL_CALL, DECISION, MEMORY, MEMORY_RUN }
 
 /**
  * The Journal's state, for `/narrator status` and the periodic health report.
@@ -52,8 +56,12 @@ data class JournalHealth(
 /** The Journal cannot serve a read: it failed to open, or went degraded after a write error. */
 class JournalUnavailableException(reason: String) : IllegalStateException("the Journal is unavailable: $reason")
 
-/** A read did not get a connection, or did not finish, within its time limit. */
-class JournalTimeoutException(timeoutMs: Long) : RuntimeException("the Journal read did not finish within $timeoutMs ms")
+/**
+ * A read did not get a connection, or did not finish, within its time limit; or a write job ([what] =
+ * `write`, [Journal.write]) did not run within its own.
+ */
+class JournalTimeoutException(timeoutMs: Long, what: String = "read") :
+    RuntimeException("the Journal $what did not finish within $timeoutMs ms")
 
 /**
  * The history of the world (`world/narrator2/narrator.duckdb`): every game fact from the bus and every
@@ -86,6 +94,20 @@ interface Journal : TraceSink, AutoCloseable {
      * [timeoutMs], and with the query's own exception otherwise.
      */
     suspend fun <T> read(timeoutMs: Long, query: (Connection) -> T): T
+
+    /**
+     * Runs [block] on the writer thread, in a transaction of its own, between two batches of the Journal,
+     * and returns its result: the memory's only way to write (M3 §4.1). [block] sees every fact committed
+     * before it (call [barrier] first to include what was just published), and must not call the network
+     * nor wait on anything but the database: it holds the only write connection.
+     *
+     * An exception in [block] rolls the transaction back and is rethrown here; the writer goes on. Fails
+     * with [JournalUnavailableException] when the Journal is unavailable or closing (jobs still queued at
+     * [close] fail too) or when its write queue is full, and with [JournalTimeoutException] (`write`) when
+     * the job did not run within [timeoutMs]: the job may still run later, so jobs are written so that
+     * running late is harmless.
+     */
+    suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T
 
     /** Asks the writer to run `CHECKPOINT` after its next batch (called after each world save). */
     fun checkpointAsync()
@@ -133,6 +155,8 @@ class DisabledJournal(private val reason: String, clock: Clock = Clock.systemUTC
     override suspend fun barrier() = Unit
 
     override suspend fun <T> read(timeoutMs: Long, query: (Connection) -> T): T = throw JournalUnavailableException(reason)
+
+    override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T = throw JournalUnavailableException(reason)
 
     override fun checkpointAsync() = Unit
 

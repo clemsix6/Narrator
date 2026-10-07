@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.journal
 import io.github.clemsix6.narrator2.event.EventCatalog
 import io.github.clemsix6.narrator2.event.EventTable
 import io.github.clemsix6.narrator2.event.EventType
+import io.github.clemsix6.narrator2.memory.MemorySchema
 import java.sql.Connection
 import java.time.ZoneId
 
@@ -19,8 +20,12 @@ import java.time.ZoneId
  * read on the Journal's connections.
  */
 object SchemaDoc {
-    /** Tables the model has no use for. */
-    private val PLUMBING = setOf("schema_version")
+    /**
+     * Tables left out of the description: `schema_version`, which the model has no use for, and the
+     * memory's tables ([MemorySchema.TABLES]), still readable by `sql`: the model reads the memory through
+     * its own views and tools (M3 §13).
+     */
+    private val PLUMBING = setOf("schema_version") + MemorySchema.TABLES
 
     /**
      * The engine's traces, listed without their columns to keep the description within its budget

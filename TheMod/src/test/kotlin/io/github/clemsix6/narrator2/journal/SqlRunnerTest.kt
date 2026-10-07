@@ -89,7 +89,7 @@ class SqlRunnerTest {
         assertContains(rows(model("DESCRIBE mining")).text, "\nore|BOOLEAN|")
         assertContains(rows(model("SUMMARIZE SELECT y FROM mining")).text, "\ny|INTEGER|-41|64|")
         assertContains(rows(operator("DESCRIBE private_messages")).text, "\ntext|VARCHAR|")
-        assertEquals(34L, rows(operator("SHOW TABLES")).total, "16 tables and 18 views")
+        assertEquals(51L, rows(operator("SHOW TABLES")).total, "16 tables of the Journal, 17 of the memory and 18 views")
     }
 
     /** The model's file barriers on a Journal on disk, where DuckDB's own files are readable: [SqlFileAccessTest]. */
@@ -333,7 +333,7 @@ class SqlRunnerTest {
     @Test
     fun `operators read everything, the private messages and the catalog included`() {
         assertContains(rows(operator("SELECT text FROM private_messages")).text, SECRET)
-        assertContains(rows(operator("SELECT table_name FROM duckdb_tables() ORDER BY 1")).text, "private_messages")
+        assertContains(rows(operator("SELECT table_name FROM duckdb_tables() WHERE table_name LIKE 'private%'")).text, "private_messages")
         assertContains(rows(operator("SELECT * FROM query_table('private_' || 'messages')")).text, SECRET)
     }
 

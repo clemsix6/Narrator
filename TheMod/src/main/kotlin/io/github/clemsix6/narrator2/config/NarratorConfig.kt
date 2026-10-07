@@ -32,6 +32,7 @@ data class NarratorConfig(
     val observer: ObserverConfig = ObserverConfig(),
     val director: DirectorConfig = DirectorConfig(),
     val workers: WorkersConfig = WorkersConfig(),
+    val memory: MemoryConfig = MemoryConfig(),
     val safety: SafetyConfig = SafetyConfig(),
     val jev: JevConfig = JevConfig(),
     val logging: LoggingConfig = LoggingConfig(),
@@ -190,6 +191,32 @@ data class WorkersConfig(
     val maxSteps: Int = 15,
     /** Longest a task may run. */
     val timeoutSeconds: Int = 180,
+)
+
+/**
+ * The Narrator's memory (design M3 §17): when its jobs run and how much it recalls by itself. Budgets
+ * and formulas are constants of the code, not settings.
+ */
+@Serializable
+data class MemoryConfig(
+    /** False keeps the memory off: no memory tool, no memory in the briefing, no job. */
+    val enabled: Boolean = true,
+    /** The Chronicler reads the Journal behind the Director this often while a chapter is open. */
+    val chronicleMinutes: Int = 10,
+    /** A dream starts once nobody has been online for this long (and a nap happened since the last dream). */
+    val dreamAfterEmptyMinutes: Int = 20,
+    /** A dream starts anyway when there was none for this long (and a nap happened since). */
+    val dreamMaxHours: Int = 24,
+    /** Players the Dreamer reflects on in one dream, the most active first. */
+    val dreamMaxPlayers: Int = 8,
+    /** The sheets' statistics of the players online are computed again this often. */
+    val statsMinutes: Int = 10,
+    /** Memories recalled by themselves at most per wake-up of the Director; 0 for none. */
+    val recallPerWake: Int = 2,
+    /** A memory recalled by itself is not recalled again before this much world play time. */
+    val recallCooldownPlayMinutes: Int = 180,
+    /** A player without the Narrator's attention for this much of their play shows in the situation. */
+    val attentionMinutes: Int = 40,
 )
 
 /** Limits the engine enforces whatever the model asks. */
@@ -395,6 +422,16 @@ object ConfigStore {
         range("workers.maxConcurrent", workers.maxConcurrent.toLong(), 1, 8)
         range("workers.maxSteps", workers.maxSteps.toLong(), 3, 40)
         range("workers.timeoutSeconds", workers.timeoutSeconds.toLong(), 30, 1_800)
+
+        val memory = config.memory
+        range("memory.chronicleMinutes", memory.chronicleMinutes.toLong(), 2, 60)
+        range("memory.dreamAfterEmptyMinutes", memory.dreamAfterEmptyMinutes.toLong(), 5, 240)
+        range("memory.dreamMaxHours", memory.dreamMaxHours.toLong(), 6, 168)
+        range("memory.dreamMaxPlayers", memory.dreamMaxPlayers.toLong(), 1, 20)
+        range("memory.statsMinutes", memory.statsMinutes.toLong(), 1, 60)
+        range("memory.recallPerWake", memory.recallPerWake.toLong(), 0, 5)
+        range("memory.recallCooldownPlayMinutes", memory.recallCooldownPlayMinutes.toLong(), 10, 1_440)
+        range("memory.attentionMinutes", memory.attentionMinutes.toLong(), 10, 600)
 
         config.safety.protectedPlayers.forEachIndexed { index, name ->
             if (!PLAYER_NAME.matches(name)) {

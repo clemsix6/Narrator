@@ -44,6 +44,7 @@ class ConfigValidationTest {
             assertEquals(30, turnsPerHour)
         }
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
+        assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40), defaults.memory)
         assertEquals(JevConfig(true, "https://api.typesafe.ai", "TYPESAFE_API_KEY", "jev-1.13.0", 1_500), defaults.jev)
     }
 
@@ -83,6 +84,22 @@ class ConfigValidationTest {
             defaults.copy(workers = WorkersConfig(maxConcurrent = 9)) to "workers.maxConcurrent must be between 1 and 8",
             defaults.copy(workers = WorkersConfig(maxSteps = 41)) to "workers.maxSteps must be between 3 and 40",
             defaults.copy(workers = WorkersConfig(timeoutSeconds = 29)) to "workers.timeoutSeconds must be between 30 and 1800",
+            defaults.copy(memory = MemoryConfig(chronicleMinutes = 1)) to "memory.chronicleMinutes must be between 2 and 60",
+            defaults.copy(memory = MemoryConfig(chronicleMinutes = 61)) to "memory.chronicleMinutes must be between 2 and 60",
+            defaults.copy(memory = MemoryConfig(dreamAfterEmptyMinutes = 4)) to "memory.dreamAfterEmptyMinutes must be between 5 and 240",
+            defaults.copy(memory = MemoryConfig(dreamAfterEmptyMinutes = 241)) to "memory.dreamAfterEmptyMinutes must be between 5 and 240",
+            defaults.copy(memory = MemoryConfig(dreamMaxHours = 5)) to "memory.dreamMaxHours must be between 6 and 168",
+            defaults.copy(memory = MemoryConfig(dreamMaxHours = 169)) to "memory.dreamMaxHours must be between 6 and 168",
+            defaults.copy(memory = MemoryConfig(dreamMaxPlayers = 0)) to "memory.dreamMaxPlayers must be between 1 and 20",
+            defaults.copy(memory = MemoryConfig(dreamMaxPlayers = 21)) to "memory.dreamMaxPlayers must be between 1 and 20",
+            defaults.copy(memory = MemoryConfig(statsMinutes = 0)) to "memory.statsMinutes must be between 1 and 60",
+            defaults.copy(memory = MemoryConfig(statsMinutes = 61)) to "memory.statsMinutes must be between 1 and 60",
+            defaults.copy(memory = MemoryConfig(recallPerWake = -1)) to "memory.recallPerWake must be between 0 and 5",
+            defaults.copy(memory = MemoryConfig(recallPerWake = 6)) to "memory.recallPerWake must be between 0 and 5",
+            defaults.copy(memory = MemoryConfig(recallCooldownPlayMinutes = 9)) to "memory.recallCooldownPlayMinutes must be between 10 and 1440",
+            defaults.copy(memory = MemoryConfig(recallCooldownPlayMinutes = 1_441)) to "memory.recallCooldownPlayMinutes must be between 10 and 1440",
+            defaults.copy(memory = MemoryConfig(attentionMinutes = 9)) to "memory.attentionMinutes must be between 10 and 600",
+            defaults.copy(memory = MemoryConfig(attentionMinutes = 601)) to "memory.attentionMinutes must be between 10 and 600",
             defaults.copy(safety = SafetyConfig(protectedPlayers = listOf("Steve", "not a name"))) to
                 "safety.protectedPlayers[1] must be a player name",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("scoreboard", "tell raw"))) to
@@ -113,6 +130,8 @@ class ConfigValidationTest {
             defaults.copy(director = DirectorConfig(chapterTokenLimit = 900_000, chapterHardLimit = 900_000, emptyServerCloseMinutes = 120, turnsPerHour = 600)),
             defaults.copy(workers = WorkersConfig(1, 3, 30)),
             defaults.copy(workers = WorkersConfig(8, 40, 1_800)),
+            defaults.copy(memory = MemoryConfig(false, 2, 5, 6, 1, 1, 0, 10, 10)),
+            defaults.copy(memory = MemoryConfig(true, 60, 240, 168, 20, 60, 5, 1_440, 600)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(jev = JevConfig(baseUrl = "http://localhost:9000", timeoutMs = 300)),
             defaults.copy(jev = JevConfig(timeoutMs = 10_000)),
@@ -161,6 +180,16 @@ class ConfigValidationTest {
         assertEquals(OperatorChannelMode.USER_TAG, config.director.channelMode)
         assertEquals(listOf("Mimosa"), config.safety.protectedPlayers)
         assertEquals(JevConfig(enabled = false), config.jev, "a null value takes its default")
+    }
+
+    @Test
+    fun `the memory section merges key by key and is validated`() {
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "memory": { "chronicleMinutes": 5, "enabled": false } }""")
+        assertEquals(MemoryConfig(enabled = false, chronicleMinutes = 5), ConfigStore.load(dir).memory)
+
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "memory": { "recallPerWake": 9 } }""")
+        val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
+        assertContains(message, "memory.recallPerWake must be between 0 and 5")
     }
 
     @Test

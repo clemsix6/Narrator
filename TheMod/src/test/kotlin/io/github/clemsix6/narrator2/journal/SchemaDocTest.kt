@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.event.EventCatalog
 import io.github.clemsix6.narrator2.event.EventTable
+import io.github.clemsix6.narrator2.memory.MemorySchema
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.math.ceil
@@ -29,7 +30,9 @@ class SchemaDocTest {
     fun `it lists every table, view, macro and event type the model may use`() {
         DuckDatabase.openInMemory(JournalFixture.OPTIONS).use { db ->
             val main = "database_name = current_database() AND schema_name = 'main' AND NOT internal"
-            val tables = names(db, "SELECT table_name FROM duckdb_tables() WHERE $main") - Journal.HIDDEN_FROM_MODEL - "schema_version"
+            // The memory's tables are read through its own views and tools (M3 §13).
+            val tables = names(db, "SELECT table_name FROM duckdb_tables() WHERE $main") - Journal.HIDDEN_FROM_MODEL - "schema_version" -
+                MemorySchema.TABLES.toSet()
             val views = names(db, "SELECT view_name FROM duckdb_views() WHERE $main")
             val macros = names(db, "SELECT function_name FROM duckdb_functions() WHERE $main AND function_type IN ('macro', 'table_macro')")
             assertEquals(14, tables.size, "$tables")

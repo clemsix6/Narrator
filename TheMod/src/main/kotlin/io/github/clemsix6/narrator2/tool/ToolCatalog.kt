@@ -6,6 +6,9 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
 import io.github.clemsix6.narrator2.tool.command.commandTools
+import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
+import io.github.clemsix6.narrator2.tool.memory.dreamerTools
+import io.github.clemsix6.narrator2.tool.memory.memoryTools
 import io.github.clemsix6.narrator2.tool.oracle.oracleTools
 import io.github.clemsix6.narrator2.tool.pacing.pacingTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
@@ -36,6 +39,9 @@ object ToolCatalog {
         sqlTools(services),
         pacingTools(services),
         taskTools(services),
+        memoryTools(services),
+        chroniclerTools(services),
+        dreamerTools(services),
     ).flatten()
 
     /**

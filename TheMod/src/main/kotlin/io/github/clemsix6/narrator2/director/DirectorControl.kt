@@ -2,7 +2,10 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.event.Envelope
+import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.NoteKind
+import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.ConversationRecord
@@ -46,6 +49,27 @@ sealed interface DirectorSignal {
     /** `/narrator whisper`: an instruction from operator [from]. */
     data class OperatorWhisper(val from: String, val text: String, val at: Long) : DirectorSignal
 
+    /**
+     * A canon commitment is due (M3 §6.6): a promise, threat, challenge, prophecy or arc end. Urgency
+     * [Urgency.SOON]; it wakes the Director even when the hour's turn budget is spent (M2 review, finding
+     * 26). [line]: what follows `DUE ` in `<events>`, e.g. `C-45 promise → Mimosa, set 1h ago: « … »`
+     * (French texts escaped). [at]: the due time, epoch milliseconds.
+     */
+    data class MemoryDue(val ref: Ref, val line: String, val at: Long) : DirectorSignal
+
+    /**
+     * A note of the memory for the Director (M3 §12.4): an incoherence, an expired commitment. Urgency
+     * [Urgency.NEXT]: never wakes; told with the next wake-up. [text]: the note, escaped.
+     */
+    data class MemoryNote(val ref: Ref, val kind: NoteKind, val text: String, val at: Long) : DirectorSignal
+
+    /**
+     * A place return or an anniversary (M3 §10.5). Urgency [Urgency.NEXT]: never wakes. [player]: who
+     * came back to the place, null for an anniversary; [line]: what follows `RETURN ` or `ANNIVERSARY `,
+     * escaped.
+     */
+    data class MemoryCue(val kind: CueKind, val ref: Ref, val player: PlayerRef?, val line: String, val at: Long) : DirectorSignal
+
     /** `/narrator pause`: the running turn ends first, then the Director stays silent. */
     data object Pause : DirectorSignal
 
@@ -57,6 +81,15 @@ sealed interface DirectorSignal {
 
     /** `/narrator reload` installed new settings. */
     data class SettingsChanged(val old: Settings, val new: Settings) : DirectorSignal
+}
+
+/** What brought a memory back by itself (M3 §10.5). */
+enum class CueKind {
+    /** A player is back where a memory happened. */
+    RETURN,
+
+    /** A memory of the same day, a week, a month or a year ago. */
+    ANNIVERSARY,
 }
 
 /** States of the Director. */

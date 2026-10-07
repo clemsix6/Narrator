@@ -144,8 +144,9 @@ data class Caller(val role: Role, val conversationId: String, val turnId: Long?,
  *
  * @property journalAvailable the Journal opened (`sql`, and `delegate` to the Analyst, need it).
  * @property workerRoles worker roles that accept tasks (the `delegate` tool lists only these).
+ * @property memoryAvailable the memory runs (`Memory.available`): the memory tools need it (M3 §5).
  */
-data class ToolEnv(val journalAvailable: Boolean, val workerRoles: Set<Role>)
+data class ToolEnv(val journalAvailable: Boolean, val workerRoles: Set<Role>, val memoryAvailable: Boolean = false)
 
 /**
  * A tool the model can call.
