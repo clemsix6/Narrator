@@ -253,7 +253,7 @@ class HybridRecallTest {
             fixture.memory(1, "Lave", "Bartok est tombé dans la lave.", players = listOf(bartok))
             val journal = DuckJournal.open(fixture.db, JournalConfig(), fixture.clock)
             try {
-                val recall = HybridRecall(journal, fixture.index, fixture.playClock, SearchFixture.STRENGTH, fixture.clock)
+                val recall = HybridRecall(journal, fixture.index, fixture.playClock, fixture.clock)
                 val hits = runBlocking { recall.search(tool("lave")) }
                 assertEquals(listOf(memory(1)), hits.refs())
             } finally {

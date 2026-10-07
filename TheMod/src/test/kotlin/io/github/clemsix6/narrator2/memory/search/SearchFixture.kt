@@ -17,8 +17,6 @@ import io.github.clemsix6.narrator2.testing.TestClock
 import org.duckdb.DuckDBConnection
 import java.time.Instant
 import java.time.ZoneId
-import kotlin.math.max
-import kotlin.math.pow
 
 /**
  * A memory database in memory (V1 + V2) with the real index and recall, for the search tests. Rows are
@@ -33,7 +31,7 @@ internal class SearchFixture(
     val connection: DuckDBConnection get() = db.writer
     val index = SearchIndex()
     val playClock = FakeMemory.FakePlayClock()
-    val recall = HybridRecall(journal, index, playClock, STRENGTH, clock)
+    val recall = HybridRecall(journal, index, playClock, clock)
 
     fun search(query: RecallQuery): List<RecallHit> = recall.search(connection, query, clock.instant())
 
@@ -155,8 +153,5 @@ internal class SearchFixture(
     companion object {
         val NOW: Instant = Instant.parse("2026-10-07T20:00:00Z")
         val OPTIONS = DuckDatabase.Options(memoryLimitMb = 512, threads = 2, timeZone = ZoneId.of("UTC"))
-
-        /** M3 §9.1, as `memory/Decay.kt` will compute it: `max(0.02, 2^(−Δ/S))`. */
-        val STRENGTH = MemoryStrength { stability, hours -> max(0.02, 2.0.pow(-hours / stability)) }
     }
 }

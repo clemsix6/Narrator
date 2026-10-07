@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
+import io.github.clemsix6.narrator2.memory.Decay
 import io.github.clemsix6.narrator2.memory.PlayClock
 import io.github.clemsix6.narrator2.memory.Recall
 import io.github.clemsix6.narrator2.memory.RecallHit
@@ -25,11 +26,6 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.random.Random
 
-/** A memory's strength (M3 §9.1) from its stability and the hours of world play since it was last reinforced. */
-fun interface MemoryStrength {
-    fun of(stabilityHours: Double, hoursSinceReinforced: Double): Double
-}
-
 /**
  * The memory's search (M3 §10.4): SQL filters, BM25 in DuckDB ([SearchIndex]), then a score that weighs
  * relevance by importance, age and strength.
@@ -40,21 +36,22 @@ fun interface MemoryStrength {
  * 2. **Relevance** ∈ [0, 1]: `0.6 × bm25 / best bm25 + 0.4 × structured`, where structured is 0.5 when one
  *    of the query's players is among the row's, plus 0.25 per tag or id in common (at most 1). Without text,
  *    structured alone; when listing the latest, 1.
- * 3. **Score**: `relevance × (0.4 + 0.4 × importance / 10 + 0.2 × 2^(−days / 30)) × strength`.
+ * 3. **Score**: `relevance × (0.4 + 0.4 × importance / 10 + 0.2 × 2^(−days / 30)) × strength`. Strength: the
+ *    decay of a memory ([Decay.strength], world play); 1 for open canon, [CLOSED_CANON_STRENGTH] for closed
+ *    canon, 1 for the chronicle; an interaction fades by half every [INTERACTION_HALF_LIFE_H] hours of its
+ *    player's play, down to [INTERACTION_FLOOR]. Interactions and chronicle entries have no importance of their
+ *    own: `3 + 2 × |valence|` for the former, by level for the latter. Days count from when it happened.
  * 4. [RecallPurpose.REMINISCENCE] keeps the hits with a score of at least [REMINISCENCE_SCORE] and a relevance
  *    of at least [REMINISCENCE_RELEVANCE], then draws them with a probability proportional to the squared
  *    score, seeded by [RecallQuery.seed] (M3 §10.6). Every other purpose sorts by score; the latest by time.
  *
  * Reads only: the caller records what it shows. The cooldowns and per-wake caps of the reminiscences are
  * the caller's (M3-14), which passes what to leave out in [RecallQuery.exclude].
- *
- * @param memoryStrength the decay of memories (M3 §9.1, `memory/Decay.kt`).
  */
 class HybridRecall(
     private val journal: Journal,
     private val index: SearchIndex,
     private val playClock: PlayClock,
-    private val memoryStrength: MemoryStrength,
     private val clock: Clock,
     private val readTimeoutMs: Long = READ_TIMEOUT_MS,
 ) : Recall {
@@ -164,8 +161,7 @@ class HybridRecall(
         )
         if (!query.match.query.includeClosed) query.where("NOT archived AND merged_into IS NULL")
         return query.rows("memories") {
-            val hours = max(0L, world - getLong(5)) / 3_600.0
-            Candidate(Ref(RefKind.MEMORY, getLong(1)), getLong(2), getInt(3), memoryStrength.of(getDouble(4), hours), getDouble(6))
+            Candidate(Ref(RefKind.MEMORY, getLong(1)), getLong(2), getInt(3), Decay.strength(getDouble(4), getLong(5), world), getDouble(6))
         }
     }
 
