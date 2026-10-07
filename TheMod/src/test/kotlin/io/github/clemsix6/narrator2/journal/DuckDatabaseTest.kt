@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.event.EventTable
+import io.github.clemsix6.narrator2.memory.MemorySchema
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
@@ -32,7 +33,7 @@ class DuckDatabaseTest {
     private val tables = listOf(
         "schema_version", "players", "player_names", "sessions", "events", "positions", "chat", "private_messages",
         "chat_signals", "stat_totals", "conversations", "turns", "tasks", "llm_calls", "tool_calls", "engine_decisions",
-    )
+    ) + MemorySchema.TABLES
 
     private fun DuckDBConnection.strings(sql: String): List<String?> = createStatement().use { statement ->
         statement.executeQuery(sql).use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
@@ -41,18 +42,18 @@ class DuckDatabaseTest {
     private fun DuckDBConnection.run(sql: String) = createStatement().use { it.execute(sql) }
 
     @Test
-    fun `creates the file and applies V1 once`() {
+    fun `creates the file and applies the migrations once`() {
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(1, db.schemaVersion)
+            assertEquals(2, db.schemaVersion)
             assertEquals(2, db.readers.size)
             assertEquals(tables.sorted(), db.writer.strings("SELECT table_name FROM duckdb_tables() ORDER BY 1"))
-            assertEquals(listOf("1"), db.writer.strings("SELECT version FROM schema_version"))
+            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             db.writer.run("INSERT INTO events (id, ts, game_time, type) VALUES (1, now(), 0, 'join')")
         }
         assertTrue(Files.isRegularFile(file))
 
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1"), db.writer.strings("SELECT version FROM schema_version"), "not applied twice")
+            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
             assertEquals(listOf("1"), db.readers[0].strings("SELECT count(*) FROM events"), "data kept")
         }
     }

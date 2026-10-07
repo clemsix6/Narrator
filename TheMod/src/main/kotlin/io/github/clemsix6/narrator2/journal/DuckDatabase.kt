@@ -91,7 +91,7 @@ class DuckDatabase private constructor(
          * Schema migrations, applied in order: `V<version>__<name>.sql`. A migration is never edited once
          * released; adding one means adding its file name here.
          */
-        val MIGRATIONS: List<String> = listOf("V1__journal.sql")
+        val MIGRATIONS: List<String> = listOf("V1__journal.sql", "V2__memory.sql")
 
         /** Views and macros for the model, run at every opening. */
         const val VIEWS = "views.sql"

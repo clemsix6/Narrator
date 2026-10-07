@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.event.EventBus
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.journal.Journal
+import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.Reflexes
 import io.github.clemsix6.narrator2.tool.ToolLimits
@@ -73,6 +74,9 @@ interface NarratorServices {
     val director: DirectorControl
 
     val workers: WorkersControl
+
+    /** The Narrator's memory (design M3); `DisabledMemory` when it is off or could not start. */
+    val memory: Memory
 
     /** The tools' limits that no new conversation resets (speech, gifts, weather and time, commands per turn). */
     val toolLimits: ToolLimits

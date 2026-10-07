@@ -18,6 +18,8 @@ import io.github.clemsix6.narrator2.journal.DuckJournal
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.openJournal
+import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.createMemory
 import io.github.clemsix6.narrator2.observer.ObserverState
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.observer.installObserver
@@ -51,12 +53,12 @@ import java.time.Clock
 /**
  * Everything the Narrator runs while a server is up (M1_M2 §2), from `SERVER_STARTED` to
  * `SERVER_STOPPED`: the bus, the Journal, the player states, the Observer, the guards, the reflexes,
- * the workers and the Director. None of them is ever rebuilt while the server runs: `/narrator reload`
- * only replaces the [settings] (configuration, prompts, texts and clients).
+ * the workers, the memory and the Director. None of them is ever rebuilt while the server runs:
+ * `/narrator reload` only replaces the [settings] (configuration, prompts, texts and clients).
  *
  * Components depend on [NarratorServices], never on this class. They are created in this order, each
  * factory receiving the runtime with the services created before it: Journal, bus, player states,
- * guards, Observer, reflexes, workers, Director.
+ * guards, Observer, reflexes, workers, memory, Director.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -115,6 +117,9 @@ class NarratorRuntime private constructor(
     final override lateinit var workers: WorkersControl
         private set
 
+    final override lateinit var memory: Memory
+        private set
+
     final override lateinit var director: DirectorControl
         private set
 
@@ -132,6 +137,7 @@ class NarratorRuntime private constructor(
         observer = installObserver(this)
         reflexes = createReflexes(this)
         workers = createWorkers(this)
+        memory = createMemory(this)
         director = createDirector(this)
         shutdown = ShutdownSequence(scope, bus, journal, settings, observer::flushAll, { phase = it })
         phase = Phase.RUNNING

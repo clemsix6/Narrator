@@ -75,6 +75,12 @@ data class LlmCallRecord(
 
         /** Jev: is this heartbeat worth waking the Director. */
         HEARTBEAT_FILTER,
+
+        /** A request of the Chronicler (a batch or a nap, M3 §7). */
+        CHRONICLE,
+
+        /** A request of the Dreamer (a step of a dream, M3 §8). */
+        DREAM,
         ;
 
         val id: String get() = name.lowercase()
@@ -220,6 +226,13 @@ data class DecisionRecord(
 
         /** A tool set was built for a conversation. */
         TOOL_CATALOG,
+
+        /**
+         * The memory (M3 §18): a write (`written`, `duplicate`, `rejected`), the voice (`voice_warning`,
+         * `voice_audit`), a commitment `due` or `expired`, a `cue`, a row `recalled`, a job (`batch`, `nap`,
+         * `dream`, `stats`), the gateway's `budget`, `paused`, `resumed`, `reverted`, `rolled_back`, `archived`.
+         */
+        MEMORY,
         ;
 
         val id: String get() = name.lowercase()
@@ -248,7 +261,11 @@ data class TurnRecord(
     val outcome: Outcome?,
 ) {
     enum class Trigger {
-        CHAT, PRAY, SALIENT, HEARTBEAT, TASK, REMINDER, OPERATOR, RESUME, CHAPTER_CLOSE;
+        CHAT, PRAY, SALIENT, HEARTBEAT, TASK, REMINDER, OPERATOR, RESUME, CHAPTER_CLOSE,
+
+        /** A canon commitment came due (`DirectorSignal.MemoryDue`, M3 §6.6). */
+        DUE,
+        ;
 
         val id: String get() = name.lowercase()
     }
@@ -330,7 +347,7 @@ data class ConversationRecord(
         /** Found unfinished after a crash. */
         INTERRUPTED,
 
-        /** Worker conversations: how the task ended. */
+        /** Worker and memory (chronicler, dreamer) conversations: how the task or the job ended. */
         DONE,
         FAILED,
         CANCELLED,

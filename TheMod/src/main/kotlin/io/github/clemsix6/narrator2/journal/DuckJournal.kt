@@ -192,6 +192,10 @@ internal class DuckJournal private constructor(
         }
     }
 
+    /** Provisional (M3-01): the writer's queue of jobs is M3-02's (design M3 §4.1). */
+    override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T =
+        throw JournalUnavailableException("memory writes are not wired yet")
+
     override fun checkpointAsync() = writer.requestCheckpoint()
 
     override fun health(): JournalHealth {
@@ -445,19 +449,33 @@ internal class DuckJournal private constructor(
 
         /**
          * Where each id sequence starts: past the largest id of its table, and past the ids other rows
-         * cite (a decision citing an event, a chat line citing its turn), in case the row itself was lost.
+         * cite (a decision citing an event, a chat line citing its turn, a memory citing its turn), in case
+         * the row itself was lost. Id lists (`evidence`, `refs`, `covers`) are left out: the memory checks
+         * them before writing, so they only cite rows that exist.
          */
         private val SEED_COLUMNS: Map<IdKind, List<String>> = mapOf(
-            IdKind.EVENT to listOf("events.id", "chat.id", "private_messages.id", "chat_signals.event_id", "engine_decisions.event_id"),
+            IdKind.EVENT to listOf(
+                "events.id", "chat.id", "private_messages.id", "chat_signals.event_id", "engine_decisions.event_id", "recalls.event_id",
+            ),
             IdKind.SESSION to listOf("sessions.session_id", "events.session_id", "positions.session_id"),
             IdKind.TURN to listOf(
                 "turns.turn_id", "llm_calls.turn_id", "tool_calls.turn_id", "engine_decisions.turn_id", "chat.turn_id",
-                "tasks.requested_by_turn",
+                "tasks.requested_by_turn", "memories.turn_id", "canon.turn_id", "interactions.turn_id", "recalls.turn_id",
+                "memory_log.turn_id",
             ),
             IdKind.TASK to listOf("tasks.task_id", "conversations.task_id"),
             IdKind.LLM_CALL to listOf("llm_calls.id", "tool_calls.llm_call_id"),
             IdKind.TOOL_CALL to listOf("tool_calls.id"),
             IdKind.DECISION to listOf("engine_decisions.id"),
+            IdKind.MEMORY to listOf(
+                "memories.id", "canon.id", "interactions.id", "chronicle.id", "notes.id", "memories.merged_into", "canon.replaces",
+                "interactions.canon_id", "interactions.memory_id", "chronicle.superseded_by", "recalls.ref_id", "search_docs.ref_id",
+            ),
+            IdKind.MEMORY_RUN to listOf(
+                "memory_runs.run_id", "memories.run_id", "canon.run_id", "interactions.run_id", "player_traits.run_id",
+                "player_skills.run_id", "player_relations.run_id", "memory_docs.run_id", "chronicle.run_id", "notes.run_id",
+                "memory_log.run_id",
+            ),
         )
 
         /**

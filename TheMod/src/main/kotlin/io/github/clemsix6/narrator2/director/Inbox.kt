@@ -7,12 +7,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /**
- * A signal waiting in the Director's inbox: a game event, a task result, a reminder due or an
- * operator's whisper (M1_M2 §12.2).
+ * A signal waiting in the Director's inbox: a game event, a task result, a reminder due, an
+ * operator's whisper (M1_M2 §12.2), or a signal of the memory: a commitment due, a note, a cue (M3 §11.3).
  *
  * @property at when it happened, epoch milliseconds: the event's time, the task's end, the reminder's
- *   due time, the whisper's time. Wake-ups are grouped from these times, and lines are dated relative
- *   to them.
+ *   or the commitment's due time, the whisper's time, the note's or the cue's. Wake-ups are grouped
+ *   from these times, and lines are dated relative to them.
  * @property failures requests that carried it and got no usable reply (refused, cut off, rejected):
  *   from [DEMOTED] on it no longer wakes the Director (and a chat line is dropped), and from [DROPPED]
  *   on it is dropped. Transient gateway failures do not count.
@@ -23,11 +23,16 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
             signal !is DirectorSignal.SettingsChanged) { "control signals are not inbox items: $signal" }
     }
 
-    /** How soon it should reach the Director: task results and reminders are like [Urgency.SOON], whispers like [Urgency.IMMEDIATE]. */
+    /**
+     * How soon it should reach the Director: task results, reminders and due commitments are like
+     * [Urgency.SOON], whispers like [Urgency.IMMEDIATE]; the memory's notes and cues never wake it
+     * ([Urgency.NEXT], M3 §11.3).
+     */
     val urgency: Urgency
         get() = when (signal) {
             is DirectorSignal.Event -> signal.urgency
             is DirectorSignal.OperatorWhisper -> Urgency.IMMEDIATE
+            is DirectorSignal.MemoryNote, is DirectorSignal.MemoryCue -> Urgency.NEXT
             else -> Urgency.SOON
         }
 
@@ -64,6 +69,9 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
             is DirectorSignal.TaskDone -> signal.at
             is DirectorSignal.ReminderDue -> signal.at
             is DirectorSignal.OperatorWhisper -> signal.at
+            is DirectorSignal.MemoryDue -> signal.at
+            is DirectorSignal.MemoryNote -> signal.at
+            is DirectorSignal.MemoryCue -> signal.at
             else -> error("not an inbox item: $signal")
         }
     }
