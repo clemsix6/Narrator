@@ -12,7 +12,6 @@ import java.time.Clock
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.UUID
-import kotlin.math.pow
 
 /**
  * The memory's store on the Journal's DuckDB database (M3 §4.2): the one point of writing of the memory.
@@ -168,7 +167,7 @@ class DuckMemoryStore(
                     "evidence_events, evidence_tools) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ref.id, draft.kind.id, job.now, from, to, draft.title, draft.content, uuidArray(players),
                 stringArray(draft.entities.distinct()), stringArray(draft.tags.distinct()), draft.importance, draft.valence,
-                facts.place?.dim, facts.place?.x, facts.place?.y, facts.place?.z, initialStabilityHours(draft.importance),
+                facts.place?.dim, facts.place?.x, facts.place?.y, facts.place?.z, Decay.initialStability(draft.importance),
                 playClock.worldPlaySeconds(job.now.toEpochMilli()), author.source.id, author.runId, author.turnId, author.conversationId,
                 longArray(draft.evidenceEvents.distinct()), longArray(draft.evidenceTools.distinct()),
             )
@@ -189,15 +188,15 @@ class DuckMemoryStore(
             voice(draft.statement, "what", MemoryLimits.CANON_STATEMENT)
             quote(draft.quote, MemoryLimits.CANON_QUOTE)
             draft.stakes?.let {
-                if (kind != CanonKind.CHALLENGE) reject("stakes only go with a challenge, not a ${kind.id}: leave stakes out")
+                if (kind != CanonKind.CHALLENGE) reject("stakes only go with a challenge, not ${an(kind.id)}: leave stakes out")
                 voice(it, "stakes", MemoryLimits.CANON_STAKES)
             }
             within(draft.importance, MemoryLimits.IMPORTANCE, "importance")
             val status = draft.status ?: CanonStatus.ACTIVE
-            if (status !in kind.startsAs) reject("a ${kind.id} starts ${kind.startsAs.joinToString(" or ") { it.id }}, not ${status.id}")
-            if (draft.dueAt != null && !kind.dueAllowed) reject("a due time does not apply to a ${kind.id}: leave due_in_minutes out")
+            if (status !in kind.startsAs) reject("${an(kind.id)} starts ${kind.startsAs.joinToString(" or ") { it.id }}, not ${status.id}")
+            if (draft.dueAt != null && !kind.dueAllowed) reject("a due time does not apply to ${an(kind.id)}: leave due_in_minutes out")
             val players = job.players(draft.players, "players")
-            if (kind.onePerPlayer && players.size != 1) reject("a ${kind.id} is given to exactly one player: name one")
+            if (kind.onePerPlayer && players.size != 1) reject("${an(kind.id)} is given to exactly one player: name one")
             if (kind == CanonKind.PLACE && draft.place == null) reject("a place needs where it is: give at_player")
             job.evidence(draft.evidenceEvents, draft.evidenceTools)
             job.checkQuote(draft.quote)
@@ -244,7 +243,7 @@ class DuckMemoryStore(
             }
             if (!old.kind.allows(old.status, status)) {
                 val allowed = old.kind.closedBy.joinToString(", ") { it.id }
-                reject("a ${old.kind.id} cannot be ${status.id}; use $allowed")
+                reject("${an(old.kind.id)} cannot be ${status.id}; use $allowed")
             }
             voice(note, "note", MemoryLimits.RESOLUTION)
             val players = if (status == CanonStatus.WON) {
@@ -350,8 +349,8 @@ class DuckMemoryStore(
                     reject("${job.names.ref(player).name} has ${TraitAxis.MAX_FREE} free traits already (${free.joinToString { it.trait }}): retire one or change one")
                 }
             }
-            val turned = old != null && old.side != draft.side
-            val confidence = if (turned) minOf(draft.confidence, TURNED_CONFIDENCE) else draft.confidence
+            val turned = old != null && old.side * draft.side < 0
+            val confidence = Decay.confidenceOnSet(draft.confidence, old?.side, draft.side)
             val trend = when {
                 old == null -> 0
                 turned -> -1
@@ -477,7 +476,7 @@ class DuckMemoryStore(
                 val covers = job.refs(draft.covers, "covers", setOf(RefKind.CHRONICLE), MAX_COVERS)
                 covers.forEach { ref ->
                     val covered = job.row<ChronicleEntry>(ref, RefKind.CHRONICLE, "a chronicle entry")
-                    if (covered.level != below) reject("covers: $ref is a ${covered.level.id}; a ${level.id} covers ${below.id} entries")
+                    if (covered.level != below) reject("covers: $ref is ${an(covered.level.id)}; ${an(level.id)} covers ${below.id} entries")
                     covered.supersededBy?.let { reject("covers: $ref was rewritten as $it; cite $it") }
                 }
             }
@@ -555,7 +554,7 @@ class DuckMemoryStore(
     override suspend fun setGag(ref: Ref, state: GagState, note: String, author: Author): CanonEntry {
         val row = write("gag $ref", author) { job ->
             val old = job.row<CanonEntry>(ref, RefKind.CANON, "a canon entry")
-            if (old.kind != CanonKind.RUNNING_GAG) reject("$ref is a ${old.kind.id}, not a running gag")
+            if (old.kind != CanonKind.RUNNING_GAG) reject("$ref is ${an(old.kind.id)}, not a running gag")
             if (!old.status.open) reject("$ref is ${old.status.id}: remember a new running gag instead")
             voice(note, "note", MemoryLimits.GAG_NOTE)
             val before = job.connection.snapshot(ref)
@@ -634,7 +633,6 @@ class DuckMemoryStore(
 
     override suspend fun recorded(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
         if (refs.isEmpty()) return
-        val gain = REINFORCEMENT[channel]
         val shown = journal.write(WRITE_TIMEOUT_MS) { connection ->
             val now = clock.instant()
             val world = playClock.worldPlaySeconds(now.toEpochMilli())
@@ -644,22 +642,25 @@ class DuckMemoryStore(
                     "INSERT INTO recalls VALUES (?, ?, ?, ?, ?, ?)",
                     now, ref.id, channel.id, context.conversationId, context.turnId, context.eventId,
                 )
-                if (ref.kind == RefKind.MEMORY && gain != null) reinforce(connection, ref, gain, world, now)
+                if (ref.kind == RefKind.MEMORY) reinforce(connection, ref, channel, world, now)
             }
         }
         log.debug { "recalled ${shown.joinToString()} (${channel.id})" }
     }
 
-    /** Reinforces a memory shown again (M3 §9.2): the more it was forgotten, the more it grows; its clock starts again. */
-    private fun reinforce(connection: Connection, ref: Ref, gain: Double, world: Long, now: Instant) {
+    /**
+     * Reinforces a memory shown again through [channel] (M3 §9.2, [Decay.reinforce]): the more it was
+     * forgotten, the more it grows, and its clock starts again; `recalls + 1`. A channel that does not
+     * reinforce (the Dreamer's reading) leaves the memory as it is.
+     */
+    private fun reinforce(connection: Connection, ref: Ref, channel: RecallChannel, world: Long, now: Instant) {
         val (stability, since) = connection.query("SELECT stability_h, reinforced_play_s FROM memories WHERE id = ?", ref.id) {
             getDouble(1) to getLong(2)
         }.single()
-        val strength = maxOf(STRENGTH_FLOOR, 2.0.pow(-((world - since).coerceAtLeast(0) / 3_600.0) / stability))
-        val grown = minOf(MAX_STABILITY_HOURS, stability * (1 + gain * (0.5 + (1 - strength))))
+        val reinforced = Decay.reinforce(stability, since, world, channel) ?: return
         connection.update(
             "UPDATE memories SET stability_h = ?, reinforced_play_s = ?, recalls = recalls + 1, last_recalled_at = ? WHERE id = ?",
-            grown, world, now, ref.id,
+            reinforced.stabilityHours, reinforced.reinforcedPlaySeconds, now, ref.id,
         )
     }
 
@@ -824,30 +825,7 @@ class DuckMemoryStore(
         /** Reasons of operators and the Dreamer (`memory_log.reason`). */
         const val MAX_REASON = 300
 
-        /** The confidence a trait keeps at most when it changes pole (M3 §9.3). */
-        const val TURNED_CONFIDENCE = 0.5
-
-        /** Bounds of a memory's strength and stability (M3 §9.1, §9.2). */
-        const val STRENGTH_FLOOR = 0.02
-        const val MAX_STABILITY_HOURS = 5_000.0
-
-        /**
-         * How much a memory grows when shown through a channel (M3 §9.2): taken up in a line, searched with
-         * `recall`, or seen (briefing, sheet, reminiscence). Shown to the Dreamer only: not reinforced.
-         */
-        private val REINFORCEMENT: Map<RecallChannel, Double> = mapOf(
-            RecallChannel.USED to 1.0,
-            RecallChannel.RECALL_TOOL to 0.5,
-            RecallChannel.BRIEFING to 0.2,
-            RecallChannel.JOIN to 0.2,
-            RecallChannel.REMINISCENCE to 0.2,
-            RecallChannel.PROFILE to 0.2,
-        )
-
         private val ARCHIVABLE = setOf(RefKind.MEMORY, RefKind.CANON, RefKind.INTERACTION)
-
-        /** The initial half-life of a memory of [importance], in hours of world play (M3 §9.1): 4 h × 160^((i − 1)/9). */
-        fun initialStabilityHours(importance: Int): Double = 4.0 * 160.0.pow((importance - 1) / 9.0)
     }
 }
 
@@ -896,6 +874,9 @@ private fun sameName(active: CanonEntry, draft: CanonDraft): Boolean {
     val other = active.quote?.let(Quotes::normalize)
     return if (quote != null && other != null) quote == other else Quotes.normalize(active.statement) == Quotes.normalize(draft.statement)
 }
+
+/** [word] with its indefinite article: `a promise`, `an arc`. */
+private fun an(word: String): String = if (word.first() in "aeiou") "an $word" else "a $word"
 
 /** Whether [row] (a memory or an interaction) is about [player]. */
 private fun concerns(row: MemoryRow?, player: UUID): Boolean = when (row) {

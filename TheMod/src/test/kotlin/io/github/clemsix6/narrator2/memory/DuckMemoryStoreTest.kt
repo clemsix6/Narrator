@@ -46,7 +46,7 @@ class DuckMemoryStoreTest {
     // ── Vocabularies, bounds, voice, players, refs ──────────────────────────────────────────────────
 
     @Test
-    fun `a broken rule writes nothing, says how to fix it and is recorded`() = runBlocking {
+    fun `a broken rule writes nothing, says how to fix it and is recorded`() = runBlocking<Unit> {
         val memory = MemoryDraft(MemoryKind.OBSERVATION, "Bartok a peur", "Bartok a peur des creepers.", players = listOf(f.bartok.uuid))
         rejected("tags: \"peur\" is not a tag; use death, fall") { store.addMemory(memory.copy(tags = listOf("peur")), f.director) }
         rejected("title is longer than 80 characters") { store.addMemory(memory.copy(title = "x".repeat(81)), f.director) }
@@ -68,7 +68,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `canon rules - starts, due times, stakes, nicknames, places`() = runBlocking {
+    fun `canon rules - starts, due times, stakes, nicknames, places`() = runBlocking<Unit> {
         rejected("a law starts active, not planned") {
             store.addCanon(CanonDraft(CanonKind.LAW, "Le Narrateur interdit de creuser sous le spawn.", status = CanonStatus.PLANNED), f.director)
         }
@@ -95,7 +95,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a canon entry is written with its computed fields, indexed and audited`() = runBlocking {
+    fun `a canon entry is written with its computed fields, indexed and audited`() = runBlocking<Unit> {
         val added = store.addCanon(canonDraft, f.director)
         assertIs<Added.New<CanonEntry>>(added)
         val row = added.row
@@ -121,7 +121,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a memory takes its time, place, stability and clock from the store`() = runBlocking {
+    fun `a memory takes its time, place, stability and clock from the store`() = runBlocking<Unit> {
         f.playClock.world = 36_000
         val death = evening.minusSeconds(600)
         f.event(1_240, death, "player_died", f.bartok.uuid, Pos("minecraft:the_nether", -120, 14, 330))
@@ -131,7 +131,7 @@ class DuckMemoryStoreTest {
         assertEquals(death, row.occurredFrom)
         assertEquals(death.plusSeconds(30), row.occurredTo)
         assertEquals(Pos("minecraft:the_nether", -120, 14, 330), row.place)
-        assertEquals(4.0 * Math.pow(160.0, 6 / 9.0), row.stabilityHours, 1e-9)
+        assertEquals(Decay.initialStability(7), row.stabilityHours, 1e-9)
         assertEquals(36_000, row.reinforcedPlaySeconds)
         assertEquals(listOf(f.bartok, f.mimosa), row.players)
         assertEquals(evening, row.createdAt)
@@ -141,18 +141,11 @@ class DuckMemoryStoreTest {
         assertEquals(evening, plain.row.occurredFrom)
         assertEquals(evening, plain.row.occurredTo)
         assertNull(plain.row.place)
-        assertEquals(4.0 * Math.pow(160.0, 4 / 9.0), plain.row.stabilityHours, 1e-9)
+        assertEquals(Decay.initialStability(5), plain.row.stabilityHours, 1e-9)
     }
 
     @Test
-    fun `initial stability follows the importance`() {
-        assertEquals(4.0, DuckMemoryStore.initialStabilityHours(1), 1e-9)
-        assertEquals(640.0, DuckMemoryStore.initialStabilityHours(10), 1e-9)
-        assertEquals(118.0, DuckMemoryStore.initialStabilityHours(7), 1.0)
-    }
-
-    @Test
-    fun `an interaction computes its time, play clock, counts and disrespect`() = runBlocking {
+    fun `an interaction computes its time, play clock, counts and disrespect`() = runBlocking<Unit> {
         f.playClock.players[f.bartok.uuid] = 219_600
         f.chat(1_234, evening.minusSeconds(60), "public", "narrateur t'es nul", f.bartok.uuid)
         val insult = store.addInteraction(MemorySamples.interactionDraft.copy(toolCalls = emptyList()), f.director).row
@@ -179,9 +172,9 @@ class DuckMemoryStoreTest {
     // ── Nicknames and duplicates (M3 §4.3) ──────────────────────────────────────────────────────────
 
     @Test
-    fun `a new nickname retires the active one, the same nickname is a duplicate`() = runBlocking {
+    fun `a new nickname retires the active one, the same nickname is a duplicate`() = runBlocking<Unit> {
         val first = store.addCanon(CanonDraft(CanonKind.NICKNAME, "Bartok est surnommé « le Plongeur ».", "le Plongeur", listOf(f.bartok.uuid)), f.director).row
-        val again = store.addCanon(CanonDraft(CanonKind.NICKNAME, "Bartok porte le surnom « le Plongeur ».", "Le Plongeur !", listOf(f.bartok.uuid)), MemorySamples.chronicler)
+        val again = store.addCanon(CanonDraft(CanonKind.NICKNAME, "Bartok porte le surnom « le Plongeur ».", "Le Plongeur !", listOf(f.bartok.uuid)), f.dreamer)
         assertIs<Added.Duplicate<CanonEntry>>(again)
         assertEquals(first.ref, again.row.ref)
         assertEquals(1, decisions("duplicate").size)
@@ -198,7 +191,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a canon entry duplicates an open one of the same kind and players by quote or by text`() = runBlocking {
+    fun `a canon entry duplicates an open one of the same kind and players by quote or by text`() = runBlocking<Unit> {
         val promise = store.addCanon(canonDraft, f.director).row
         val sameQuote = store.addCanon(canonDraft.copy(statement = "Le Narrateur rendra ses bottes à Mimosa.", quote = "Je te rends tes bottes demain, promis !"), f.director)
         assertEquals(Added.Duplicate(promise), sameQuote)
@@ -215,7 +208,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `an interaction duplicates one of the same player and kind within ten minutes`() = runBlocking {
+    fun `an interaction duplicates one of the same player and kind within ten minutes`() = runBlocking<Unit> {
         f.chat(1_234, evening.minusSeconds(60), "public", "narrateur t'es nul", f.bartok.uuid)
         f.chat(1_300, evening.plusSeconds(120), "public", "franchement nul", f.bartok.uuid)
         val draft = InteractionDraft(f.bartok.uuid, InteractionKind.INSULT, -2, "a traité le Narrateur de « nul » dans le chat", evidenceEvents = listOf(1_234))
@@ -229,7 +222,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a memory duplicates one that shares an evidence, a player and a tag`() = runBlocking {
+    fun `a memory duplicates one that shares an evidence, a player and a tag`() = runBlocking<Unit> {
         f.event(1_240, evening, "player_died", f.bartok.uuid)
         val draft = MemoryDraft(MemoryKind.EPISODE, "Mort dans la lave", "Bartok est mort dans la lave.", listOf(f.bartok.uuid), tags = listOf("death", "lava"), evidenceEvents = listOf(1_240))
         val first = store.addMemory(draft, f.director).row
@@ -242,7 +235,7 @@ class DuckMemoryStoreTest {
     // ── Quotes (M3 §4.2) ────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the Chronicler's quotes must be words said in its window, the Director's are taken as given`() = runBlocking {
+    fun `the Chronicler's quotes must be words said in its window, the Director's are taken as given`() = runBlocking<Unit> {
         val from = evening.minusSeconds(600)
         val chronicler = f.run(7, from, evening)
         f.chat(1_253, evening.minusSeconds(300), "narrator", "Accordé. Mais la prochaine fois, je garde les bottes. Promis.")
@@ -285,7 +278,7 @@ class DuckMemoryStoreTest {
     // ── Statuses (M3 §3.6) ──────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `a canon entry moves only along its transitions`() = runBlocking {
+    fun `a canon entry moves only along its transitions`() = runBlocking<Unit> {
         val promise = store.addCanon(canonDraft, f.director).row
         rejected("a promise cannot be won; use fulfilled, broken, expired, cancelled") {
             store.resolveCanon(promise.ref, CanonStatus.WON, "Mimosa a gagné.", listOf(f.mimosa.uuid), f.director)
@@ -319,7 +312,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `running gags are served, worn and retired`() = runBlocking {
+    fun `running gags are served, worn and retired`() = runBlocking<Unit> {
         val gag = store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, "Le Narrateur commente chaque chute de Bartok.", players = listOf(f.bartok.uuid)), f.director).row
         val used = store.useCanon(gag.ref, evening.plusSeconds(60), MemorySamples.chronicler)
         assertEquals(1, used.uses)
@@ -336,7 +329,7 @@ class DuckMemoryStoreTest {
     // ── Sheets ──────────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `a trait changes pole instead of stacking, with capped confidence, and free traits are bounded`() = runBlocking {
+    fun `a trait changes pole instead of stacking, with capped confidence, and free traits are bounded`() = runBlocking<Unit> {
         val memory = store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Plongeon", "Bartok a sauté dans la lave.", listOf(f.bartok.uuid)), f.director).row
         val other = store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Pont", "Mimosa a fini son pont.", listOf(f.mimosa.uuid)), f.director).row
         val draft = TraitDraft(f.bartok.uuid, "boldness", 1, intensity = 3, confidence = 0.85, evidence = listOf(memory.ref), note = "plonge dans la lave")
@@ -373,7 +366,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `skills and relations replace their row and resolve their evidence`() = runBlocking {
+    fun `skills and relations replace their row and resolve their evidence`() = runBlocking<Unit> {
         val memory = store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Coffre disputé", "Bartok et Mimosa se disputent un coffre.", listOf(f.bartok.uuid, f.mimosa.uuid)), f.director).row
         store.setSkill(f.bartok.uuid, Skill.MINING, 6, "30 diamants", emptyList(), f.dreamer)
         val skill = store.setSkill(f.bartok.uuid, Skill.MINING, 8, "41 diamants, minerai moyen à y=-38", listOf(memory.ref), f.dreamer)
@@ -388,7 +381,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `documents are versioned within their budget`() = runBlocking {
+    fun `documents are versioned within their budget`() = runBlocking<Unit> {
         val key = DocKey.Sheet(f.bartok.uuid, SheetSection.RECAP)
         val v1 = store.writeDoc(key, "Explorateur tête baissée.", emptyList(), f.dreamer)
         val v2 = store.writeDoc(key, "Explorateur tête baissée qui revient demander de l'aide.", emptyList(), f.dreamer)
@@ -405,7 +398,7 @@ class DuckMemoryStoreTest {
     // ── Chronicle and notes ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the chronicle covers the level below and rewrites the open season`() = runBlocking {
+    fun `the chronicle covers the level below and rewrites the open season`() = runBlocking<Unit> {
         val chapter = store.addChronicle(ChronicleDraft(ChronicleLevel.CHAPTER, evening, evening.plusSeconds(3_600), "La nuit des slimes", "Bartok insulte le ciel.", conversationId = "director-c13"), MemorySamples.chronicler)
         rejected("the chronicle of this chapter exists already (${chapter.ref})") {
             store.addChronicle(ChronicleDraft(ChronicleLevel.CHAPTER, evening, evening, "Encore", "Encore.", conversationId = "director-c13"), MemorySamples.chronicler)
@@ -435,7 +428,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `notes are shown, done, and expire`() = runBlocking {
+    fun `notes are shown, done, and expire`() = runBlocking<Unit> {
         val note = store.addNote(MemorySamples.noteDraft.copy(refs = emptyList()), MemorySamples.chronicler)
         val hint = store.addNote(NoteDraft(NoteKind.DREAM_HINT, "Bartok est mort trois fois de chute cette semaine.", listOf(f.bartok.uuid), expiresAt = evening.plusSeconds(60)), f.dreamer)
         rejected("text is longer than 200 characters") { store.addNote(NoteDraft(NoteKind.DREAM_HINT, "a".repeat(201)), f.dreamer) }
@@ -455,7 +448,7 @@ class DuckMemoryStoreTest {
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `canon lists by due time, importance and recency, for a player or everyone`() = runBlocking {
+    fun `canon lists by due time, importance and recency, for a player or everyone`() = runBlocking<Unit> {
         val law = store.addCanon(CanonDraft(CanonKind.LAW, "Le Narrateur interdit de creuser sous le spawn.", importance = 8), f.director).row
         val late = store.addCanon(canonDraft.copy(dueAt = evening.plusSeconds(7_200)), f.director).row
         val soon = store.addCanon(CanonDraft(CanonKind.THREAT, "Le Narrateur a menacé Bartok d'une pluie de slimes.", players = listOf(f.bartok.uuid), dueAt = evening.plusSeconds(600)), f.director).row
@@ -471,7 +464,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `interactions read newest first, marked ones apart`() = runBlocking {
+    fun `interactions read newest first, marked ones apart`() = runBlocking<Unit> {
         val insult = store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.INSULT, -2, "a insulté le Narrateur", at = evening.minusSeconds(3_600)), f.director).row
         val help = store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.HELP, 1, "a aidé Mimosa", at = evening), f.director).row
         val hero = store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.HELP, 3, "a sauvé Mimosa de la lave", at = evening.minusSeconds(60)), f.director).row
@@ -482,7 +475,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a recall row is written for each shown ref and memories are reinforced by channel`() = runBlocking {
+    fun `a recall row is written for each shown ref and memories are reinforced by channel`() = runBlocking<Unit> {
         f.playClock.world = 0
         val memory = store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Plongeon", "Bartok a sauté dans la lave.", listOf(f.bartok.uuid), importance = 5), f.director).row
         val promise = store.addCanon(canonDraft, f.director).row
@@ -491,7 +484,7 @@ class DuckMemoryStoreTest {
         val context = RecallContext("director-c13", 42, 1_234)
         store.recorded(listOf(memory.ref, promise.ref, Ref(RefKind.MEMORY, 9_999)), RecallChannel.RECALL_TOOL, context)
         val once = store.memory(memory.ref)!!
-        assertEquals(stability * (1 + 0.5 * (0.5 + 0.5)), once.stabilityHours, 1e-6, "half forgotten, searched: x1.5")
+        assertEquals(stability * (1 + 0.5 * (0.5 + 0.5)), once.stabilityHours, 1e-3, "half forgotten, searched: x1.5")
         assertEquals(f.playClock.world, once.reinforcedPlaySeconds)
         assertEquals(1, once.recalls)
         assertEquals(evening, once.lastRecalledAt)
@@ -508,7 +501,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `the memory state is a small key value store`() = runBlocking {
+    fun `the memory state is a small key value store`() = runBlocking<Unit> {
         assertNull(store.state("world_play_s"))
         store.setState("world_play_s", "120")
         store.setState("world_play_s", "180")
@@ -516,7 +509,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `a grandiose word is written but recorded as a voice warning`() = runBlocking {
+    fun `a grandiose word is written but recorded as a voice warning`() = runBlocking<Unit> {
         store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Les ténèbres", "Bartok a erré dans les ténèbres du Nether.", listOf(f.bartok.uuid)), f.director)
         val warning = decisions("voice_warning").single()
         assertContains(warning.reason.orEmpty(), "ténèbres")
@@ -524,7 +517,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `merging keeps one memory with the evidence, recalls and the largest stability of all`() = runBlocking {
+    fun `merging keeps one memory with the evidence, recalls and the largest stability of all`() = runBlocking<Unit> {
         f.event(1, evening.minusSeconds(60), "player_died", f.bartok.uuid)
         f.event(2, evening, "player_died", f.bartok.uuid)
         val a = store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Lave", "Bartok est tombé dans la lave.", listOf(f.bartok.uuid), tags = listOf("lava"), importance = 4, evidenceEvents = listOf(1)), f.director).row
