@@ -95,8 +95,8 @@ class JoinBrief(
         if (shownAt != null && now - shownAt < RESHOW_MS) {
             return listOf("SHEET $name (${listOfNotNull("rejoined", away).joinToString("; ")}; full sheet shown ${ToolText.duration(now - shownAt)} ago in this chapter)")
         }
-        val at = Instant.ofEpochMilli(now)
-        val facts = listOfNotNull("joined", listOfNotNull(away, last?.let { "last session ${dates.period(it.joinedAt, it.leftAt, at)}" }).joinToString(", ").ifEmpty { null })
+        val lastPeriod = last?.let { "last session ${dates.period(it.joinedAt, it.leftAt, Instant.ofEpochMilli(now))}" }
+        val facts = listOfNotNull("joined", listOfNotNull(away, lastPeriod).joinToString(", ").ifEmpty { null })
         val header = "SHEET $name (${facts.joinToString("; ")})"
         val sheet = try {
             sheets.sheet(player.uuid, now) ?: return listOf("$header: (no sheet: this player is not in the Journal yet)")
@@ -107,27 +107,29 @@ class JoinBrief(
             log.warn("join: the sheet of ${player.name} is unavailable: $reason")
             return listOf("$header: (sheet unavailable: ${ModelText.escape(reason)})")
         }
-        if (!full) {
-            chapter.sheetsShownAt[player.uuid] = now
-            return listOf("$header: ${sheets.render(sheet, SheetDetail.LINE, now)}")
-        }
+        chapter.sheetsShownAt[player.uuid] = now
+        if (!full) return listOf("$header: ${sheets.render(sheet, SheetDetail.LINE, now)}")
+        return fullBrief(header, sheet, last, envelope.id, chapter, now)
+    }
 
+    /** The full join of [sheet]'s player, within [MAX_CHARS]; what it shows goes into [chapter] and the `recalls`. */
+    private suspend fun fullBrief(header: String, sheet: PlayerSheet, last: Session?, eventId: Long, chapter: ChapterMemory, now: Long): List<String> {
+        val at = Instant.ofEpochMilli(now)
         val condensed = sheets.render(sheet, SheetDetail.CONDENSED, now)
-        val hints = hints(player.uuid, chapter)
+        val hints = hints(sheet.player.uuid, chapter)
         val fixed = buildList {
             add("$header:")
-            condensed.lines().forEach { add("  $it") }
-            add("  " + lastSessionLine(sheet, last, at))
+            condensed.lines().forEach { add(INDENT + it) }
+            add(INDENT + lastSessionLine(sheet, last, at))
         }
-        val hintLines = hints.map { "  Dream hint (once, ${it.ref}): ${ModelText.escape(it.text)}" }
-        val room = MAX_CHARS - BriefText.length(fixed + hintLines) - 1
-        val (awayLine, awayRefs) = whileAway(sheet, last, at, room - INDENT.length)
+        val hintLines = hints.map { "${INDENT}Dream hint (once, ${it.ref}): ${ModelText.escape(it.text)}" }
+        val room = MAX_CHARS - BriefText.length(fixed + hintLines) - 1 - INDENT.length
+        val (awayLine, awayRefs) = whileAway(sheet, last, at, room)
         val lines = BriefText.within(fixed + (INDENT + awayLine) + hintLines, MAX_CHARS)
 
         val shown = (SheetRenderer.refs(condensed) + awayRefs + hints.map { it.ref }).distinct()
         chapter.shownRefs += shown
-        chapter.sheetsShownAt[player.uuid] = now
-        record(shown, chapter, envelope.id)
+        record(shown, chapter, eventId)
         for (hint in hints) {
             if (!showings.shown(hint.ref, chapter)) continue
             try {
