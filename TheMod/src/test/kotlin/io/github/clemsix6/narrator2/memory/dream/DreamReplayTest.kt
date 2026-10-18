@@ -95,7 +95,7 @@ class DreamReplayTest {
         assertEquals(5, outcome.lastStep)
         assertEquals(1, outcome.rejected, "the invalid Grimoire")
         assertEquals(
-            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pairs read",
+            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read",
             outcome.report,
         )
         assertEquals("5", f.write { state(MemoryJobs.stepKey(12)) })
@@ -217,7 +217,7 @@ class DreamReplayTest {
 
         assertEquals(RunStatus.DONE, resumed.status, resumed.report)
         assertEquals(5, resumed.lastStep)
-        assertEquals("resumed at step 3 · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pairs read", resumed.report)
+        assertEquals("resumed at step 3 · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read", resumed.report)
         assertEquals("5", f.write { state(MemoryJobs.stepKey(21)) })
         val steps = f.fake.requests.drop(4).filter { it.json.path("messages").size() == 1 }.map { text(it.json.path("messages").first()).substringBefore("/>") }
         assertEquals(

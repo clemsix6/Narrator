@@ -163,7 +163,8 @@ class Dreamer(
     private suspend fun merges(dream: Dream, lastEnd: Instant?): StepResult {
         val candidates = hygiene.mergeCandidates(lastEnd)
         val opening = inputs.merges(dream.runId, candidates) ?: return StepResult(Status.SKIPPED, "no merge candidate")
-        return dream.step(5, "merges", opening, MERGE_STEPS, MERGE_TIMEOUT).let { if (it.status == Status.DONE) it.copy(note = "${candidates.size} pairs read") else it }
+        val read = "${candidates.size} pair${if (candidates.size == 1) "" else "s"} read"
+        return dream.step(5, "merges", opening, MERGE_STEPS, MERGE_TIMEOUT).let { if (it.status == Status.DONE) it.copy(note = read) else it }
     }
 
     // ── The voice audit (M3 §12.3) ──────────────────────────────────────────────────────────────────
