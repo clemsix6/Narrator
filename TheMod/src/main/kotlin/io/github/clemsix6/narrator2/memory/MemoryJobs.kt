@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.director.CueKind
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.event.AsyncSubscription
+import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.PositionSampled
@@ -43,18 +44,22 @@ import java.util.concurrent.ConcurrentHashMap
  * @property saveClock saves it (`DuckPlayClock.save`); every 5 minutes and at the stop.
  * @property worldPlaySeconds reads it (`PlayClock.worldPlaySeconds`); any thread, never waits.
  * @property tidy the code's housekeeping (`Hygiene.tidy`, with the run id for the authors); every 10 minutes.
- * @property refreshStats computes the sheets' statistics of these players again (`StatsRefresher`);
- *   every `memory.statsMinutes` while someone plays.
- * @property situation the memory lines of the Director's situation (favor, due soon, attention, M3
- *   §11.3), cached every 60 s.
+ * @property refreshStats computes the sheets' statistics of these players again
+ *   (`StatsRefresher.refresh(players, why)`): `timer` every `memory.statsMinutes` for the players online,
+ *   `left` for a player who leaves, `dream` before a new dream.
+ * @property activeSince the players online at some point since an instant (`StatsRefresher.activeSince`):
+ *   those whose stats a dream needs, since the end of the last dream.
+ * @property favorLines the `Favor` and `Attention` lines of the situation for the players online
+ *   (`Favor.read` for each, then `Favor.situationLines`); the jobs add `Due soon` and cache them every 60 s.
  */
 class JobHooks(
     val tickClock: (nowMillis: Long) -> Unit,
     val saveClock: suspend (nowMillis: Long) -> Unit,
     val worldPlaySeconds: (nowMillis: Long) -> Long,
     val tidy: suspend (now: Instant, runId: Long) -> HygieneReport,
-    val refreshStats: suspend (players: List<UUID>, now: Instant) -> Unit,
-    val situation: suspend (nowMillis: Long) -> List<String>,
+    val refreshStats: suspend (players: Collection<UUID>, why: String) -> Unit,
+    val activeSince: suspend (since: Instant) -> List<UUID>,
+    val favorLines: suspend (online: List<PlayerRef>, now: Instant) -> List<String>,
 )
 
 /**
@@ -68,8 +73,8 @@ class JobHooks(
  *   chapter every `memory.chronicleMinutes` when the Narrator spoke or acted, the catch-up of the naps
  *   30 s after the start then every 30 minutes, the dream (server empty, or daily), the statistics, the
  *   housekeeping, the situation cache, the anniversary of the day.
- * - **Cues**: the position samples of the bus, checked against a grid of the placed memories (a player
- *   back where a memory happened).
+ * - **The bus**: the position samples, checked against a grid of the placed memories (a player back
+ *   where a memory happened); the departures, whose player's stats are computed again.
  *
  * The code's jobs (clock, due times, stats, housekeeping, cues) go on while the model jobs wait. Nothing
  * here touches the world; the server thread never waits for it ([chapterClosed], [status] and the
@@ -145,15 +150,15 @@ class MemoryJobs(
      */
     fun start() {
         check(root == null) { "the memory jobs are already started" }
-        val cues = services.bus.subscribeAsync(CUES_SUBSCRIBER, OWNER, CUES_CAPACITY) { it is PositionSampled }
+        val events = services.bus.subscribeAsync(EVENTS_SUBSCRIBER, OWNER, EVENTS_CAPACITY) { it is PositionSampled || it is PlayerLeft }
         root = services.scope.launch(CoroutineName(COROUTINE)) {
             try {
                 recover()
                 launch { work() }
-                launch { cues(cues) }
+                launch { follow(events) }
                 timers()
             } finally {
-                cues.close()
+                events.close()
             }
         }
         log.info("memory jobs started")
@@ -352,7 +357,10 @@ class MemoryJobs(
             val outcome = when (job) {
                 is QueuedJob.Batch -> chronicler.batch(job.runId, job.chapter, run.windowFrom!!, run.windowTo!!)
                 is QueuedJob.Nap -> chronicler.nap(job.runId, job.record)
-                is QueuedJob.Dream -> dreamer.dream(job.runId, job.fromStep)
+                is QueuedJob.Dream -> {
+                    if (job.fromStep == 1) attempt("stats before a dream") { refreshBeforeDream() }
+                    dreamer.dream(job.runId, job.fromStep)
+                }
             }
             finish(job, run, outcome)
         } catch (e: CancellationException) {
@@ -406,6 +414,12 @@ class MemoryJobs(
     private fun skip(job: QueuedJob, why: String): MemoryRun? {
         log.debug { "${job.kind.id} run ${job.runId} not started: $why" }
         return null
+    }
+
+    /** §8.2: before a new dream, the stats of every player online since the last dream ended. */
+    private suspend fun refreshBeforeDream() {
+        val since = store.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: Instant.EPOCH
+        hooks.refreshStats(hooks.activeSince(since), "dream")
     }
 
     /** Where the next batch of [chapter] starts: the end of its last successful batch, else the chapter's start. */
@@ -490,7 +504,7 @@ class MemoryJobs(
         }
         if (now >= nextRefreshAt) {
             nextRefreshAt = now + REFRESH_MS
-            attempt("situation") { situationCache = hooks.situation(now) }
+            attempt("situation") { situationCache = situation(Instant.ofEpochMilli(now)) }
             attempt("status") { refresh(now, settings) }
         }
         if (now >= nextGridAt) {
@@ -505,7 +519,7 @@ class MemoryJobs(
         val online = services.players.online
         if (online.isNotEmpty() && now >= nextStatsAt) {
             nextStatsAt = now + settings.statsMinutes * 60_000L
-            attempt("stats") { refreshStats(online.map { it.ref.uuid }, now) }
+            attempt("stats") { hooks.refreshStats(online.map { it.ref.uuid }, "timer") }
         }
         if (online.isNotEmpty()) attempt("anniversary") { anniversary(now, online.map { it.ref }) }
         if (services.phase != Phase.RUNNING || stopping) return
@@ -573,9 +587,8 @@ class MemoryJobs(
     }
 
     private fun dueLine(entry: CanonEntry, now: Instant): String {
-        val who = entry.players.joinToString { ModelText.name(it.name) }.ifEmpty { "all" }
         val set = ToolText.duration(Duration.between(entry.createdAt, now).toMillis())
-        return "${entry.ref} ${entry.kind.id} → $who, set $set ago: « ${ModelText.escape(ModelText.cut(entry.quote ?: entry.statement, CUE_TEXT_MAX))} »"
+        return "${entry.ref} ${entry.kind.id} → ${who(entry)}, set $set ago: « ${ModelText.escape(ModelText.cut(entry.quote ?: entry.statement, CUE_TEXT_MAX))} »"
     }
 
     private suspend fun tidy(now: Instant) {
@@ -599,10 +612,26 @@ class MemoryJobs(
         outputTokens = null, report = report, error = error,
     )
 
-    private suspend fun refreshStats(players: List<UUID>, now: Long) {
-        hooks.refreshStats(players, Instant.ofEpochMilli(now))
-        log.debug { "stats of ${players.size} player(s) computed again in ${clock.millis() - now} ms" }
+    /**
+     * The memory lines of the situation (M3 §11.3): `Favor`, then `Due soon` (open commitments due within
+     * the hour, the soonest first), then `Attention`. A line without anyone is left out.
+     */
+    private suspend fun situation(now: Instant): List<String> {
+        val (favor, others) = hooks.favorLines(services.players.online.map { it.ref }, now).partition { it.startsWith("Favor:") }
+        val soon = store.canon(CanonFilter(kinds = DUE_KINDS, open = true, limit = DUE_SCAN))
+            .filter { it.status == CanonStatus.ACTIVE && it.dueAt?.let { due -> due.isAfter(now) && !due.isAfter(now + DUE_SOON) } == true }
+            .sortedBy { it.dueAt }
+            .take(DUE_SOON_MAX)
+        val due = if (soon.isEmpty()) emptyList() else listOf(
+            "Due soon: " + soon.joinToString(" · ") {
+                val ends = if (it.kind == CanonKind.CHALLENGE) "ends " else ""
+                "${it.ref} ${it.kind.id} → ${who(it)} ${ends}in ${ToolText.wait(Duration.between(now, it.dueAt).toMillis())}"
+            },
+        )
+        return favor + due + others
     }
+
+    private fun who(entry: CanonEntry) = entry.players.joinToString { ModelText.name(it.name) }.ifEmpty { "all" }
 
     /** §7.1: the naps of the chapters closed without one, oldest first (a failed nap is retried, [MAX_NAP_FAILURES] times). */
     private suspend fun catchUp(trigger: RunTrigger) {
@@ -653,10 +682,14 @@ class MemoryJobs(
 
     // ── Cues (M3 §10.5) ─────────────────────────────────────────────────────────────────────────────
 
-    private suspend fun cues(subscription: AsyncSubscription) {
+    /** The bus: a position sample may be a return to a place; a departure has its player's stats computed again. */
+    private suspend fun follow(subscription: AsyncSubscription) {
         for (envelope in subscription.events) {
-            val sample = envelope.event as? PositionSampled ?: continue
-            attempt("place cue") { placeCue(sample, envelope.ts) }
+            when (val event = envelope.event) {
+                is PositionSampled -> attempt("place cue") { placeCue(event, envelope.ts) }
+                is PlayerLeft -> attempt("stats of a departure") { hooks.refreshStats(listOf(event.player.uuid), "left") }
+                else -> Unit
+            }
         }
     }
 
@@ -767,7 +800,7 @@ class MemoryJobs(
 
     companion object {
         const val COROUTINE = "narrator2-memory"
-        const val CUES_SUBSCRIBER = "memory-cues"
+        const val EVENTS_SUBSCRIBER = "memory-jobs"
         const val OWNER = "memory"
 
         /** `memory_state` keys: the operator's pause, the dream to resume and its steps, the end of the last dream, the anniversary day. */
@@ -805,10 +838,16 @@ class MemoryJobs(
         const val PLACE_COOLDOWN_S = 6 * 3_600L
         val CUE_MIN_AGE: Duration = Duration.ofHours(24)
         const val ANNIVERSARY_MIN_IMPORTANCE = 8
+
+        /** `Due soon` in the situation: open commitments due within this time, [DUE_SOON_MAX] at most. */
+        val DUE_SOON: Duration = Duration.ofHours(1)
+        const val DUE_SOON_MAX = 5
         const val CUE_TEXT_MAX = 200
         const val REPORT_MAX_CHARS = 500
 
-        private const val CUES_CAPACITY = 256
+        private const val EVENTS_CAPACITY = 256
+        private const val DUE_SCAN = 200
+        private val DUE_KINDS = CanonKind.entries.filter { it.dueAllowed }.toSet()
         private const val STOP_WRITE_MS = 5_000L
         private val SUCCESS = setOf(RunStatus.DONE, RunStatus.SKIPPED)
         private val PRIORITY = mapOf(RunKind.NAP to 0, RunKind.BATCH to 1, RunKind.DREAM to 2)

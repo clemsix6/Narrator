@@ -9,6 +9,8 @@ import io.github.clemsix6.narrator2.director.DirectorHarness
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
+import io.github.clemsix6.narrator2.event.LeaveReason
+import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.PositionSampled
@@ -187,6 +189,8 @@ class MemoryJobsTest {
         assertEquals(RunTrigger.SERVER_EMPTY, dream.trigger)
         assertEquals(RunStatus.DONE, dream.status)
         assertEquals("", h.store.state[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals(listOf(listOf(bartok.uuid, mimosa.uuid) to "dream"), h.stats, "the stats of the players active since the last dream, first")
+        assertEquals(listOf(Instant.EPOCH), h.activeSince)
 
         h.advance(Duration.ofHours(30))
         assertEquals(1, h.runner.calls.size, "no nap since the last dream")
@@ -236,6 +240,7 @@ class MemoryJobsTest {
         h.advance(Duration.ofMinutes(10))
 
         assertEquals(listOf("dream from 1 at +0s", "dream from 3 at +10m"), h.runner.calls)
+        assertEquals(1, h.stats.count { it.second == "dream" }, "a resumed dream does not compute the stats again")
         assertEquals(RunStatus.DONE, h.data.runs.getValue(second).status)
         assertEquals("", h.store.state[MemoryJobs.DREAM_PENDING_KEY])
     }
@@ -390,7 +395,11 @@ class MemoryJobsTest {
     @Test
     fun `the clock, the housekeeping, the stats and the situation run on their own timers`() = runTest {
         val h = Harness(this)
+        h.store.names[mimosa.uuid] = mimosa.name
         h.tidyReport = HygieneReport(expired = listOf(Ref(RefKind.CANON, 4)))
+        val promise = h.store.addCanon(CanonDraft(CanonKind.PROMISE, "Des bottes.", players = listOf(mimosa.uuid), dueAt = START + Duration.ofMinutes(40)), DIRECTOR)
+        val challenge = h.store.addCanon(CanonDraft(CanonKind.CHALLENGE, "Un œuf de tortue.", dueAt = START + Duration.ofMinutes(50)), DIRECTOR)
+        h.store.addCanon(CanonDraft(CanonKind.PROMISE, "Plus tard.", dueAt = START + Duration.ofHours(2)), DIRECTOR)
         h.jobs.start()
         h.advance(Duration.ofMinutes(5))
         assertEquals(emptyList(), h.stats, "nobody online")
@@ -403,9 +412,20 @@ class MemoryJobsTest {
         val hygiene = h.data.runs(RunKind.HYGIENE)
         assertEquals(h.tidied, hygiene.map { it.runId })
         assertEquals("expired 1, worn 0, archived 0, notes done 0, merge candidates 0", hygiene.first().report)
-        assertEquals(listOf(listOf(bartok.uuid), listOf(bartok.uuid), listOf(bartok.uuid)), h.stats)
-        assertEquals(listOf("Favor: Bartok -31"), h.jobs.situationLines())
+        assertEquals(List(3) { listOf(bartok.uuid) to "timer" }, h.stats)
+        assertEquals(
+            listOf(
+                "Favor: Bartok -31",
+                "Due soon: ${promise.row.ref} promise → Mimosa in 10m · ${challenge.row.ref} challenge → all ends in 20m",
+                "Attention: Mimosa has had nothing from you for 50m of play",
+            ),
+            h.jobs.situationLines(),
+        )
         assertEquals(3_600, h.jobs.status().worldPlaySeconds)
+
+        h.services.bus.publish(PlayerLeft(bartok, Pos("minecraft:overworld", 0, 64, 0), 1, 1_500, LeaveReason.LEAVE))
+        h.advance(Duration.ZERO)
+        assertEquals(listOf(bartok.uuid) to "left", h.stats.last())
     }
 
     // ── Harness ─────────────────────────────────────────────────────────────────────────────────────
@@ -422,15 +442,17 @@ class MemoryJobsTest {
         var ticks = 0
         var saves = 0
         val tidied = mutableListOf<Long>()
-        val stats = mutableListOf<List<UUID>>()
+        val stats = mutableListOf<Pair<List<UUID>, String>>()
+        val activeSince = mutableListOf<Instant>()
         var tidyReport = HygieneReport()
         private val hooks = JobHooks(
             tickClock = { ticks++ },
             saveClock = { saves++ },
             worldPlaySeconds = { world },
             tidy = { _, runId -> tidied += runId; tidyReport },
-            refreshStats = { players, _ -> stats += players },
-            situation = { listOf("Favor: Bartok -31") },
+            refreshStats = { players, why -> stats += players.toList() to why },
+            activeSince = { since -> activeSince += since; listOf(bartok.uuid, mimosa.uuid) },
+            favorLines = { _, _ -> listOf("Favor: Bartok -31", "Attention: Mimosa has had nothing from you for 50m of play") },
         )
         val jobs = newJobs()
 
