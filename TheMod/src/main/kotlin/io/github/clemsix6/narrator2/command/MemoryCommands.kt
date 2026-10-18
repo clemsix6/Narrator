@@ -301,7 +301,8 @@ object MemoryCommands {
 
     /**
      * The `Memory:` line of `/narrator status`: `Memory: available · jobs running · nothing queued · last
-     * dream 10-01 23:05 done`, or `Memory: unavailable (not wired yet)`. From memory, never the database: any thread.
+     * dream 10-01 23:05 done`, or `Memory: unavailable (memory.enabled is false)`. From memory, never the
+     * database: any thread.
      */
     internal fun statusLine(memory: Memory, text: TraceText): String {
         if (!memory.available) return "Memory: unavailable (${memory.unavailableReason ?: "no reason given"})"
