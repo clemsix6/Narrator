@@ -5,6 +5,11 @@ import io.github.clemsix6.narrator2.memory.MemoryDataset.day2
 import io.github.clemsix6.narrator2.memory.stats.Tics.Line
 import io.github.clemsix6.narrator2.memory.stats.Tics.Tic
 import org.junit.jupiter.api.Test
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.Statement
 import java.time.Instant
 import kotlin.test.assertEquals
 
@@ -85,4 +90,33 @@ class TicsTest {
             assertEquals(day2("20:20"), lines.first().ts)
         }
     }
+
+    @Test
+    fun `the lines are read within the stats' time limit`() {
+        MemoryDataset.journal().use { fixture ->
+            val timeouts = mutableListOf<Int>()
+            val lines = MemoryDataset.read(fixture) { Tics.lines(recordingTimeouts(it, timeouts)) }
+            assertEquals(5, lines.size)
+            assertEquals(listOf(SheetStats.QUERY_TIMEOUT_SECONDS), timeouts)
+        }
+    }
+
+    /** [connection], whose statements add the time limit they are given to [timeouts]. */
+    private fun recordingTimeouts(connection: Connection, timeouts: MutableList<Int>): Connection = proxy(connection) { method, args ->
+        val result = method.invoke(connection, *args)
+        if (result !is Statement) return@proxy result
+        proxy<Statement>(result) { call, callArgs ->
+            if (call.name == "setQueryTimeout") timeouts += callArgs.single() as Int
+            call.invoke(result, *callArgs)
+        }
+    }
+
+    private inline fun <reified T : Any> proxy(target: T, crossinline handle: (Method, Array<Any?>) -> Any?): T =
+        Proxy.newProxyInstance(TicsTest::class.java.classLoader, arrayOf(T::class.java)) { _, method, args ->
+            try {
+                handle(method, args ?: emptyArray())
+            } catch (e: InvocationTargetException) {
+                throw e.targetException
+            }
+        } as T
 }

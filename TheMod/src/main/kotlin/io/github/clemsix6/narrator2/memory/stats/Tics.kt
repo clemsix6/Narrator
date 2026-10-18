@@ -30,13 +30,12 @@ object Tics {
     /** A tic: [text] as written last, in [count] lines, the latest at [last]; [share] of the lines for the ellipsis. */
     data class Tic(val text: String, val count: Int, val last: Instant, val share: Double? = null)
 
-    /** The Narrator's latest [LINES] lines, oldest first, on a read connection. */
-    fun lines(connection: Connection): List<Line> = connection.createStatement().use { statement ->
-        statement.executeQuery(
-            "SELECT text, epoch_ms(ts) FROM (SELECT text, ts, id FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT $LINES) ORDER BY ts, id",
-        ).use { rows ->
-            buildList { while (rows.next()) add(Line(rows.getString(1), Instant.ofEpochMilli(rows.getLong(2)))) }
-        }
+    /** The Narrator's latest [LINES] lines, oldest first, on a read connection, within the stats' time limit. */
+    fun lines(connection: Connection): List<Line> = SheetStats.query(
+        connection,
+        "SELECT text, epoch_ms(ts) FROM (SELECT text, ts, id FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT $LINES) ORDER BY ts, id",
+    ) { rows ->
+        buildList { while (rows.next()) add(Line(rows.getString(1), Instant.ofEpochMilli(rows.getLong(2)))) }
     }
 
     /** The tics of [lines] (oldest first), the most frequent first, [MAX] at most. */
@@ -71,7 +70,14 @@ object Tics {
     /** « … » or « ... » at the end of a sentence. */
     private val ELLIPSIS = Regex("(…|\\.\\.\\.)(?=\\s|$|[»\"”)])")
 
-    /** French words too common to make a tic on their own (articles, pronouns, prepositions, auxiliaries). */
+    /**
+     * French words too common to make a tic on their own (articles, pronouns, prepositions, auxiliaries).
+     *
+     * **These words are search data, not text for a human**: the Narrator speaks French, so its tics are
+     * French phrases, and a phrase that starts or ends with « de » or « la » is not one. They are never shown
+     * to a model nor to a player: like `CueWords` and the analyzer's stop words, they are the one legitimate
+     * kind of French in the code. `FrenchAnalyzer`'s own list is private and has no accents.
+     */
     private val STOP_WORDS: Set<String> = setOf(
         "le", "la", "les", "l", "un", "une", "des", "du", "de", "d", "au", "aux", "à", "a", "et", "ou", "en", "dans", "sur",
         "sous", "par", "pour", "avec", "sans", "que", "qu", "qui", "quoi", "ce", "cet", "cette", "ces", "se", "sa", "son",
