@@ -7,9 +7,12 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.DisabledMemory
+import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.FakeWorkers
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -112,6 +115,35 @@ class SituationReportTest {
             "Mimosa: overworld underground y=-58 dripstone_caves · hp 14/20 food 12 · online 1m",
             report.render(now, world, emptyList(), emptyList()).lines()[1],
         )
+    }
+
+    @Test
+    fun `the memory's lines end the situation, none without a memory, and a failing one says why`() {
+        val memory = FakeMemory(clock).apply {
+            situation = listOf(
+                "Favor: Bartok -31 ↘ · Mimosa +22 ↗ · clemsix6 +4",
+                "Due soon: C-45 promise → Mimosa in 12m · C-50 challenge ends in 40m",
+                "Attention: <Kelvin> has had nothing from you for 1h10m of play",
+            )
+        }
+        fun render(memory: Memory) = SituationReport(TestServices(clock = clock, players = players, memory = memory), digest, ZoneOffset.UTC)
+            .render(now, world, emptyList(), emptyList()).lines()
+
+        assertEquals(
+            listOf(
+                "Your last actions: none",
+                "Favor: Bartok -31 ↘ · Mimosa +22 ↗ · clemsix6 +4",
+                "Due soon: C-45 promise → Mimosa in 12m · C-50 challenge ends in 40m",
+                "Attention: ‹Kelvin› has had nothing from you for 1h10m of play",
+                "</situation>",
+            ),
+            render(memory).takeLast(5),
+        )
+        assertEquals(listOf("Your last actions: none", "</situation>"), render(DisabledMemory("not wired yet")).takeLast(2))
+        val failing = object : Memory by memory {
+            override fun situationLines(now: Long): List<String> = throw IllegalStateException("the cache is not ready")
+        }
+        assertEquals(listOf("Memory: unavailable (the cache is not ready)", "</situation>"), render(failing).takeLast(2))
     }
 
     @Test

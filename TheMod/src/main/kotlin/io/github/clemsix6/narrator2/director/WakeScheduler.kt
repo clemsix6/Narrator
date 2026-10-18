@@ -18,7 +18,8 @@ import kotlin.random.Random
  *   26): they go with the next wake-up, a heartbeat's included, or between two tool calls. Neither do
  *   items demoted after failed requests ([Item.waking]).
  * - Once the [TurnBudget] is spent (`throttled`), only [Urgency.IMMEDIATE] items wake it: addressed
- *   chat, prayers and operator whispers. The other items wait for a turn to leave the hour.
+ *   chat, prayers and operator whispers; and a commitment that comes due ([DirectorSignal.MemoryDue],
+ *   M3 §11.3), rare and binding. The other items wait for a turn to leave the hour.
  * - Heartbeats: a random time in `director.heartbeatMinutes` after the last turn ([nextHeartbeat]),
  *   worth what [heartbeatWorth] says.
  */
@@ -36,12 +37,12 @@ object WakeScheduler {
     /**
      * When the Director should wake up for [items], never before [notBefore] (after a refused reply);
      * null when none of them wakes it. [throttled]: the budget of turns is spent, only
-     * [Urgency.IMMEDIATE] items wake it.
+     * [Urgency.IMMEDIATE] items and due commitments wake it.
      */
     fun wakeAt(items: List<Item>, debounceMs: Long, notBefore: Long? = null, throttled: Boolean = false): Long? {
         val waking = items.filter { it.waking }
         val immediate = waking.filter { it.urgency == Urgency.IMMEDIATE }.map { it.at }
-        val soon = if (throttled) emptyList() else waking.filter { it.urgency == Urgency.SOON }.map { it.at }
+        val soon = waking.filter { it.urgency == Urgency.SOON && (!throttled || it.signal is DirectorSignal.MemoryDue) }.map { it.at }
         val candidates = listOfNotNull(
             if (immediate.isEmpty()) null else minOf(immediate.max() + debounceMs, immediate.min() + IMMEDIATE_MAX_MS),
             if (soon.isEmpty()) null else minOf(soon.max() + SOON_QUIET_MS, soon.min() + SOON_MAX_MS),
@@ -56,17 +57,19 @@ object WakeScheduler {
 
     /**
      * What the salient items waiting since the last turn are worth to a heartbeat, from 0 to 1: a chat
-     * line between players [CHAT_WORTH], another [Urgency.NEXT] event [NEXT_WORTH], an item that wakes
-     * the Director by itself 1. Items demoted after failed requests count for nothing.
+     * line between players [CHAT_WORTH], another [Urgency.NEXT] event or a memory cue (a place return, an
+     * anniversary: M3 §10.5) [NEXT_WORTH], an item that wakes the Director by itself 1. Items demoted
+     * after failed requests count for nothing, and so do the memory's notes (an incoherence, an expired
+     * commitment): they go with the next wake-up, they are no reason for one.
      */
-    fun salience(items: List<Item>): Double = items.sumOf { item ->
-        when {
-            item.failures >= Item.DEMOTED || item.urgency == Urgency.BATCH -> 0.0
-            item.isUnaddressedChat -> CHAT_WORTH
-            item.urgency == Urgency.NEXT -> NEXT_WORTH
-            else -> 1.0
-        }
-    }.coerceAtMost(1.0)
+    fun salience(items: List<Item>): Double = items.sumOf(::worth).coerceAtMost(1.0)
+
+    private fun worth(item: Item): Double = when {
+        item.failures >= Item.DEMOTED || item.urgency == Urgency.BATCH || item.signal is DirectorSignal.MemoryNote -> 0.0
+        item.isUnaddressedChat -> CHAT_WORTH
+        item.urgency == Urgency.NEXT -> NEXT_WORTH
+        else -> 1.0
+    }
 
     /**
      * What a heartbeat is worth, and why, for its decision (M2 review, finding 26). The heuristic judges
@@ -77,7 +80,7 @@ object WakeScheduler {
      */
     fun heartbeatWorth(verdict: HeartbeatVerdict?, waiting: List<Item>): HeartbeatWorth {
         val salient = salience(waiting)
-        val counted = waiting.count { it.failures < Item.DEMOTED && it.urgency != Urgency.BATCH }
+        val counted = waiting.count { worth(it) > 0.0 }
         val byWaiting = "worth ${p(salient)} by $counted salient ${if (counted == 1) "item" else "items"} waiting"
         return when {
             verdict == null || verdict.source == HeuristicReflexes.SOURCE -> HeartbeatWorth(salient, byWaiting)
@@ -94,8 +97,8 @@ object WakeScheduler {
 
 /**
  * The Director's budget of turns per hour (M2 review, finding 26), `director.turnsPerHour`: once that
- * many turns started within the last hour, only addressed chat, prayers and operator whispers wake the
- * Narrator ([WakeScheduler.wakeAt]); salient events wait for a turn to leave the hour, or go with the
+ * many turns started within the last hour, only addressed chat, prayers, operator whispers and due
+ * commitments wake the Narrator ([WakeScheduler.wakeAt]); salient events wait for a turn to leave the hour, or go with the
  * next wake-up, and heartbeats are skipped. The Director counts its turns ([started]); the salience
  * reads the budget to write its `salience throttled` decisions. Any thread.
  */
