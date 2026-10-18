@@ -1,0 +1,12 @@
+Bartok (formerly Bartok_) · « le Plongeur » (C-12) · no title · since 09-12 · 23 sessions · 61h played · online
+Recap (10-02): Explorateur tête baissée qui écume les chambres d'épreuve avec clemsix6. Provoque le Narrateur dès qu'il perd, puis revient lui demander de l'aide. Équipé en fer avec une épée en diamant ; a vu le Nether, pas encore l'End. Meurt souvent, et de façon spectaculaire.
+Traits: reckless 4/5 ↗ (sure) · free: obsédé par le butin 3/5 (likely) · defiant 3/5 (likely) · vindictive 2/5 (unsure)
+Skills: PvE 6 · PvP 4 · building 2 · mining 8 · exploration 8 · survival 3 · luck 2
+Toward you: provocateur quand il perd, quémandeur quand il a besoin ; respecte les menaces tenues · respect 35/100 · favor -31 ↘ · disrespect ×5 (last « narrateur t'es nul », 10-03)
+Relations: clemsix6 duo · Mimosa rival
+Likes: le butin rare, les combats de boss ; déteste les téléportations et attendre la nuit · fears: le Warden, la noyade
+Hooks: sa boucle mort-vengeance est un gag récurrent, à doser ; son duo avec clemsix6 en fait une cible collective
+Stats: deaths 87 (fall 31, mob_attack 24, lava 9) · PvP 3-5 · mined 18400 (41 diamonds, 3 ancient debris) · gear 4/5 (iron_chestplate, diamond_sword) · nether yes · end no · luck 23/100 · style explorer 45% fighter 30% miner 20% · base overworld -1232 72 3312
+With you: messages 143 (12 prayers) · punishments 7 · blessings 2 · gifts 1 · challenges 2 won, 2 lost · last attention 25m of play ago
+History: 10-03 I-505 punishment 0: a reçu lenteur II pendant 60 s pour l'insulte (t88) · 10-03 I-512 insult -2: a traité le Narrateur de « nul » juste après sa mort contre le Warden · 10-02 I-498 challenge_result +2: a gagné la course au Nether contre Mimosa
+Marked: 09-25 I-402 insult -3: a traité le Narrateur de dieu de pacotille · +1 more
