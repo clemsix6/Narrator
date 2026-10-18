@@ -64,9 +64,8 @@ object PairStats {
                 statement.setInt(7, pair.griefsAOnB)
                 statement.setInt(8, pair.griefsBOnA)
                 statement.setString(9, pair.computedAt.toString())
-                statement.addBatch()
+                statement.executeUpdate() // no JDBC batch: DuckDB's would open a transaction inside the job's
             }
-            statement.executeBatch()
         }
     }
 

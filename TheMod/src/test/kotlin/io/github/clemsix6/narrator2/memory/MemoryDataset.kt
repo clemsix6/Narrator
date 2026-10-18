@@ -30,7 +30,6 @@ import io.github.clemsix6.narrator2.event.StatsSnapshot
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.event.Traded
 import io.github.clemsix6.narrator2.journal.IdKind
-import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.reflex.Tone
@@ -47,7 +46,7 @@ import java.util.UUID
 /**
  * A small world history for the memory's computed stats (M3-05), written through the real Journal (bus,
  * mapping, writer) like `SqlDataset`, plus the memory rows the stats read (interactions, canon) inserted
- * on a second connection, as the memory store will write them. Fixed times: the stats take `now`.
+ * by `Journal.write` jobs, as the memory store writes them. Fixed times: the stats take `now`.
  *
  * - **Day 1** ([DAY1], 2026-09-25, UTC): Bartok plays 18:00–20:00 (dies 5 times, kills, mines, builds,
  *   trades, fishes, goes to the Nether 18:45–19:00); Mimosa plays 18:10–19:30 near him (they kill each
@@ -101,34 +100,16 @@ internal object MemoryDataset {
         return fixture
     }
 
-    /** Runs [block] on a second write connection of the fixture's database, as a `Journal.write` job would. */
-    fun <T> write(fixture: JournalFixture, block: (Connection) -> T): T {
-        fixture.sync()
-        return fixture.db.writer.duplicate().use { connection ->
-            connection.autoCommit = false
-            try {
-                block(connection).also { connection.commit() }
-            } catch (e: Exception) {
-                connection.rollback()
-                throw e
-            }
-        }
+    /** Runs [block] as a `Journal.write` job of the fixture's Journal (on its writer thread), after a barrier. */
+    fun <T> write(fixture: JournalFixture, block: (Connection) -> T): T = runBlocking {
+        fixture.journal.barrier()
+        fixture.journal.write(10_000, block)
     }
 
     /** Runs [block] on a read connection of the fixture's Journal. */
     fun <T> read(fixture: JournalFixture, block: (Connection) -> T): T {
         fixture.sync()
         return runBlocking { fixture.journal.read(10_000, block) }
-    }
-
-    /** The fixture's Journal, whose `write` runs on a second connection (the real one is M3-02's). */
-    class Writable(private val fixture: JournalFixture) : Journal by fixture.journal {
-        val writes = java.util.concurrent.atomic.AtomicInteger()
-
-        override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T {
-            writes.incrementAndGet()
-            return write(fixture, block)
-        }
     }
 
     private fun fill(fixture: JournalFixture) {

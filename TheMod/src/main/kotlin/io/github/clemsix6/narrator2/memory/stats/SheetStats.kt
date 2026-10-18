@@ -103,9 +103,8 @@ object SheetStats {
                 if (stat.value == null) statement.setNull(3, java.sql.Types.DOUBLE) else statement.setDouble(3, stat.value)
                 statement.setString(4, stat.detail)
                 statement.setString(5, now.toString())
-                statement.addBatch()
+                statement.executeUpdate() // no JDBC batch: DuckDB's would open a transaction inside the job's
             }
-            statement.executeBatch()
         }
     }
 

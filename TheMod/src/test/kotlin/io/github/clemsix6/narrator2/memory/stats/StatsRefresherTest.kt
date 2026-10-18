@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.sql.Connection
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -22,7 +23,14 @@ class StatsRefresherTest {
     @Test
     fun `pairs then each player, one job each, with a decision`() {
         MemoryDataset.journal().use { fixture ->
-            val journal = MemoryDataset.Writable(fixture)
+            val journal = object : Journal by fixture.journal {
+                val writes = AtomicInteger()
+
+                override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T {
+                    writes.incrementAndGet()
+                    return fixture.journal.write(timeoutMs, block)
+                }
+            }
             val refresher = StatsRefresher(journal, fixture.clock)
             val stranger = UUID.fromString("00000000-0000-4000-8000-0000000000ff")
             val outcome = runBlocking { refresher.refresh(listOf(bartok.uuid, kelvin.uuid, bartok.uuid, stranger), "timer") }
@@ -45,12 +53,12 @@ class StatsRefresherTest {
     @Test
     fun `a failing job is skipped, an unavailable Journal is not`() {
         MemoryDataset.journal().use { fixture ->
-            val failing = object : Journal by MemoryDataset.Writable(fixture) {
+            val failing = object : Journal by fixture.journal {
                 var calls = 0
 
                 override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T {
                     if (calls++ == 1) error("disk full") // Bartok's job
-                    return MemoryDataset.write(fixture, block)
+                    return fixture.journal.write(timeoutMs, block)
                 }
             }
             val outcome = runBlocking { StatsRefresher(failing, fixture.clock).refresh(listOf(bartok.uuid, mimosa.uuid), "left") }
