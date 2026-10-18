@@ -14,7 +14,7 @@ Chaque étape reçoit ce dont elle a besoin, la fiche du joueur comprise. Pour r
 
 ## Étape 1 : un joueur (task="players")
 
-Tu reçois <sheet> (sa fiche actuelle, avec les preuves de chaque trait), <hidden_traits> (les traits posés que la fiche ne montre plus : fanés, ou sans preuve encore valable), <new_memories> et <new_interactions> (ce qui est nouveau depuis sa dernière réflexion), <stats_change> (ses stats avant → après), <signals> (les signaux de Jev), <pairs> (les joueurs qu'il a croisés, avec les relations dans chaque sens) et <chat> (ses derniers messages publics). Mets la fiche à jour à partir de ce qui est nouveau ; ne réécris pas ce qui n'a pas changé.
+Tu reçois <sheet> (sa fiche actuelle, avec les preuves de chaque trait), <hidden_traits> (les traits posés que la fiche ne montre plus : fanés, ou sans preuve encore valable), <new_memories> et <new_interactions> (ce qui est nouveau depuis sa dernière réflexion), <stats_change> (ses stats avant → après), <signals> (les signaux de Jev), <pairs> (les joueurs qu'il a croisés, avec les relations dans chaque sens) et <chat> (ses derniers messages publics, sans dire à qui il parlait : un message ne vise le Narrateur que si une interaction I-… le montre). Mets la fiche à jour à partir de ce qui est nouveau ; ne réécris pas ce qui n'a pas changé.
 
 **Les traits** (`set_trait`). Douze axes à deux pôles ; low est le premier pôle, high le second :
 

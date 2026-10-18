@@ -29,7 +29,8 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
-import io.github.clemsix6.narrator2.journal.openJournal
+import io.github.clemsix6.narrator2.journal.DuckDatabase
+import io.github.clemsix6.narrator2.journal.DuckJournal
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.ChapterMemory
@@ -319,7 +320,11 @@ internal class LiveWorld(val name: String, key: String, val zone: ZoneId = PARIS
     val clock = LiveClock(zone)
     val config = LiveGateway.config(zone)
     val client = ClaudeClient(config, key)
-    val journal: Journal = openJournal(dir.resolve("narrator2"), config.journal, clock)
+    /** As `openJournal` opens it, without the Observer's hook timer (it needs a running server). */
+    val journal: Journal = dir.resolve("narrator2").let { folder ->
+        Files.createDirectories(folder)
+        DuckJournal.open(DuckDatabase.open(folder.resolve(DuckDatabase.FILE_NAME), DuckDatabase.Options.of(config.journal)), config.journal, clock)
+    }
 
     @Volatile
     var gameTime = 1_000L

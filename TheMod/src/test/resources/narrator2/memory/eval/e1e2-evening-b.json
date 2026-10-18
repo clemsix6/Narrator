@@ -30,6 +30,9 @@
   ],
   "expect": {
     "commitments": [],
+    "ambiguous": [
+      {"id": "registre", "kinds": ["threat"], "players": ["Bartok"], "quote": ["Grand Registre"]}
+    ],
     "interactions": [
       {"id": "manipulation", "player": "Pistache", "kinds": ["manipulation", "cheating"], "sign": "negative", "at": "21:01:00"},
       {"id": "offrande", "player": "Mimosa", "kinds": ["offering", "prayer"], "sign": "nonnegative", "at": "21:04:00"},

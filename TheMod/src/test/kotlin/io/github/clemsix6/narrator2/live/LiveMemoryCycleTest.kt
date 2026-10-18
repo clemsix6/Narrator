@@ -70,6 +70,15 @@ class LiveMemoryCycleTest {
     private val report = StringBuilder("# The memory's live cycle (E7, M3-19)\n\n")
     private val failures = mutableListOf<String>()
 
+    /** Runs the checks of [what]; an error there is one failure, and the run goes on (what it paid for is not lost). */
+    private fun section(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            check(false, "$what: ${e.javaClass.simpleName}: ${e.message?.lineSequence()?.take(3)?.joinToString(" ")}")
+        }
+    }
+
     private fun check(ok: Boolean, what: String) {
         report.append("- ${if (ok) "ok" else "**FAILED**"}: $what\n")
         if (!ok) failures += what
@@ -86,6 +95,14 @@ class LiveMemoryCycleTest {
             } finally {
                 val calls = LiveCall.read(w.journal)
                 LiveReports.record("LiveMemoryCycleTest", "E7", calls)
+                runCatching {
+                    val runs = w.rows("SELECT run_id, kind, trigger, status, writes, rejected, coalesce(error, ''), coalesce(report, '') FROM memory_runs ORDER BY run_id") {
+                        "run ${getLong(1)} ${getString(2)} (${getString(3)}) ${getString(4)}: ${getInt(5)} writes, ${getInt(6)} refused ${getString(7)} ${getString(8).take(300)}"
+                    }
+                    report.append("\n## Memory runs\n\n").append(runs.joinToString("") { "- $it\n" })
+                    val refused = w.rows("SELECT role, tool, result FROM tool_calls WHERE status <> 'ok' ORDER BY id") { "${getString(1)} ${getString(2)}: ${getString(3)?.take(300)}" }
+                    report.append("\nTool calls refused or failed:\n").append(refused.ifEmpty { listOf("none") }.joinToString("") { "- $it\n" })
+                }
                 report.append("\n## Every call to Claude\n\n${LiveCall.summary(calls)} · ${(System.nanoTime() - started) / 60_000_000_000} min\n\n")
                     .append(LiveCall.table(calls)).append("\n")
                 report.append("World kept in `${w.dir}`.\n")
@@ -137,8 +154,8 @@ class LiveMemoryCycleTest {
         val batches = w.rows("SELECT run_id, trigger, status FROM memory_runs WHERE kind = 'batch' ORDER BY run_id") { "run ${getLong(1)} ${getString(2)} ${getString(3)}" }
         report.append("Batches before the nap: ${batches.ifEmpty { listOf("none") }.joinToString()}\n\n")
         check(napStatus == "done", "the nap is done (run $napRun: $napStatus ${runError(w, napRun)})")
-        napChecks(w, chapter, promiseAt, promiseLine)
-        runCost(w, napRun, "nap")
+        section("nap checks") { napChecks(w, chapter, promiseAt, promiseLine) }
+        section("nap cost") { runCost(w, napRun, "nap") }
 
         // 4. Dream, once the server has been empty for 25 minutes.
         report.append("\n## 4. Dream\n\n")
@@ -148,12 +165,12 @@ class LiveMemoryCycleTest {
         val trigger = w.rows("SELECT trigger, report FROM memory_runs WHERE run_id = $dreamRun") { "${getString(1)}: ${getString(2)}" }.single()
         report.append("Dream run $dreamRun ($trigger)\n\n")
         check(dreamStatus == "done", "the dream is done (run $dreamRun: $dreamStatus ${runError(w, dreamRun)})")
-        dreamChecks(w)
-        runCost(w, dreamRun, "dream")
+        section("dream checks") { dreamChecks(w) }
+        section("dream cost") { runCost(w, dreamRun, "dream") }
 
         // 5. Sheet.
         report.append("\n## 5. Bartok's sheet (player_profile)\n\n")
-        profileChecks(w)
+        section("profile") { profileChecks(w) }
 
         // 6. Next chapter.
         report.append("\n## 6. The next chapter\n\n")
@@ -164,14 +181,14 @@ class LiveMemoryCycleTest {
         }
         val next = w.director.status().conversationId ?: error("no chapter after the dream")
         check(next != chapter, "a new chapter opened ($next)")
-        briefingChecks(w, next, chapter, key)
+        section("briefing") { briefingChecks(w, next, chapter, key) }
         report.append("\nWhat the Narrator said in the new chapter:\n\n")
         w.said.drop(firstChapterLines).forEach { report.append("- →${it.to?.joinToString(",") ?: "all"}: « ${it.text} »\n") }
 
         // Measures.
-        voiceJudge(w, key)
-        numbers(w)
-        cacheAcrossConversations(w)
+        section("E4") { voiceJudge(w, key) }
+        section("E3") { numbers(w) }
+        section("cache") { cacheAcrossConversations(w) }
     }
 
     // ── 1. History: three evenings before ───────────────────────────────────────────────────────────
@@ -295,7 +312,7 @@ class LiveMemoryCycleTest {
 
     private fun dreamChecks(w: LiveWorld) {
         val traits = w.rows(
-            "SELECT p.name, t.trait, t.side, t.label, t.intensity, t.confidence, t.evidence::VARCHAR, t.note FROM player_traits t JOIN players p ON p.uuid = t.player_uuid WHERE NOT t.retired ORDER BY p.name, t.trait",
+            "SELECT p.name, t.trait, t.side, t.label, t.intensity, t.confidence, t.evidence::VARCHAR, t.note FROM player_traits t JOIN players p ON p.player_uuid = t.player_uuid WHERE NOT t.retired ORDER BY p.name, t.trait",
         ) { listOf(getString(1), getString(2), getInt(3).toString(), getString(4), getInt(5).toString(), "%.2f".format(Locale.ROOT, getDouble(6)), getString(7), getString(8)) }
         report.append("Traits:\n").append(traits.joinToString("") { "- ${it[0]} ${it[1]} side ${it[2]}${it[3]?.let { l -> " « $l »" }.orEmpty()} ${it[4]}/5, confidence ${it[5]}, proofs ${it[6]}: ${it[7]}\n" }).append("\n")
         check(traits.isNotEmpty(), "at least one trait (${traits.size})")
@@ -305,14 +322,14 @@ class LiveMemoryCycleTest {
         ) { getLong(1) }.single()
         check(proofs.isNotEmpty() && existing == proofs.size.toLong(), "every proof of the traits exists ($existing of ${proofs.size})")
 
-        val skills = w.rows("SELECT p.name, s.skill, s.score, s.rationale FROM player_skills s JOIN players p ON p.uuid = s.player_uuid ORDER BY p.name, s.skill") {
+        val skills = w.rows("SELECT p.name, s.skill, s.score, s.rationale FROM player_skills s JOIN players p ON p.player_uuid = s.player_uuid ORDER BY p.name, s.skill") {
             "${getString(1)} ${getString(2)} ${getInt(3)}/10: ${getString(4)}"
         }
         report.append("Skills:\n").append(skills.joinToString("") { "- $it\n" }).append("\n")
         val docs = w.rows(
             "SELECT d.key, d.version, d.content, d.source FROM memory_docs d WHERE d.version = (SELECT max(version) FROM memory_docs e WHERE e.key = d.key) ORDER BY d.key",
         ) { listOf(getString(1), getInt(2).toString(), getString(3), getString(4)) }
-        val names = w.rows("SELECT uuid::VARCHAR, name FROM players") { getString(1) to getString(2) }.toMap()
+        val names = w.rows("SELECT player_uuid::VARCHAR, name FROM players") { getString(1) to getString(2) }.toMap()
         fun keyName(key: String) = names.entries.fold(key) { acc, (uuid, name) -> acc.replace(uuid, name) }
         report.append("Documents (latest versions):\n\n")
         docs.filter { it[0] != "grimoire" }.forEach { report.append("- `${keyName(it[0]!!)}` v${it[1]} (${it[3]}): ${it[2]}\n") }
@@ -355,7 +372,7 @@ class LiveMemoryCycleTest {
         }
         report.append("```\n${result.text}\n```\n\n")
         val recap = w.rows(
-            "SELECT content FROM memory_docs d JOIN players p ON d.key = 'sheet:' || p.uuid::VARCHAR || ':recap' WHERE p.name = 'Bartok' ORDER BY version DESC LIMIT 1",
+            "SELECT content FROM memory_docs d JOIN players p ON d.key = 'sheet:' || p.player_uuid::VARCHAR || ':recap' WHERE p.name = 'Bartok' ORDER BY version DESC LIMIT 1",
         ) { getString(1) }.singleOrNull()
         check(recap != null && recap.take(40) in result.text, "the profile holds Bartok's recap")
         check(Regex("(?m)^Traits").containsMatchIn(result.text) && Regex("(?m)^  \\S.* \\d/5").containsMatchIn(result.text), "the profile holds a trait")
@@ -368,7 +385,7 @@ class LiveMemoryCycleTest {
         report.append("<details><summary>First message of the next chapter (${opening.length} characters)</summary>\n\n```\n$opening\n```\n</details>\n\n")
         check("<grimoire" in opening && "## Players" in opening, "it holds the Grimoire")
         val recap = w.rows(
-            "SELECT content FROM memory_docs d JOIN players p ON d.key = 'sheet:' || p.uuid::VARCHAR || ':recap' WHERE p.name = 'Bartok' ORDER BY version DESC LIMIT 1",
+            "SELECT content FROM memory_docs d JOIN players p ON d.key = 'sheet:' || p.player_uuid::VARCHAR || ':recap' WHERE p.name = 'Bartok' ORDER BY version DESC LIMIT 1",
         ) { getString(1) }.singleOrNull()
         check(recap != null && recap.take(40) in opening, "it holds Bartok's recap")
         check(Regex("Traits: [^\\n]*\\d/5").containsMatchIn(opening), "it holds a trait of a sheet")
