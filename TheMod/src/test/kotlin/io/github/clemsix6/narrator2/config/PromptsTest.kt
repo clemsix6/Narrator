@@ -22,8 +22,8 @@ class PromptsTest {
         Prompts::class.java.getResourceAsStream("/narrator2/prompts/$name.md")!!.use { String(it.readAllBytes(), Charsets.UTF_8) }
 
     @Test
-    fun `ships the prompts of the Director, the Analyst, the chapter summary and the ping`() {
-        assertEquals(listOf("director", "analyst", "chapter_summary", "ping"), Prompts.NAMES)
+    fun `ships the prompts of the Director, the Analyst, the chapter summary, the Chronicler and the ping`() {
+        assertEquals(listOf("director", "analyst", "chapter_summary", "chronicler", "ping"), Prompts.NAMES)
     }
 
     @Test

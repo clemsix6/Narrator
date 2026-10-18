@@ -26,30 +26,35 @@ import java.util.concurrent.atomic.AtomicLong
  *   background, so the caller (often the server thread) does not wait for the disk; it only does when
  *   a burst uses up the rest of the block first.
  * - The file is written whole to a temporary file forced to the disk, then moved over the old one: a
- *   crash while it is written leaves the previous one.
+ *   crash while it is written leaves the previous one, never a missing or partial file.
+ * - On Windows, a file that another program has open (an antivirus, a backup, someone reading it)
+ *   cannot be replaced until it is closed: the move is tried again for up to 63 ms ([replace]).
+ * - The reservations in memory only follow what the file holds: a write that fails reserves nothing.
  * - A clean close ([close]) writes exactly what was handed out: no gap after a normal restart. After a
  *   crash, the unused part of each last block is skipped.
  * - [IdKind.EVENT] ids are handed out by the bus; [handedOut] reserves them, from a synchronous
  *   subscriber that is first on the bus: no other subscriber sees an event before its id is reserved.
- * - When the file cannot be written (disk full, read-only), ids are handed out anyway, the error is
- *   logged, and the file is written again at the next id, at most once a second. Until it succeeds, a
- *   crash could hand out some ids again.
+ * - When the file still cannot be written (disk full, read-only, held open for longer), ids are handed
+ *   out anyway, the error is logged, and the file is written again in the background at most once a
+ *   second. Until it succeeds, a crash could hand out some ids again.
  * - Without a file (a database in memory, in tests), nothing is reserved.
  */
 internal class IdReservations private constructor(
     private val file: Path?,
     starts: Map<IdKind, Long>,
     private val blocks: Map<IdKind, Long>,
+    /** Waits between two attempts to replace [file], in milliseconds. */
+    private val pause: (Long) -> Unit,
 ) {
     /** The next id of each kind not handed out yet. */
     private val counters: Map<IdKind, AtomicLong> = IdKind.entries.associateWith { AtomicLong(starts.getValue(it)) }
 
-    /** Ids below these are reserved on disk (in memory: all of them). Raised once the file says so. */
+    /** Ids below these are reserved on disk (in memory: all of them). Raised only once the file says so. */
     private val reserved: Map<IdKind, AtomicLong> =
         IdKind.entries.associateWith { AtomicLong(if (file == null) Long.MAX_VALUE else starts.getValue(it)) }
 
-    /** Held while the file is written, and to change [reserved]. */
-    private val lock = Any()
+    /** Held while the file is written and [reserved] changes; a test holds it to read the file between two writes. */
+    internal val lock = Any()
     private val topUpQueued = AtomicBoolean()
 
     /** When the last write of the file failed (`System.nanoTime()`); null once it is written again. */
@@ -89,11 +94,13 @@ internal class IdReservations private constructor(
     }
 
     private fun cover(kind: IdKind, id: Long) {
+        val failed = failedAt
         val ceiling = reserved.getValue(kind).get()
         when {
-            id >= ceiling -> synchronized(lock) { if (id >= reserved.getValue(kind).get()) reserveAhead() }
+            // The file cannot be written: the id goes out anyway; one more attempt a second, off the caller's thread.
+            failed != null -> if (System.nanoTime() - failed >= RETRY_NANOS) topUpLater()
+            id >= ceiling -> synchronized(lock) { if (id >= reserved.getValue(kind).get() && failedAt == null) reserveAhead() }
             ceiling - id <= blocks.getValue(kind) / 2 -> topUpLater()
-            failedAt?.let { System.nanoTime() - it >= RETRY_NANOS } == true -> topUpLater()
         }
     }
 
@@ -113,7 +120,7 @@ internal class IdReservations private constructor(
 
     /**
      * Gives every kind with half a block or less left a new block past the ids handed out, and writes
-     * the file (also when its last write failed). Under [lock].
+     * the file (also when its last write failed). [reserved] follows only once the file is written. Under [lock].
      */
     private fun reserveAhead() {
         val ceilings = IdKind.entries.associateWith { kind ->
@@ -123,9 +130,7 @@ internal class IdReservations private constructor(
             if (ceiling - used <= block / 2) used + block else ceiling
         }
         if (failedAt == null && ceilings.all { (kind, value) -> value == reserved.getValue(kind).get() }) return
-        write(ceilings)
-        // Raised even when the write failed: ids keep coming, and the error is in the log.
-        ceilings.forEach { (kind, value) -> reserved.getValue(kind).set(value) }
+        if (write(ceilings)) ceilings.forEach { (kind, value) -> reserved.getValue(kind).set(value) }
     }
 
     /** Writes [ceilings] to [file], replacing it at once; false (and logged) when it fails. */
@@ -141,7 +146,7 @@ internal class IdReservations private constructor(
                 it.write(ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)))
                 it.force(true)
             }
-            Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            replace(temporary, file)
             if (failedAt != null) log.info("ids reserved in $file again")
             failedAt = null
             true
@@ -154,23 +159,58 @@ internal class IdReservations private constructor(
         }
     }
 
+    /**
+     * Moves [temporary] over [file] in one step. On Windows the move fails while another program has
+     * [file] open, even only to read it: it is tried again after 1, 2, 4… up to [REPLACE_MAX_WAIT_MS] ms
+     * (63 ms in all), which outlasts a scan or a copy of so small a file.
+     */
+    private fun replace(temporary: Path, file: Path) {
+        var wait = 1L
+        while (true) {
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                if (wait > 1) log.debug { "replaced $file after ${wait - 1} ms of waiting for another program to close it" }
+                return
+            } catch (e: IOException) {
+                if (wait > REPLACE_MAX_WAIT_MS) throw e
+                try {
+                    pause(wait)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw e
+                }
+                wait *= 2
+            }
+        }
+    }
+
     companion object {
         /** File name of the reservations, next to the database. */
         const val FILE_NAME = "narrator.ids"
 
         private val RETRY_NANOS = TimeUnit.SECONDS.toNanos(1)
+
+        /** The longest wait between two attempts to replace the file; the waits double from 1 ms. */
+        private const val REPLACE_MAX_WAIT_MS = 32L
         private val log = Log.journal
 
         /**
          * Starts each kind past [seeds] (the database) and past [file], then reserves a first block of
-         * each on disk: [blocks] ids, or [eventBlock] for [IdKind.EVENT].
+         * each on disk: [blocks] ids, or [eventBlock] for [IdKind.EVENT]. [pause] waits between two
+         * attempts to replace the file (a test steps in there).
          */
-        fun open(file: Path?, seeds: Map<IdKind, Long>, blocks: Long, eventBlock: Long): IdReservations {
+        fun open(
+            file: Path?,
+            seeds: Map<IdKind, Long>,
+            blocks: Long,
+            eventBlock: Long,
+            pause: (Long) -> Unit = { Thread.sleep(it) },
+        ): IdReservations {
             val onDisk = file?.let(::read).orEmpty()
             val starts = IdKind.entries.associateWith { maxOf(seeds.getValue(it), onDisk[it] ?: 0) }
             val sizes = IdKind.entries.associateWith { if (it == IdKind.EVENT) eventBlock else blocks }
             require(sizes.values.all { it >= 2 }) { "an id block holds 2 ids at least" }
-            val reservations = IdReservations(file, starts, sizes)
+            val reservations = IdReservations(file, starts, sizes, pause)
             if (file != null) synchronized(reservations.lock) { reservations.reserveAhead() }
             return reservations
         }
