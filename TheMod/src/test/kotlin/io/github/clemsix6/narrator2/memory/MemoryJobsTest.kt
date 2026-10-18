@@ -32,7 +32,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -309,85 +308,60 @@ class MemoryJobsTest {
         assertEquals(listOf("due"), h.decisions())
     }
 
-    // ── Cues (§10.5) ────────────────────────────────────────────────────────────────────────────────
+    // ── Cues (§10.5): found by the reminiscence (ReminiscenceTest), posted here ─────────────────────
 
     @Test
-    fun `a player back where a strong old memory happened is cued once per memory and player every 6 hours of world play`() = runTest {
+    fun `each position sample is asked for a place return, whose cue is posted, only while the Director listens to cues`() = runTest {
         val h = Harness(this)
         val here = Pos("minecraft:overworld", 100, 64, -300)
-        val old = START - Duration.ofDays(30)
-        h.data.placed = listOf(
-            cue(1, old, 7, here, bartok.uuid, "Bartok est tombé du pont."),
-            cue(2, START - Duration.ofHours(2), 9, here, bartok.uuid, "trop récent"),
-            cue(3, old, 9, here, mimosa.uuid, "Mimosa n'est pas là."),
-            cue(4, old, 5, here, bartok.uuid, "trop faible"),
-            cue(5, old, 8, Pos("minecraft:the_nether", 100, 64, -300), bartok.uuid, "autre dimension"),
-        )
+        val cue = DirectorSignal.MemoryCue(CueKind.RETURN, Ref(RefKind.MEMORY, 1), bartok, "Bartok is where M-1 happened (4w ago, ★7): « … »", START.toEpochMilli())
         h.online(bartok)
+        h.online(mimosa)
+        h.services.phase = Phase.STARTING
         h.jobs.start()
         h.advance(Duration.ZERO)
+        h.sample(bartok, here)
+        assertEquals(emptyList(), h.asked, "nothing before the server runs")
 
-        h.sample(bartok, Pos("minecraft:overworld", 110, 64, -300))
-        h.sample(bartok, Pos("minecraft:overworld", 108, 60, -305))
-        h.world += 5 * 3_600
-        h.sample(bartok, Pos("minecraft:overworld", 100, 64, -300))
-        h.sample(bartok, Pos("minecraft:overworld", 120, 64, -300)) // 20 blocks away
-        h.world += 3_600
-        h.sample(bartok, Pos("minecraft:overworld", 52, 64, -300)) // 48 blocks: in a neighbor cell, too far
-        h.sample(bartok, Pos("minecraft:overworld", 90, 70, -295))
+        h.services.phase = Phase.RUNNING
+        h.returns += cue
+        h.sample(bartok, here)
+        h.sample(mimosa, Pos("minecraft:the_nether", 5, 70, 8))
+        for (muted in listOf(DirectorState.PAUSED, DirectorState.BLOCKED, DirectorState.DISABLED, DirectorState.STOPPED)) {
+            h.director.state = muted
+            h.sample(bartok, here)
+        }
 
-        val cues = h.director.signals.filterIsInstance<DirectorSignal.MemoryCue>()
-        val line = "Bartok is where M-1 happened (4w ago): « Bartok est tombé du pont. »"
-        assertEquals(listOf(DirectorSignal.MemoryCue(CueKind.RETURN, Ref(RefKind.MEMORY, 1), bartok, line, START.toEpochMilli())), cues.take(1))
-        assertEquals(listOf(1L, 1L), cues.map { it.ref.id })
-        assertEquals(listOf("cue", "cue"), h.decisions())
+        assertEquals(
+            listOf(
+                "return Bartok at minecraft:overworld 100,64,-300 (online Bartok+Mimosa) at +0s",
+                "return Mimosa at minecraft:the_nether 5,70,8 (online Bartok+Mimosa) at +0s",
+            ),
+            h.asked,
+        )
+        assertEquals(listOf<DirectorSignal>(cue), h.director.signals, "the cue as the reminiscence wrote it; nothing for a null")
+        assertEquals(emptyList(), h.decisions(), "the reminiscence records its cue decision itself")
     }
 
     @Test
-    fun `the strongest memory of the same day a month ago is an anniversary, once a day, for a player online`() = runTest {
+    fun `the anniversary is asked at each pass with someone online while the Director listens to cues, and its cue is posted`() = runTest {
         val h = Harness(this)
-        h.data.dated = listOf(
-            cue(1, START - Duration.ofDays(30), 9, null, bartok.uuid, "Bartok a vaincu le Wither."), // Sept 3: one month ago
-            cue(2, START - Duration.ofDays(30), 8, null, mimosa.uuid, "Mimosa est absente."),
-            cue(3, START - Duration.ofDays(14), 10, null, bartok.uuid, "Il y a deux semaines."),
-        )
+        val cue = DirectorSignal.MemoryCue(CueKind.ANNIVERSARY, Ref(RefKind.MEMORY, 3), bartok, "M-3, 2 weeks ago today (★10): « … »", START.toEpochMilli())
         h.jobs.start()
         h.advance(Duration.ofMinutes(5))
-        assertEquals(emptyList(), h.director.signals, "nobody online")
-
         h.online(bartok)
-        h.advance(Duration.ofMinutes(30))
-        h.advance(Duration.ofHours(2))
+        h.director.state = DirectorState.PAUSED
+        h.advance(Duration.ofMinutes(1))
+        assertEquals(emptyList(), h.asked, "nobody online, then a muted Director: it would drop the cue")
 
-        assertEquals<List<DirectorSignal>>(
-            listOf(
-                DirectorSignal.MemoryCue(
-                    CueKind.ANNIVERSARY, Ref(RefKind.MEMORY, 3), bartok, "M-3, 2 weeks ago today: « Il y a deux semaines. »",
-                    (START + Duration.ofSeconds(330)).toEpochMilli(),
-                ),
-            ),
-            h.director.signals,
-        )
-        assertEquals(LocalDate.of(2026, 10, 3).toString(), h.store.state[MemoryJobs.ANNIVERSARY_KEY])
-    }
+        h.director.state = DirectorState.IDLE
+        h.anniversaries += cue
+        h.advance(Duration.ofMinutes(1))
 
-    @Test
-    fun `anniversary days and coarse ages`() {
-        val days = MemoryJobs.anniversaryDays(LocalDate.of(2026, 3, 30))
-        assertEquals("one week", days[LocalDate.of(2026, 3, 23)])
-        assertEquals("4 weeks", days[LocalDate.of(2026, 3, 2)])
-        assertEquals("2 months", days[LocalDate.of(2026, 1, 30)])
-        assertEquals(null, days[LocalDate.of(2026, 2, 28)], "no Feb 30: no one-month anniversary")
-        assertEquals("one year", days[LocalDate.of(2025, 3, 30)])
-        assertEquals("10 years", days[LocalDate.of(2016, 3, 30)])
-        assertEquals(4 + 10 + 10, days.size)
-        assertEquals("5h12m", MemoryJobs.ago(Duration.ofMinutes(312)))
-        assertEquals("3d", MemoryJobs.ago(Duration.ofDays(3)))
-        assertEquals("4w", MemoryJobs.ago(Duration.ofDays(30)))
-        assertEquals("1 month", MemoryJobs.ago(Duration.ofDays(50)))
-        assertEquals("4 months", MemoryJobs.ago(Duration.ofDays(125)))
-        assertEquals("1 year", MemoryJobs.ago(Duration.ofDays(400)))
-        assertEquals("2 years", MemoryJobs.ago(Duration.ofDays(800)))
+        assertEquals(listOf("anniversary (online Bartok) at +390s", "anniversary (online Bartok) at +420s"), h.asked)
+        assertEquals(listOf<DirectorSignal>(cue), h.director.signals)
+        assertEquals(emptyList(), h.decisions(), "the reminiscence records its cue decision itself")
+        assertNull(h.store.state[Reminiscence.ANNIVERSARY_STATE], "the reminiscence keeps the day, not the jobs")
     }
 
     // ── Code jobs ───────────────────────────────────────────────────────────────────────────────────
@@ -445,6 +419,11 @@ class MemoryJobsTest {
         val stats = mutableListOf<Pair<List<UUID>, String>>()
         val activeSince = mutableListOf<Instant>()
         var tidyReport = HygieneReport()
+
+        /** What the reminiscence was asked (place returns, anniversaries), and the cues it answers next (null otherwise). */
+        val asked = mutableListOf<String>()
+        val returns = ArrayDeque<DirectorSignal.MemoryCue>()
+        val anniversaries = ArrayDeque<DirectorSignal.MemoryCue>()
         private val hooks = JobHooks(
             tickClock = { ticks++ },
             saveClock = { saves++ },
@@ -453,10 +432,22 @@ class MemoryJobsTest {
             refreshStats = { players, why -> stats += players.toList() to why },
             activeSince = { since -> activeSince += since; listOf(bartok.uuid, mimosa.uuid) },
             favorLines = { _, _ -> listOf("Favor: Bartok -31", "Attention: Mimosa has had nothing from you for 50m of play") },
+            placeReturn = { player, pos, online, now ->
+                asked += "return ${player.name} at ${pos.dim} ${pos.x},${pos.y},${pos.z} ${names(online)} at ${since(now)}"
+                returns.removeFirstOrNull()
+            },
+            anniversary = { now, online ->
+                asked += "anniversary ${names(online.map { it.uuid })} at ${since(now)}"
+                anniversaries.removeFirstOrNull()
+            },
         )
         val jobs = newJobs()
 
         fun newJobs() = MemoryJobs(services, store, data, runner, runner, hooks)
+
+        private fun names(online: Collection<UUID>) = "(online ${listOf(bartok, mimosa).filter { it.uuid in online }.joinToString("+") { it.name }})"
+
+        private fun since(now: Long) = "+${(now - START.toEpochMilli()) / 1_000}s"
 
         /** Moves virtual time by [duration], then runs what is due at that very moment. */
         fun advance(duration: Duration) {
@@ -551,12 +542,6 @@ class MemoryJobsTest {
         val activity = CopyOnWriteArrayList<Instant>()
         val signaled = ConcurrentHashMap<Ref, Instant>()
 
-        @Volatile
-        var placed: List<CueMemory> = emptyList()
-
-        @Volatile
-        var dated: List<CueMemory> = emptyList()
-
         fun runs(kind: RunKind) = runs.values.filter { it.kind == kind }.sortedBy { it.runId }
 
         override suspend fun interruptRunning(now: Instant): Int {
@@ -600,12 +585,6 @@ class MemoryJobsTest {
             signaled[ref] = at
         }
 
-        override suspend fun placedMemories(minImportance: Int, before: Instant): List<CueMemory> =
-            placed.filter { it.importance >= minImportance && it.place != null && !it.occurredFrom.isAfter(before) }
-
-        override suspend fun memoriesOn(days: List<LocalDate>, zone: java.time.ZoneId, minImportance: Int): List<CueMemory> =
-            dated.filter { it.importance >= minImportance && it.occurredFrom.atZone(zone).toLocalDate() in days }
-
         override suspend fun refusals(since: Instant) = Refusals(0, 0)
     }
 
@@ -622,8 +601,5 @@ class MemoryJobsTest {
             id, kind, RunTrigger.TIMER, status, endedAt - Duration.ofMinutes(2), endedAt.takeIf { status != RunStatus.RUNNING }, null, null,
             chapter, emptyList(), 0, 0, null, null, null, null,
         )
-
-        fun cue(id: Long, at: Instant, importance: Int, place: Pos?, player: UUID, text: String) =
-            CueMemory(Ref(RefKind.MEMORY, id), at, text, listOf(player), importance, place)
     }
 }

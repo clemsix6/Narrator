@@ -1,6 +1,5 @@
 package io.github.clemsix6.narrator2.memory
 
-import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import kotlinx.coroutines.runBlocking
@@ -8,15 +7,12 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The SQL of the memory jobs (M3 §6.6, §7.1, §10.5, §18) on an in-memory Journal. */
+/** The SQL of the memory jobs (M3 §6.6, §7.1, §18) on an in-memory Journal. */
 class DuckJobsDataTest {
     private val fixture = StoreFixture()
     private val data = DuckJobsData(fixture.journal)
@@ -43,15 +39,6 @@ class DuckJobsDataTest {
         "INSERT INTO canon (id, kind, created_at, statement, players, importance, status, due_at, due_signaled_at, source, " +
             "evidence_events, evidence_tools) VALUES (?, 'promise', ?, 'Le Narrateur a promis.', [], 5, ?, ?, ?, 'director', [], [])",
         id, start, status, due, signaled,
-    )
-
-    private fun memory(id: Long, occurred: Instant, importance: Int, place: Pos?, players: List<UUID> = listOf(fixture.bartok.uuid),
-                       archived: Boolean = false) = fixture.sql(
-        "INSERT INTO memories (id, kind, created_at, occurred_from, occurred_to, title, content, players, entities, tags, importance, " +
-            "valence, dim, x, y, z, stability_h, reinforced_play_s, source, evidence_events, evidence_tools, archived) VALUES " +
-            "(?, 'episode', ?, ?, ?, 'titre', 'Bartok est tombé.', ${players.joinToString(",", "[", "]") { "'$it'::UUID" }}::UUID[], " +
-            "[], [], ?, 0, ?, ?, ?, ?, 38.0, 0, 'chronicler', [], [], ?)",
-        id, occurred, occurred, occurred, importance, place?.dim, place?.x, place?.y, place?.z, archived,
     )
 
     @Test
@@ -152,28 +139,6 @@ class DuckJobsDataTest {
         data.markDueSignaled(Ref(RefKind.CANON, 2), at(10))
         assertEquals(listOf(Ref(RefKind.CANON, 1)), data.dueCanon(at(10)))
         assertEquals(at(10), fixture.rows("SELECT due_signaled_at FROM canon WHERE id = 2") { getObject(1, java.time.OffsetDateTime::class.java).toInstant() }.single())
-    }
-
-    @Test
-    fun `memories for the cues, by place and by day`() = runBlocking<Unit> {
-        val zone = ZoneId.of("Europe/Paris")
-        val here = Pos("minecraft:overworld", 100, 64, -300)
-        memory(1, at(0) - Duration.ofDays(30), 7, here, listOf(fixture.bartok.uuid, fixture.mimosa.uuid))
-        memory(2, at(0) - Duration.ofDays(30), 5, here)
-        memory(3, at(0), 9, here)
-        memory(4, at(0) - Duration.ofDays(30), 9, null)
-        memory(5, at(0) - Duration.ofDays(30), 9, here, archived = true)
-
-        val placed = data.placedMemories(6, at(0) - Duration.ofHours(24))
-        assertEquals(
-            listOf(CueMemory(Ref(RefKind.MEMORY, 1), at(0) - Duration.ofDays(30), "Bartok est tombé.", listOf(fixture.bartok.uuid, fixture.mimosa.uuid), 7, here)),
-            placed,
-        )
-
-        val day = (at(0) - Duration.ofDays(30)).atZone(zone).toLocalDate()
-        assertEquals(listOf(1L, 4L), data.memoriesOn(listOf(day, LocalDate.of(2020, 1, 1)), zone, 7).map { it.ref.id })
-        assertEquals(listOf(4L), data.memoriesOn(listOf(day), zone, 8).map { it.ref.id })
-        assertEquals(emptyList(), data.memoriesOn(emptyList(), zone, 1))
     }
 
     @Test

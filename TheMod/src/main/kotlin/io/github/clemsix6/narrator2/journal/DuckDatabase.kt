@@ -24,8 +24,9 @@ import java.util.Properties
  * 2. `SET TimeZone` on the write connection: TIMESTAMPTZ values read back in the Journal's zone;
  * 3. the migrations of [MIGRATIONS] not applied yet, each in one transaction with its `schema_version` row;
  * 4. [VIEWS], if bundled, run at every opening (`CREATE OR REPLACE`: views and macros follow the code);
- * 5. `SET lock_configuration = true`: no setting can change afterwards, on any connection;
- * 6. the read connections, duplicated from the write connection (they inherit the time zone).
+ * 5. the `event_types` table recreated from the event catalog ([EventTypesTable]), also at every opening;
+ * 6. `SET lock_configuration = true`: no setting can change afterwards, on any connection;
+ * 7. the read connections, duplicated from the write connection (they inherit the time zone).
  *
  * A connection must only be used by one thread at a time.
  */
@@ -132,6 +133,7 @@ class DuckDatabase private constructor(
                 writer.execute("SET TimeZone = '${options.timeZone.id}'")
                 val version = migrate(writer)
                 bundled(VIEWS)?.let { views -> inTransaction(writer, VIEWS) { writer.execute(views) } }
+                inTransaction(writer, EventTypesTable.NAME) { writer.execute(EventTypesTable.sql()) }
                 writer.execute("SET lock_configuration = true")
                 repeat(options.readers) { readers += writer.duplicate() }
                 return DuckDatabase(file, writer, readers, version, options.timeZone)

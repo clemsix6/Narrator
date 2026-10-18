@@ -33,7 +33,7 @@ class DuckDatabaseTest {
     private val tables = listOf(
         "schema_version", "players", "player_names", "sessions", "events", "positions", "chat", "private_messages",
         "chat_signals", "stat_totals", "conversations", "turns", "tasks", "llm_calls", "tool_calls", "engine_decisions",
-    ) + MemorySchema.TABLES
+    ) + MemorySchema.TABLES + EventTypesTable.NAME
 
     private fun DuckDBConnection.strings(sql: String): List<String?> = createStatement().use { statement ->
         statement.executeQuery(sql).use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }

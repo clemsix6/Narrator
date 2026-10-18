@@ -44,7 +44,7 @@ import kotlin.math.sqrt
  * - [placeReturn]: a player back where a memory happened, as a `RETURN` [DirectorSignal.MemoryCue] that
  *   `MemoryJobs` (M3-12) posts; called for each position sample.
  * - [anniversary]: a memory of the same day a week, a month or a year before, as an `ANNIVERSARY` cue that
- *   `MemoryJobs` posts; called at the first wake-up of a day.
+ *   `MemoryJobs` posts; asked at each of its passes with someone online, it finds one a day at most.
  *
  * Anti-repetition (M3 §10.6):
  * - a memory already shown in the chapter is not attached again in it: in [ChapterMemory.shownRefs], or
@@ -250,7 +250,8 @@ class Reminiscence(
      * ago) does not come back, except one of importance [PRIORITY_IMPORTANCE] or more, which also passes the
      * player's gap and comes first. Then the most important, the nearest.
      *
-     * `MemoryJobs` calls it for each position sample, one at a time, and posts the cue it returns:
+     * `MemoryJobs` calls it for each position sample while the Director listens to cues, one at a time, and
+     * posts the cue it returns:
      * `RETURN Mimosa is where M-77 happened (1mo ago, ★7): « … »`. Memories with a place are kept in a grid
      * of [GRID_CELL] blocks per dimension, read again every [GRID_REFRESH_MS]. Null when nothing comes back,
      * or when the memory cannot be read (`WARN`).
@@ -339,8 +340,8 @@ class Reminiscence(
      * `memory_state` ([ANNIVERSARY_STATE]), and taken by the first call of the day with someone [online],
      * even when no memory fits.
      *
-     * `MemoryJobs` calls it at the first wake-up of a day (in practice, at each pass with someone online) and
-     * posts the cue: `ANNIVERSARY M-12, one month ago today (★9): « … »`. Null when nobody is online, when the
+     * `MemoryJobs` calls it at each pass with someone online (every 30 s) while the Director listens to cues,
+     * and posts the cue: `ANNIVERSARY M-12, one month ago today (★9): « … »`. Null when nobody is online, when the
      * day had its call, when no memory fits, or when the memory cannot be read (`WARN`).
      *
      * @param now epoch milliseconds.
@@ -417,7 +418,7 @@ class Reminiscence(
         /** An anniversary is a memory at least this important. */
         const val ANNIVERSARY_IMPORTANCE = 8
 
-        /** The `memory_state` key of the last day that had its anniversary call (`2026-10-18`); the key of `MemoryJobs` too. */
+        /** The `memory_state` key of the last day that had its anniversary call (`2026-10-18`); written here only. */
         const val ANNIVERSARY_STATE = "cue:anniversary_day"
 
         /** The events that bring memories back (M3 §10.5), the most telling first. */

@@ -4,7 +4,6 @@ import io.github.clemsix6.narrator2.agent.GatewayError
 import io.github.clemsix6.narrator2.config.MemoryConfig
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
-import io.github.clemsix6.narrator2.director.CueKind
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.event.AsyncSubscription
@@ -31,7 +30,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -51,6 +49,12 @@ import java.util.concurrent.ConcurrentHashMap
  *   those whose stats a dream needs, since the end of the last dream.
  * @property favorLines the `Favor` and `Attention` lines of the situation for the players online
  *   (`Favor.read` for each, then `Favor.situationLines`); the jobs add `Due soon` and cache them every 60 s.
+ * @property placeReturn the place return of a position sample (`Reminiscence.placeReturn`, which keeps the grid,
+ *   the delays and records the `cue` decision): the cue to post, or null. Asked for each sample while the
+ *   Director listens to cues, one at a time.
+ * @property anniversary the anniversary of the day (`Reminiscence.anniversary`, which keeps the day in
+ *   `memory_state`, one a day, and records the `cue` decision): the cue to post, or null. Asked at each pass
+ *   with someone online while the Director listens to cues.
  */
 class JobHooks(
     val tickClock: (nowMillis: Long) -> Unit,
@@ -60,6 +64,8 @@ class JobHooks(
     val refreshStats: suspend (players: Collection<UUID>, why: String) -> Unit,
     val activeSince: suspend (since: Instant) -> List<UUID>,
     val favorLines: suspend (online: List<PlayerRef>, now: Instant) -> List<String>,
+    val placeReturn: suspend (player: PlayerRef, pos: Pos, online: Collection<UUID>, nowMillis: Long) -> DirectorSignal.MemoryCue?,
+    val anniversary: suspend (nowMillis: Long, online: Collection<PlayerRef>) -> DirectorSignal.MemoryCue?,
 )
 
 /**
@@ -72,9 +78,12 @@ class JobHooks(
  * - **Timers**, every 30 s: the world play clock, the due canon (`DUE`, once), the batch of the open
  *   chapter every `memory.chronicleMinutes` when the Narrator spoke or acted, the catch-up of the naps
  *   30 s after the start then every 30 minutes, the dream (server empty, or daily), the statistics, the
- *   housekeeping, the situation cache, the anniversary of the day.
- * - **The bus**: the position samples, checked against a grid of the placed memories (a player back
- *   where a memory happened); the departures, whose player's stats are computed again.
+ *   housekeeping, the situation cache, the anniversary of the day ([JobHooks.anniversary]).
+ * - **The bus**: the position samples, each a possible return to the place of a memory
+ *   ([JobHooks.placeReturn]); the departures, whose player's stats are computed again.
+ *
+ * The cues (§10.5) are found by the reminiscence (M3-14); the jobs only ask for them when the Director
+ * listens, and post them.
  *
  * The code's jobs (clock, due times, stats, housekeeping, cues) go on while the model jobs wait. Nothing
  * here touches the world; the server thread never waits for it ([chapterClosed], [status] and the
@@ -119,9 +128,6 @@ class MemoryJobs(
     @Volatile
     private var summary = Summary()
 
-    @Volatile
-    private var grid = CueGrid(emptyList())
-
     // Touched by the timers' coroutine only.
     private var emptySince: Long? = null
     private var runningSince: Long? = null
@@ -130,8 +136,6 @@ class MemoryJobs(
     private var nextStatsAt = 0L
     private var nextTidyAt = 0L
     private var nextSaveAt = 0L
-    private var nextGridAt = 0L
-    private var anniversaryDay: LocalDate? = null
 
     /** Also set to 0 by the worker after a run, for a refresh at the next pass. */
     @Volatile
@@ -140,13 +144,9 @@ class MemoryJobs(
     /** The last failure of each step, logged once until it works again. */
     private val failures = ConcurrentHashMap<String, String>()
 
-    /** When each memory was last cued to each player, in seconds of world play. */
-    private val cued = ConcurrentHashMap<Pair<Long, UUID>, Long>()
-
     /**
      * Starts the coroutine `narrator2-memory` in `services.scope`: closes the runs a crash left
-     * `running`, reads the pause and the day's anniversary back, then runs the worker, the cues and the
-     * timers. Once.
+     * `running`, reads the pause back, then runs the worker, the bus and the timers. Once.
      */
     fun start() {
         check(root == null) { "the memory jobs are already started" }
@@ -301,7 +301,6 @@ class MemoryJobs(
                 paused = true
                 log.info("the memory jobs stay paused (/narrator memory resume)")
             }
-            anniversaryDay = store.state(ANNIVERSARY_KEY)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         }
     }
 
@@ -507,10 +506,6 @@ class MemoryJobs(
             attempt("situation") { situationCache = situation(Instant.ofEpochMilli(now)) }
             attempt("status") { refresh(now, settings) }
         }
-        if (now >= nextGridAt) {
-            nextGridAt = now + GRID_MS
-            attempt("cue grid") { grid = CueGrid(data.placedMemories(PLACE_MIN_IMPORTANCE, Instant.ofEpochMilli(now) - CUE_MIN_AGE)) }
-        }
         attempt("due") { signalDue(Instant.ofEpochMilli(now)) }
         if (now >= nextTidyAt) {
             nextTidyAt = now + TIDY_MS
@@ -588,7 +583,7 @@ class MemoryJobs(
 
     private fun dueLine(entry: CanonEntry, now: Instant): String {
         val set = ToolText.duration(Duration.between(entry.createdAt, now).toMillis())
-        return "${entry.ref} ${entry.kind.id} → ${who(entry)}, set $set ago: « ${ModelText.escape(ModelText.cut(entry.quote ?: entry.statement, CUE_TEXT_MAX))} »"
+        return "${entry.ref} ${entry.kind.id} → ${who(entry)}, set $set ago: « ${ModelText.escape(ModelText.cut(entry.quote ?: entry.statement, DUE_TEXT_MAX))} »"
     }
 
     private suspend fun tidy(now: Instant) {
@@ -686,54 +681,28 @@ class MemoryJobs(
     private suspend fun follow(subscription: AsyncSubscription) {
         for (envelope in subscription.events) {
             when (val event = envelope.event) {
-                is PositionSampled -> attempt("place cue") { placeCue(event, envelope.ts) }
+                is PositionSampled -> attempt("place return") { placeReturn(event, envelope.ts) }
                 is PlayerLeft -> attempt("stats of a departure") { hooks.refreshStats(listOf(event.player.uuid), "left") }
                 else -> Unit
             }
         }
     }
 
-    /** A player within 16 blocks of a placed memory that concerns them or someone online: once per memory and player every 6 h of world play. */
-    private fun placeCue(sample: PositionSampled, at: Long) {
-        val near = grid.near(sample.pos)
-        if (near.isEmpty()) return
+    /** A position sample while the Director listens to cues: the place return it brings, if any, is posted. */
+    private suspend fun placeReturn(sample: PositionSampled, at: Long) {
         if (!directorListens(cue = true)) return
-        val online = services.players.online.map { it.ref.uuid }.toSet() + sample.player.uuid
-        val world = hooks.worldPlaySeconds(at)
-        val oldest = Instant.ofEpochMilli(at) - CUE_MIN_AGE
-        val memory = near.filter { it.occurredFrom <= oldest && (it.players.isEmpty() || it.players.any { p -> p in online }) }
-            .filter { m -> cued[m.ref.id to sample.player.uuid]?.let { world - it >= PLACE_COOLDOWN_S } ?: true }
-            .maxWithOrNull(compareBy<CueMemory> { it.importance }.thenBy { it.occurredFrom })
-            ?: return
-        cued[memory.ref.id to sample.player.uuid] = world
-        val age = ago(Duration.between(memory.occurredFrom, Instant.ofEpochMilli(at)))
-        val line = "${ModelText.name(sample.player.name)} is where ${memory.ref} happened ($age ago): « ${text(memory)} »"
-        services.director.post(DirectorSignal.MemoryCue(CueKind.RETURN, memory.ref, sample.player, line, at))
-        decisions.record(log, DecisionRecord.Kind.MEMORY, "cue", memory.ref.toString(), "RETURN $line")
+        val online = services.players.online.map { it.ref.uuid }
+        hooks.placeReturn(sample.player, sample.pos, online, at)?.let { services.director.post(it) }
     }
 
-    /** At the first pass of a day with someone online: a strong memory of the same day a week (first month), months or years ago. One a day. */
+    /**
+     * A pass with someone [online] while the Director listens to cues: the anniversary of the day, if any, is
+     * posted. The hook keeps the day: it finds one a day at most, however often it is asked.
+     */
     private suspend fun anniversary(now: Long, online: List<PlayerRef>) {
-        val zone = clock.zone
-        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
-        if (anniversaryDay == today) return
         if (!directorListens(cue = true)) return
-        anniversaryDay = today
-        store.setState(ANNIVERSARY_KEY, today.toString())
-        val days = anniversaryDays(today)
-        val players = online.associateBy { it.uuid }
-        val memory = data.memoriesOn(days.keys.toList(), zone, ANNIVERSARY_MIN_IMPORTANCE)
-            .filter { it.players.isEmpty() || it.players.any { p -> p in players } }
-            .maxWithOrNull(compareBy<CueMemory> { it.importance }.thenByDescending { it.occurredFrom })
-            ?: return
-        val day = memory.occurredFrom.atZone(zone).toLocalDate()
-        val line = "${memory.ref}, ${days.getValue(day)} ago today: « ${text(memory)} »"
-        val player = memory.players.firstNotNullOfOrNull { players[it] }
-        services.director.post(DirectorSignal.MemoryCue(CueKind.ANNIVERSARY, memory.ref, player, line, now))
-        decisions.record(log, DecisionRecord.Kind.MEMORY, "cue", memory.ref.toString(), "ANNIVERSARY $line")
+        hooks.anniversary(now, online)?.let { services.director.post(it) }
     }
-
-    private fun text(memory: CueMemory) = ModelText.escape(ModelText.cut(memory.content, CUE_TEXT_MAX))
 
     // ── Types ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -773,41 +742,18 @@ class MemoryJobs(
         val chaptersToNap: List<ConversationRecord> = emptyList(),
     )
 
-    /** The placed memories in cells of [CELL] blocks per dimension. */
-    private class CueGrid(memories: List<CueMemory>) {
-        private val cells: Map<String, Map<Long, List<CueMemory>>> = memories.filter { it.place != null }
-            .groupBy { it.place!!.dim }
-            .mapValues { (_, list) -> list.groupBy { key(cell(it.place!!.x), cell(it.place.z)) } }
-
-        /** The memories within [PLACE_RADIUS] blocks of [pos]. */
-        fun near(pos: Pos): List<CueMemory> {
-            val dim = cells[pos.dim] ?: return emptyList()
-            val cx = cell(pos.x)
-            val cz = cell(pos.z)
-            return (cx - 1..cx + 1).flatMap { x -> (cz - 1..cz + 1).flatMap { z -> dim[key(x, z)].orEmpty() } }.filter {
-                val p = it.place!!
-                val dx = (p.x - pos.x).toLong()
-                val dy = (p.y - pos.y).toLong()
-                val dz = (p.z - pos.z).toLong()
-                dx * dx + dy * dy + dz * dz <= PLACE_RADIUS.toLong() * PLACE_RADIUS
-            }
-        }
-
-        private fun cell(coordinate: Int) = Math.floorDiv(coordinate, CELL)
-
-        private fun key(x: Int, z: Int): Long = (x.toLong() shl 32) or (z.toLong() and 0xffffffffL)
-    }
-
     companion object {
         const val COROUTINE = "narrator2-memory"
         const val EVENTS_SUBSCRIBER = "memory-jobs"
         const val OWNER = "memory"
 
-        /** `memory_state` keys: the operator's pause, the dream to resume and its steps, the end of the last dream, the anniversary day. */
+        /**
+         * `memory_state` keys: the operator's pause, the dream to resume and its steps, the end of the last
+         * dream. The anniversary day is the reminiscence's ([Reminiscence.ANNIVERSARY_STATE]).
+         */
         const val PAUSED_KEY = "jobs:paused"
         const val DREAM_PENDING_KEY = "dream:pending"
         const val DREAM_END_KEY = "dream:last_end"
-        const val ANNIVERSARY_KEY = "cue:anniversary_day"
 
         /** The `memory_state` key of the last step dream run [runId] finished (the Dreamer writes it after each step). */
         fun stepKey(runId: Long) = "dream:$runId:step"
@@ -816,7 +762,6 @@ class MemoryJobs(
         const val REFRESH_MS = 60_000L
         const val SAVE_MS = 5 * 60_000L
         const val TIDY_MS = 10 * 60_000L
-        const val GRID_MS = 10 * 60_000L
         const val CATCH_UP_DELAY_MS = 30_000L
         const val CATCH_UP_MS = 30 * 60_000L
 
@@ -832,17 +777,12 @@ class MemoryJobs(
         /** Naps one catch-up queues at most. */
         const val CATCH_UP_MAX = 20
 
-        const val PLACE_RADIUS = 16
-        const val CELL = 64
-        const val PLACE_MIN_IMPORTANCE = 6
-        const val PLACE_COOLDOWN_S = 6 * 3_600L
-        val CUE_MIN_AGE: Duration = Duration.ofHours(24)
-        const val ANNIVERSARY_MIN_IMPORTANCE = 8
-
         /** `Due soon` in the situation: open commitments due within this time, [DUE_SOON_MAX] at most. */
         val DUE_SOON: Duration = Duration.ofHours(1)
         const val DUE_SOON_MAX = 5
-        const val CUE_TEXT_MAX = 200
+
+        /** The quote (or statement) of a `DUE` line is cut to this many characters. */
+        const val DUE_TEXT_MAX = 200
         const val REPORT_MAX_CHARS = 500
 
         private const val EVENTS_CAPACITY = 256
@@ -854,35 +794,5 @@ class MemoryJobs(
         private val ORDER = compareBy<QueuedJob> { PRIORITY[it.kind] ?: 3 }
         private val MUTED = setOf(DirectorState.DISABLED, DirectorState.STOPPED, DirectorState.PAUSED, DirectorState.BLOCKED)
         private val TIME = DateTimeFormatter.ofPattern("HH:mm")
-
-        /**
-         * The days whose memories are anniversaries on [today], with how long ago: 1 to 4 weeks, 1 to 11
-         * months, 1 to 10 years (a day a month or a year back that does not exist, Feb 30, is skipped).
-         */
-        fun anniversaryDays(today: LocalDate): Map<LocalDate, String> {
-            val days = LinkedHashMap<LocalDate, String>()
-            for (weeks in 1..4) days.putIfAbsent(today.minusWeeks(weeks.toLong()), if (weeks == 1) "one week" else "$weeks weeks")
-            for (months in 1..11) {
-                val day = today.minusMonths(months.toLong())
-                if (day.dayOfMonth == today.dayOfMonth) days.putIfAbsent(day, if (months == 1) "one month" else "$months months")
-            }
-            for (years in 1..10) {
-                val day = today.minusYears(years.toLong())
-                if (day.dayOfMonth == today.dayOfMonth) days.putIfAbsent(day, if (years == 1) "one year" else "$years years")
-            }
-            return days
-        }
-
-        /** A coarse age: `5h12m`, `3d`, `4w`, `1 month`, `4 months`, `1 year`, `2 years`. */
-        fun ago(age: Duration): String {
-            val days = age.toDays()
-            return when {
-                days < 2 -> ToolText.duration(age.toMillis())
-                days < 14 -> "${days}d"
-                days < 45 -> "${days / 7}w"
-                days < 365 -> (days / 30).let { if (it == 1L) "1 month" else "$it months" }
-                else -> (days / 365).let { if (it == 1L) "1 year" else "$it years" }
-            }
-        }
     }
 }

@@ -11,23 +11,31 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/** The schema description given to the model (M1_M2 §6.5): budget, completeness, privacy, stability. */
+/** The schema description given to the model (M1_M2 §6.5, M3 §13): budgets, completeness, privacy, stability. */
 class SchemaDocTest {
     private val doc = SchemaDoc.text
+
+    private val sections = DuckDatabase.openInMemory(JournalFixture.OPTIONS).use { SchemaDoc.sections(it.writer) }
 
     private fun names(db: DuckDatabase, sql: String): List<String> = db.writer.createStatement().use { statement ->
         statement.executeQuery(sql).use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
     }
 
     @Test
-    fun `it fits in 2500 tokens`() {
+    fun `it fits in 2500 tokens, each section within its budget`() {
         // No tokenizer offline: 3 characters a token is pessimistic for this English-and-identifiers text.
         val tokens = ceil(doc.length / 3.0).toInt()
-        assertTrue(tokens <= 2_500, "about $tokens tokens (${doc.length} characters):\n$doc")
+        val measured = sections.entries.joinToString { (section, text) -> "${section.name.lowercase()} ${text.length}/${section.budget}" }
+        println("SchemaDoc: ${doc.length} characters, about $tokens tokens ($measured)")
+        assertTrue(tokens <= 2_500 && doc.length <= SchemaDoc.MAX_CHARS, "about $tokens tokens (${doc.length} characters):\n$doc")
+        assertEquals(SchemaDoc.Section.entries, sections.keys.toList(), "every section, in order")
+        sections.forEach { (section, text) -> assertTrue(text.length <= section.budget, "${section.name}: ${text.length} > ${section.budget}:\n$text") }
+        assertTrue(SchemaDoc.Section.entries.sumOf { it.budget } <= SchemaDoc.MAX_CHARS, "the budgets fit in the whole")
+        assertEquals(doc, sections.values.joinToString("\n"))
     }
 
     @Test
-    fun `it lists every table, view, macro and event type the model may use`() {
+    fun `it lists every table, view and macro the model may use`() {
         DuckDatabase.openInMemory(JournalFixture.OPTIONS).use { db ->
             val main = "database_name = current_database() AND schema_name = 'main' AND NOT internal"
             // The memory's tables are read through its own views and tools (M3 §13).
@@ -35,22 +43,54 @@ class SchemaDocTest {
                 MemorySchema.TABLES.toSet()
             val views = names(db, "SELECT view_name FROM duckdb_views() WHERE $main")
             val macros = names(db, "SELECT function_name FROM duckdb_functions() WHERE $main AND function_type IN ('macro', 'table_macro')")
-            assertEquals(14, tables.size, "$tables")
-            assertEquals(18, views.size, "$views")
+            assertEquals(15, tables.size, "$tables")
+            assertEquals(24, views.size, "$views")
             assertEquals(8, macros.size, "$macros")
             (views + macros).forEach { name -> assertTrue("\n$name(" in doc, "$name is described") }
             // Game tables with their columns; the engine's traces by name, their columns through columns_of().
             tables.forEach { name -> assertTrue("\n$name(" in doc || "\n$name — " in doc, "$name is described") }
-            listOf("players", "sessions", "events", "positions", "chat", "stat_totals").forEach { name ->
+            listOf("players", "sessions", "events", "positions", "chat", "stat_totals", "event_types").forEach { name ->
                 assertTrue("\n$name(" in doc, "$name comes with its columns")
             }
         }
-        EventCatalog.types(EventTable.EVENTS).forEach { type ->
-            assertTrue(Regex("""\n${type.name}(:|\n)""").containsMatchIn(doc), "event type ${type.name} is described")
-        }
         assertTrue("\nevents(id, ts, game_time, type, player_uuid, player, session_id, dim, x, y, z, subject, amount, other, detail JSON) — " in doc)
-        assertTrue("\nblock_break: block; -; tool in the main hand (null: bare hand); creative, correct_tool, placed_by\n" in doc)
         assertTrue("\nhotspots(p, t, cell) — " in doc)
+    }
+
+    /** M3 §13: the event types are a table the model queries, no longer a list in the description. */
+    @Test
+    fun `the event types are a table, not a list`() {
+        val line = "event_types(type, summary, subject, amount, other, detail JSON) — What each events.type means and stores in subject, amount, other and detail"
+        assertTrue(line.endsWith(EventTypesTable.COMMENT))
+        // Right under the events it describes.
+        val tables = sections.getValue(SchemaDoc.Section.TABLES).lines()
+        assertEquals(line, tables[tables.indexOfFirst { it.startsWith("events(") } + 1], tables.joinToString("\n"))
+        assertFalse("EVENT TYPES" in doc)
+        EventCatalog.types(EventTable.EVENTS).forEach { type ->
+            assertFalse("\n${type.name}:" in doc || "\n${type.name}\n" in doc, "${type.name} is no longer listed")
+            assertFalse(type.summary in doc, type.summary)
+        }
+    }
+
+    /** M3 §13: six views of the memory, in their own section, and none of the memory's tables. */
+    @Test
+    fun `the memory is described through its six views`() {
+        val memory = sections.getValue(SchemaDoc.Section.MEMORY)
+        assertEquals(
+            listOf(
+                "mem_memories(ref, kind, occurred, title, content, players[], tags[], importance, valence, strength)",
+                "mem_canon(ref, kind, status, statement, quote, players[], due_at, resolved_at, resolution, created_at)",
+                "mem_interactions(ref, ts, player, kind, valence, disrespect, summary, quote)",
+                "mem_favor(player, favor, trend, disrespect)",
+                "mem_stats(player, stat, value, detail JSON)",
+                "mem_chronicle(ref, level, period_from, period_to, title, summary)",
+            ),
+            memory.lines().drop(1).map { it.substringBefore(" — ") },
+        )
+        assertTrue(memory.lines().drop(1).all { " — " in it }, "every memory view has its comment:\n$memory")
+        assertTrue(memory.startsWith("MEMORY (") && "M-812, C-45" in memory.lines().first(), memory)
+        assertFalse("mem_" in sections.getValue(SchemaDoc.Section.VIEWS), "the memory's views are only in their section")
+        MemorySchema.TABLES.forEach { table -> assertFalse(Regex("""\n$table[(\s]""").containsMatchIn(doc), "$table is not described") }
     }
 
     /** Facts of one tick share their millisecond (T07): the model is told to order by `ts, id`, and every view of facts has `id`. */
@@ -91,6 +131,7 @@ class SchemaDocTest {
     fun `its examples run as they are`() {
         SqlDataset.journal().use { fixture ->
             val runner = SqlRunner(fixture.journal, fixture.clock)
+            assertTrue(SchemaDoc.examples.any { "mem_" in it }, "an example reads the memory")
             SchemaDoc.examples.forEach { sql ->
                 assertTrue("\n$sql" in doc, sql)
                 val outcome = runBlocking { runner.query(sql, SqlLimits(maxRows = 50, timeoutSeconds = 5)) }
