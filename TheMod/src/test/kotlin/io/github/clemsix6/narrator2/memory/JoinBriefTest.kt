@@ -68,6 +68,9 @@ class JoinBriefTest {
             assertTrue(shown.containsAll(listOf("C-12", "I-505", "I-512", "I-498", "I-402", "H-89", "H-91", "C-63", "C-61", "N-14")), "$shown")
             assertFalse("H-88" in shown, "the session he played is not one he missed")
             assertEquals(f.now, chapter.sheetsShownAt[bartok.uuid])
+            assertTrue(f.store.recalls.isEmpty() && f.store.writes.isEmpty(), "nothing is written before the model accepts the request")
+
+            f.accept(chapter)
             assertTrue(f.store.recalls.all { it.second == RecallChannel.JOIN && it.third == RecallContext("director-c14", null, join.envelope.id) })
             assertEquals(chapter.shownRefs, f.store.recalls.map { it.first }.toSet())
             assertEquals(listOf("markNote N-14 by engine"), f.store.writes)
@@ -81,6 +84,7 @@ class JoinBriefTest {
             val chapter = f.chapter()
             assertEquals("<memory>\nSHEET Kelvin (first time on this server)\n</memory>", f.attachments.block(listOf(f.join(kelvin, firstTime = true)), chapter, f.now))
             assertEquals(f.now, chapter.sheetsShownAt[kelvin.uuid])
+            f.accept(chapter)
             assertTrue(f.store.recalls.isEmpty())
         }
     }
@@ -91,6 +95,7 @@ class JoinBriefTest {
             evening(f)
             val chapter = f.chapter()
             f.joins.lines(listOf(f.join(bartok)), chapter, f.now)
+            f.accept(chapter)
             val shownAt = f.now
 
             f.clock.advance(Duration.ofMinutes(8))
@@ -141,11 +146,13 @@ class JoinBriefTest {
             evening(f)
             val chapter = f.chapter()
             val join = f.join(bartok)
+            val mark = chapter.mark()
             val first = f.attachments.block(listOf(join), chapter, f.now)
-            chapter.shownRefs.clear() // the request was not accepted: the Director puts the chapter back as it was
-            chapter.sheetsShownAt.clear()
+            mark.restore() // the request was not accepted: the Director puts the chapter back as it was
             assertEquals(first, f.attachments.block(listOf(join), chapter, f.now), "the same block, hint included")
+            f.accept(chapter)
             assertEquals(listOf("markNote N-14 by engine"), f.store.writes, "marked once")
+            assertEquals(chapter.shownRefs.size, f.store.recalls.size, "each ref recorded once")
 
             val next = f.chapter("director-c15")
             f.clock.advance(Duration.ofHours(1))
@@ -257,6 +264,20 @@ class JoinBriefTest {
                 block[block.size - 2],
             )
             assertTrue(Ref(RefKind.MEMORY, 120) in chapter.shownRefs)
+        }
+    }
+
+    @Test
+    fun `a memory too slow to attach leaves a line for each sheet it would have shown`() {
+        BriefingFixture().use { f ->
+            val chapter = f.chapter()
+            chapter.sheetsShownAt[mimosa.uuid] = f.now // the briefing of this wake-up showed hers
+            val signals = listOf(f.join(bartok), f.join(mimosa, at = NOW.minusSeconds(3)), f.join(kelvin, firstTime = true))
+            assertEquals(
+                "<memory>\n(the sheet of Bartok could not be read in time: player_profile Bartok)\n</memory>",
+                WakeAttachments.late(signals, chapter, f.now),
+            )
+            assertNull(WakeAttachments.late(listOf(f.join(kelvin, firstTime = true), f.join(bartok), f.leave(bartok)), chapter, f.now), "a newcomer has no sheet")
         }
     }
 

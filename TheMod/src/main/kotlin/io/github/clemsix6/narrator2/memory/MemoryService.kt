@@ -33,7 +33,7 @@ class MemoryService(
 
     override val unavailableReason: String? get() = null
 
-    override suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection> = sections.sections(chapter, now)
+    override suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean): List<BriefingSection> = sections.sections(chapter, now, reduced)
 
     override suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): String? = wake.block(signals, chapter, now)
 

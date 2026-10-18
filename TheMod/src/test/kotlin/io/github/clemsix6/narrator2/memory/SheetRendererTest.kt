@@ -177,14 +177,28 @@ class SheetRendererTest {
     }
 
     @Test
-    fun `the refs a sheet shows can be listed and cited`() {
-        val refs = SheetRenderer.refs(render(SheetSamples.reference, SheetDetail.FULL)).map { it.toString() }
-        for (ref in listOf("C-12", "M-120", "I-512", "M-130", "I-498", "C-50", "C-63", "C-61", "C-27", "M-77", "I-301", "I-402")) assertContains(refs, ref)
+    fun `the refs a sheet shows are the rows it names, taken from the rows`() {
+        val full = renderer.rendered(SheetSamples.reference, SheetDetail.FULL, now)
+        assertEquals(render(SheetSamples.reference, SheetDetail.FULL), full.text)
+        val refs = full.refs.map { it.toString() }
+        for (ref in listOf("C-12", "I-505", "I-512", "I-470", "I-498", "I-402", "I-301", "C-63", "C-61", "C-27", "M-77", "M-120", "M-130")) assertContains(refs, ref)
+        for (ref in listOf("C-50", "M-140", "I-330")) assertFalse(ref in refs, "$ref is only mentioned (a link, a proof): its row is not shown")
         assertEquals(refs.distinct(), refs)
-        assertEquals(
-            listOf("C-12", "I-505", "I-512", "I-498", "I-402"),
-            SheetRenderer.refs(render(SheetSamples.reference, SheetDetail.CONDENSED)).map { it.toString() },
-        )
+        assertEquals(listOf("C-12", "I-505", "I-512", "I-498", "I-402"), renderer.rendered(SheetSamples.reference, SheetDetail.CONDENSED, now).refs.map { it.toString() })
+        assertEquals(emptyList(), renderer.rendered(SheetSamples.reference, SheetDetail.LINE, now).refs, "a line names no row")
+    }
+
+    @Test
+    fun `a player's words that look like a ref are not a ref shown`() {
+        val asked = SheetSamples.interaction(530, "2026-10-03T19:50:00Z", InteractionKind.PRAYER, 1, "a dit : souviens-toi de M-999", quote = "souviens-toi de M-998")
+        val sheet = SheetSamples.reference.copy(recent = listOf(asked) + SheetSamples.reference.recent.drop(1))
+        for (detail in listOf(SheetDetail.FULL, SheetDetail.CONDENSED)) {
+            val rendered = renderer.rendered(sheet, detail, now)
+            assertContains(rendered.text, "souviens-toi de M-999")
+            assertContains(rendered.refs, Ref(RefKind.INTERACTION, 530))
+            assertFalse(rendered.refs.any { it.kind == RefKind.MEMORY && it.id >= 998 }, "$detail: ${rendered.refs}")
+        }
+        assertContains(renderer.render(sheet, SheetDetail.FULL, now), "said « souviens-toi de M-998 »")
     }
 
     @Test

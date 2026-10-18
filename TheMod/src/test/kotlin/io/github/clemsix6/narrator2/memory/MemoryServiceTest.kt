@@ -255,7 +255,7 @@ class MemoryServiceTest {
         override val clock get() = memory.clock
         override val jobs get() = memory.jobs
 
-        override suspend fun briefing(chapter: ChapterMemory, now: Long) = memory.briefing(chapter, now)
+        override suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean) = memory.briefing(chapter, now, reduced)
 
         override suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long) = memory.attachments(signals, chapter, now)
 

@@ -133,7 +133,7 @@ class BriefingMemoryTest {
             val headers = sheets.lines.count { it.contains(" · no title · ") || it.contains(" · title « ") }
             assertTrue(headers in 5..MemoryBriefing.MAX_CONDENSED, "condensed sheets: $headers")
             assertEquals(8, sheets.reduced!!.size)
-            assertEquals(8, chapter.sheetsShownAt.size)
+            assertEquals(headers, chapter.sheetsShownAt.size, "only the condensed sheets count as shown: a line is not the sheet")
 
             // Memories: twelve, each cut inside its quote.
             val memories = sections.getValue("memories").lines
@@ -204,7 +204,9 @@ class BriefingMemoryTest {
             assertEquals(listOf("(unavailable: the index is rebuilding)"), sections.getValue("memories").lines)
             assertNull(sections.getValue("memories").reduced)
             assertTrue(sections.getValue("canon").lines.first().startsWith("C-45 promise"))
+            Shown.record(down, chapter.takeUnrecorded()) // the recalls cannot be written: logged, the notes are still marked
             assertTrue(Ref(RefKind.CANON, 45) in chapter.shownRefs, "the chapter knows what was shown, even when recalls cannot be written")
+            assertEquals(setOf("markNote N-9 by engine", "markNote N-12 by engine", "markNote N-14 by engine"), f.store.writes.toSet())
         }
     }
 
@@ -231,7 +233,7 @@ class BriefingMemoryTest {
     // ── What the briefing shows ─────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `what the briefing shows goes into the chapter and gets a briefing recall`() = runBlocking<Unit> {
+    fun `what the briefing shows goes into the chapter and gets a briefing recall once the request is accepted`() = runBlocking<Unit> {
         BriefingFixture().use { f ->
             BriefingSamples.evening(f)
             val chapter = f.chapter()
@@ -241,10 +243,44 @@ class BriefingMemoryTest {
                 assertTrue(ref in shown, "$ref shown: $shown")
             }
             assertFalse("M-130" in shown, "a ref the Grimoire only mentions was not shown")
+            assertEquals(mapOf(bartok.uuid to f.now, mimosa.uuid to f.now), chapter.sheetsShownAt)
+            assertTrue(f.store.recalls.isEmpty() && f.store.writes.isEmpty(), "nothing is written before the model accepts the request")
+
+            f.accept(chapter)
             assertEquals(chapter.shownRefs, f.store.recalls.map { it.first }.toSet())
             assertTrue(f.store.recalls.all { it.second == RecallChannel.BRIEFING && it.third == RecallContext("director-c14", null, null) })
-            assertEquals(mapOf(bartok.uuid to f.now, mimosa.uuid to f.now), chapter.sheetsShownAt)
             assertEquals(setOf("markNote N-9 by engine", "markNote N-12 by engine", "markNote N-14 by engine"), f.store.writes.toSet())
+            assertTrue(chapter.unrecorded.isEmpty())
+        }
+    }
+
+    @Test
+    fun `a reduced briefing shows and records only what its reduced form holds`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            BriefingSamples.evening(f)
+            val chapter = f.chapter()
+            val sections = f.briefing.sections(chapter, f.now, reduced = true).associateBy { it.tag }
+            f.accept(chapter)
+            val shown = chapter.shownRefs.map { it.toString() }.toSet()
+            for (ref in listOf("C-45", "C-50", "C-25", "C-12", "C-27", "H-3", "H-40", "N-9", "N-12", "N-14")) assertTrue(ref in shown, "$ref shown: $shown")
+            for (ref in listOf("H-88", "H-89", "H-91", "M-120", "M-77", "I-512", "I-505")) assertFalse(ref in shown, "$ref is not in the reduced form: $shown")
+            assertTrue(chapter.sheetsShownAt.isEmpty(), "a line is not the sheet: the players' joins will show theirs")
+            assertEquals(chapter.shownRefs, f.store.recalls.map { it.first }.toSet())
+            assertEquals(2, sections.getValue("sheets").reduced!!.size, "the reduced form itself does not change")
+        }
+    }
+
+    @Test
+    fun `a player's words that look like a ref are not a ref shown`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            BriefingSamples.evening(f)
+            val asked = SheetSamples.interaction(530, "2026-10-03T19:50:00Z", InteractionKind.PRAYER, 1, "a dit au Narrateur : souviens-toi de M-999")
+            f.sheets.sheets[bartok.uuid] = SheetSamples.reference.copy(recent = listOf(asked) + SheetSamples.reference.recent.drop(1))
+            val chapter = f.chapter()
+            val sheets = f.briefing.sections(chapter, f.now).first { it.tag == "sheets" }.lines.joinToString("\n")
+            assertTrue("souviens-toi de M-999" in sheets, sheets)
+            assertTrue(Ref(RefKind.INTERACTION, 530) in chapter.shownRefs)
+            assertFalse(Ref(RefKind.MEMORY, 999) in chapter.shownRefs, "only the rows of the sheet count, not what they say")
         }
     }
 
@@ -253,29 +289,36 @@ class BriefingMemoryTest {
         BriefingFixture().use { f ->
             BriefingSamples.evening(f)
             f.note(15, NoteKind.DREAM_HINT, "Kelvin s'est noyé quatre fois cette semaine.", listOf(kelvin))
-            fun notes(sections: Map<String, BriefingSection>) = sections.getValue("notes").lines.map { it.substringBefore(':') }
+            suspend fun notes(id: String): List<String> {
+                val chapter = f.chapter(id)
+                val sections = f.sections(chapter)
+                f.accept(chapter)
+                return sections.getValue("notes").lines.map { it.substringBefore(':') }
+            }
 
-            val first = notes(f.sections(f.chapter("director-c14")))
-            assertEquals(listOf("N-9 coherence", "N-12 expired", "N-14 dream_hint for Bartok (once)", "Style"), first)
-            assertEquals(listOf("N-9 coherence", "N-12 expired", "Style"), notes(f.sections(f.chapter("director-c15"))))
-            assertEquals(listOf("(no open note)", "Style"), notes(f.sections(f.chapter("director-c16"))))
+            assertEquals(listOf("N-9 coherence", "N-12 expired", "N-14 dream_hint for Bartok (once)", "Style"), notes("director-c14"))
+            assertEquals(listOf("N-9 coherence", "N-12 expired", "Style"), notes("director-c15"))
+            assertEquals(listOf("(no open note)", "Style"), notes("director-c16"))
             assertEquals(2, (f.store.rows.getValue(Ref(RefKind.NOTE, 9)) as Note).shownCount)
             assertEquals(NoteStatus.OPEN, (f.store.rows.getValue(Ref(RefKind.NOTE, 15)) as Note).status, "Kelvin's hint waits for his join")
         }
     }
 
     @Test
-    fun `a briefing built again after a refused request shows the same notes without marking them twice`() = runBlocking<Unit> {
+    fun `a briefing built again after a refused request shows the same notes and is recorded once`() = runBlocking<Unit> {
         BriefingFixture().use { f ->
             BriefingSamples.evening(f)
             val chapter = f.chapter()
+            val mark = chapter.mark()
             val before = f.briefing.sections(chapter, f.now).first { it.tag == "notes" }.lines
-            chapter.shownRefs.clear() // the Director puts the chapter back as it was before the briefing
-            chapter.sheetsShownAt.clear()
+            mark.restore() // the request was refused: the Director puts the chapter back as it was before the briefing
+            assertTrue(chapter.shownRefs.isEmpty() && chapter.unrecorded.isEmpty())
             val again = f.briefing.sections(chapter, f.now).first { it.tag == "notes" }.lines
+            f.accept(chapter)
             assertEquals(before, again)
             assertEquals(3, f.store.writes.size, "each note marked once: ${f.store.writes}")
             assertEquals(1, (f.store.rows.getValue(Ref(RefKind.NOTE, 14)) as Note).shownCount)
+            assertEquals(chapter.shownRefs.size, f.store.recalls.size, "each ref recorded once: ${f.store.recalls.map { it.first }}")
             assertEquals(2, chapter.sheetsShownAt.size)
         }
     }

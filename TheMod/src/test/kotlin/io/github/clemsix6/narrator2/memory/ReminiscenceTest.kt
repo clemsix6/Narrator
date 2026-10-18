@@ -192,6 +192,8 @@ class ReminiscenceTest {
             assertTrue(recalled.line.startsWith("RECALLED for DEATH Bartok: M-1 · "), recalled.line)
             assertTrue("‹engine›" in recalled.line && "<" !in recalled.line, recalled.line)
             assertTrue(lava in chapter.shownRefs)
+            assertEquals(emptyList<String>(), f.recalls(lava), "recorded once the request is accepted")
+            f.accept(chapter)
             assertEquals(listOf("reminiscence"), f.recalls(lava))
             val decision = f.journal.sink.decisions.single { it.kind == DecisionRecord.Kind.MEMORY && it.decision == "recalled" }
             assertEquals("Bartok", decision.subject)
@@ -317,13 +319,16 @@ class ReminiscenceTest {
             val reminiscence = f.reminiscence()
             val chapter = ChapterMemory("director-c1", 1)
             val death = signal(death(bartok, "minecraft:lava"))
+            val mark = chapter.mark()
             val first = reminiscence.forWake(listOf(death), chapter, f.now)
             assertEquals(listOf(lava), first.map { it.ref })
 
-            chapter.shownRefs.remove(lava) // the Director restores the chapter after a 529
-            assertEquals(first, reminiscence.forWake(listOf(death), chapter, f.now), "the same memory, although in its cooldown now")
+            mark.restore() // the Director restores the chapter after a 529: what it showed is not recorded
+            assertEquals(first, reminiscence.forWake(listOf(death), chapter, f.now), "the same memory")
             assertTrue(lava in chapter.shownRefs)
+            f.accept(chapter)
             assertEquals(listOf("reminiscence"), f.recalls(lava), "recorded once")
+            assertEquals(1, f.journal.sink.decisions.count { it.decision == "recalled" }, "decided once")
             assertTrue(reminiscence.forWake(listOf(death), chapter, f.now).isEmpty(), "shown in the chapter already")
         }
     }
@@ -335,10 +340,12 @@ class ReminiscenceTest {
             val reminiscence = f.reminiscence()
             val chapter = ChapterMemory("director-c1", 1)
             val cue = DirectorSignal.MemoryCue(CueKind.RETURN, lava, bartok, "Bartok is where M-1 happened", f.now)
+            val mark = chapter.mark()
             assertTrue(reminiscence.forWake(listOf(cue, signal(death(bartok, "minecraft:lava"))), chapter, f.now).isEmpty())
             assertTrue(lava in chapter.shownRefs)
-            chapter.shownRefs.clear()
+            mark.restore() // not accepted: the cue goes back to the inbox, and comes again
             reminiscence.forWake(listOf(cue), chapter, f.now)
+            f.accept(chapter)
             assertEquals(listOf("reminiscence"), f.recalls(lava))
         }
     }
@@ -494,9 +501,14 @@ class ReminiscenceTest {
 
         fun reminiscence(store: MemoryStore = this.store) = Reminiscence(recall, store, journal, playClock, { config }, clock)
 
-        /** One wake-up of a new chapter and a new reminiscence: only the database remembers. */
-        suspend fun wake(event: GameEvent): List<Reminiscence.Recalled> =
-            reminiscence().forWake(listOf(signal(event)), ChapterMemory("director-c${nextChapter++}", 1), now)
+        /** One wake-up of a new chapter and a new reminiscence, its request accepted: only the database remembers. */
+        suspend fun wake(event: GameEvent): List<Reminiscence.Recalled> {
+            val chapter = ChapterMemory("director-c${nextChapter++}", 1)
+            return reminiscence().forWake(listOf(signal(event)), chapter, now).also { accept(chapter) }
+        }
+
+        /** The model accepted the request that showed what [chapter] holds: it is recorded, as the Director does. */
+        suspend fun accept(chapter: ChapterMemory) = Shown.record(store, chapter.takeUnrecorded())
 
         private var nextChapter = 1
 

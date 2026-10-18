@@ -1,7 +1,9 @@
 package io.github.clemsix6.narrator2.memory
 
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.trace.ConversationRecord
+import kotlinx.coroutines.CancellationException
 import java.time.Instant
 import java.util.UUID
 
@@ -24,18 +26,27 @@ interface Memory {
 
     /**
      * The memory sections of a new chapter's briefing (M3 §11.1), in [BriefingSection.TAGS] order, each
-     * within its budget and with its reduced form; a failing source says so in its section. Every ref
-     * rendered goes into [chapter]'s [ChapterMemory.shownRefs] and gets a `recalls` row (`briefing`).
-     * [now]: epoch milliseconds.
+     * within its budget and with its reduced form; a failing source says so in its section. What the form
+     * the briefing renders ([reduced] or not) shows goes into [chapter] ([ChapterMemory.shownRefs], the
+     * condensed sheets in [ChapterMemory.sheetsShownAt]) and waits in [ChapterMemory.unrecorded] for the
+     * request to be accepted. [now]: epoch milliseconds.
      */
-    suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection>
+    suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean = false): List<BriefingSection>
 
     /**
      * The `<memory>` block for [signals] told to the Director at a wake-up or between two tool calls (M3
      * §11.2, §11.3): the sheet of a player who joins, the reminiscences of the events; null when there
-     * is nothing to attach. Updates [chapter] (refs and sheets shown).
+     * is nothing to attach. Updates [chapter] (refs and sheets shown, and what waits to be recorded).
      */
     suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): String?
+
+    /**
+     * What [shown] showed reached the model: the Director calls it once the request that carried it is
+     * accepted, off its own coroutine ([ChapterMemory.takeUnrecorded]). Each ref gets its `recalls` row,
+     * which reinforces it and starts its cooldown; each note shown is marked `shown`, once. A write that
+     * fails is logged (`WARN`); only a cancellation goes through.
+     */
+    suspend fun recordShown(shown: List<Shown>) = Shown.record(store, shown)
 
     /** The memory lines of the situation (M3 §11.3: favor, due soon, attention), from a cache: never waits for the database. */
     fun situationLines(now: Long): List<String>
@@ -67,12 +78,77 @@ data class RunContext(val runId: Long, val kind: RunKind, val windowFrom: Instan
 
 /**
  * What the memory tracks for one open chapter (anti-repetition, M3 §10.6): the refs shown in it (briefing,
- * sheets, reminiscences, `recall`) and when each player's sheet was last shown (epoch milliseconds).
- * Touched by the Director's coroutine only.
+ * sheets, reminiscences, `recall`), when each player's condensed sheet was last shown (epoch milliseconds),
+ * and what the requests not accepted yet showed ([unrecorded]). Touched by the Director's coroutine only.
+ *
+ * A request the model does not accept told it nothing: the Director puts the chapter back as it was
+ * before ([mark], [Mark.restore]), so the same sheets and memories are shown again, and what it showed is
+ * never recorded. A request accepted hands its [unrecorded] to [Memory.recordShown].
  */
 class ChapterMemory(val conversationId: String, val number: Int) {
     val shownRefs: MutableSet<Ref> = HashSet()
     val sheetsShownAt: MutableMap<UUID, Long> = HashMap()
+
+    /** What the requests not accepted yet showed, in order: recorded once the model accepts them, dropped otherwise. */
+    val unrecorded: MutableList<Shown> = ArrayList()
+
+    /** The chapter as it is now, to put back with [Mark.restore]. */
+    fun mark(): Mark = Mark(shownRefs.toSet(), sheetsShownAt.toMap(), unrecorded.toList())
+
+    /** What [unrecorded] holds, which it no longer does: the request that showed it was accepted. */
+    fun takeUnrecorded(): List<Shown> = unrecorded.toList().also { unrecorded.clear() }
+
+    /** What the chapter held when [mark] was taken. */
+    inner class Mark internal constructor(private val refs: Set<Ref>, private val sheets: Map<UUID, Long>, private val pending: List<Shown>) {
+        /** Puts the chapter back as it was: what was shown since is shown again, and never recorded. */
+        fun restore() {
+            shownRefs.retainAll(refs)
+            sheetsShownAt.clear()
+            sheetsShownAt.putAll(sheets)
+            unrecorded.clear()
+            unrecorded.addAll(pending)
+        }
+    }
+}
+
+/**
+ * What one source showed the Director in a request (M3 §10.6): [refs] through [channel], in [context]
+ * (`recalls` rows), and the [notes] it showed (marked `shown`). Kept in [ChapterMemory.unrecorded] until the
+ * model accepts the request; dropped with it otherwise.
+ */
+data class Shown(val refs: List<Ref>, val channel: RecallChannel, val context: RecallContext, val notes: List<Ref> = emptyList()) {
+    companion object {
+        private val log = Log.memory
+
+        /** Who marks the notes the Director was shown. */
+        private val ENGINE = Author(Source.ENGINE)
+
+        /**
+         * [shown] reached the model: a `recalls` row for each of its refs, each note marked `shown` once. Each
+         * write is tried on its own; one that fails is logged (`WARN`), the others go on.
+         */
+        suspend fun record(store: MemoryStore, shown: List<Shown>) {
+            for (one in shown) {
+                if (one.refs.isEmpty()) continue
+                safely("the ${one.channel.id} refs ${one.refs.joinToString()} were shown but could not be recorded (no recalls row, no reinforcement)") {
+                    store.recorded(one.refs, one.channel, one.context)
+                }
+            }
+            for (note in shown.flatMap { it.notes }.distinct()) {
+                safely("$note was shown but could not be marked") { store.markNote(note, NoteStatus.SHOWN, ENGINE) }
+            }
+        }
+
+        private suspend fun safely(what: String, write: suspend () -> Unit) {
+            try {
+                write()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("$what: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
 }
 
 /**
@@ -141,7 +217,7 @@ class DisabledMemory(private val reason: String) : Memory {
         override fun resume(by: String) = Unit
     }
 
-    override suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection> =
+    override suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean): List<BriefingSection> =
         BriefingSection.TAGS.map { tag -> BriefingSection(tag, "", listOf("(${unavailable()})"), listOf("(${unavailable()})")) }
 
     override suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): String? = null

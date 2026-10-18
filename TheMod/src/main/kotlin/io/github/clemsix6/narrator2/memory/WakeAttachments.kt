@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorSignal
+import io.github.clemsix6.narrator2.tool.shownName
 
 /**
  * The `<memory>` block of a Director's wake-up, or of the events injected between two tool calls (M3
@@ -18,9 +19,10 @@ import io.github.clemsix6.narrator2.director.DirectorSignal
  *
  * First the sheets of the players who join ([JoinBrief]), then the reminiscences of the events
  * ([Reminiscence.forWake]); null when there is neither. Both keep the [ChapterMemory] up to date (refs and
- * sheets shown, so nothing is attached twice in a chapter) and record what they show. Runs on the
- * Director's coroutine, which owns the chapter; never throws for the memory's sake (each source says or
- * logs its own failure), only a cancellation goes through.
+ * sheets shown, so nothing is attached twice in a chapter) and leave what they show in
+ * [ChapterMemory.unrecorded], recorded once the model accepts the request. Runs on the Director's
+ * coroutine, which owns the chapter; never throws for the memory's sake (each source says or logs its own
+ * failure), only a cancellation goes through.
  */
 class WakeAttachments(private val joins: JoinBrief, private val reminiscence: Reminiscence) {
     private val log = Log.memory
@@ -37,5 +39,25 @@ class WakeAttachments(private val joins: JoinBrief, private val reminiscence: Re
                 "${block.length} characters in ${(System.nanoTime() - started) / 1_000_000} ms"
         }
         return block
+    }
+
+    companion object {
+        /**
+         * The `<memory>` block when the memory did not answer in time (the Director gave up and put [chapter]
+         * back as it was): one line for each player among [signals] whose sheet it would have attached, so the
+         * Narrator knows that it exists and how to read it; null when there is none.
+         *
+         * ```
+         * <memory>
+         * (the sheet of Bartok could not be read in time: player_profile Bartok)
+         * </memory>
+         * ```
+         */
+        fun late(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): String? {
+            val players = JoinBrief.sheetsDue(signals, chapter, now)
+            if (players.isEmpty()) return null
+            val lines = players.map { "(the sheet of ${it.shownName} could not be read in time: player_profile ${it.shownName})" }
+            return (listOf("<memory>") + lines + "</memory>").joinToString("\n")
+        }
     }
 }

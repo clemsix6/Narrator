@@ -39,6 +39,10 @@ import kotlin.math.roundToLong
  * is made of pieces (a line, or a heading with its items). When they do not all fit, the room is shared out
  * by weight (water-filling: a piece shorter than its share keeps all of it); a piece short of room cuts its
  * texts at a word, never inside a quote, or leaves out its last items (`+N more`). Pure: no database.
+ *
+ * **Refs shown** ([rendered]): the rows a form keeps and names by their ref (the nickname and the title of
+ * the header, the interactions, the open canon, the memories), taken from the rows themselves, never read
+ * back from the text: a player's words that look like a ref (« souviens-toi de M-120 ») are not one.
  */
 class SheetRenderer(private val zone: ZoneId) {
     private val dayFormat = DateTimeFormatter.ofPattern("MM-dd", Locale.ROOT).withZone(zone)
@@ -46,14 +50,22 @@ class SheetRenderer(private val zone: ZoneId) {
     private val dayTimeFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.ROOT).withZone(zone)
     private val yearDayTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT).withZone(zone)
 
+    /** A rendering: its [text], and the [refs] of the rows it shows, in order and without repeats. */
+    class Rendered(val text: String, val refs: List<Ref>)
+
     /** [sheet] as [detail] at [now] (epoch milliseconds), with only [parts] (the player's name always). */
-    fun render(sheet: PlayerSheet, detail: SheetDetail, now: Long, parts: Set<SheetPart> = SheetPart.ALL): String {
+    fun render(sheet: PlayerSheet, detail: SheetDetail, now: Long, parts: Set<SheetPart> = SheetPart.ALL): String =
+        rendered(sheet, detail, now, parts).text
+
+    /** [render], with the refs of the rows the text shows: what its reader records as shown (`recalls`, `ChapterMemory.shownRefs`). */
+    fun rendered(sheet: PlayerSheet, detail: SheetDetail, now: Long, parts: Set<SheetPart> = SheetPart.ALL): Rendered {
         val view = View(sheet, Instant.ofEpochMilli(now), parts)
-        return when (detail) {
+        val fit = when (detail) {
             SheetDetail.LINE -> view.line()
             SheetDetail.CONDENSED -> assemble(view.condensed(), detail.maxChars)
             SheetDetail.FULL -> assemble(view.full(), detail.maxChars)
         }
+        return Rendered(fit.text, fit.refs.distinct())
     }
 
     /** One rendering: the sheet, the time, the parts asked for, and what is derived from them. */
@@ -102,6 +114,9 @@ class SheetRenderer(private val zone: ZoneId) {
             add("${played(sheet.playedSeconds)} played")
             add(if (sheet.online) "online" else "offline, last seen ${dayTime(sheet.lastSeen)} (${ago(sheet.lastSeen)})")
         }.joinToString(" · ")
+
+        /** The [header] as a piece, with the refs it names: the nickname and the title. */
+        fun headerPiece(): Fixed = Fixed(header(), if (has(SheetPart.IDENTITY)) listOfNotNull(sheet.nickname?.ref, sheet.title?.ref) else emptyList())
 
         /** `reckless 4/5 ↗`, or `free: obsédé par le butin 3/5`. */
         fun traitName(trait: Trait, free: String = "free: "): String {
@@ -157,6 +172,7 @@ class SheetRenderer(private val zone: ZoneId) {
             "${day(interaction.ts)} ${interaction.ref} ${interaction.kind.id} ${signed(interaction.valence)}: ",
             cutText(text(interaction.summary), CONDENSED_SUMMARY),
             elastic = true,
+            ref = interaction.ref,
         )
 
         /** `10-03 19:40 I-512 insult -2: ` + its summary + ` · said « … » · canon C-50 · memory M-77` (FULL). */
@@ -166,6 +182,7 @@ class SheetRenderer(private val zone: ZoneId) {
             (interaction.quote?.let { " · said ${quote(it, FULL_QUOTE)}" } ?: "") +
                 (interaction.canon?.let { " · canon $it" } ?: "") + (interaction.memory?.let { " · memory $it" } ?: ""),
             elastic = true,
+            ref = interaction.ref,
         )
 
         /** The marked interactions (valence ±3) that [shown] does not hold, newest first. */
@@ -176,8 +193,11 @@ class SheetRenderer(private val zone: ZoneId) {
 
         // ── LINE ────────────────────────────────────────────────────────────────────────────────────
 
-        /** `Bartok · « le Plongeur » · 61h played · favor -31 ↘ · respect 35/100 · disrespect ×5 · reckless 4/5 ↗, … · Explorateur…`. */
-        fun line(): String {
+        /**
+         * `Bartok · « le Plongeur » · 61h played · favor -31 ↘ · respect 35/100 · disrespect ×5 · reckless 4/5 ↗, … · Explorateur…`.
+         * It names no row by its ref: it shows none.
+         */
+        fun line(): Fit {
             val items = buildList {
                 add(Item(sheet.player.shownName))
                 if (has(SheetPart.IDENTITY)) {
@@ -193,13 +213,13 @@ class SheetRenderer(private val zone: ZoneId) {
                 if (has(SheetPart.PERSONALITY) && traits.isNotEmpty()) add(Item(traits.take(LINE_TRAITS).joinToString(", ") { traitName(it.first, free = "") }))
                 if (has(SheetPart.RECAP)) doc(SheetSection.RECAP)?.let { add(Item("", text(it.content), elastic = true)) }
             }
-            return ItemsPiece(null, items, 1) { "…" }.fit(SheetDetail.LINE.maxChars) ?: cutText(sheet.player.shownName, SheetDetail.LINE.maxChars)
+            return ItemsPiece(null, items, 1) { "…" }.fit(SheetDetail.LINE.maxChars) ?: Fit(cutText(sheet.player.shownName, SheetDetail.LINE.maxChars))
         }
 
         // ── CONDENSED ───────────────────────────────────────────────────────────────────────────────
 
         fun condensed(): List<Piece> = buildList {
-            add(Fixed(header()))
+            add(headerPiece())
             if (has(SheetPart.RECAP)) add(TextPiece(docLabel("Recap", SheetSection.RECAP), docText(SheetSection.RECAP, CONDENSED_RECAP), 8))
             if (has(SheetPart.PERSONALITY)) {
                 val shown = traits.map { (trait, confidence) -> Item("${traitName(trait)} (${sureness(confidence)})") }
@@ -234,7 +254,7 @@ class SheetRenderer(private val zone: ZoneId) {
         // ── FULL ────────────────────────────────────────────────────────────────────────────────────
 
         fun full(): List<Piece> = buildList {
-            add(Fixed(header()))
+            add(headerPiece())
             if (has(SheetPart.IDENTITY)) {
                 add(Fixed("Identity: uuid ${sheet.player.uuid} · first seen ${dayTime(sheet.firstSeen)} · last seen ${dayTime(sheet.lastSeen)}"))
             }
@@ -287,7 +307,8 @@ class SheetRenderer(private val zone: ZoneId) {
                 add(
                     ItemsPiece("Disrespect ×${sheet.disrespect.size}, latest", sheet.disrespect.take(FULL_DISRESPECT).map {
                         val head = "${day(it.ts)} ${it.ref} "
-                        it.quote?.let { q -> Item("$head« ", quoted(q, FULL_QUOTE), " »", elastic = true) } ?: Item(head, text(it.summary), elastic = true)
+                        it.quote?.let { q -> Item("$head« ", quoted(q, FULL_QUOTE), " »", elastic = true, ref = it.ref) }
+                            ?: Item(head, text(it.summary), elastic = true, ref = it.ref)
                     }, 2),
                 )
             }
@@ -314,14 +335,17 @@ class SheetRenderer(private val zone: ZoneId) {
                 append(": ")
             }
             val end = (entry.quote?.let { " · said ${quote(it, FULL_QUOTE)}" } ?: "") + (entry.stakes?.let { " · stakes: ${cutText(text(it), FULL_STAKES)}" } ?: "")
-            return Item(head, text(entry.statement), end, elastic = true)
+            return Item(head, text(entry.statement), end, elastic = true, ref = entry.ref)
         }
 
         private fun memories(): Piece {
             if (sheet.memories.isEmpty()) return Fixed("Memories: (none yet)")
             return ListPiece("Strongest memories:", sheet.memories.map { memory ->
                 val with = others(memory.players)?.let { " with $it" } ?: ""
-                Item("${memory.ref} ${day(memory.occurredFrom)} (${ago(memory.occurredFrom)}) ★${memory.importance}$with: ${text(memory.title)}: ", text(memory.content), elastic = true)
+                Item(
+                    "${memory.ref} ${day(memory.occurredFrom)} (${ago(memory.occurredFrom)}) ★${memory.importance}$with: ${text(memory.title)}: ", text(memory.content),
+                    elastic = true, ref = memory.ref,
+                )
             }, 6, ::more)
         }
 
@@ -514,33 +538,37 @@ class SheetRenderer(private val zone: ZoneId) {
 
     // ── Pieces and how they share the room ──────────────────────────────────────────────────────────
 
+    /** Some text of a rendering, and the refs of the rows it shows. */
+    private class Fit(val text: String, val refs: List<Ref> = emptyList())
+
     /** A part of a rendering that fits itself into a number of characters; [weight]: its share of the room when not everything fits. */
     private abstract class Piece(val weight: Int) {
         /** This piece within [max] characters: its whole form when it fits; null when even its shortest form does not. */
-        abstract fun fit(max: Int): String?
+        abstract fun fit(max: Int): Fit?
 
-        val natural: Int by lazy { fit(Int.MAX_VALUE)?.length ?: 0 }
+        val natural: Int by lazy { fit(Int.MAX_VALUE)?.text?.length ?: 0 }
     }
 
-    /** A line that is never shortened: the header, or a line saying a section is missing. */
-    private class Fixed(private val text: String) : Piece(FIXED_WEIGHT) {
-        override fun fit(max: Int): String? = text.takeIf { it.length <= max }
+    /** A line that is never shortened: the header (and the [refs] it names), or a line saying a section is missing. */
+    private class Fixed(private val text: String, private val refs: List<Ref> = emptyList()) : Piece(FIXED_WEIGHT) {
+        override fun fit(max: Int): Fit? = if (text.length <= max) Fit(text, refs) else null
     }
 
     /** `label: text`, the text cut at a word when it does not fit. */
     private class TextPiece(private val label: String, private val text: String, weight: Int) : Piece(weight) {
-        override fun fit(max: Int): String? {
+        override fun fit(max: Int): Fit? {
             val room = max.toLong() - label.length - 2
             if (room < text.length && room < MIN_TEXT) return null
-            return "$label: ${cutText(text, room.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())}"
+            return Fit("$label: ${cutText(text, room.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())}")
         }
     }
 
     /**
      * An item of an [ItemsPiece] or a [ListPiece]: [head], [body], [end]. An [elastic] body may be cut (at a
-     * word, never inside a quote) when the piece is short of room; head and end never are.
+     * word, never inside a quote) when the piece is short of room; head and end never are. [ref]: the row it
+     * shows and names, if any.
      */
-    private class Item(val head: String, val body: String = "", val end: String = "", val elastic: Boolean = false) {
+    private class Item(val head: String, val body: String = "", val end: String = "", val elastic: Boolean = false, val ref: Ref? = null) {
         val text: String get() = head + body + end
 
         fun cut(max: Int): String = head + cutText(body, max) + end
@@ -557,14 +585,14 @@ class SheetRenderer(private val zone: ZoneId) {
         private val minBody: Int = MIN_ELASTIC,
         private val more: (Int) -> String = { "+$it more" },
     ) : Piece(weight) {
-        override fun fit(max: Int): String? = fitItems(items, max, minBody, 1) { texts, left ->
+        override fun fit(max: Int): Fit? = fitItems(items, max, minBody, 1) { texts, left ->
             (label?.let { "$it: " } ?: "") + (texts + if (left > 0) listOf(more(left)) else emptyList()).joinToString(SEPARATOR)
         }
     }
 
     /** A heading, then one indented line per item; short of room, its elastic bodies are cut, then its last items left out ([more]). */
     private class ListPiece(private val heading: String, private val items: List<Item>, weight: Int, private val more: (Int) -> String) : Piece(weight) {
-        override fun fit(max: Int): String? = fitItems(items, max, MIN_LIST_BODY, 0) { texts, left ->
+        override fun fit(max: Int): Fit? = fitItems(items, max, MIN_LIST_BODY, 0) { texts, left ->
             (listOf(heading) + texts.map { "  $it" } + if (left > 0) listOf("  " + more(left)) else emptyList()).joinToString("\n")
         }
     }
@@ -572,15 +600,6 @@ class SheetRenderer(private val zone: ZoneId) {
     companion object {
         /** The stat [DuckPlayerSheets] adds from `pair_stats`: `{pairs: [{uuid, name, minutes, minutes_7d, pvp_won, pvp_lost, griefs_done, griefs_suffered}]}`. */
         const val PAIRS = "pairs"
-
-        /** A ref the sheets print: `M-120`, `I-512`, `C-45`. */
-        private val REF = Regex("""\b[MCIHN]-[1-9][0-9]{0,17}\b""")
-
-        /**
-         * The refs a rendered sheet shows, in order and without repeats: what its reader records as shown
-         * (`recalls`, `ChapterMemory.shownRefs`). A player's quote that looks like a ref counts too.
-         */
-        fun refs(rendered: String): List<Ref> = REF.findAll(rendered).mapNotNull { Ref.parse(it.value) }.distinct().toList()
 
         private const val SEPARATOR = " · "
         private const val FIXED_WEIGHT = 1_000
@@ -640,19 +659,21 @@ class SheetRenderer(private val zone: ZoneId) {
         /**
          * The most of [items] that fit in [max] characters once laid out by [layout] (the texts shown, and how many
          * are left out): whole when they fit; else with their elastic bodies sharing what the rest leaves
-         * (water-filling, [minBody] each at least); else with fewer items, down to [minShown].
+         * (water-filling, [minBody] each at least); else with fewer items, down to [minShown]. With the refs of
+         * the items kept.
          */
-        private fun fitItems(items: List<Item>, max: Int, minBody: Int, minShown: Int, layout: (List<String>, Int) -> String): String? {
+        private fun fitItems(items: List<Item>, max: Int, minBody: Int, minShown: Int, layout: (List<String>, Int) -> String): Fit? {
             for (shown in items.size downTo minShown) {
                 val kept = items.take(shown)
+                val refs = kept.mapNotNull { it.ref }
                 val whole = layout(kept.map { it.text }, items.size - shown)
-                if (whole.length <= max) return whole
+                if (whole.length <= max) return Fit(whole, refs)
                 val elastic = kept.filter { it.elastic }
                 if (elastic.isEmpty()) continue
                 val room = max - (whole.length - elastic.sumOf { it.body.length })
                 if (room < elastic.size * minBody) continue
                 val caps = share(elastic.map { it.body.length }, elastic.map { 1 }, room).iterator()
-                return layout(kept.map { if (it.elastic) it.cut(caps.next()) else it.text }, items.size - shown)
+                return Fit(layout(kept.map { if (it.elastic) it.cut(caps.next()) else it.text }, items.size - shown), refs)
             }
             return null
         }
@@ -661,15 +682,16 @@ class SheetRenderer(private val zone: ZoneId) {
          * [pieces] one per line within [max] characters. The first pass shares the room and always fits (each
          * piece stays within its cap); what the cut pieces left unused (items dropped whole) is shared again.
          */
-        private fun assemble(pieces: List<Piece>, max: Int): String {
+        private fun assemble(pieces: List<Piece>, max: Int): Fit {
             val room = max - (pieces.size - 1)
             var allowance = room
-            var best = ""
+            var best = Fit("")
             for (pass in 0 until FIT_PASSES) {
                 val caps = share(pieces.map { it.natural }, pieces.map { it.weight }, allowance)
-                val text = pieces.indices.mapNotNull { pieces[it].fit(caps[it]) }.joinToString("\n")
+                val fits = pieces.indices.mapNotNull { pieces[it].fit(caps[it]) }
+                val text = fits.joinToString("\n") { it.text }
                 if (text.length > max) break
-                best = text
+                best = Fit(text, fits.flatMap { it.refs })
                 if (pieces.indices.all { caps[it] >= pieces[it].natural } || text.length == max) break
                 allowance += max - text.length
             }
