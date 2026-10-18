@@ -245,6 +245,17 @@ class ReminiscenceTest {
     }
 
     @Test
+    fun `a memory the Director saw through a tool in the chapter is not attached in it`() = runBlocking<Unit> {
+        Fixture().use { f ->
+            // Seen through `recall` long ago in play time: out of its cooldown, but still in the chapter's conversation.
+            val lava = f.memory(1, "Mort dans la lave", "Bartok est mort dans la lave.", tags = listOf("death", "lava"), entities = listOf("minecraft:lava"), shownPlay = WORLD - 300 * 60)
+            f.db.writer.update("INSERT INTO recalls VALUES (?, ?, 'recall_tool', 'director-c1', 42, NULL)", f.clock.instant(), lava.id)
+            assertTrue(f.reminiscence().forWake(listOf(signal(death(bartok, "minecraft:lava"))), ChapterMemory("director-c1", 1), f.now).isEmpty())
+            assertEquals(listOf(lava), f.reminiscence().forWake(listOf(signal(death(bartok, "minecraft:lava"))), ChapterMemory("director-c2", 2), f.now).map { it.ref }, "another chapter")
+        }
+    }
+
+    @Test
     fun `at most recallPerWake reminiscences per wake and one per event`() = runBlocking<Unit> {
         Fixture().use { f ->
             (1L..4L).forEach { f.lavaMemory(it) }

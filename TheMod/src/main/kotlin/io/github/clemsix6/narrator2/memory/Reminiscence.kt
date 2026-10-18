@@ -47,7 +47,8 @@ import kotlin.math.sqrt
  *   `MemoryJobs` posts; called at the first wake-up of a day.
  *
  * Anti-repetition (M3 §10.6):
- * - a memory already shown in the chapter is not attached again in it ([ChapterMemory.shownRefs]);
+ * - a memory already shown in the chapter is not attached again in it: in [ChapterMemory.shownRefs], or
+ *   with a `recalls` row of the chapter's conversation (what `recall` and `player_profile` showed);
  * - a memory shown less than `memory.recallCooldownPlayMinutes` of world play ago is not attached, nor
  *   brought back to its place, except the place return of a memory of importance [PRIORITY_IMPORTANCE] or more;
  * - at most `memory.recallPerWake` reminiscences per call of [forWake], one per event, [PER_PLAY_HOUR] per
@@ -150,7 +151,7 @@ class Reminiscence(
             .take(MAX_SEARCHES)
         if (perWake <= 0 || cues.isEmpty()) return emptyList()
         val world = playClock.worldPlaySeconds(now)
-        val cooling = safely("reading the memories in their cooldown") { cooling(world) } ?: return emptyList()
+        val seen = safely("reading the memories seen lately") { seen(world, chapter.conversationId) } ?: return emptyList()
         val recalled = ArrayList<Recalled>()
         for (cue in cues) {
             if (recalled.size >= perWake) break
@@ -160,7 +161,7 @@ class Reminiscence(
                 continue
             }
             if (!hourAllows(world)) continue
-            val hit = search(cue, chapter.shownRefs + cooling) ?: continue
+            val hit = search(cue, chapter.shownRefs + seen) ?: continue
             val one = Recalled(hit.ref, cue.eventId, "RECALLED for ${cue.label}: ${hit.line}")
             chapter.shownRefs += hit.ref
             attached[cue.eventId] = one
@@ -188,13 +189,20 @@ class Reminiscence(
         }
     }
 
-    /** The memories shown less than the cooldown ago, in world play time: their last recall reinforced them then (M3 §9.2). */
-    private suspend fun cooling(world: Long): Set<Ref> {
+    /**
+     * The memories not to bring back: those shown less than the cooldown ago, in world play time (their last
+     * recall reinforced them then, M3 §9.2), and those the chapter's [conversationId] has seen whenever,
+     * through any channel (`recall` and `player_profile` cannot fill [ChapterMemory.shownRefs]: they leave
+     * `recalls` rows of the Director's conversation, M3-09).
+     */
+    private suspend fun seen(world: Long, conversationId: String): Set<Ref> {
         val since = world - config().recallCooldownPlayMinutes * 60L
         return journal.read(READ_TIMEOUT_MS) { connection ->
-            connection.query("SELECT id FROM memories WHERE last_recalled_at IS NOT NULL AND reinforced_play_s > ?", since) {
-                Ref(RefKind.MEMORY, getLong(1))
-            }.toSet()
+            connection.query(
+                "SELECT id FROM memories WHERE last_recalled_at IS NOT NULL AND reinforced_play_s > ? " +
+                    "UNION SELECT ref_id FROM recalls WHERE conversation_id = ? AND ref_id IN (SELECT id FROM memories)",
+                since, conversationId,
+            ) { Ref(RefKind.MEMORY, getLong(1)) }.toSet()
         }
     }
 
