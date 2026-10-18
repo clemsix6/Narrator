@@ -34,7 +34,8 @@ import java.util.Locale
 
 /**
  * Writes what the Director reads about the game (M1_M2 §12.6): English, compact, one line per event,
- * dated relative to the `now` of the block that holds it (`[-36s]`).
+ * dated relative to the `now` of the block that holds it (`[-36s]`). The memory's signals have theirs
+ * (M3 §11.3): `DUE C-45 promise → …`, `NOTE N-9 coherence: …`, `RETURN …`, `ANNIVERSARY …`.
  *
  * Whatever a player or a model wrote goes through the common escape, `core/ModelText`, so that no one
  * can forge an `<operator>` or `<engine>` tag nor start a line of their own: texts are quoted ([quote]:
@@ -86,10 +87,19 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             is DirectorSignal.Event -> event(signal.envelope, signal.annotation)
             is DirectorSignal.TaskDone -> task(signal)
             is DirectorSignal.ReminderDue -> "REMINDER R-${signal.id} set ${duration(signal.at - signal.setAt)} ago: ${quote(signal.note)}"
+            is DirectorSignal.MemoryDue -> "DUE ${memory(signal.line)}"
+            is DirectorSignal.MemoryNote -> "NOTE ${signal.ref} ${signal.kind.id}: ${memory(signal.text)}"
+            is DirectorSignal.MemoryCue -> "${signal.kind.name} ${memory(signal.line)}"
             else -> return null
         }
         return "[-${duration(now - item.at)}] $body"
     }
+
+    /**
+     * A line written by the memory (M3 §11.3): already escaped by its producer, escaped again on one line
+     * all the same (escaping twice changes nothing) and cut to [MEMORY_LINE_MAX] characters.
+     */
+    private fun memory(text: String): String = ModelText.escape(ModelText.cut(text, MEMORY_LINE_MAX))
 
     /** One event, without its date. [annotation] comes from the salience: the chat triage, or a grief's count. */
     fun event(envelope: Envelope, annotation: String?): String = when (val event = envelope.event) {
@@ -198,6 +208,9 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         /** Longest title (advancement) or name (mob name tag). */
         const val TITLE_MAX = 60
 
+        /** Longest line of the memory after its keyword (`DUE`, `NOTE`, `RETURN`, `ANNIVERSARY`); a note holds 300 characters at most. */
+        const val MEMORY_LINE_MAX = 600
+
         /** Longest task result given to the Director (a worker's report is at most 3 000 characters). */
         const val TASK_RESULT_MAX = 3_000
 
@@ -249,6 +262,9 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             is DirectorSignal.TaskDone -> "TASK"
             is DirectorSignal.ReminderDue -> "REMINDER"
             is DirectorSignal.OperatorWhisper -> "WHISPER"
+            is DirectorSignal.MemoryDue -> "DUE"
+            is DirectorSignal.MemoryNote -> "NOTE"
+            is DirectorSignal.MemoryCue -> signal.kind.name
             else -> "OTHER"
         }
 

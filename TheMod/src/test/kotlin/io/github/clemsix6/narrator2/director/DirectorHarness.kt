@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.ClaudeClient
+import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
@@ -25,6 +26,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.FakeReflexes
 import io.github.clemsix6.narrator2.testing.FakeWorkers
 import io.github.clemsix6.narrator2.testing.MemoryTraceSink
@@ -38,6 +40,7 @@ import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.NoArgs
 import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolEffect
+import io.github.clemsix6.narrator2.tool.ToolEnv
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolSet
 import io.github.clemsix6.narrator2.tool.of
@@ -67,7 +70,7 @@ import kotlin.test.fail
  * A whole Director without Minecraft (M1_M2 §17.2): the real bus, salience, inbox, `AgentLoop` and
  * `ToolRunner`, a `ClaudeClient` talking to a strict [FakeAnthropic], fake tools (`say`, `sql`, and
  * `slow_probe`, which waits for the test), fake reflexes, a fake game (world clock, action bar,
- * operators), traces in memory and virtual time.
+ * operators), a fake memory ([memory], M3), traces in memory and virtual time.
  *
  * Time only moves when the test says so ([advance]): the Director's coroutines run on a test
  * dispatcher whose clock is also the engine's [clock]. The fake server answers on real threads; the
@@ -81,6 +84,7 @@ class DirectorHarness(
     mode: OperatorChannelMode = OperatorChannelMode.SYSTEM_MESSAGE,
     heartbeatMinutes: List<Int> = listOf(3, 3),
     turnsPerHour: Int = NarratorConfig().director.turnsPerHour,
+    memoryOff: String? = null,
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -94,6 +98,15 @@ class DirectorHarness(
     val workers = FakeWorkers()
     val game = FakeGame()
     val bus = EventBus(clock, { 0L }, 1)
+
+    /**
+     * The memory (M3): a fake that records what the Director asks of it and gives back what the test set;
+     * the services have a `DisabledMemory` instead when the harness is made with `memoryOff`.
+     */
+    val memory = FakeMemory(clock)
+
+    /** The tool environment of each chapter opened, in order. */
+    val toolEnvs = CopyOnWriteArrayList<ToolEnv>()
 
     /** Texts said by the fake `say` tool, in order. */
     val said = CopyOnWriteArrayList<String>()
@@ -127,11 +140,12 @@ class DirectorHarness(
             guards = guards,
             reflexes = reflexes,
             workers = workers,
+            memory = memoryOff?.let(::DisabledMemory) ?: memory,
         )
         services = object : NarratorServices by base {
             override val director get() = this@DirectorHarness.director
         }
-        director = Director(services, game, { ToolSet.of(listOf(SayTool(), SqlTool(), SlowProbeTool())) }, Random(7))
+        director = Director(services, game, { env -> toolEnvs += env; ToolSet.of(listOf(SayTool(), SqlTool(), SlowProbeTool())) }, Random(7))
         director.start()
         runCurrent()
     }
