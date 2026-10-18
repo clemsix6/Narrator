@@ -31,17 +31,22 @@ internal const val PLAYERS_MAX = 8
 /** Journal refs a write may cite as its evidence (the store's limit). */
 internal const val EVIDENCE_MAX = 20
 
-/** What `remember` records: a canon entry ([canon]) or a memory ([memory]); exactly one is set. */
+/**
+ * What `remember` records: a canon entry ([canon]) or a memory ([memory]); exactly one is set.
+ *
+ * @property told the Narrator says it to the players: the Chronicler records it only with the Narrator's
+ *   own words (`quote`), from the line it cites in `evidence` (M3 review, finding 1).
+ */
 @Serializable
-enum class RememberKind(val canon: CanonKind?, val memory: MemoryKind?) {
-    @SerialName("promise") PROMISE(CanonKind.PROMISE, null),
-    @SerialName("threat") THREAT(CanonKind.THREAT, null),
-    @SerialName("challenge") CHALLENGE(CanonKind.CHALLENGE, null),
-    @SerialName("law") LAW(CanonKind.LAW, null),
-    @SerialName("prophecy") PROPHECY(CanonKind.PROPHECY, null),
-    @SerialName("nickname") NICKNAME(CanonKind.NICKNAME, null),
-    @SerialName("title") TITLE(CanonKind.TITLE, null),
-    @SerialName("place") PLACE(CanonKind.PLACE, null),
+enum class RememberKind(val canon: CanonKind?, val memory: MemoryKind?, val told: Boolean = false) {
+    @SerialName("promise") PROMISE(CanonKind.PROMISE, null, told = true),
+    @SerialName("threat") THREAT(CanonKind.THREAT, null, told = true),
+    @SerialName("challenge") CHALLENGE(CanonKind.CHALLENGE, null, told = true),
+    @SerialName("law") LAW(CanonKind.LAW, null, told = true),
+    @SerialName("prophecy") PROPHECY(CanonKind.PROPHECY, null, told = true),
+    @SerialName("nickname") NICKNAME(CanonKind.NICKNAME, null, told = true),
+    @SerialName("title") TITLE(CanonKind.TITLE, null, told = true),
+    @SerialName("place") PLACE(CanonKind.PLACE, null, told = true),
     @SerialName("lore") LORE(CanonKind.LORE, null),
     @SerialName("opinion") OPINION(CanonKind.OPINION, null),
     @SerialName("running_gag") RUNNING_GAG(CanonKind.RUNNING_GAG, null),
@@ -70,7 +75,10 @@ data class RememberArgs(
     )
     @MaxLen(MemoryLimits.CANON_STATEMENT)
     val what: String,
-    @Doc("Your exact words to the players, when you said it to them (the promise, the threat, the decree, the nickname).")
+    @Doc(
+        "Your exact words to the players, when you said it to them (the promise, the threat, the decree, the nickname). " +
+            "With an exchange log: required for what was said to players, 3 words or more copied from the NARRATOR line cited in evidence.",
+    )
     @MaxLen(MemoryLimits.CANON_QUOTE)
     val quote: String? = null,
     @Doc("The players it concerns, by name, online or not; leave out for everyone. A nickname or a title: exactly one.")

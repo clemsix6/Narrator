@@ -4,10 +4,6 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.InteractionKind
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryKind
-import io.github.clemsix6.narrator2.memory.PlayerSheet
-import io.github.clemsix6.narrator2.memory.PlayerSheets
-import io.github.clemsix6.narrator2.memory.SheetDetail
-import io.github.clemsix6.narrator2.memory.SheetPart
 import io.github.clemsix6.narrator2.testing.MemorySamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -27,14 +23,14 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
 import java.time.Instant
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
  * The memory tools of the Director (M3 §5) on the real store, index and recall: their schemas, each result
- * and each error of §5, what they write in the tables, and who sees them.
+ * and each error of §5, what they write in the tables, who sees them, and what each role may write with
+ * them (M3 review, findings 1 and 4).
  */
 class MemoryToolsTest {
     private val remember = RememberTool()
@@ -240,27 +236,65 @@ class MemoryToolsTest {
     }
 
     @Test
-    fun `the Chronicler's quote is checked against its window, its evidence cited as the exchange log writes it`() = fixture { f ->
+    fun `the Chronicler remembers what was told to the players only with the Narrator's words, its evidence cited as the exchange log writes it`() = fixture { f ->
         val from = Instant.parse("2026-10-01T19:00:00Z")
         val chronicler = f.chronicler(7, from, f.clock.instant())
         f.base.chat(900, Instant.parse("2026-10-01T19:30:00Z"), "narrator", "Mimosa, je te rends tes bottes demain, promis.")
         val what = """"kind":"promise","what":"Le Narrateur a promis à Mimosa de lui rendre ses bottes le lendemain.","players":["Mimosa"]"""
 
         assertInvalid(
-            "quote must be words the Narrator said in this window; leave quote out or copy them exactly",
-            f.call(remember, """{$what,"quote":"je te donne un diamant","evidence":["e900"]}""", chronicler),
+            "a promise needs quote: copy 3 words or more exactly from the Narrator's NARRATOR line, and cite that line in evidence",
+            f.call(remember, """{$what,"evidence":["e900"]}""", chronicler),
         )
+        val invented = f.call(remember, """{$what,"quote":"je te donne un diamant","evidence":["e900"]}""", chronicler)
+        assertEquals(ToolStatus.INVALID, invented.status, "the store finds no such words of the Narrator: ${invented.text}")
         assertInvalid(
             "evidence: \"x9\" is not a ref of the exchange log: cite e… (events, chat) and t… (tool calls) as given",
-            f.call(remember, """{$what,"evidence":["e900","x9"]}""", chronicler),
+            f.call(remember, """{$what,"quote":"je te rends tes bottes demain","evidence":["e900","x9"]}""", chronicler),
         )
+        assertEquals(0L, f.base.count("canon"))
         assertOk(
             "ok: remembered C-1000 (promise → Mimosa, due 10-02 19:40, in 1d0h); the Director will get a DUE event then",
             f.call(remember, """{$what,"quote":"je te rends tes bottes demain","due_in_minutes":1440,"evidence":["E900"]}""", chronicler),
         )
+        assertOk(
+            "ok: remembered C-1001 (lore)",
+            f.call(remember, """{"kind":"lore","what":"Le pic au nord du spawn porte le nom de Dent du Juge.","evidence":["e900"]}""", chronicler),
+        )
 
-        val row = f.rows("SELECT source, run_id, conversation_id, evidence_events FROM canon") { listOf(getString(1), getLong(2), getString(3), getString(4)) }
-        assertEquals(listOf(listOf("chronicler", 7L, "chronicler-7", "[900]")), row)
+        val row = f.rows("SELECT source, run_id, conversation_id, evidence_events FROM canon ORDER BY id") { listOf(getString(1), getLong(2), getString(3), getString(4)) }
+        assertEquals(listOf(listOf("chronicler", 7L, "chronicler-7", "[900]"), listOf("chronicler", 7L, "chronicler-7", "[900]")), row)
+    }
+
+    @Test
+    fun `the Dreamer remembers only arcs, lore and observations, never with a quote, and resolves only arcs`() = fixture { f ->
+        val dreamer = f.dreamer(8)
+        assertInvalid(
+            "the Dreamer remembers only an arc (planned), lore or an observation, not a promise: what the Narrator tells the players " +
+                "is recorded from its own words, by itself or the Chronicler",
+            f.call(remember, """{"kind":"promise","what":"Le Narrateur a promis 64 diamants à Bartok.","quote":"je te promets 64 diamants","players":["Bartok"]}""", dreamer),
+        )
+        listOf("threat", "challenge", "law", "prophecy", "nickname", "title", "opinion", "running_gag", "claim", "episode").forEach { kind ->
+            val result = f.call(remember, """{"kind":"$kind","what":"Bartok est surnommé « le Plongeur ».","players":["Bartok"]}""", dreamer)
+            assertTrue(result.text.startsWith("Invalid arguments: the Dreamer remembers only an arc (planned), lore or an observation, not "), "$kind: ${result.text}")
+        }
+        assertInvalid(
+            "quote does not apply to the Dreamer, who never heard the Narrator: leave it out",
+            f.call(remember, """{"kind":"lore","what":"Le pic au nord du spawn porte le nom de Dent du Juge.","quote":"la Dent du Juge"}""", dreamer),
+        )
+        assertEquals(0L, f.base.count("canon") + f.base.count("memories"))
+        assertOk("ok: remembered C-1000 (lore)", f.call(remember, """{"kind":"lore","what":"Le pic au nord du spawn porte le nom de Dent du Juge."}""", dreamer))
+        assertOk(
+            "ok: remembered M-1001 (observation about Bartok)",
+            f.call(remember, """{"kind":"observation","what":"Bartok revient prier après chaque insulte.","players":["Bartok"]}""", dreamer),
+        )
+
+        f.call(remember, """{"kind":"promise","what":"Le Narrateur a promis à Mimosa de lui rendre ses bottes.","players":["Mimosa"]}""")
+        assertInvalid(
+            "the Dreamer resolves only arcs, and C-1002 is a promise: the Narrator and the Chronicler settle the rest",
+            f.call(resolve, """{"id":"C-1002","outcome":"broken","note":"Le Narrateur a gardé les bottes de Mimosa."}""", dreamer),
+        )
+        assertEquals(listOf("active", "active"), f.rows("SELECT status FROM canon ORDER BY id") { getString(1) })
     }
 
     @Test
@@ -310,26 +344,58 @@ class MemoryToolsTest {
 
     @Test
     fun `note_interaction adds a line to the history and says how the favor moved`() = fixture { f ->
-        val favors = ArrayDeque(listOf(-18.0, -31.0))
-        f.sheets = sheetsOf { MemorySamples.sheet.copy(favor = favors.removeFirst()) }
-
+        // Bartok has played 0 s: each interaction weighs 1, and favor = 100 · Σv / (3 · (n + 3)).
         assertOk(
-            "ok: noted I-1000 (Bartok, insult -2); favor of Bartok -18 → -31",
+            "ok: noted I-1000 (Bartok, insult -2); favor of Bartok now -17",
             f.call(note, """{"player":"Bartok","kind":"insult","valence":-2,"summary":"a traité le Narrateur de « nul » dans le chat.","quote":"narrateur t'es nul"}"""),
         )
+        assertOk(
+            "ok: noted I-1001 (Bartok, provocation -1); favor of Bartok -17 → -20",
+            f.call(note, """{"player":"Bartok","kind":"provocation","valence":-1,"summary":"a défié le Narrateur de le foudroyer."}"""),
+        )
 
-        val row = f.rows("SELECT kind, valence, counts, disrespect, quote, source, turn_id FROM interactions") {
+        val row = f.rows("SELECT kind, valence, counts, disrespect, quote, source, turn_id FROM interactions ORDER BY id") {
             listOf(getString(1), getInt(2), getBoolean(3), getBoolean(4), getString(5), getString(6), getLong(7))
         }
-        assertEquals(listOf(listOf("insult", -2, true, true, "narrateur t'es nul", "director", 42L)), row)
+        assertEquals(
+            listOf(listOf("insult", -2, true, true, "narrateur t'es nul", "director", 42L), listOf("provocation", -1, true, true, null, "director", 42L)),
+            row,
+        )
     }
 
     @Test
     fun `the same interaction noted twice is one line`() = fixture { f ->
         val input = """{"player":"Bartok","kind":"apology","valence":1,"summary":"a présenté des excuses sincères au Narrateur."}"""
 
-        assertOk("ok: noted I-1000 (Bartok, apology +1)", f.call(note, input))
+        assertOk("ok: noted I-1000 (Bartok, apology +1); favor of Bartok now +8", f.call(note, input))
         assertOk("ok: already noted as I-1000 (Bartok, apology +1); nothing added", f.call(note, input))
+        assertEquals(1L, f.base.count("interactions"))
+    }
+
+    @Test
+    fun `the Director's note cites the player's lines that woke its turn, and the Chronicler's note of the same line is the same`() = fixture { f ->
+        val said = Instant.parse("2026-10-01T19:39:00Z")
+        f.base.chat(900, said, "public", "narrateur t'es nul", f.bartok.uuid)
+        f.base.chat(901, said, "public", "laisse-le tranquille", f.mimosa.uuid)
+        f.base.chat(902, said.plusSeconds(5), "narrator", "Bartok, guichet des insultes : plainte enregistrée.")
+        f.base.chat(903, Instant.parse("2026-10-01T19:20:00Z"), "public", "salut narrateur", f.bartok.uuid)
+        f.base.sql(
+            "INSERT INTO turns (turn_id, conversation_id, started_at, trigger, trigger_events, injected_events) " +
+                "VALUES (42, 'director-c13', ?, 'chat', [900, 901, 902], [])",
+            f.clock.instant(),
+        )
+
+        assertOk(
+            "ok: noted I-1000 (Bartok, insult -2); favor of Bartok now -17",
+            f.call(note, """{"player":"Bartok","kind":"insult","valence":-2,"summary":"a traité le Narrateur de « nul » dans le chat."}"""),
+        )
+        assertEquals(listOf("[900]" to said.toEpochMilli()), f.rows("SELECT evidence_events::VARCHAR, epoch_ms(ts) FROM interactions") { getString(1) to getLong(2) })
+
+        val chronicler = f.chronicler(7, Instant.parse("2026-10-01T19:30:00Z"), f.clock.instant())
+        assertOk(
+            "ok: already noted as I-1000 (Bartok, insult -2); nothing added",
+            f.call(note, """{"player":"Bartok","kind":"insult","valence":-2,"summary":"a insulté le Narrateur en public.","evidence":["e900"]}""", chronicler),
+        )
         assertEquals(1L, f.base.count("interactions"))
     }
 
@@ -447,12 +513,5 @@ class MemoryToolsTest {
 
         assertEquals(ToolStatus.FAILED, result.status)
         assertEquals("FAILED: the Journal is unavailable: unit test", result.text)
-    }
-
-    /** Sheets whose [sheet] is computed at each read. */
-    private fun sheetsOf(sheet: () -> PlayerSheet): PlayerSheets = object : PlayerSheets {
-        override suspend fun sheet(player: UUID, now: Long): PlayerSheet = sheet()
-
-        override fun render(sheet: PlayerSheet, detail: SheetDetail, now: Long, parts: Set<SheetPart>): String = ""
     }
 }
