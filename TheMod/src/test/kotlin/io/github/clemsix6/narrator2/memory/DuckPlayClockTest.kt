@@ -141,6 +141,20 @@ class DuckPlayClockTest {
     }
 
     @Test
+    fun `a player's clock at a past time counts the sessions until then, not those closed after`() {
+        session(1, bartok, 0, 60)
+        session(2, bartok, 100, null) // being played
+        session(3, mimosa, 30, 90)
+        fun clockAt(player: PlayerRef, minutes: Long) = DuckPlayClock.playerSecondsAt(fixture.db.writer, player.uuid, at(minutes))
+        assertEquals(50 * 60L, clockAt(bartok, 50), "inside a session that closed later")
+        assertEquals(60 * 60L, clockAt(bartok, 80), "between two sessions")
+        assertEquals((60 + 20) * 60L, clockAt(bartok, 120), "the running session until then")
+        assertEquals(10 * 60L, clockAt(mimosa, 40))
+        assertEquals(0L, clockAt(mimosa, 20), "before the first session")
+        assertEquals(0L, DuckPlayClock.playerSecondsAt(fixture.db.writer, java.util.UUID(7, 7), at(120)), "a player never seen")
+    }
+
+    @Test
     fun `world play between two times clips the sessions and runs those of players online`() = runBlocking {
         session(1, bartok, 0, 60)
         session(2, mimosa, 100, null) // Mimosa is online

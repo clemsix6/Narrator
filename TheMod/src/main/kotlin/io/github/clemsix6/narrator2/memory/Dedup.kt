@@ -7,8 +7,9 @@ import java.util.UUID
 
 /**
  * Finds the open row an add would duplicate (M3 §4.3). The Director and the Chronicler may both record
- * the same thing: the second pass is the safety net, the duplicate is not wanted. The texts are compared
- * by [Indexer.similarity] (BM25 against the row over BM25 against itself); [THRESHOLD] or more is the same.
+ * the same thing: the second pass is the safety net, the duplicate is not wanted (an interaction counted
+ * twice moves the favor twice). The texts are compared by [Indexer.similarity] (BM25 against the row over
+ * BM25 against itself); [THRESHOLD] or more is the same.
  */
 internal class Dedup(private val indexer: Indexer) {
     /**
@@ -29,7 +30,9 @@ internal class Dedup(private val indexer: Indexer) {
 
     /**
      * An unarchived interaction of the same player and kind less than [INTERACTION_WINDOW] from [at] that
-     * shares an evidence event or a tool call, or whose text is at least [THRESHOLD] similar. Null when none.
+     * is the same one, the most recent first: it shares an evidence event or a tool call; or one of the two
+     * has no evidence at all (the Director, who notes an interaction as it happens, may cite none, and its
+     * words never match the Chronicler's); or its text is at least [THRESHOLD] similar. Null when none.
      */
     fun interaction(
         connection: Connection,
@@ -41,11 +44,12 @@ internal class Dedup(private val indexer: Indexer) {
         text: String,
     ): Ref? {
         val candidates = connection.query(
-            "SELECT id, list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) FROM interactions " +
-                "WHERE player_uuid = ? AND kind = ? AND NOT archived AND ts BETWEEN ? AND ? ORDER BY id DESC",
+            "SELECT id, list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) OR (len(evidence_events) = 0 AND len(tool_calls) = 0) " +
+                "FROM interactions WHERE player_uuid = ? AND kind = ? AND NOT archived AND ts BETWEEN ? AND ? ORDER BY id DESC",
             longArray(events), longArray(tools), player, kind.id, at - INTERACTION_WINDOW, at + INTERACTION_WINDOW,
         ) { Ref(RefKind.INTERACTION, getLong(1)) to getBoolean(2) }
         if (candidates.isEmpty()) return null
+        if (events.isEmpty() && tools.isEmpty()) return candidates.first().first
         candidates.firstOrNull { it.second }?.let { return it.first }
         return mostSimilar(connection, text, candidates.map { it.first })
     }
