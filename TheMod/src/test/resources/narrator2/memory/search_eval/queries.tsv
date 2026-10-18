@@ -1,0 +1,30 @@
+Q1	dir		Bartok a-t-il déjà insulté le Narrateur ?	4:2 5:2 41:1 42:1 65:1
+Q2	dir		les chutes mortelles de Mimosa	7:2 66:1
+Q3	dir		quelles promesses le Narrateur a faites à Mimosa	49:2 50:1 10:1 23:1
+Q4	dir		surnoms donnés aux joueurs	2:2 3:2 67:2 39:1 38:1
+Q5	dir		qui a battu le dragon de l'End	13:2 68:1
+Q6	dir		noyades de Kelvin	17:2 67:2 16:1 40:1
+Q7	dir		manipulation pour obtenir des diamants gratuits	19:2 46:1
+Q8	dir		duels et combats entre joueurs	6:2 62:2 34:1
+Q9	dir		cadeaux offerts par le Narrateur	9:2 50:2 47:1 11:1 14:1
+Q10	dir		la loi sur la destruction des constructions	25:2 26:2
+Q11	dir		prophétie des bottes	23:2 24:2
+Q12	dir		gag du plongeon	27:2 28:2 2:1
+Q13	dir		joueur timide qui parle peu	18:2
+Q14	dir		de quoi Mimosa a-t-elle peur	37:2
+Q15	dir		fermes de Josiane	15:2 26:1 47:1 32:1 64:1
+Q16	dir		défis perdus par Bartok	20:2 57:1 33:1
+Q17	dir		excuses présentées au Narrateur	30:2 65:2
+Q18	dir		la menace de la pluie de slimes	41:2 42:2
+Q19	dir		exploration des chambres d'épreuve	3:2 21:2 2:1
+Q20	dir		titre Architecte du Ciel	38:2 39:2
+Q21	evt	Bartok	Bartok death lava nether minecraft:lava mort lave	1:2 43:1 48:1
+Q22	evt	Mimosa	Mimosa minecraft:cherry_grove	7:2 8:2
+Q23	evt	Bartok	Bartok minecraft:trial_chambers	2:2 3:2 21:2
+Q24	evt	Kelvin	Kelvin death drown mort noyade	17:2 67:2
+Q25	evt	Bartok	Bartok minecraft:ancient_city	36:2
+Q26	evt	Josiane	Josiane death minecraft:creeper mort	32:2
+Q27	evt	clemsix6	clemsix6 minecraft:elytra	35:2 66:1
+Q28	evt	Bartok	Bartok minecraft:stronghold minecraft:end_portal_frame	61:2
+Q29	evt	Mimosa	Mimosa minecraft:ocean_monument	55:2
+Q30	evt	Kelvin	Kelvin help aide	16:2 58:2 47:1 64:1
