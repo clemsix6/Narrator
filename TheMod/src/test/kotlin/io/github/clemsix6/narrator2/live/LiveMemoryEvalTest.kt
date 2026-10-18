@@ -121,7 +121,7 @@ class LiveMemoryEvalTest {
         report.append("\n")
         outcomes.forEach { report.append(it.markdown()) }
         writeReport()
-        assertTrue(noted.size >= 2, "E5: ${noted.size} of 3 contradictions noted")
+        assertTrue(noted.size >= 2, "E5: ${noted.size} of ${outcomes.size} contradictions noted")
     }
 
     @Test
@@ -466,9 +466,15 @@ class LiveMemoryEvalTest {
             var found = 0
             var written = 0
             var matched = 0
+            var ambiguous = 0
             outcomes.forEach { outcome ->
                 val rows = outcome.canon.filter { it.source == "chronicler" }.toMutableList()
                 written += rows.size
+                rows.filter { row -> outcome.fixture.expect.ambiguous.any { matches(row, it) } }.forEach { row ->
+                    ambiguous++
+                    rows.remove(row)
+                    text.append("- ambiguous in ${outcome.fixture.name}: C-${row.id} ${row.kind} « ${row.quote} »: ${row.statement}\n")
+                }
                 outcome.fixture.expect.commitments.forEach { exp ->
                     expected++
                     val row = rows.firstOrNull { matches(it, exp) }
@@ -489,8 +495,14 @@ class LiveMemoryEvalTest {
                 rows.forEach { text.append("- **extra** in ${outcome.fixture.name}: C-${it.id} ${it.kind} → ${it.players.joinToString().ifEmpty { "all" }} « ${it.quote} »: ${it.statement}\n") }
             }
             val recall = if (expected == 0) 1.0 else found.toDouble() / expected
-            val precision = if (written == 0) 1.0 else matched.toDouble() / written
-            text.insert(0, "Recall %d/%d = %.2f · precision %d/%d = %.2f (thresholds 0.90 and 0.90)\n\n".format(Locale.ROOT, found, expected, recall, matched, written, precision))
+            val judged = written - ambiguous
+            val precision = if (judged == 0) 1.0 else matched.toDouble() / judged
+            val strict = if (written == 0) 1.0 else matched.toDouble() / written
+            text.insert(
+                0,
+                "Recall %d/%d = %.2f · precision %d/%d = %.2f, ambiguous lines left out (%d/%d = %.2f counting them as wrong) · thresholds 0.90 and 0.90\n\n"
+                    .format(Locale.ROOT, found, expected, recall, matched, judged, precision, matched, written, strict),
+            )
             return Score(recall, precision, text.toString())
         }
 
@@ -599,6 +611,8 @@ class LiveMemoryEvalTest {
     @Serializable
     data class Expect(
         val commitments: List<ExpectedCommitment> = emptyList(),
+        /** Lines a careful reader may take either way: a commitment written for one counts neither for nor against E1's precision. */
+        val ambiguous: List<ExpectedCommitment> = emptyList(),
         val interactions: List<ExpectedInteraction> = emptyList(),
         val coherence: String? = null,
     )
