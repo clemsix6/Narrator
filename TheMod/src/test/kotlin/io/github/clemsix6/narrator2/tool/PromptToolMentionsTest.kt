@@ -10,15 +10,16 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * The prompts only name what the model really has (M1_M2 §18.2, T22). The lesson of the v1: tools that
- * did nothing were presented to the model as working. Every identifier quoted between backticks in
- * `director.md` and `analyst.md` must be a tool of that role's set, with everything wired; and since each
- * prompt says it lists "all the tools", each role's set must be named in full by its prompt.
+ * The prompts only name what the model really has (M1_M2 §18.2, T22, M3 §16). The lesson of the v1: tools
+ * that did nothing were presented to the model as working. Every identifier quoted between backticks in
+ * `director.md`, `analyst.md` and `chronicler.md` must be a tool of that role's set, with everything wired
+ * (the memory included); and since each prompt says it lists "all the tools", each role's set must be
+ * named in full by its prompt.
  */
 class PromptToolMentionsTest {
     private val prompts = Prompts.bundled()
     private val services = TestServices()
-    private val everythingWired = ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST))
+    private val everythingWired = ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST), memoryAvailable = true)
 
     private fun toolsOf(role: Role): Set<String> = ToolCatalog.toolSetFor(role, everythingWired, services).names.toSet()
 
@@ -38,6 +39,9 @@ class PromptToolMentionsTest {
 
     @Test
     fun `the Analyst's prompt names its tools, all of them and nothing else`() = assertNamesExactly("analyst", Role.ANALYST)
+
+    @Test
+    fun `the Chronicler's prompt names its tools, all of them and nothing else`() = assertNamesExactly("chronicler", Role.CHRONICLER)
 
     @Test
     fun `the chapter summary prompt names no tool, since no tool runs while summing up`() {
