@@ -626,8 +626,9 @@ object MemoryCommands {
     // ── forget, restore, note ───────────────────────────────────────────────────────────────────────
 
     /**
-     * `/narrator memory forget <ref> [reason]` (archives: out of recall, briefings and sheets, never deleted)
-     * and `restore <ref> [reason]` (the reverse). Memories, canon entries and interactions only.
+     * `/narrator memory forget <ref> [reason]` (archives: out of the briefings, the reminiscences and `recall`,
+     * even with `include_closed`; never deleted, so the raw tables stay readable by `sql`) and
+     * `restore <ref> [reason]` (the reverse). Memories, canon entries and interactions only.
      */
     internal suspend fun archive(services: NarratorServices, operator: String, typed: String, archived: Boolean, reason: String?): Reply = changing {
         val ref = ref(typed)
@@ -635,7 +636,7 @@ object MemoryCommands {
         services.memory.store.archive(ref, archived, why, author(operator))
         record(services, if (archived) "memory_forget" else "memory_restore", operator, "$ref: $why")
         if (archived) {
-            Reply.done(narratorLine("$ref forgotten: archived, the Narrator no longer recalls it; /narrator memory restore $ref brings it back."))
+            Reply.done(narratorLine("$ref forgotten: archived, out of the briefings, reminiscences and recall (even with include_closed); the raw tables stay readable by sql; /narrator memory restore $ref brings it back."))
         } else {
             Reply.done(narratorLine("$ref restored: the Narrator may recall it again."))
         }
