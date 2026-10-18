@@ -448,23 +448,27 @@ class ReminiscenceTest {
         Fixture().use { f ->
             fun day(date: String): Instant = Instant.parse("${date}T15:00:00Z")
             val year = f.memory(40, "Le dragon", "Bartok a vaincu l'Ender Dragon seul.", importance = 9, at = day("2025-10-18"))
-            f.memory(41, "Le Wither", "Mimosa a vaincu le Wither.", listOf(mimosa), importance = 9, at = day("2026-09-18"))
+            f.memory(41, "Le Wither", "Mimosa a vaincu le Wither.", listOf(mimosa), importance = 10, at = day("2026-09-18"))
             f.memory(42, "La tour", "Bartok a bâti une tour.", importance = 7, at = day("2026-10-11"))
             f.memory(43, "Le temple", "Bartok a pillé un temple.", importance = 10, at = day("2026-10-10"))
-            val week = f.memory(44, "La forteresse", "Bartok a trouvé une forteresse.", importance = 8, at = day("2026-10-12"))
+            f.memory(44, "La forteresse", "Bartok a trouvé une forteresse.", importance = 8, at = day("2026-10-12"))
+            val everyone = f.memory(45, "La grande fête", "Le serveur a fêté son ouverture.", emptyList(), importance = 8, at = day("2026-09-19"))
 
-            val cue = f.reminiscence().anniversary(f.now) ?: error("no anniversary")
+            assertNull(f.reminiscence().anniversary(f.now, emptyList()), "nobody online: the day is not taken")
+            val cue = f.reminiscence().anniversary(f.now, listOf(bartok)) ?: error("no anniversary")
             assertEquals(CueKind.ANNIVERSARY, cue.kind)
-            assertEquals(year, cue.ref)
-            assertNull(cue.player)
+            assertEquals(year, cue.ref, "M-41 is about Mimosa, offline")
+            assertEquals(bartok, cue.player)
             assertEquals("M-40, one year ago today (★9): « Bartok a vaincu l'Ender Dragon seul. »", cue.line)
-            assertNull(f.reminiscence().anniversary(f.now + 3_600_000), "one per day, kept in memory_state")
+            assertNull(f.reminiscence().anniversary(f.now + 3_600_000, listOf(bartok, mimosa)), "one per day, kept in memory_state")
             assertEquals("2026-10-18", f.store.state(Reminiscence.ANNIVERSARY_STATE))
 
             f.clock.advance(Duration.ofDays(1))
-            assertEquals(week, f.reminiscence().anniversary(f.clock.millis())?.ref, "the next day")
+            val next = f.reminiscence().anniversary(f.clock.millis(), listOf(mimosa)) ?: error("no anniversary the next day")
+            assertEquals(everyone, next.ref, "M-44 is about Bartok, offline; M-45 about the whole server")
+            assertNull(next.player)
             f.clock.advance(Duration.ofDays(1))
-            assertNull(f.reminiscence().anniversary(f.clock.millis()), "no memory fits")
+            assertNull(f.reminiscence().anniversary(f.clock.millis(), listOf(bartok)), "no memory fits")
         }
     }
 

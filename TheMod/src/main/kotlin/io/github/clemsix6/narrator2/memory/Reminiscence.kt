@@ -327,39 +327,49 @@ class Reminiscence(
         val label: String get() = if (count == 1) "one $unit" else "$count ${unit}s"
     }
 
+    /** A memory whose anniversary is today, [span] after it happened. */
+    private class Anniversary(val ref: Ref, val importance: Int, val players: List<UUID>, val span: Span)
+
     /**
      * The anniversary of the day (M3 §10.5): a memory of importance [ANNIVERSARY_IMPORTANCE] or more that
      * happened the same day 1 to 3 weeks before, 1 to 11 months before, or a whole number of years before
-     * (in [clock]'s zone); the most important, then the oldest kind of anniversary (years, months, weeks).
-     * One per day at most, whatever happens to the server: the day is kept in `memory_state`
-     * ([ANNIVERSARY_STATE]), and taken by the first call of the day, even when no memory fits.
+     * (in [clock]'s zone), about a player [online] or about the whole server; the most important, then the
+     * oldest kind of anniversary (years, months, weeks). Its [DirectorSignal.MemoryCue.player] is the first
+     * player online it is about. One per day at most, whatever happens to the server: the day is kept in
+     * `memory_state` ([ANNIVERSARY_STATE]), and taken by the first call of the day with someone [online],
+     * even when no memory fits.
      *
-     * `MemoryJobs` calls it at the first wake-up of a day (the first player of the day) and posts the cue:
-     * `ANNIVERSARY M-12, one month ago today (★9): « … »`. Null when the day had its call, when no memory fits,
-     * or when the memory cannot be read (`WARN`).
+     * `MemoryJobs` calls it at the first wake-up of a day (in practice, at each pass with someone online) and
+     * posts the cue: `ANNIVERSARY M-12, one month ago today (★9): « … »`. Null when nobody is online, when the
+     * day had its call, when no memory fits, or when the memory cannot be read (`WARN`).
      *
      * @param now epoch milliseconds.
      */
-    suspend fun anniversary(now: Long): DirectorSignal.MemoryCue? {
-        if (config().recallPerWake <= 0) return null
+    suspend fun anniversary(now: Long, online: Collection<PlayerRef>): DirectorSignal.MemoryCue? {
+        if (config().recallPerWake <= 0 || online.isEmpty()) return null
         val today = LocalDate.ofInstant(Instant.ofEpochMilli(now), clock.zone)
+        val present = online.associateBy { it.uuid }
         return safely("anniversary of $today") {
             if (store.state(ANNIVERSARY_STATE) == today.toString()) return@safely null
             store.setState(ANNIVERSARY_STATE, today.toString())
-            val dates = journal.read(READ_TIMEOUT_MS) { connection ->
+            val candidates = journal.read(READ_TIMEOUT_MS) { connection ->
                 connection.query(
-                    "SELECT id, importance, epoch_ms(occurred_from) FROM memories WHERE importance >= ? AND NOT archived AND merged_into IS NULL",
+                    "SELECT id, importance, players, epoch_ms(occurred_from) FROM memories " +
+                        "WHERE importance >= ? AND NOT archived AND merged_into IS NULL",
                     ANNIVERSARY_IMPORTANCE,
-                ) { Triple(Ref(RefKind.MEMORY, getLong(1)), getInt(2), LocalDate.ofInstant(Instant.ofEpochMilli(getLong(3)), clock.zone)) }
+                ) {
+                    val day = LocalDate.ofInstant(Instant.ofEpochMilli(getLong(4)), clock.zone)
+                    span(day, today)?.let { Anniversary(Ref(RefKind.MEMORY, getLong(1)), getInt(2), uuids(3), it) }
+                }.filterNotNull()
             }
-            val best = dates.mapNotNull { (ref, importance, day) -> span(day, today)?.let { Triple(ref, importance, it) } }
-                .maxWithOrNull(compareBy<Triple<Ref, Int, Span>> { it.second }.thenBy { it.third.rank }.thenBy { it.first.id })
+            val best = candidates.filter { it.players.isEmpty() || it.players.any { player -> player in present } }
+                .maxWithOrNull(compareBy<Anniversary> { it.importance }.thenBy { it.span.rank }.thenBy { it.ref.id })
                 ?: return@safely null
-            val memory = store.memory(best.first) ?: return@safely null
-            val span = best.third
+            val memory = store.memory(best.ref) ?: return@safely null
+            val span = best.span
             decisions.record(log, DecisionRecord.Kind.MEMORY, "cue", reason = "ANNIVERSARY ${memory.ref}, ${span.label} ago today (★${memory.importance})")
             val line = "${memory.ref}, ${span.label} ago today (★${memory.importance}): « ${ModelText.escape(memory.content)} »"
-            DirectorSignal.MemoryCue(CueKind.ANNIVERSARY, memory.ref, null, line, now)
+            DirectorSignal.MemoryCue(CueKind.ANNIVERSARY, memory.ref, best.players.firstNotNullOfOrNull { present[it] }, line, now)
         }
     }
 
@@ -407,8 +417,8 @@ class Reminiscence(
         /** An anniversary is a memory at least this important. */
         const val ANNIVERSARY_IMPORTANCE = 8
 
-        /** The `memory_state` key of the last day that had its anniversary call (`2026-10-18`). */
-        const val ANNIVERSARY_STATE = "anniversary_day"
+        /** The `memory_state` key of the last day that had its anniversary call (`2026-10-18`); the key of `MemoryJobs` too. */
+        const val ANNIVERSARY_STATE = "cue:anniversary_day"
 
         /** The events that bring memories back (M3 §10.5), the most telling first. */
         val KINDS: List<String> = listOf("DEATH", "PVP", "GRIEF", "PRAY", "CHAT", "ADVANCEMENT", "STRUCTURE", "BIOME", "DIMENSION")
