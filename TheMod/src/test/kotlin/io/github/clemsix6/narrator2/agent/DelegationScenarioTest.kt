@@ -151,7 +151,7 @@ class DelegationScenarioTest {
             val analystRequests = fake.requests.filter { it.conversationOf() == analystSession }
             assertEquals(3, analystRequests.size)
             assertEquals(
-                listOf("area_info", "inspect_player", "list_players", "locate", "player_stats", "scan_area", "sql"),
+                listOf("area_info", "inspect_player", "list_players", "locate", "player_profile", "player_stats", "recall", "scan_area", "sql"),
                 analystRequests[0].toolNames(),
             )
             val opening = analystRequests[0].json.path("messages")[0].path("content")[0].path("text").asText()

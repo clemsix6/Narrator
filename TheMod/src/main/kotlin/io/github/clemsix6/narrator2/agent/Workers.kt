@@ -168,7 +168,7 @@ class Workers(
         val config = settings.config.workers
         val started = record.startedAt ?: clock.instant()
         return try {
-            val tools = toolSet(record.role, ToolEnv(journalAvailable = services.journal.available, workerRoles = emptySet()))
+            val tools = toolSet(record.role, ToolEnv(services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available))
             val system = listOf(TextBlockParam.builder().text(settings.prompts.get(record.role.id)).build())
             val conversation = Conversation(record.role, "Task T-${task.id} (${record.role.id})", system, tools, services.transcripts, conversationId)
             val row = conversationRecord(task, conversation, started)
