@@ -59,7 +59,7 @@ class VoiceGuardTest {
     @Test
     fun `quoted words are exempt, an unclosed quote is not`() {
         listOf(
-            "Le Narrateur a promis : « je te rends tes bottes demain, promis ».",
+            "Le Narrateur a promis à Mimosa, devant tout le serveur : « je te rends tes bottes demain, promis ».",
             "Bartok a écrit \"tu es nul\" dans le chat.",
             "Le Narrateur a dit “nous verrons bien” à Mimosa.",
             "« Moi » et « toi » : Bartok a moqué le Narrateur.",
@@ -101,7 +101,7 @@ class VoiceGuardTest {
         assertNull(VoiceGuard.check("Moi a insulté Toi, puis VOUS a ri ; ton a fui.", "what", 400, names))
         assertNull(VoiceGuard.check("Bartok a fait rire Moi avec son tonneau.", "what", 400, names))
         assertContains(VoiceGuard.check("Moi a dit que je mentais.", "what", 400, names).orEmpty(), "(found \"je\" outside quotes)")
-        assertContains(refused("Moi a insulté Toi."), "(found \"moi\" outside quotes)", "without the names, a pronoun")
+        assertContains(refused("Moi a insulté Toi."), "(found \"moi\" outside quotes)", message = "without the names, a pronoun")
     }
 
     @Test

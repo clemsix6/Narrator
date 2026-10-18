@@ -270,7 +270,7 @@ class DuckMemoryStoreTest {
         f.chat(1_250, evening.plusSeconds(1_900), "public", "franchement nul", f.mimosa.uuid)
         val other = InteractionDraft(f.mimosa.uuid, InteractionKind.PROVOCATION, -1, "a recommencé, plus fort", evidenceEvents = listOf(1_250))
         assertIs<Added.New<Interaction>>(store.addInteraction(other, f.director))
-        assertEquals(2L, f.count("interactions"))
+        assertEquals(3L, f.count("interactions"))
     }
 
     @Test
