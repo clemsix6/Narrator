@@ -19,7 +19,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -52,10 +54,18 @@ class JournalRecoveryTest {
      * The write connection is closed under the writer's feet: the database stops answering. Another
      * program (the DuckDB command line, in another JVM) takes the file as soon as the Journal lets go of
      * it, holds it while the Journal tries to open it again, then quits.
+     *
+     * The Journal's first attempt waits until the other program holds the file: left to the clock, the
+     * Journal could open the file again before a slow child took it, and the outage would end at once.
      */
     @Test
     fun `a failed database is opened again, the operators are told once and the losses are recorded`() {
-        val fixture = JournalFixture(file, tuning = JournalTuning(reopenIntervalMs = 500))
+        val held = CountDownLatch(1)
+        val attempts = AtomicInteger()
+        val fixture = JournalFixture(file, tuning = JournalTuning(reopenIntervalMs = 500)) {
+            attempts.incrementAndGet()
+            check(held.await(60, TimeUnit.SECONDS)) { "the other program never took the file" }
+        }
         val told = CopyOnWriteArrayList<String>()
         fixture.journal.tellOperators = { told += it }
         LogCapture().use { logs ->
@@ -71,12 +81,13 @@ class JournalRecoveryTest {
                 assertFalse(fixture.journal.available)
                 assertContains(logs.text, "the Journal stops recording")
                 cli.awaitLine(JournalChild.READY)
+                held.countDown()
 
                 fixture.publish(joined(alex, 2)) // lost, but the session is still followed
                 repeat(4) { fixture.publish(broke(steve)) }
                 fixture.journal.decision(decision(fixture.journal.nextId(IdKind.DECISION)))
-                waitUntil("an attempt to open the database again") { "opening the database again failed (attempt 1)" in logs.text }
-                Thread.sleep(1_200) // two more attempts
+                waitUntil("two failed attempts to open the database again") { attempts.get() >= 3 } // the third one started
+                assertContains(logs.text, "opening the database again failed (attempt 1)")
                 assertFalse(fixture.journal.available, "the file is held by another program")
                 assertEquals(1, told.size, "the operators are told once: $told")
                 assertContains(told.single(), "The Journal failed and records nothing")
