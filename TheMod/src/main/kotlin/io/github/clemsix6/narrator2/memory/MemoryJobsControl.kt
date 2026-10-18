@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.memory
 
+import io.github.clemsix6.narrator2.agent.GatewayError
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import java.time.Instant
 
@@ -109,7 +110,9 @@ interface MemoryJobsControl {
 /**
  * How a model job ended: [RunStatus.DONE], [RunStatus.FAILED], [RunStatus.SKIPPED] or
  * [RunStatus.CANCELLED]. [report]: the model's final text (≤ 500 characters, `memory_runs.report`) or
- * the error; [lastStep]: the last dream step that succeeded.
+ * the error; [lastStep]: the last dream step that succeeded; [budget]: set when the job stopped on the
+ * gateway's 402 (its status is then [RunStatus.FAILED]): `MemoryJobs` then holds every model job until
+ * [GatewayError.Budget.resetAt] (15 minutes when the gateway did not say).
  */
 data class RunOutcome(
     val status: RunStatus,
@@ -118,6 +121,7 @@ data class RunOutcome(
     val rejected: Int,
     val conversations: List<String>,
     val lastStep: Int? = null,
+    val budget: GatewayError.Budget? = null,
 )
 
 /** The Chronicler (M3 §7), run by `MemoryJobs`. Implemented by `chronicle/Chronicler.kt` (M3-10). */
