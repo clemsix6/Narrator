@@ -139,7 +139,7 @@ class NarratorRuntime private constructor(
         workers = createWorkers(this)
         memory = createMemory(this)
         director = createDirector(this)
-        shutdown = ShutdownSequence(scope, bus, journal, settings, observer::flushAll, { phase = it })
+        shutdown = ShutdownSequence(scope, bus, journal, settings, observer::flushAll, { phase = it }, stopMemory = memory::stop)
         phase = Phase.RUNNING
     }
 
@@ -261,7 +261,8 @@ class NarratorRuntime private constructor(
             val config = settings.config
             log.info(
                 "ready · gateway ${config.gateway.baseUrl} · LLMGW key ${if (settings.claude != null) "present" else "missing"} · " +
-                    "Journal ${if (runtime.journal.available) "available" else "unavailable"} · data in ${runtime.dataDir}",
+                    "Journal ${if (runtime.journal.available) "available" else "unavailable"} · " +
+                    "memory ${if (runtime.memory.available) "on" else "off (${runtime.memory.unavailableReason})"} · data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }

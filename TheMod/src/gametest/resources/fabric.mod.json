@@ -22,7 +22,8 @@
       "io.github.clemsix6.narrator2.gametest.DirectorEndToEndTests",
       "io.github.clemsix6.narrator2.gametest.LiveDirectorGameTests",
       "io.github.clemsix6.narrator2.gametest.DeathTraceGameTests",
-      "io.github.clemsix6.narrator2.gametest.MemoryCommandGameTests"
+      "io.github.clemsix6.narrator2.gametest.MemoryCommandGameTests",
+      "io.github.clemsix6.narrator2.gametest.MemoryGameTests"
     ]
   },
   "depends": {

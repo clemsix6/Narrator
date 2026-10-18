@@ -5,26 +5,18 @@ import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.Item
 import io.github.clemsix6.narrator2.director.Urgency
 import io.github.clemsix6.narrator2.testing.MemorySamples
-import io.github.clemsix6.narrator2.testing.TestServices
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The seams of M3-01: the disabled memory the server runs with, the briefing sections, the Director's new signals. */
+/**
+ * The seams of M3-01: the disabled memory (when and why the server runs with it: `MemoryServiceTest`), the
+ * briefing sections, the Director's new signals.
+ */
 class MemoryContractsTest {
-    @Test
-    fun `the server runs with a disabled memory until it is wired`() {
-        val memory = createMemory(TestServices())
-        assertIs<DisabledMemory>(memory)
-        assertFalse(memory.available)
-        assertEquals("not wired yet", memory.unavailableReason)
-    }
-
     @Test
     fun `a disabled memory reads nothing, refuses writes and says why in the briefing`() = runBlocking {
         val memory = DisabledMemory("memory.enabled is false")
@@ -46,6 +38,7 @@ class MemoryContractsTest {
         assertNull(memory.attachments(emptyList(), chapter, 0))
         assertEquals(emptyList(), memory.situationLines(0))
         assertNull(memory.runContext("chronicler-1"))
+        memory.stop() // no job runs: nothing to stop
     }
 
     @Test

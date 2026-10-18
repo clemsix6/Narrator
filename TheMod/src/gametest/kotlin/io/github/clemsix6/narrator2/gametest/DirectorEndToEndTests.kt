@@ -81,6 +81,11 @@ class DirectorEndToEndTests {
             check("<world day=\"" in briefing) { "the world line, read on the server thread: ${briefing.take(600)}" }
             check("live positions unavailable" !in briefing) { "the live positions, read on the server thread: $briefing" }
             check(Regex("${speaker.name}: overworld -?\\d+ -?\\d+ -?\\d+").containsMatchIn(briefing)) { "the live position of ${speaker.name}: $briefing" }
+            // The memory runs (M3-18): its five tools are in the chapter's tool set, its six sections in the briefing.
+            val directorTools = opening.json.path("tools").map { it.path("name").asText() }
+            check(directorTools.containsAll(MEMORY_TOOLS)) { "the Director's memory tools: $directorTools" }
+            check(listOf("<grimoire", "<chronicle", "<canon", "<sheets", "<memories", "<notes").all { it in briefing }) { "the memory's sections: $briefing" }
+            check("(memory unavailable" !in briefing && "(unavailable:" !in briefing) { "every memory section read: $briefing" }
             val results = lastUser(answered).path("content").filter { it.path("type").asText() == "tool_result" }.map { it.resultText() }
             check(results.size == 2) { "two tool results: $results" }
             check("public|$greeting" in results[0]) { "sql reads the greeting in the Journal: ${results[0]}" }
@@ -226,7 +231,10 @@ const val DIRECTOR_ENVIRONMENT = "narrator2-gametest:director"
 /** Budget of a script test: at least two minutes of wall-clock time (see [runScript]). */
 private const val SCRIPT_MAX_TICKS = 120_000
 
-private val ANALYST_TOOLS = listOf("area_info", "inspect_player", "list_players", "locate", "player_stats", "scan_area", "sql")
+private val ANALYST_TOOLS = listOf("area_info", "inspect_player", "list_players", "locate", "player_profile", "player_stats", "recall", "scan_area", "sql")
+
+/** The Director's memory tools (M3 §5), there whenever the memory runs. */
+val MEMORY_TOOLS = listOf("note_interaction", "player_profile", "recall", "remember", "resolve")
 
 private val scriptLog = LoggerFactory.getLogger("narrator2-gametest")
 
