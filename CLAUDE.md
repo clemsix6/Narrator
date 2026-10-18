@@ -10,7 +10,9 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 
 ## LLMGW (accès à Claude)
 - On utilise **le serveur LLMGW existant du propriétaire** : **on ne clone ni n'installe jamais LLMGW en local**.
-- On y accède par un tunnel SSH vers le serveur du réseau local : `ssh -o BatchMode=yes -N -L 8088:localhost:8088 clement@192.168.1.20`. Le nom public `<ssh-host>` passe par Cloudflare, qui ne relaie pas SSH : utilise toujours l'IP locale.
+- Depuis le 18/10/2026, on y accède par un tunnel SSH qui passe par Cloudflare Access (`cloudflared` est installé dans `C:\Program Files (x86)\cloudflared\`) :
+  `ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -o HostKeyAlias=192.168.1.20 -o ProxyCommand="\"C:/Program Files (x86)/cloudflared/cloudflared.exe\" access ssh --hostname %h" -N -L 8088:localhost:8088 <user>@<ssh-host>`.
+  L'option `HostKeyAlias` vérifie la clé d'hôte contre celle du serveur du réseau local, déjà connue. L'ancienne IP locale (`192.168.1.20`) ne répond plus.
 - URL de base : `http://localhost:8088/`. Authentification : en-tête `x-api-key: <clé>` (`Authorization: Bearer` marche aussi). Test : `GET /v1/models`.
 - La clé se trouve dans `.secrets/llmgw.key` (non versionné). Pour le mod, elle passe par la variable d'environnement `NARRATOR_LLMGW_KEY`. **Ne jamais l'afficher, la logger, la commiter ni la recopier ailleurs.**
 - Tunnel partagé : avant d'ouvrir le tunnel, vérifie si le port 8088 écoute déjà (`netstat -ano | findstr :8088`). S'il écoute, réutilise ce tunnel. Ne ferme que le processus ssh que tu as lancé toi-même.
