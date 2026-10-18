@@ -195,6 +195,8 @@ class DirectorEndToEndTests {
             val last = lastUser(request)
             val text = last.wakeText()
             return when {
+                // The memory's jobs share the fake gateway: they get a plain text, never a tool call of the Director's (M3 review, finding 28).
+                isChronicler(request) || isDreamer(request) -> reply { text("Nothing to record.") }
                 isAnalyst(request) && !last.hasToolResult() ->
                     reply { toolUse("inspect_player", """{"player": "$player", "include": ["position"]}""") }
                 isAnalyst(request) -> reply { text("Réponse : $player est en overworld. $REPORT") }
@@ -313,6 +315,10 @@ suspend fun awaitRequest(fake: FakeAnthropic, what: String, timeoutMs: Long = 15
 fun isDirector(request: RecordedRequest) = request.conversation.orEmpty().startsWith("director-")
 
 fun isAnalyst(request: RecordedRequest) = request.conversation.orEmpty().startsWith("analyst-")
+
+fun isChronicler(request: RecordedRequest) = request.conversation.orEmpty().startsWith("chronicler-")
+
+fun isDreamer(request: RecordedRequest) = request.conversation.orEmpty().startsWith("dreamer-")
 
 /** The last `user` message of [request]. */
 fun lastUser(request: RecordedRequest): JsonNode = request.json.path("messages").last { it.path("role").asText() == "user" }

@@ -102,10 +102,11 @@ interface Journal : TraceSink, AutoCloseable {
      * nor wait on anything but the database: it holds the only write connection.
      *
      * An exception in [block] rolls the transaction back and is rethrown here; the writer goes on. Fails
-     * with [JournalUnavailableException] when the Journal is unavailable or closing (jobs still queued at
-     * [close] fail too) or when its write queue is full, and with [JournalTimeoutException] (`write`) when
-     * the job did not run within [timeoutMs]: the job may still run later, so jobs are written so that
-     * running late is harmless.
+     * with [JournalUnavailableException] when the Journal is unavailable or closed, or when its write queue
+     * is full, and with [JournalTimeoutException] (`write`) when the job did not run within [timeoutMs]: the
+     * job may still run later, so jobs are written so that running late is harmless. Jobs still queued when
+     * [close] is called run during the drain, like the traces; only those left at its deadline fail
+     * ("the Journal is closed").
      */
     suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T
 

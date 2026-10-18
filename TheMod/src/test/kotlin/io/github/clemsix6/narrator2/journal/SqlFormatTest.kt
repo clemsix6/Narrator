@@ -21,7 +21,7 @@ class SqlFormatTest {
     private val context = SqlFormat.Context.at(now, paris)
     private val limits = SqlLimits(maxRows = 50, timeoutSeconds = 5)
 
-    private fun cell(value: Any?, maxChars: Int = 120) = SqlFormat.cell(value, context, maxChars)
+    private fun cell(value: Any?, maxChars: Int = limits.maxCellChars) = SqlFormat.cell(value, context, maxChars)
 
     @Test
     fun `timestamps are local, without the year when it is the current one`() {
@@ -62,6 +62,16 @@ class SqlFormatTest {
         assertEquals("abcdefgh…(+4)", cell("abcdefghijkl", maxChars = 8))
         assertEquals("abcdefgh", cell("abcdefgh", maxChars = 8))
         assertEquals("abcdefg…(+4)", cell("abcdefg😀ab", maxChars = 8), "a character is never cut in two")
+    }
+
+    /** M3 review, finding 17: a memory's `content` holds up to 400 characters, and the model must read it whole. */
+    @Test
+    fun `a cell holds up to 400 characters by default`() {
+        assertEquals(400, SqlLimits(maxRows = 1, timeoutSeconds = 1).maxCellChars)
+        assertEquals(400, SqlLimits.OPERATOR.maxCellChars)
+        assertEquals("x".repeat(400), cell("x".repeat(400)))
+        assertEquals("${"x".repeat(400)}…(+1)", cell("x".repeat(401)))
+        assertEquals("${"x".repeat(400)}…(+600)", cell("x".repeat(1_000)))
     }
 
     /** M2 review, finding 27: a chat line or a name in a cell must not pass for a tag of the engine. */

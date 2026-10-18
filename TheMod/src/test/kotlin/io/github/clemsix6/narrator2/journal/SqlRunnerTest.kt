@@ -438,6 +438,24 @@ class SqlRunnerTest {
         assertEquals("${"x".repeat(40)}…(+20)", result.text.lines()[2].substringAfter('|'))
     }
 
+    /** M3 review, finding 17: cells hold 400 characters by default, and the whole text still stops at 8 000. */
+    @Test
+    fun `a cell holds up to 400 characters, and the total stays at 8000`() {
+        val limits = SqlLimits(maxRows = 200, timeoutSeconds = 5)
+        assertEquals(400, limits.maxCellChars)
+        assertEquals(8_000, limits.maxChars)
+
+        val whole = rows(model("SELECT repeat('y', 400) AS text", limits))
+        assertEquals("y".repeat(400), whole.text.lines()[2], "a 400-character cell is shown whole")
+        val cut = rows(model("SELECT repeat('y', 500) AS text", limits))
+        assertEquals("${"y".repeat(400)}…(+100)", cut.text.lines()[2])
+
+        val many = rows(model("SELECT range AS n, repeat('z', 400) AS filler FROM range(200)", limits))
+        assertTrue(many.text.length <= 8_000, "${many.text.length} chars")
+        assertTrue(many.shown in 5..19, "${many.shown} rows shown")
+        assertEquals("${many.shown} of 200 rows shown — aggregate or add LIMIT", many.text.lines().last())
+    }
+
     @Test
     fun `timestamps are shown in the Journal's time zone`() {
         val db = DuckDatabase.openInMemory(DuckDatabase.Options(memoryLimitMb = 128, threads = 1, timeZone = ZoneId.of("Asia/Tokyo")))

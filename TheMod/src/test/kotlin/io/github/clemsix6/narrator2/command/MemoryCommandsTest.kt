@@ -287,7 +287,13 @@ class MemoryCommandsTest {
 
         val forgot = MemoryCommands.archive(services, "Clement", ref.lowercase(), archived = true, reason = "  souvenir inventé  ")
         assertTrue(forgot.done)
-        assertEquals(listOf("[Narrator] $ref forgotten: archived, the Narrator no longer recalls it; /narrator memory restore $ref brings it back."), forgot.text())
+        assertEquals(
+            listOf(
+                "[Narrator] $ref forgotten: archived, out of the briefings, reminiscences and recall (even with include_closed); " +
+                    "the raw tables stay readable by sql; /narrator memory restore $ref brings it back.",
+            ),
+            forgot.text(),
+        )
         assertTrue(f.store.memory(row.ref)!!.archived)
         assertEquals(listOf("[Narrator] refused: $ref is archived already"), MemoryCommands.archive(services, "Clement", ref, archived = true, reason = null).text())
 

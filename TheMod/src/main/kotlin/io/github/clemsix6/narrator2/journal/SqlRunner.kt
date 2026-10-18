@@ -27,10 +27,10 @@ import java.time.ZoneId
  *
  * @property maxRows rows shown; the others are only counted, up to [SqlFormat.COUNT_LIMIT].
  * @property timeoutSeconds the query is interrupted after this delay.
- * @property maxCellChars a longer value is cut with `…(+N)`.
- * @property maxChars the whole text is cut at the end of a row.
+ * @property maxCellChars a longer value is cut with `…(+N)`; 400 holds the longest memory texts (`memories.content`).
+ * @property maxChars the whole text is cut at the end of a row, whatever the cell cap.
  */
-data class SqlLimits(val maxRows: Int, val timeoutSeconds: Int, val maxCellChars: Int = 120, val maxChars: Int = 8_000) {
+data class SqlLimits(val maxRows: Int, val timeoutSeconds: Int, val maxCellChars: Int = 400, val maxChars: Int = 8_000) {
     init {
         require(maxRows >= 1) { "maxRows must be at least 1" }
         require(timeoutSeconds >= 1) { "timeoutSeconds must be at least 1" }
