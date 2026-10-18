@@ -1,10 +1,13 @@
 package io.github.clemsix6.narrator2.memory.dream
 
+import io.github.clemsix6.narrator2.tool.ToolStatus
+import io.github.clemsix6.narrator2.tool.memory.WriteGrimoireTool
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** The form of the Grimoire (M3 §8.4): seven sections in order, none empty, within the budget, factual. */
+/** The form of the Grimoire (M3 §8.4): seven sections in order, none empty; its budget and voice are the store's. */
 class GrimoireFormatTest {
     private fun grimoire(vararg sections: Pair<String, String>): String = sections.joinToString("\n") { (heading, body) -> "## $heading\n$body" }
 
@@ -46,13 +49,26 @@ class GrimoireFormatTest {
     }
 
     @Test
-    fun `the voice, the chevrons and the budget are checked like any text of the memory`() {
-        val voice = GrimoireFormat.problems(valid.replace("- Les formulaires administratifs font rire Mimosa.", "- Mes formulaires font rire Mimosa."))
-        assertEquals(1, voice.size)
-        assertTrue(voice.single().startsWith("text must be factual and in the third person"), voice.single())
-        assertEquals(listOf("text must not contain < or >: write the words instead"), GrimoireFormat.problems(valid.replace("aucun", "<aucun>")))
-        val long = GrimoireFormat.problems(valid.replace("- aucun", "- " + "a".repeat(10_000)))
-        assertTrue(long.single().startsWith("text is longer than 10000 characters"), long.single())
-        assertEquals(listOf("text must not be empty", "sections: ## Players, ## Running gags, ## Arcs, ## What works, ## What falls flat, ## Plans, ## Watch out missing; write all seven: ## Players, ## Running gags, ## Arcs, ## What works, ## What falls flat, ## Plans, ## Watch out"), GrimoireFormat.problems(" "))
+    fun `the voice, the chevrons and the budget are left to the store, which checks them when the Grimoire is written`() {
+        val voice = valid.replace("- Les formulaires administratifs font rire Mimosa.", "- Mes formulaires font rire Mimosa.")
+        val chevrons = valid.replace("aucun", "<aucun>")
+        val long = valid.replace("- aucun", "- " + "a".repeat(10_000))
+        listOf(voice, chevrons, long).forEach { assertEquals(emptyList(), GrimoireFormat.problems(it), "only the form is checked here") }
+        assertEquals(
+            listOf("sections: ## Players, ## Running gags, ## Arcs, ## What works, ## What falls flat, ## Plans, ## Watch out missing; write all seven: ## Players, ## Running gags, ## Arcs, ## What works, ## What falls flat, ## Plans, ## Watch out"),
+            GrimoireFormat.problems(" "),
+        )
+
+        // The tool of the Dreamer: the form first, then the store refuses what is not factual, in the third person, without chevrons.
+        DreamerFixture().use { f ->
+            fun write(text: String) = f.call(WriteGrimoireTool(), """{"text": ${JsonPrimitive(text)}}""")
+            val refused = write(voice)
+            assertEquals(ToolStatus.INVALID, refused.status, refused.text)
+            assertTrue(refused.text.startsWith("Invalid arguments: text must be factual and in the third person"), refused.text)
+            assertTrue(write(chevrons).text.startsWith("Invalid arguments: text must not contain < or >"))
+            assertEquals(0L, f.count("memory_docs"), "nothing written")
+            assertEquals(ToolStatus.OK, write(valid).status)
+            assertEquals(1L, f.count("memory_docs"))
+        }
     }
 }

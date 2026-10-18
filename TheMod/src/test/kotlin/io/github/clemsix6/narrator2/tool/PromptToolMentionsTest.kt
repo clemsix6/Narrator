@@ -44,7 +44,10 @@ class PromptToolMentionsTest {
     fun `the Chronicler's prompt names its tools, all of them and nothing else`() = assertNamesExactly("chronicler", Role.CHRONICLER)
 
     @Test
-    fun `the Dreamer's prompt names its tools, all of them and nothing else`() = assertNamesExactly("dreamer", Role.DREAMER)
+    fun `the Dreamer's prompt names its tools, all of them and nothing else`() {
+        assertEquals(15, toolsOf(Role.DREAMER).size, "the Dreamer's tools: ${toolsOf(Role.DREAMER)}")
+        assertNamesExactly("dreamer", Role.DREAMER)
+    }
 
     @Test
     fun `the chapter summary prompt names no tool, since no tool runs while summing up`() {

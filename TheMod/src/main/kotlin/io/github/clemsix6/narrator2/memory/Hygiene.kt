@@ -38,10 +38,10 @@ data class HygieneReport(
  * The memory's housekeeping, done by the code alone (M3 §6.6, §8.6, §9.3). Nothing is deleted: rows are
  * closed, archived or marked through the [store], as [Source.ENGINE], so every change is audited.
  *
- * - [tidy], every 10 minutes (`MemoryJobs`): canon expirations and worn gags.
- * - [beforeDream], before the first step of each dream: [tidy], then archival of faded trivial memories,
- *   notes done, and the merge candidates for the Dreamer's step 5. The caller runs
- *   `Journal.checkpointAsync()` after the dream.
+ * - [tidy], every 10 minutes (`MemoryJobs`): canon expirations, worn gags, notes done.
+ * - [beforeDream], before the first step of each dream: [tidy], then archival of faded trivial memories
+ *   and the merge candidates for the Dreamer's step 5. The caller runs `Journal.checkpointAsync()` after
+ *   the dream.
  *
  * A write the store refuses (the entry was resolved meanwhile) is logged and skipped; Journal exceptions
  * propagate to the caller.
@@ -57,25 +57,24 @@ class Hygiene(
     private val log = Log.memory
     private val dueFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
-    /** Canon expirations and worn gags at [now]; [runId]: the memory job, for the audit. */
+    /** Canon expirations, worn gags and notes done at [now]; [runId]: the memory job, for the audit. */
     suspend fun tidy(now: Instant, runId: Long? = null): HygieneReport {
         val author = Author(Source.ENGINE, runId = runId)
-        val report = HygieneReport(expired = expire(now, author), worn = wearGags(author))
-        if (report.expired.isNotEmpty() || report.worn.isNotEmpty()) log.info("hygiene: ${report.summary()}")
+        val report = HygieneReport(expired = expire(now, author), worn = wearGags(author), notesDone = closeNotes(now, author))
+        if (report.expired.isNotEmpty() || report.worn.isNotEmpty() || report.notesDone.isNotEmpty()) log.info("hygiene: ${report.summary()}")
         return report
     }
 
     /**
-     * The full pass before a dream at [now]: [tidy], archival, notes, and up to [MAX_MERGE_CANDIDATES]
-     * merge candidates among the memories written since [mergeSince] (null: all of them), so that pairs
-     * the Dreamer already left apart are not offered at every dream.
+     * The full pass before a dream at [now]: [tidy], archival, and up to [MAX_MERGE_CANDIDATES] merge
+     * candidates among the memories written since [mergeSince] (null: all of them), so that pairs the
+     * Dreamer already left apart are not offered at every dream.
      */
     suspend fun beforeDream(now: Instant, mergeSince: Instant?, runId: Long? = null): HygieneReport {
         val author = Author(Source.ENGINE, runId = runId)
         val tidied = tidy(now, runId)
         val report = tidied.copy(
             archived = archive(now, author),
-            notesDone = closeNotes(now, author),
             mergeCandidates = mergeCandidates(mergeSince),
         )
         log.info("hygiene before the dream: ${report.summary()}")
@@ -129,11 +128,12 @@ class Hygiene(
     }
 
     /**
-     * `C-45 promise (Mimosa) came due 05-14 22:10 with no resolution recorded: « … »`, or `C-12 threat
-     * (Bartok) went 104h of world play without mention: « … »`, within the note's budget.
+     * `C-45 promise (« Mimosa ») came due 05-14 22:10 with no resolution recorded: « … »`, or `C-12 threat
+     * (« Bartok ») went 104h of world play without mention: « … »`, within the note's budget. The names are
+     * between « » so that [VoiceGuard] leaves them alone: a player called `Moi` or `Tu` is not a pronoun.
      */
     private fun expiredNote(entry: CanonEntry, reason: String): String {
-        val who = if (entry.players.isEmpty()) "" else " (${entry.players.joinToString { it.name }})"
+        val who = if (entry.players.isEmpty()) "" else " (${entry.players.joinToString { "« ${it.name} »" }})"
         val head = "${entry.ref} ${entry.kind.id}$who $reason: « "
         val room = MemoryLimits.NOTE_TEXT - head.length - 2
         val statement = entry.statement.let { if (it.length <= room) it else it.take((room - 1).coerceAtLeast(0)) + "…" }
@@ -187,12 +187,16 @@ class Hygiene(
         }
     }
 
+    /**
+     * Marks done the notes the Director has seen enough: a dream hint once shown (it is shown once, at its
+     * player's join), or after [DREAM_HINT_LIFE] without being shown; any other note once shown
+     * [COHERENCE_SHOWINGS] times, as many as the briefing shows it.
+     */
     private suspend fun closeNotes(now: Instant, author: Author): List<Ref> =
         store.openNotes().filter { note ->
             when (note.kind) {
-                NoteKind.COHERENCE -> note.shownCount >= COHERENCE_SHOWINGS
-                NoteKind.DREAM_HINT -> note.shownCount == 0 && !now.isBefore(note.createdAt + DREAM_HINT_LIFE)
-                else -> false
+                NoteKind.DREAM_HINT -> note.shownCount > 0 || !now.isBefore(note.createdAt + DREAM_HINT_LIFE)
+                else -> note.shownCount >= COHERENCE_SHOWINGS
             }
         }.filter { note ->
             try {
@@ -264,7 +268,10 @@ class Hygiene(
         /** Hours of world play without mention after which a threat or prophecy without due time expires. */
         const val SILENCE_HOURS = 100L
 
-        /** Times a `coherence` note is shown before it is done. */
+        /**
+         * Times a note other than a dream hint (`coherence`, `expired`, `operator`) is shown before it is done:
+         * as many as the briefing shows it (`MemoryBriefing.NOTE_SHOWINGS`).
+         */
         const val COHERENCE_SHOWINGS = 2
 
         /** How long a dream hint waits for its player's join before it is done. */
