@@ -14,6 +14,7 @@ import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -37,6 +38,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -77,8 +79,14 @@ interface GameView {
  * - **Wake-ups.** The [Salience] classifies the bus's events; the [WakeScheduler] groups them into
  *   wake-ups; heartbeats come a few minutes after the last turn while players are online, when the
  *   reflexes find the activity worth it. Each wake-up is one turn of [AgentLoop] on the open chapter,
- *   opened by a message with `<events>`, `<heartbeat>` and `<situation>`. Beyond `director.turnsPerHour`
- *   turns in the last hour ([TurnBudget]), only addressed chat, prayers and whispers wake it.
+ *   opened by a message with `<events>`, `<memory>`, `<heartbeat>` and `<situation>`. Beyond
+ *   `director.turnsPerHour` turns in the last hour ([TurnBudget]), only addressed chat, prayers, whispers
+ *   and due commitments wake it.
+ * - **Memory** (M3 §11): a chapter's briefing holds the memory's sections; the memory's signals are lines
+ *   of `<events>` (`DUE` wakes the Director, `NOTE`, `RETURN` and `ANNIVERSARY` wait for a wake-up); the
+ *   memory attaches a `<memory>` block (the sheet of a player who joins, the memories the events bring
+ *   back) after `</events>` and `</new_events>`, and adds its lines to `<situation>`. Without a memory
+ *   (`DisabledMemory`) none of it is there, and the Director runs as in M2.
  * - **Never blocked.** Events that arrive during a turn are given to the model between two tool calls,
  *   in a `<new_events>` block placed after the tool results; operator whispers become notes.
  * - **No quota.** A turn that ends without acting is a normal turn; the engine never prompts the model
@@ -361,9 +369,13 @@ class Director(
         }
     }
 
-    /** While muted, only what someone waits for is kept: addressed chat, prayers, tasks, reminders, whispers. */
+    /**
+     * While muted, only what someone waits for is kept: addressed chat, prayers, tasks, reminders,
+     * whispers, and the memory's due commitments and notes. Its cues go with the events: a place return
+     * or an anniversary is stale once the silence ends.
+     */
     private fun mute() {
-        val gone = inbox.discard { it.signal is DirectorSignal.Event && it.urgency != Urgency.IMMEDIATE }
+        val gone = inbox.discard { (it.signal is DirectorSignal.Event && it.urgency != Urgency.IMMEDIATE) || it.signal is DirectorSignal.MemoryCue }
         if (gone.isNotEmpty()) log.debug { "${gone.size} events left to the activity digest while silent" }
     }
 
@@ -539,21 +551,46 @@ class Director(
         val skipped = inbox.takeOverflow()
         val now = clock.millis()
         val shown = beat ?: silence?.let { digest.takeWindow().takeIf { it.isNotEmpty() }?.let { lines -> Beat(lines, now - it.since, null) } }
+        val mark = MemoryMark(open.memory)
+        // A new chapter's first message starts with its briefing, which tells the chat up to these events
+        // and the sheets of the players online: it comes before the memory attached to these events.
+        val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders(), reducedBriefing)
+        val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
+        val remembered = attachments(events, open, now)
         val text = buildString {
-            val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
             if (events.isNotEmpty() || skipped.isNotEmpty()) append(formatter.events(events, now, skipped)).append('\n')
+            remembered?.let { append(it).append('\n') }
             shown?.let { append(formatter.heartbeat(it.summary, it.windowMs, it.hint, now)).append('\n') }
             append(situation.render(now, worldTime(), pendingReminders(), recentActions()))
         }
         val notes = whispers(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
-        // A new chapter's first message starts with its briefing, which tells the chat up to these events.
-        val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders(), reducedBriefing)
         val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
         carry = emptyList()
         val trigger = triggerOf(items, beat, resumed)
         budget.started(now)
-        Turn(scope, open, trigger, items, skipped, beat).run(opening)
+        Turn(scope, open, trigger, items, skipped, beat, mark).run(opening)
         afterTurn()
+    }
+
+    /**
+     * The memory's `<memory>` block for [events] told in [chapter] (M3 §11.2, §11.3): the sheet of a
+     * player who joins, the memories the events bring back. Null when there is nothing to attach, no
+     * memory, or the memory failed or took too long (logged: the events go without it).
+     */
+    private suspend fun attachments(events: List<Item>, chapter: Chapter, now: Long): String? {
+        val memory = services.memory
+        if (events.isEmpty() || !memory.available) return null
+        return try {
+            val attached = withTimeoutOrNull(ATTACH_TIMEOUT_MS) { Result.success(memory.attachments(events.map { it.signal }, chapter.memory, now)) }
+            if (attached == null) log.warn("the memory attached nothing to ${events.size} items: it took more than ${duration(ATTACH_TIMEOUT_MS)}")
+            attached?.getOrNull()?.trimEnd()?.takeIf { it.isNotBlank() }
+                ?.also { log.debug { "memory attached to ${events.size} items: ${it.length} characters" } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.error("the memory failed to attach anything to ${events.size} items", e)
+            null
+        }
     }
 
     /**
@@ -568,6 +605,8 @@ class Director(
         private val openingItems: List<Item>,
         openingSkipped: Map<String, Int>,
         private val beat: Beat?,
+        /** What the chapter's memory held before the last request's items were attached: put back when they go back to the inbox. */
+        private var mark: MemoryMark,
     ) {
         private val id = services.trace.nextId(IdKind.TURN)
         private val caller = Caller(Role.DIRECTOR, chapter.conversation.id, id, taskId = null)
@@ -615,7 +654,7 @@ class Director(
             } catch (e: Exception) {
                 log.error("turn $id failed in the engine; its chapter closes", e)
                 closeChapter(ConversationRecord.EndReason.INTERRUPTED, "the engine failed during turn $id: ${e.message ?: e.javaClass.simpleName}")
-                putBack(sent, failed = true, sentSkipped)
+                giveBack(failed = true)
                 outcome = TurnRecord.Outcome.FAILED
             } finally {
                 indicator.stop()
@@ -676,7 +715,7 @@ class Director(
                             conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
                         )
                         closeChapter(ConversationRecord.EndReason.REFUSAL, "${what(outcome)} twice during a turn")
-                        putBack(sent, failed = true, sentSkipped)
+                        giveBack(failed = true)
                         return result
                     }
                     is TurnOutcome.Failed -> return failed(outcome)
@@ -696,6 +735,7 @@ class Director(
             val items = if (take) unseen(inbox.takeAll(), chapter) else emptyList()
             if (!take) log.debug { "turn $id is past its step limit: ${inbox.items().size} items wait for the next turn" }
             val skipped = if (items.isEmpty()) emptyMap() else inbox.takeOverflow()
+            if (sentCommitted) mark = MemoryMark(chapter.memory)
             sent = if (sentCommitted) items else sent + items
             sentSkipped = if (sentCommitted) skipped else merged(sentSkipped, skipped)
             sentCommitted = false
@@ -703,8 +743,21 @@ class Director(
             injected += items.mapNotNull { it.eventId }
             indicator.show(items.mapNotNull { it.waitingPlayer }, scope)
             val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
-            val blocks = if (events.isEmpty() && skipped.isEmpty()) emptyList() else listOf(ContentBlockParam.ofText(formatter.newEvents(events, now, skipped)))
+            val text = buildList {
+                if (events.isNotEmpty() || skipped.isNotEmpty()) add(formatter.newEvents(events, now, skipped))
+                attachments(events, chapter, now)?.let(::add)
+            }
+            val blocks = if (text.isEmpty()) emptyList() else listOf(ContentBlockParam.ofText(text.joinToString("\n")))
             return Pending(blocks, whispers(items))
+        }
+
+        /**
+         * Puts the items of the last request back in the inbox ([putBack]), and the chapter's memory as it
+         * was before they were attached: their sheets and memories are attached again when they are told.
+         */
+        private fun giveBack(failed: Boolean) {
+            putBack(sent, failed, sentSkipped)
+            mark.restore()
         }
 
         /** The request that carried [items] got a usable reply: they are in the history now. */
@@ -729,7 +782,7 @@ class Director(
                 log, DecisionRecord.Kind.REFUSAL, "refused", subject = "turn $id", reason = "${what(outcome)}; the events wait ${duration(RETRY_DELAY_MS)}",
                 eventId = triggerEvents.firstOrNull(), conversationId = chapter.conversation.id, turnId = id, level = Log.Level.WARN,
             )
-            putBack(sent, failed = true, sentSkipped)
+            giveBack(failed = true)
         }
 
         private fun failed(outcome: TurnOutcome.Failed): TurnRecord.Outcome {
@@ -766,7 +819,7 @@ class Director(
                 is GatewayError.BadRequest, is GatewayError.SystemRoleRejected -> {
                     log.error("turn $id: the gateway rejected the request (request ${outcome.requestId ?: "without id"}): ${error.description}")
                     closeChapter(ConversationRecord.EndReason.BAD_REQUEST, "the gateway rejected the request: ${error.description}")
-                    putBack(sent, failed = true, sentSkipped)
+                    giveBack(failed = true)
                     TurnRecord.Outcome.FAILED
                 }
                 GatewayError.ContextExceeded -> {
@@ -775,11 +828,11 @@ class Director(
                         reducedBriefing = true
                         log.warn("turn $id: the first message of chapter ${chapter.number} does not fit in the context; it goes again with a reduced briefing")
                         services.transcripts.note(chapter.conversation, "the first message does not fit in the context; sent again with a reduced briefing")
-                        putBack(sent, failed = false, sentSkipped)
+                        giveBack(failed = false)
                         return TurnRecord.Outcome.FAILED
                     }
                     closeChapter(ConversationRecord.EndReason.CONTEXT_EXCEEDED, error.description)
-                    putBack(sent, failed = false, sentSkipped)
+                    giveBack(failed = false)
                     TurnRecord.Outcome.FAILED
                 }
             }
@@ -788,7 +841,7 @@ class Director(
         /** Keeps the tool results of [pending] to send first next time, and its items for the next wake-up. */
         private fun keepForLater(pending: Pending) {
             carry = pending.blocks.filter { it.isToolResult() }
-            putBack(sent, failed = false, sentSkipped)
+            giveBack(failed = false)
         }
 
         /** Closes the chapter on an error, without a summary: the next one opens after a backoff. */
@@ -821,12 +874,14 @@ class Director(
                 TurnRecord.Trigger.CHAT -> openingItems.firstOrNull { it.isAddressedChat } ?: openingItems.firstOrNull { it.chat != null }
                 else -> null
             }
+            val due = if (trigger == TurnRecord.Trigger.DUE) openingItems.firstOrNull { it.signal is DirectorSignal.MemoryDue } else null
             val head = when {
                 main?.chat != null -> "${trigger.id} ${main.chat?.player?.name}"
+                due != null -> "${trigger.id} ${(due.signal as DirectorSignal.MemoryDue).ref}"
                 beat != null -> "${trigger.id} (${beat.summary.size} active ${if (beat.summary.size == 1) "player" else "players"})"
                 else -> trigger.id
             }
-            val more = openingItems.size - if (main == null) 0 else 1
+            val more = openingItems.size - if (main == null && due == null) 0 else 1
             return head + if (more > 0) " + $more ${if (more == 1) "item" else "items"}" else ""
         }
     }
@@ -921,6 +976,21 @@ class Director(
                 "answer what still matters now, do not try to catch up on everything."
     }
 
+    /**
+     * What [memory] showed so far (refs, sheets), taken before a request's items are attached: a request
+     * that is not committed told the model nothing, so the memory may show the same again (M3 §10.6).
+     */
+    private class MemoryMark(private val memory: ChapterMemory) {
+        private val refs = memory.shownRefs.toSet()
+        private val sheets = memory.sheetsShownAt.toMap()
+
+        fun restore() {
+            memory.shownRefs.retainAll(refs)
+            memory.sheetsShownAt.clear()
+            memory.sheetsShownAt.putAll(sheets)
+        }
+    }
+
     /** A heartbeat: what the players did during [windowMs], and the reflexes' [hint]. */
     private data class Beat(val summary: List<String>, val windowMs: Long, val hint: String?)
 
@@ -963,6 +1033,9 @@ class Director(
         /** Pause of the loop after an unexpected exception, so that a bug never spins. */
         const val ERROR_PAUSE_MS = 5_000L
 
+        /** How long the memory may take to attach sheets and memories to the items of a request (M3 §11.3). */
+        const val ATTACH_TIMEOUT_MS = 3_000L
+
         private val ACTING = setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK)
         private const val HEARTBEAT = "heartbeat"
         private val NOTABLE_STATES = setOf(DirectorState.DISABLED, DirectorState.PAUSED, DirectorState.BACKOFF, DirectorState.BLOCKED, DirectorState.STOPPED)
@@ -985,6 +1058,7 @@ class Director(
             items.any { it.signal is DirectorSignal.OperatorWhisper } -> TurnRecord.Trigger.OPERATOR
             items.any { it.signal is DirectorSignal.TaskDone } -> TurnRecord.Trigger.TASK
             items.any { it.signal is DirectorSignal.ReminderDue } -> TurnRecord.Trigger.REMINDER
+            items.any { it.signal is DirectorSignal.MemoryDue } -> TurnRecord.Trigger.DUE
             items.any { it.urgency == Urgency.SOON } -> TurnRecord.Trigger.SALIENT
             beat != null -> TurnRecord.Trigger.HEARTBEAT
             resumed -> TurnRecord.Trigger.RESUME

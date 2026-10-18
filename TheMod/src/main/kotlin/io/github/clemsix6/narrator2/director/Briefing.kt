@@ -8,6 +8,8 @@ import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
+import io.github.clemsix6.narrator2.memory.BriefingSection
+import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -26,11 +28,18 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * The briefing that opens a chapter (M1_M2 §12.11): the first block of the chapter's first message,
- * everything the Narrator knows when its conversation starts afresh. English, written by the engine:
+ * The briefing that opens a chapter (M1_M2 §12.11, M3 §11.1): the first block of the chapter's first
+ * message, everything the Narrator knows when its conversation starts afresh. English, written by the
+ * engine, with the memory's six sections between its own, from the steadiest to the most changing:
+ * `<grimoire>`, `<chronicle>`, `<previous_chapters>`, `<canon>`, `<world/>`, `<players_online>`,
+ * `<sheets>`, `<players_recent>`, `<memories>`, `<notes>`, `<recent_chat>`, `<your_recent_actions>`,
+ * `<engine_state>`. The memory writes its sections (`Memory.briefing`, already escaped); the briefing
+ * places them, keeps each within its budget ([MEMORY_BUDGETS]) and, when they cannot be read, says so
+ * in each of them.
  *
- * - `<previous_chapters>`: the last three chapters of the Director, with their factual summaries
- *   (commitments included) or why they have none;
+ * - `<previous_chapters>`: the last two chapters of the Director (three without a memory, whose
+ *   chronicle covers the older ones), with their factual summaries (commitments included) or why they
+ *   have none;
  * - `<world …/>`: the Overworld's day, hour and weather;
  * - `<players_online>`: each player online with their dimension, position and state, how long they have
  *   played and what they did in the last minutes;
@@ -46,13 +55,14 @@ import java.util.UUID
  * source says so (`(no chat in the last 24 hours)`). That is the lesson of the first version, whose
  * briefing was built from empty inputs without anyone noticing.
  *
- * Each section has a fixed budget: the whole stays within [MAX_CHARS] (about 10,000 tokens at 3.5
+ * Each section has a fixed budget: the whole stays within [MAX_CHARS] (about 20,000 tokens at 3.5
  * characters per token), whatever the history. Reads from the Journal come after a barrier, so the
  * facts of the last second are in; they run side by side, each within [READ_TIMEOUT_MS]. After a first
  * message too long for the model's context, the briefing is sent again in its reduced form: the last
- * summarized chapter only, and a few lines of chat, actions and past players.
+ * summarized chapter only, a few lines of chat, actions and past players, and the memory sections in
+ * their reduced form (the Grimoire and the canon stay whole, the others shrink or go).
  *
- * The three places of `<previous_chapters>` go to chapters **with a summary** (M2 review, finding 28):
+ * The places of `<previous_chapters>` go to chapters **with a summary** (M2 review, finding 28):
  * chapters closed without one (an error, a crash) never push the last summaries, and their promises,
  * out of the briefing. The newest of them are still named, one line each, after the summaries.
  *
@@ -82,6 +92,7 @@ class Briefing(
      * @param reminders the reminders waiting.
      * @param closed the chapters closed since the server started, newest last: they complete the Journal's
      *   rows, which may lag behind or be unavailable.
+     * @param memory what the memory shows in this chapter: its briefing adds to it.
      * @param reduced the reduced form, after a first message that did not fit in the context.
      */
     suspend fun render(
@@ -91,29 +102,96 @@ class Briefing(
         chatBefore: Long,
         reminders: List<PendingReminder>,
         closed: List<ConversationRecord>,
+        memory: ChapterMemory,
         reduced: Boolean = false,
     ): String = coroutineScope {
         if (services.journal.available) {
             withTimeoutOrNull(BARRIER_TIMEOUT_MS) { services.journal.barrier() } ?: log.warn("briefing: the Journal barrier timed out, the last facts may be missing")
         }
         val limits = if (reduced) Limits.REDUCED else Limits.FULL
+        val places = previousPlaces(reduced)
         val snapshot = async { attempt("world") { world() } }
+        val sections = async { attempt("memory") { memorySections(memory, now) } }
         val chapters = async { attempt("previous chapters") { storedChapters(conversationId) } }
         val recent = async { attempt("recent players") { recentPlayers(now, limits) } }
         val chat = async { attempt("recent chat") { chat(now, chatBefore, limits) } }
         val actions = async { attempt("recent actions") { actions(now, limits) } }
         val captured = snapshot.await()
+        val remembered = sections.await().fold({ it }, ::unavailableMemory)
+        fun StringBuilder.memory(tag: String) {
+            val section = remembered[tag] ?: return
+            section.render(reducedForm = reduced && tag !in BriefingSection.NEVER_REDUCED)?.let { append(within(section, it)).append('\n') }
+        }
         buildString {
             append("<briefing chapter=\"$number\" now=\"${stamp.format(Instant.ofEpochMilli(now))}\"${if (reduced) " reduced=\"true\"" else ""}>\n")
-            section("previous_chapters", previousChapters(chapters.await(), closed, now, limits))
+            memory("grimoire")
+            memory("chronicle")
+            section("previous_chapters", previousChapters(chapters.await(), closed, now, places))
+            memory("canon")
             append(worldLine(captured)).append('\n')
             section("players_online", playersOnline(captured, now))
+            memory("sheets")
             section("players_recent window=\"24h\"", recent.await().fold({ it.ifEmpty { listOf("(no other player in the last 24 hours)") } }, ::unavailableLines))
+            memory("memories")
+            memory("notes")
             section("recent_chat", chat.await().fold({ it.ifEmpty { listOf("(no chat in the last 24 hours)") } }, ::unavailableLines))
             section("your_recent_actions", actions.await().fold({ it.ifEmpty { listOf("(none yet)") } }, ::unavailableLines))
             section("engine_state", engineState(now, reminders))
             append("</briefing>")
         }
+    }
+
+    // ── Memory ──────────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The memory's sections, by tag (M3 §11.1): those it gave, in its own order; a section it left out
+     * is not written (`DisabledMemory` gives the six, each saying why it has nothing).
+     */
+    private suspend fun memorySections(chapter: ChapterMemory, now: Long): Map<String, BriefingSection> {
+        val given = withTimeoutOrNull(MEMORY_TIMEOUT_MS) { services.memory.briefing(chapter, now) }
+            ?: throw IllegalStateException("the memory did not answer within ${duration(MEMORY_TIMEOUT_MS)}")
+        val unknown = given.map { it.tag }.filter { it !in BriefingSection.TAGS }
+        if (unknown.isNotEmpty()) log.warn("briefing: the memory gave sections that have no place: ${unknown.joinToString()}")
+        val missing = BriefingSection.TAGS.filter { tag -> given.isNotEmpty() && given.none { it.tag == tag } }
+        if (missing.isNotEmpty()) log.warn("briefing: the memory gave no ${missing.joinToString()} section")
+        return given.filter { it.tag in BriefingSection.TAGS }.associateBy { it.tag }
+    }
+
+    /** Every memory section saying why the memory could not be read, with its error. */
+    private fun unavailableMemory(error: Throwable): Map<String, BriefingSection> =
+        BriefingSection.TAGS.associateWith { tag -> BriefingSection(tag, "", unavailableLines(error), unavailableLines(error)) }
+
+    /**
+     * [rendered], the text of [section], kept within its budget ([MEMORY_BUDGETS], counted on its lines):
+     * past it, the last lines go and a line says so. The memory keeps to its budgets (M3-13); this makes
+     * sure the briefing keeps to [MAX_CHARS] whatever it gives.
+     */
+    private fun within(section: BriefingSection, rendered: String): String {
+        val budget = MEMORY_BUDGETS[section.tag] ?: return rendered
+        val open = rendered.substringBefore('\n')
+        val close = "</${section.tag}>"
+        val body = rendered.removePrefix(open).removeSuffix(close).trim('\n')
+        if (body.length <= budget) return rendered
+        log.warn("briefing: the memory's ${section.tag} section takes ${body.length} characters, more than its $budget: it is cut")
+        val note = "(cut: this section went over its $budget characters)"
+        val kept = StringBuilder()
+        for (line in body.lines()) {
+            val room = budget - note.length - 1 - kept.length - 1
+            if (line.length <= room) {
+                kept.append(line).append('\n')
+            } else {
+                if (room > 1) kept.append(ModelText.cut(line, room)).append('\n')
+                break
+            }
+        }
+        return "$open\n$kept$note\n$close"
+    }
+
+    /** How many summarized chapters `<previous_chapters>` holds: fewer with a memory, whose chronicle covers the older ones. */
+    private fun previousPlaces(reduced: Boolean): Int = when {
+        reduced -> 1
+        services.memory.available -> PREVIOUS_CHAPTERS
+        else -> PREVIOUS_CHAPTERS_WITHOUT_MEMORY
     }
 
     // ── Previous chapters ───────────────────────────────────────────────────────────────────────────
@@ -127,13 +205,14 @@ class Briefing(
         }
     }
 
-    /** The last [PREVIOUS_CHAPTERS] chapters with a summary, and as many of the last without one. */
+    /** The last [PREVIOUS_CHAPTERS_WITHOUT_MEMORY] chapters with a summary, and as many of the last without one. */
     private suspend fun storedChapters(current: String): List<PastChapter> {
         val columns = "conversation_id, chapter, epoch_ms(started_at), epoch_ms(ended_at), end_reason, summary"
         val director = "FROM conversations WHERE role = 'director' AND conversation_id <> ?"
+        val limit = PREVIOUS_CHAPTERS_WITHOUT_MEMORY
         return query(
-            "(SELECT $columns $director AND coalesce(trim(summary), '') <> '' ORDER BY started_at DESC LIMIT $PREVIOUS_CHAPTERS) UNION ALL " +
-                "(SELECT $columns $director AND coalesce(trim(summary), '') = '' ORDER BY started_at DESC LIMIT $PREVIOUS_CHAPTERS)",
+            "(SELECT $columns $director AND coalesce(trim(summary), '') <> '' ORDER BY started_at DESC LIMIT $limit) UNION ALL " +
+                "(SELECT $columns $director AND coalesce(trim(summary), '') = '' ORDER BY started_at DESC LIMIT $limit)",
             current,
             current,
         ) {
@@ -142,17 +221,17 @@ class Briefing(
     }
 
     /**
-     * The last summarized chapters ([Limits.chapters] places), oldest first, then the chapters closed
-     * without a summary since the last of them, one line each ([PREVIOUS_CHAPTERS] at most).
+     * The last summarized chapters ([places]), oldest first, then the chapters closed without a summary
+     * since the last of them, one line each (as many as a full briefing has places, at most).
      */
-    private fun previousChapters(stored: Result<List<PastChapter>>, closed: List<ConversationRecord>, now: Long, limits: Limits): List<String> {
+    private fun previousChapters(stored: Result<List<PastChapter>>, closed: List<ConversationRecord>, now: Long, places: Int): List<String> {
         val byId = LinkedHashMap<String, PastChapter>()
         stored.getOrNull()?.forEach { byId[it.id] = it }
         closed.forEach { byId[it.conversationId] = PastChapter.of(it) }
         val all = byId.values.sortedBy { it.startedAt }
-        val summarized = all.filter { !it.summary.isNullOrBlank() }.takeLast(limits.chapters)
+        val summarized = all.filter { !it.summary.isNullOrBlank() }.takeLast(places)
         val lastSummarized = summarized.lastOrNull()?.startedAt ?: Long.MIN_VALUE
-        val unsummarized = all.filter { it.summary.isNullOrBlank() && it.startedAt > lastSummarized }.takeLast(PREVIOUS_CHAPTERS)
+        val unsummarized = all.filter { it.summary.isNullOrBlank() && it.startedAt > lastSummarized }.takeLast(previousPlaces(reduced = false))
         val lines = mutableListOf<String>()
         val empty = summarized.isEmpty() && unsummarized.isEmpty()
         stored.exceptionOrNull()?.let { lines += "(${if (empty) "" else "older chapters "}unavailable: ${reason(it)})" }
@@ -364,13 +443,33 @@ class Briefing(
         }
 
     companion object {
-        /** The whole briefing stays within this many characters: about 10,000 tokens at 3.5 characters per token. */
-        const val MAX_CHARS = 35_000
+        /** The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token (M3 §11.1). */
+        const val MAX_CHARS = 70_000
 
         /** How far back the players and the chat go. */
         const val WINDOW_MS = 24 * 3_600_000L
 
-        const val PREVIOUS_CHAPTERS = 3
+        /** The summarized chapters of `<previous_chapters>` with a memory: its chronicle covers the older ones (M3 §11.1). */
+        const val PREVIOUS_CHAPTERS = 2
+
+        /** The summarized chapters of `<previous_chapters>` without a memory, as in M2: nothing else covers the older ones. */
+        const val PREVIOUS_CHAPTERS_WITHOUT_MEMORY = 3
+
+        /**
+         * The budget of each memory section, in characters of its lines (M3 §11.1): 40,300 in all. A
+         * section that goes over is cut ([within]).
+         */
+        val MEMORY_BUDGETS: Map<String, Int> = mapOf(
+            "grimoire" to 10_000,
+            "chronicle" to 8_000,
+            "canon" to 4_000,
+            "sheets" to 10_800,
+            "memories" to 5_000,
+            "notes" to 2_500,
+        )
+
+        /** How long the memory may take to give its sections. */
+        const val MEMORY_TIMEOUT_MS = 10_000L
 
         /** A chapter summary is kept to this many characters (the length `conversations.summary` holds). */
         const val SUMMARY_MAX = 4_000
@@ -403,8 +502,8 @@ class Briefing(
     }
 
     /** What each section may hold: the full briefing, or its reduced form after a first message too long for the context. */
-    private enum class Limits(val chapters: Int, val recentPlayers: Int, val chatLines: Int, val chatChars: Int, val actions: Int) {
-        FULL(PREVIOUS_CHAPTERS, RECENT_PLAYERS, CHAT_LINES, CHAT_MAX_CHARS, ACTIONS),
-        REDUCED(1, 3, 10, 2_500, 5),
+    private enum class Limits(val recentPlayers: Int, val chatLines: Int, val chatChars: Int, val actions: Int) {
+        FULL(RECENT_PLAYERS, CHAT_LINES, CHAT_MAX_CHARS, ACTIONS),
+        REDUCED(3, 10, 2_500, 5),
     }
 }

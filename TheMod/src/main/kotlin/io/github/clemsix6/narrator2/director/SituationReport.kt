@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.tool.ToolText.dimension
@@ -47,8 +48,11 @@ data class DirectorAction(val at: Long, val tool: String, val targets: List<Stri
  * online, the Narrator's active effects, the deaths it may still cause each player, its tasks and
  * reminders, and its last actions. Every section is written even when empty, so that the model never
  * mistakes a missing source for an empty one. Player names go through the common escape (`core/ModelText`).
+ * The memory adds its lines at the end when it has something to say (M3 §11.3): favor, commitments due
+ * soon, players who had nothing from the Narrator for long.
  */
 class SituationReport(private val services: NarratorServices, private val digest: ActivityDigest, zone: ZoneId) {
+    private val log = Log.director
     private val formatter = EventFormatter(zone)
     private val hours = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(zone)
 
@@ -70,8 +74,24 @@ class SituationReport(private val services: NarratorServices, private val digest
             append("Deaths you may still cause: ").append(deathsLeft(online)).append('\n')
             append("Tasks: ").append(tasks(now)).append(" · Reminders: ").append(reminders(reminders)).append('\n')
             append("Your last actions: ").append(actions(actions, now)).append('\n')
+            memoryLines(now).forEach { append(it).append('\n') }
             append("</situation>")
         }
+
+    /**
+     * The memory's lines (M3 §11.3: `Favor: …`, `Due soon: …`, `Attention: …`), read from its cache: never
+     * the database. None without a memory; one line saying why when it fails. Escaped again, one line each.
+     */
+    private fun memoryLines(now: Long): List<String> {
+        val memory = services.memory
+        if (!memory.available) return emptyList()
+        return try {
+            memory.situationLines(now).filter { it.isNotBlank() }.map { ModelText.escape(ModelText.cut(it, MEMORY_LINE_MAX)) }
+        } catch (e: Exception) {
+            log.error("situation: the memory's lines are unavailable", e)
+            listOf("Memory: unavailable (${e.message ?: e.javaClass.simpleName})")
+        }
+    }
 
     private fun player(live: LivePlayer, now: Long): String {
         val parts = mutableListOf<String>()
@@ -137,5 +157,8 @@ class SituationReport(private val services: NarratorServices, private val digest
 
         /** Hostile actions are refused against a player who died less than this long ago (`Rules.NO_PILE_ON`). */
         const val NO_PILE_ON_MS = 5 * 60_000L
+
+        /** Longest line of the memory in the situation. */
+        const val MEMORY_LINE_MAX = 400
     }
 }
