@@ -3,8 +3,12 @@ package io.github.clemsix6.narrator2.memory.chronicle
 import io.github.clemsix6.narrator2.event.LeaveReason
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.MemoryDraft
+import io.github.clemsix6.narrator2.memory.MemoryKind
 import io.github.clemsix6.narrator2.memory.RunKind
 import io.github.clemsix6.narrator2.memory.RunStatus
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerFixture.Companion.at
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerReplayTest.Companion.text
 import io.github.clemsix6.narrator2.testing.budgetExceeded
@@ -148,18 +152,17 @@ class ChroniclerTest {
     }
 
     @Test
-    fun `a refusal fails the batch with its reason and validates nothing`() = runBlocking<Unit> {
+    fun `a refusal fails the batch with its reason, and the code still covers the punishments and benefits`() = runBlocking<Unit> {
         f.scenario()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")
-        val interactions = f.count("interactions")
         f.fake.enqueue(reply { refusal(category = "cyber") })
 
         val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
 
         assertEquals(RunStatus.FAILED, outcome.status)
         assertEquals("refused by the safety filter (category cyber)", outcome.report)
-        assertEquals(0, outcome.writes)
-        assertEquals(interactions, f.count("interactions"), "not even the punishment: the next batch comes back to the window")
+        assertEquals(2, outcome.writes, "the code's own: the punishment and the gift")
+        assertEquals(listOf("punishment", "gift"), f.rows("SELECT kind FROM interactions WHERE source = 'engine' ORDER BY id") { getString(1) })
         assertEquals(listOf("failed"), f.rows("SELECT end_reason FROM conversations WHERE role = 'chronicler'") { getString(1) })
     }
 
@@ -174,8 +177,99 @@ class ChroniclerTest {
         assertEquals(RunStatus.FAILED, outcome.status)
         assertEquals(Instant.parse("2026-10-01T21:00:00Z"), outcome.budget?.resetAt)
         assertEquals("budget: the LLMGW budget is spent until 21:00", outcome.report)
-        assertEquals(0, outcome.writes)
-        assertEquals(1L, f.count("interactions"), "the Director's prayer only")
+        assertEquals(2, outcome.writes, "the punishment and the gift, covered by the code")
+        assertEquals(3L, f.count("interactions"), "the Director's prayer, and the code's two")
+    }
+
+    @Test
+    fun `a block that fails does not stop the next ones, but a 402 does`() = runBlocking<Unit> {
+        longWindow()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") }, reply { refusal(category = "cyber") }, reply { text("Toujours rien.") })
+
+        val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+
+        assertEquals(RunStatus.FAILED, outcome.status)
+        assertEquals(3, outcome.conversations.size, "the third block is read after the second failed")
+        assertEquals("refused by the safety filter (category cyber)", outcome.report)
+        val ends = f.rows("SELECT conversation_id, end_reason FROM conversations WHERE role = 'chronicler'") { getString(1) to getString(2) }.toMap()
+        assertEquals(listOf("done", "failed", "done"), outcome.conversations.map { ends[it] }, "in the order of the blocks")
+
+        f.runRow(8, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(budgetExceeded(resetAt = "2026-10-01T21:00:00Z"))
+        val spent = f.chronicler.batch(8, f.chapter, at("20:00"), at("20:10"))
+
+        assertEquals(RunStatus.FAILED, spent.status)
+        assertEquals(1, spent.conversations.size, "the next blocks would hit the same 402")
+        assertEquals(Instant.parse("2026-10-01T21:00:00Z"), spent.budget?.resetAt)
+    }
+
+    @Test
+    fun `a nap whose last batch fails goes on to its consolidation, and its window is passed with a warning and a decision`() = runBlocking<Unit> {
+        closed(summary, EndReason.QUIET_LIMIT)
+        f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
+        f.clock.now = at("20:30:30")
+        f.journal.sync()
+        f.runRow(12, RunKind.NAP, "20:10", "20:30")
+        f.fake.enqueue(reply { refusal(category = "cyber") }, reply { text("Chapitre consolidé.") })
+
+        val outcome = f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
+
+        assertEquals(RunStatus.DONE, outcome.status, outcome.report)
+        assertEquals(2, outcome.conversations.size)
+        assertEquals("failed: refused by the safety filter (category cyber) / Chapitre consolidé.", outcome.report)
+        assertEquals(
+            listOf(
+                "run 12" to "the last batch of the nap of chapter 13 (20:10–20:30) failed; the nap went on without it: " +
+                    "refused by the safety filter (category cyber)",
+            ),
+            f.rows("SELECT subject, reason FROM engine_decisions WHERE kind = 'memory' AND decision = 'window_passed'") { getString(1) to getString(2) },
+        )
+        assertEquals(listOf("punishment", "gift"), f.rows("SELECT kind FROM interactions WHERE source = 'engine' ORDER BY id") { getString(1) })
+    }
+
+    @Test
+    fun `the nap of an old chapter reads what was written during it and by its own job, not what came after`() = runBlocking<Unit> {
+        val e = closed(summary, EndReason.QUIET_LIMIT)
+        val thanks = f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
+        f.journal.sync()
+        f.clock.now = at("22:00")
+        val later = f.store.addMemory(
+            MemoryDraft(MemoryKind.EPISODE, "La tour de Bartok", "Bartok a bâti une tour de terre au spawn.", listOf(f.bartok.uuid), importance = 3),
+            Author(Source.DIRECTOR, conversationId = "director-c14"),
+        ).row.ref
+        f.clock.now = at("23:00")
+        f.runRow(12, RunKind.NAP, "20:10", "20:30")
+        f.fake.enqueue(
+            reply {
+                toolUse(
+                    "note_interaction",
+                    """{"player": "Mimosa", "kind": "compliment", "valence": 1, "summary": "a remercié le Narrateur pour les bottes",
+                       "quote": "merci pour les bottes", "evidence": ["e$thanks"]}""",
+                )
+            },
+            reply { text("Remerciement de Mimosa noté.") },
+            reply { text("Chapitre consolidé.") },
+        )
+
+        val outcome = f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
+
+        assertEquals(RunStatus.DONE, outcome.status, outcome.report)
+        val thanked = f.rows("SELECT id FROM interactions WHERE run_id = 12 AND source = 'chronicler'") { getLong(1) }.single()
+        val opening = text(f.fake.requests.last().json.path("messages").first())
+        val written = opening.substringAfter("<written>\n").substringBefore("\n</written>")
+        assertTrue("- ${e.threat} threat → Mimosa (by the director at 20:06" in written, written)
+        assertTrue("- I-$thanked Mimosa compliment +1 at " in written, "what the nap's last batch wrote: $written")
+        assertFalse("$later" in written, "written later, for another chapter: $written")
+    }
+
+    /** Chapter 13 from 20:00, with 150 long lines of chat from 20:01: three blocks of exchange log. */
+    private fun longWindow() {
+        f.chapterRow()
+        f.publish("20:00:01", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
+        val sentence = "Le pont de Mimosa tient encore, mais pour combien de temps, personne ne le sait vraiment ici. "
+        repeat(150) { i -> f.chat(at("20:01").plusSeconds(2L * i).toString().substring(11, 19), f.bartok, "$i " + sentence.repeat(3)) }
+        f.journal.sync()
     }
 
     @Test
@@ -194,11 +288,7 @@ class ChroniclerTest {
 
     @Test
     fun `a window too long for one block is chronicled in one conversation per block`() = runBlocking<Unit> {
-        f.chapterRow()
-        f.publish("20:00:01", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
-        val sentence = "Le pont de Mimosa tient encore, mais pour combien de temps, personne ne le sait vraiment ici. "
-        repeat(150) { i -> f.chat(at("20:01").plusSeconds(2L * i).toString().substring(11, 19), f.bartok, "$i " + sentence.repeat(3)) }
-        f.journal.sync()
+        longWindow()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")
         f.fake.enqueue(reply { text("Rien.") }, reply { text("Rien non plus.") }, reply { text("Toujours rien.") })
 

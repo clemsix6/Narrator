@@ -185,11 +185,11 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
     /**
      * What the memory got between [from] and [until] (its audit, `memory_log`): canon, interactions,
-     * memories, notes and chronicle entries written, and the canon closed then; oldest first. [names] gives
-     * the players' names.
+     * memories, notes and chronicle entries written, and the canon closed then; oldest first. With [runId],
+     * what that job wrote or closed too, whenever it did. [names] gives the players' names.
      */
-    fun written(connection: Connection, names: Names, from: Instant, until: Instant, zone: ZoneId): List<Written> {
-        val inserted = connection.query(INSERTED_SQL, from, until) { getString(1) to getString(2).toLong() }
+    fun written(connection: Connection, names: Names, from: Instant, until: Instant, zone: ZoneId, runId: Long? = null): List<Written> {
+        val inserted = connection.query(INSERTED_SQL, from, until, runId) { getString(1) to getString(2).toLong() }
             .groupBy({ it.first }, { it.second })
         val rows = buildList<MemoryRow> {
             fun ids(kind: RefKind) = longArray(inserted[kind.table].orEmpty())
@@ -200,7 +200,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
             addAll(connection.query("SELECT $CHRONICLE_COLUMNS FROM chronicle WHERE list_contains(?, id)", ids(RefKind.CHRONICLE)) { chronicleEntry() })
         }
         val written = rows.map { row -> writtenOf(row, zone) }
-        val closed = connection.query(CLOSED_CANON_SQL, from, until, from) { canonEntry(names) }
+        val closed = connection.query(CLOSED_CANON_SQL, from, from, until, runId) { canonEntry(names) }
             .map { Written(it.resolvedAt!!, "${it.ref} ${canonWhat(it)} ${it.status.id} at ${time(it.resolvedAt, zone)}" + said(it.resolution), false) }
         return (written + closed).sortedBy { it.at }
     }
@@ -620,13 +620,14 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
         private const val OPEN_CANON_SQL = "SELECT $CANON_COLUMNS FROM canon WHERE status IN ('planned', 'active') AND NOT archived ORDER BY created_at, id"
 
-        /** The citable rows inserted in a period, by their audit. */
-        private const val INSERTED_SQL = "SELECT DISTINCT table_name, row_key FROM memory_log WHERE op = 'insert' AND ts >= ? AND ts <= ? " +
-            "AND table_name IN ('canon', 'interactions', 'memories', 'notes', 'chronicle')"
+        /** The citable rows inserted in a period, or by a job (a null job: none), by their audit. */
+        private const val INSERTED_SQL = "SELECT DISTINCT table_name, row_key FROM memory_log WHERE op = 'insert' " +
+            "AND ((ts >= ? AND ts <= ?) OR run_id = ?) AND table_name IN ('canon', 'interactions', 'memories', 'notes', 'chronicle')"
 
-        /** Canon written before a period and closed in it. */
-        private const val CLOSED_CANON_SQL = "SELECT $CANON_COLUMNS FROM canon WHERE resolved_at >= ? AND resolved_at <= ? AND created_at < ? " +
-            "ORDER BY resolved_at, id"
+        /** Canon written before a period and closed in it, or closed by a job (a null job: none). */
+        private const val CLOSED_CANON_SQL = "SELECT $CANON_COLUMNS FROM canon WHERE created_at < ? AND resolved_at IS NOT NULL " +
+            "AND ((resolved_at >= ? AND resolved_at <= ?) OR id IN (SELECT TRY_CAST(row_key AS BIGINT) FROM memory_log " +
+            "WHERE run_id = ? AND table_name = 'canon' AND op = 'update')) ORDER BY resolved_at, id"
 
         /** What the Director of a chapter was shown (its own reads, not the dream's nor a use). */
         private const val SHOWN_SQL = "SELECT ts, ref_id, channel, event_id FROM recalls WHERE conversation_id = ? AND ts >= ? AND ts <= ? " +

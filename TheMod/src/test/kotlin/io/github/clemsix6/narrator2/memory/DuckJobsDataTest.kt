@@ -58,9 +58,7 @@ class DuckJobsDataTest {
 
         val read = data.lastRun(RunKind.BATCH)!!
         assertEquals(ended.copy(inputTokens = 3_310, outputTokens = 120), read)
-        assertEquals(read, data.lastRun(RunKind.BATCH, setOf(RunStatus.DONE), "director-c1"))
-        assertNull(data.lastRun(RunKind.BATCH, setOf(RunStatus.FAILED)))
-        assertNull(data.lastRun(RunKind.BATCH, chapter = "director-c2"))
+        assertNull(data.lastRun(RunKind.NAP))
 
         data.insertRun(run(2, RunKind.DREAM, RunStatus.RUNNING, at(5)))
         assertEquals(1, data.interruptRunning(at(9)))
@@ -68,6 +66,34 @@ class DuckJobsDataTest {
         assertEquals(RunStatus.INTERRUPTED, dream.status)
         assertEquals(at(9), dream.endedAt)
         assertEquals(RunStatus.DONE, data.lastRun(RunKind.BATCH)!!.status)
+    }
+
+    @Test
+    fun `batches resume after the latest window done, skipped or passed, and a failure from the same start is found, a 402 not`() = runBlocking<Unit> {
+        suspend fun batch(id: Long, status: RunStatus, from: Long, to: Long, error: String? = null, chapter: String = "director-c1") =
+            data.insertRun(run(id, RunKind.BATCH, status, at(to), chapter, error, windowTo = at(to)).copy(windowFrom = at(from)))
+        assertNull(data.batchEnd("director-c1"))
+        batch(1, RunStatus.DONE, 0, 10)
+        batch(2, RunStatus.SKIPPED, 10, 20)
+        batch(3, RunStatus.FAILED, 20, 30, "refused by the safety filter")
+        assertEquals(at(20), data.batchEnd("director-c1"), "a failed window comes back")
+        assertTrue(data.batchFailedFrom("director-c1", at(20), 4))
+        assertFalse(data.batchFailedFrom("director-c1", at(20), 3), "the run itself")
+        assertFalse(data.batchFailedFrom("director-c2", at(20), 4), "another chapter")
+        assertFalse(data.batchFailedFrom("director-c1", at(10), 4), "another start")
+
+        batch(4, RunStatus.FAILED, 20, 40, "passed: the window 20:20:00–20:40:00 failed twice, the next batch starts after it: refused")
+        batch(5, RunStatus.FAILED, 40, 50, "budget: the LLMGW budget is spent")
+        batch(6, RunStatus.DONE, 0, 99, chapter = "director-c2")
+        assertEquals(at(40), data.batchEnd("director-c1"), "a passed window does not come back; a 402's does")
+        assertFalse(data.batchFailedFrom("director-c1", at(40), 7), "a 402 is not the window's fault")
+    }
+
+    @Test
+    fun `a memory_state key done with is deleted`() = runBlocking<Unit> {
+        fixture.sql("INSERT INTO memory_state VALUES ('dream:7:step', '3', ?), ('dream:pending', '7', ?)", start, start)
+        data.deleteState("dream:7:step")
+        assertEquals(listOf("dream:pending"), fixture.rows("SELECT key FROM memory_state ORDER BY key") { getString(1) })
     }
 
     @Test
@@ -97,14 +123,17 @@ class DuckJobsDataTest {
         repeat(4) { data.insertRun(run(10L + it, RunKind.NAP, RunStatus.FAILED, at(121L + it), "director-c4", "budget: the LLMGW budget is spent")) }
         data.insertRun(run(20, RunKind.NAP, RunStatus.FAILED, at(130), "director-c2", "empty replies"))
 
-        val chapters = data.chaptersToNap(maxFailures = 3, limit = 10)
+        val chapters = data.chaptersToNap(maxFailures = 3, limit = 10, closedSince = at(0))
 
         assertEquals(listOf("director-c2", "director-c4"), chapters.map { it.conversationId })
         assertEquals(
             ConversationRecord("director-c2", Role.DIRECTOR, "Chapter 2", 2, null, at(30), at(60), ConversationRecord.EndReason.SHUTDOWN, "summary 2", null),
             chapters.first(),
         )
-        assertEquals(listOf("director-c2"), data.chaptersToNap(3, 1).map { it.conversationId })
+        assertEquals(listOf("director-c2"), data.chaptersToNap(3, 1, at(0)).map { it.conversationId })
+        assertEquals(listOf("director-c2", "director-c4"), data.chaptersToNap(3, 10, at(60)).map { it.conversationId }, "closed at the date counts")
+        assertEquals(listOf("director-c4"), data.chaptersToNap(3, 10, at(61)).map { it.conversationId })
+        assertEquals(2, data.chaptersNeverNapped(at(100)), "chapters 2 and 3: 1 has its nap, 4 and 5 closed later or not at all, the analyst is no chapter")
         assertEquals(at(120), data.chapter("director-c5")!!.startedAt)
         assertNull(data.chapter("director-c9"))
     }

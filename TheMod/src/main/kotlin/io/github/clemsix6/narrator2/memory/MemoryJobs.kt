@@ -79,6 +79,10 @@ class JobHooks(
  *   chapter every `memory.chronicleMinutes` when the Narrator spoke or acted, the catch-up of the naps
  *   30 s after the start then every 30 minutes, the dream (server empty, or daily), the statistics, the
  *   housekeeping, the situation cache, the anniversary of the day ([JobHooks.anniversary]).
+ * - **No window blocks a chapter**: a batch window that fails twice from the same start is passed (the next
+ *   batch starts at its end), with a `WARN` and the decision `memory window_passed`.
+ * - **The catch-up** naps the chapters closed since the memory first started on the world ([SINCE_KEY]),
+ *   less `memory.catchUpDays`; older chapters never get a nap.
  * - **The bus**: the position samples, each a possible return to the place of a memory
  *   ([JobHooks.placeReturn]); the departures, whose player's stats are computed again.
  *
@@ -128,9 +132,14 @@ class MemoryJobs(
     @Volatile
     private var summary = Summary()
 
+    /** When the memory first started on this world ([SINCE_KEY]); null until read. */
+    @Volatile
+    private var memorySince: Instant? = null
+
     // Touched by the timers' coroutine only.
     private var emptySince: Long? = null
     private var runningSince: Long? = null
+    private var caughtUp = false
     private var nextCatchUpAt = Long.MAX_VALUE
     private var nextBatchAt = 0L
     private var nextStatsAt = 0L
@@ -165,21 +174,30 @@ class MemoryJobs(
     }
 
     /**
-     * Stops everything (`STOPPING`, M3-18): the running job ends `cancelled` (a dream keeps its step to
-     * resume), the queue is dropped, the world play clock is saved. Waits for that, a few seconds at most.
+     * Stops everything (`STOPPING`, M3-18): the world play clock is saved first, then the running job ends
+     * `cancelled` (a dream keeps its step to resume) and the queue is dropped. [STOP_WAIT_MS] at most for
+     * each of the two: a job that does not let go is left behind.
      */
     suspend fun stop() {
         stopping = true
-        root?.cancelAndJoin()
-        withTimeoutOrNull(STOP_WRITE_MS) {
+        withTimeoutOrNull(STOP_WAIT_MS) {
             runCatching { hooks.saveClock(clock.millis()) }.onFailure { log.warn("could not save the world play clock: ${it.message}") }
-        }
+        } ?: log.warn("could not save the world play clock within ${ToolText.duration(STOP_WAIT_MS)}")
+        withTimeoutOrNull(STOP_WAIT_MS) { root?.cancelAndJoin() ?: Unit }
+            ?: log.warn("the memory jobs did not end within ${ToolText.duration(STOP_WAIT_MS)}: left behind")
         val dropped = synchronized(lock) { queue.size.also { queue.clear() } }
         log.info("memory jobs stopped${if (dropped > 0) ", $dropped queued job(s) dropped" else ""}")
     }
 
-    /** A Director chapter closed for good: its nap is queued (and the batch waiting for it dropped). Any thread, never blocks. */
+    /**
+     * A Director chapter closed for good: its nap is queued (and the batch waiting for it dropped); nothing
+     * once the jobs stop, the catch-up of the next start naps it. Any thread, never blocks.
+     */
     fun chapterClosed(record: ConversationRecord) {
+        if (stopping) {
+            log.debug { "nap of chapter ${record.chapter ?: "?"} (${record.conversationId}) not queued: the memory stops; the catch-up naps it at the next start" }
+            return
+        }
         val runId = synchronized(lock) {
             queue.removeAll { it.kind == RunKind.BATCH && it.chapter == record.conversationId }
             if (jobFor(RunKind.NAP, record.conversationId) != null) return
@@ -302,6 +320,29 @@ class MemoryJobs(
                 log.info("the memory jobs stay paused (/narrator memory resume)")
             }
         }
+        attempt("memory start") { catchUpSince(now) }
+    }
+
+    /**
+     * Since when the closed chapters get their nap (M3 §7.1): the memory's first start on this world
+     * ([SINCE_KEY], set then), less `memory.catchUpDays`.
+     */
+    private suspend fun catchUpSince(now: Instant): Instant {
+        val since = memorySince ?: (store.state(SINCE_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: firstStart(now)).also { memorySince = it }
+        return since - Duration.ofDays(config.catchUpDays.toLong())
+    }
+
+    /** The memory starts on this world for the first time, at [now]: [SINCE_KEY] is set, and the log tells which chapters never get a nap. */
+    private suspend fun firstStart(now: Instant): Instant {
+        val days = config.catchUpDays
+        val since = now - Duration.ofDays(days.toLong())
+        val never = data.chaptersNeverNapped(since)
+        store.setState(SINCE_KEY, now.toEpochMilli().toString())
+        log.info(
+            "the memory starts on this world: the chapters closed since ${DAY_TIME.format(since.atZone(clock.zone))} get their nap " +
+                "(memory.catchUpDays = $days)${if (never > 0) "; the $never older one(s) never will" else ""}",
+        )
+        return now
     }
 
     // ── The model jobs ──────────────────────────────────────────────────────────────────────────────
@@ -364,7 +405,7 @@ class MemoryJobs(
             finish(job, run, outcome)
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
-                withTimeoutOrNull(STOP_WRITE_MS) {
+                withTimeoutOrNull(STOP_WAIT_MS) {
                     val ended = run.copy(status = RunStatus.CANCELLED, endedAt = clock.instant(), error = "the server stopped")
                     attempt("cancel run ${job.runId}") { data.finishRun(ended) }
                 }
@@ -373,7 +414,7 @@ class MemoryJobs(
             throw e
         } catch (e: Exception) {
             log.error("${job.kind.id} run ${job.runId} failed: ${e.message}", e)
-            val ended = run.copy(status = RunStatus.FAILED, endedAt = clock.instant(), error = "engine error: ${e.message}")
+            val ended = run.copy(status = RunStatus.FAILED, endedAt = clock.instant(), error = failure(job, run, "engine error: ${e.message}"))
             attempt("close run ${job.runId}") { data.finishRun(ended) }
             if (job is QueuedJob.Dream) endDream(job.runId, null, forGood = true)
             refreshSoon()
@@ -400,7 +441,10 @@ class MemoryJobs(
                 job.fromStep = done + 1
                 store.setState(DREAM_PENDING_KEY, job.runId.toString())
                 store.setState(stepKey(job.runId), done.toString())
-                if (pending != null) log.info("dream run ${job.runId} resumes dream run $pending at step ${job.fromStep}")
+                if (pending != null) {
+                    data.deleteState(stepKey(pending)) // its step is this run's now
+                    log.info("dream run ${job.runId} resumes dream run $pending at step ${job.fromStep}")
+                }
             }
         }
         return MemoryRun(
@@ -421,9 +465,8 @@ class MemoryJobs(
         hooks.refreshStats(hooks.activeSince(since), "dream")
     }
 
-    /** Where the next batch of [chapter] starts: the end of its last successful batch, else the chapter's start. */
-    private suspend fun batchStart(chapter: String): Instant? =
-        data.lastRun(RunKind.BATCH, SUCCESS, chapter)?.windowTo ?: data.chapter(chapter)?.startedAt
+    /** Where the next batch of [chapter] starts: the end of its last batch done, skipped or passed, else the chapter's start. */
+    private suspend fun batchStart(chapter: String): Instant? = data.batchEnd(chapter) ?: data.chapter(chapter)?.startedAt
 
     private suspend fun finish(job: QueuedJob, run: MemoryRun, outcome: RunOutcome) {
         val now = clock.instant()
@@ -432,6 +475,7 @@ class MemoryJobs(
         val text = outcome.report?.let { ModelText.cut(it, REPORT_MAX_CHARS) }
         val error = when {
             budget != null -> budgetError(budget)
+            outcome.status == RunStatus.FAILED -> failure(job, run, text ?: "no reason given")
             failed -> text ?: "no reason given"
             else -> null
         }
@@ -454,13 +498,41 @@ class MemoryJobs(
         refreshSoon()
     }
 
-    /** A dream run ended: its step is kept; a dream ended [forGood] (done or failed) is no longer pending. */
+    /**
+     * Why [job] failed, as its row keeps it. A batch whose chapter already had a batch fail from the same start
+     * (not on a 402) has its window passed: the next batch starts at its end, and an operator is told (a `WARN`
+     * and the decision `memory window_passed`).
+     */
+    private suspend fun failure(job: QueuedJob, run: MemoryRun, error: String): String {
+        val from = run.windowFrom
+        val to = run.windowTo
+        if (job !is QueuedJob.Batch || from == null || to == null) return error
+        var again = false
+        attempt("window check") { again = data.batchFailedFrom(job.chapter, from, job.runId) }
+        if (!again) return error
+        val window = "${seconds(from)}–${seconds(to)}"
+        decisions.record(
+            log, DecisionRecord.Kind.MEMORY, "window_passed", "run ${job.runId}",
+            "the batch window $window of ${job.chapter} failed twice: passed, the next batch starts at ${seconds(to)}: $error",
+            level = Log.Level.WARN,
+        )
+        return ModelText.cut("${DuckJobsData.PASSED_PREFIX} the window $window failed twice, the next batch starts after it: $error", REPORT_MAX_CHARS)
+    }
+
+    private fun seconds(at: Instant): String = SECONDS.format(at.atZone(clock.zone))
+
+    /**
+     * A dream run ended: its step is kept to resume; a dream ended [forGood] (done or failed) is no longer
+     * pending, and its step is dropped.
+     */
     private suspend fun endDream(runId: Long, lastStep: Int?, forGood: Boolean) {
         attempt("end dream run $runId") {
-            if (lastStep != null) store.setState(stepKey(runId), lastStep.toString())
             if (forGood) {
                 store.setState(DREAM_PENDING_KEY, "")
                 store.setState(DREAM_END_KEY, clock.millis().toString())
+                data.deleteState(stepKey(runId))
+            } else if (lastStep != null) {
+                store.setState(stepKey(runId), lastStep.toString())
             }
         }
     }
@@ -524,7 +596,9 @@ class MemoryJobs(
         }
         if (now >= nextCatchUpAt) {
             nextCatchUpAt = now + CATCH_UP_MS
-            attempt("catch-up") { catchUp(RunTrigger.STARTUP) }
+            val trigger = if (caughtUp) RunTrigger.CATCH_UP else RunTrigger.STARTUP
+            caughtUp = true
+            attempt("catch-up") { catchUp(Instant.ofEpochMilli(now), trigger) }
         }
         if (now >= nextBatchAt) {
             nextBatchAt = now + settings.chronicleMinutes * 60_000L
@@ -556,7 +630,10 @@ class MemoryJobs(
         val firstNap = data.firstNapDone(lastEnd)
         val nextDream = firstNap?.let {
             val daily = (lastEnd ?: it) + Duration.ofHours(settings.dreamMaxHours.toLong())
-            val empty = emptySince?.let { since -> Instant.ofEpochMilli(since) + Duration.ofMinutes(settings.dreamAfterEmptyMinutes.toLong()) }
+            val empty = emptySince?.let { since ->
+                val rested = Instant.ofEpochMilli(since) + Duration.ofMinutes(settings.dreamAfterEmptyMinutes.toLong())
+                listOfNotNull(rested, lastEnd?.plus(Duration.ofHours(settings.dreamMinHours.toLong()))).max()
+            }
             listOfNotNull(daily, empty).min()
         }
         summary = Summary(
@@ -565,7 +642,7 @@ class MemoryJobs(
             lastDream = data.lastRun(RunKind.DREAM),
             nextDreamAt = nextDream,
             refusals = data.refusals(at - Duration.ofHours(24)),
-            chaptersToNap = data.chaptersToNap(MAX_NAP_FAILURES, CATCH_UP_MAX),
+            chaptersToNap = data.chaptersToNap(MAX_NAP_FAILURES, CATCH_UP_MAX, catchUpSince(at)),
         )
     }
 
@@ -586,6 +663,10 @@ class MemoryJobs(
         return "${entry.ref} ${entry.kind.id} → ${who(entry)}, set $set ago: « ${ModelText.escape(ModelText.cut(entry.quote ?: entry.statement, DUE_TEXT_MAX))} »"
     }
 
+    /**
+     * The housekeeping, with its own run id for its authors: a `memory_runs` row when it changed something
+     * (canon expired, gags worn, notes done: every `memory_log` row of the run has its run) or failed.
+     */
     private suspend fun tidy(now: Instant) {
         val runId = newRunId()
         val report = try {
@@ -596,7 +677,7 @@ class MemoryJobs(
             data.insertRun(codeRun(runId, RunKind.HYGIENE, now, RunStatus.FAILED, null, "${e.javaClass.simpleName}: ${e.message}"))
             throw e
         }
-        if (report.expired.isEmpty() && report.worn.isEmpty()) return
+        if (report.expired.isEmpty() && report.worn.isEmpty() && report.notesDone.isEmpty()) return
         data.insertRun(codeRun(runId, RunKind.HYGIENE, now, RunStatus.DONE, report.summary(), null))
         log.info("hygiene run $runId: ${report.summary()}")
     }
@@ -628,9 +709,12 @@ class MemoryJobs(
 
     private fun who(entry: CanonEntry) = entry.players.joinToString { ModelText.name(it.name) }.ifEmpty { "all" }
 
-    /** §7.1: the naps of the chapters closed without one, oldest first (a failed nap is retried, [MAX_NAP_FAILURES] times). */
-    private suspend fun catchUp(trigger: RunTrigger) {
-        val chapters = data.chaptersToNap(MAX_NAP_FAILURES, CATCH_UP_MAX)
+    /**
+     * §7.1: the naps of the chapters closed without one since [catchUpSince], oldest first (a failed nap is
+     * retried, [MAX_NAP_FAILURES] times).
+     */
+    private suspend fun catchUp(now: Instant, trigger: RunTrigger) {
+        val chapters = data.chaptersToNap(MAX_NAP_FAILURES, CATCH_UP_MAX, catchUpSince(now))
         val queued = synchronized(lock) {
             chapters.filter { jobFor(RunKind.NAP, it.conversationId) == null }
                 .map { QueuedJob.Nap(newRunId(), trigger, it) }
@@ -657,15 +741,17 @@ class MemoryJobs(
     }
 
     /**
-     * §8.1: a dream once nobody has played for `dreamAfterEmptyMinutes`, or `dreamMaxHours` after the last
-     * one, provided a nap was done since the last dream ended. Never two; a dream cut short resumes.
+     * §8.1: a dream once nobody has played for `dreamAfterEmptyMinutes` and `dreamMinHours` passed since the
+     * last one, or `dreamMaxHours` after the last one, provided a nap was done since the last dream ended.
+     * Never two; a dream cut short resumes.
      */
     private suspend fun dream(now: Long, settings: MemoryConfig) {
         if (synchronized(lock) { jobFor(RunKind.DREAM, null) } != null) return
         val lastEnd = store.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
         val firstNap = data.firstNapDone(lastEnd) ?: return
         val at = Instant.ofEpochMilli(now)
-        val empty = emptySince?.let { now - it >= settings.dreamAfterEmptyMinutes * 60_000L } == true
+        val rested = lastEnd == null || !at.isBefore(lastEnd + Duration.ofHours(settings.dreamMinHours.toLong()))
+        val empty = rested && emptySince?.let { now - it >= settings.dreamAfterEmptyMinutes * 60_000L } == true
         val trigger = when {
             empty -> RunTrigger.SERVER_EMPTY
             !at.isBefore((lastEnd ?: firstNap) + Duration.ofHours(settings.dreamMaxHours.toLong())) -> RunTrigger.DAILY
@@ -749,13 +835,18 @@ class MemoryJobs(
 
         /**
          * `memory_state` keys: the operator's pause, the dream to resume and its steps, the end of the last
-         * dream. The anniversary day is the reminiscence's ([Reminiscence.ANNIVERSARY_STATE]).
+         * dream, the memory's first start on the world (ms epoch, set once). The anniversary day is the
+         * reminiscence's ([Reminiscence.ANNIVERSARY_STATE]).
          */
         const val PAUSED_KEY = "jobs:paused"
         const val DREAM_PENDING_KEY = "dream:pending"
         const val DREAM_END_KEY = "dream:last_end"
+        const val SINCE_KEY = "memory:since"
 
-        /** The `memory_state` key of the last step dream run [runId] finished (the Dreamer writes it after each step). */
+        /**
+         * The `memory_state` key of the last step dream run [runId] finished (the Dreamer writes it after each
+         * step). Only the pending dream's run has one: it is dropped when a run resumes it or the dream is over.
+         */
         fun stepKey(runId: Long) = "dream:$runId:step"
 
         const val PASS_MS = 30_000L
@@ -785,14 +876,21 @@ class MemoryJobs(
         const val DUE_TEXT_MAX = 200
         const val REPORT_MAX_CHARS = 500
 
+        /**
+         * The stop waits this long at most for the clock's save, then as long for the jobs to end; a cancelled
+         * job writes its row within it too.
+         */
+        const val STOP_WAIT_MS = 5_000L
+
         private const val EVENTS_CAPACITY = 256
         private const val DUE_SCAN = 200
         private val DUE_KINDS = CanonKind.entries.filter { it.dueAllowed }.toSet()
-        private const val STOP_WRITE_MS = 5_000L
         private val SUCCESS = setOf(RunStatus.DONE, RunStatus.SKIPPED)
         private val PRIORITY = mapOf(RunKind.NAP to 0, RunKind.BATCH to 1, RunKind.DREAM to 2)
         private val ORDER = compareBy<QueuedJob> { PRIORITY[it.kind] ?: 3 }
         private val MUTED = setOf(DirectorState.DISABLED, DirectorState.STOPPED, DirectorState.PAUSED, DirectorState.BLOCKED)
         private val TIME = DateTimeFormatter.ofPattern("HH:mm")
+        private val SECONDS = DateTimeFormatter.ofPattern("HH:mm:ss")
+        private val DAY_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     }
 }

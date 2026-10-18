@@ -24,6 +24,8 @@ import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.memory.stringArray
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.trace.ConversationRecord
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
@@ -44,10 +46,14 @@ import java.util.Locale
  *   one conversation consolidates the whole chapter (episodes, statuses, `write_chapter` when there is no
  *   summary, `since_last` for the players who left, `mark_used`, notes), and the code covers the punishments
  *   and benefits of the whole chapter.
- * - **No retry**: a conversation that fails (refusal, cut-off, empty replies, step limit, timeout, gateway
- *   error) ends the job `failed` with its reason, and with the gateway's [GatewayError.Budget] on a 402; the
- *   next batch or the catch-up comes back to it. What the tools wrote before stays: the store keeps a second
- *   pass from writing twice. A cancellation (the server stops) goes through to `MemoryJobs`.
+ * - **No retry, and no block stops the others**: a conversation that fails (refusal, cut-off, empty
+ *   replies, step limit, timeout, gateway error) does not stop the next blocks; a batch with one ends
+ *   `failed`, with the reasons. `MemoryJobs` passes a window that fails twice. The nap goes on to its
+ *   consolidation, which alone decides whether it is done: a last batch that failed is then passed (`WARN`,
+ *   decision `memory window_passed`). Only the gateway's 402 stops a job at once, `failed` with its
+ *   [GatewayError.Budget]. What the tools wrote before stays: the store keeps a second pass from writing
+ *   twice. A cancellation (the server stops) goes through to `MemoryJobs`.
+ * - **The punishments and benefits are covered whatever the model did** (§6.5): the code's guarantee.
  *
  * [RunOutcome.writes] counts the job's rows of `memory_log` (its writes, the code's included);
  * [RunOutcome.rejected] its tool calls refused for their arguments, the store's refusals among them.
@@ -55,6 +61,7 @@ import java.util.Locale
 class Chronicler(private val services: NarratorServices, private val agents: MemoryAgents) : ChronicleRunner {
     private val log = Log.memory
     private val clock = services.clock
+    private val decisions = Decisions(services.trace, clock)
     private val sanctions = Sanctions(services)
     private val exchange = ExchangeLog(services, sanctions)
 
@@ -63,13 +70,10 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val name = chapterName(chapter)
         val context = RunContext(runId, RunKind.BATCH, from, to, chapter)
         log.info("batch run $runId of chapter $name: ${exchange.time(from)}–${exchange.time(to)}")
-        when (chronicle(work, context, name, from, to, last = false)) {
-            Step.NOTHING -> return work.outcome(RunStatus.SKIPPED, "nothing to note: no line of chat nor tool call in the window")
-            Step.FAILED -> return work.outcome(RunStatus.FAILED)
-            Step.DONE -> Unit
-        }
+        val step = chronicle(work, context, name, from, to, last = false)
+        if (step == Step.NOTHING) return work.outcome(RunStatus.SKIPPED, "nothing to note: no line of chat nor tool call in the window")
         sanctions.cover(chapter, from, to, runId)
-        return work.outcome(RunStatus.DONE)
+        return work.outcome(if (step == Step.DONE) RunStatus.DONE else RunStatus.FAILED)
     }
 
     override suspend fun nap(runId: Long, chapter: ConversationRecord): RunOutcome {
@@ -80,22 +84,38 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val context = RunContext(runId, RunKind.NAP, from, to, chapter.conversationId)
         log.info("nap run $runId of chapter $name (${chapter.endReason?.id ?: "open"}): rest ${exchange.time(from)}–${exchange.time(to)}")
         val entry = chapterEntry(runId, chapter, end)
-        if (chronicle(work, context, name, from, to, last = true) == Step.FAILED) return work.outcome(RunStatus.FAILED)
-        val opening = napOpening(runId, chapter, end, name, entry)
-            ?: return work.outcome(RunStatus.SKIPPED, "nothing happened in the chapter")
-        val run = agents.run(Role.CHRONICLER, context, "Nap of chapter $name (run $runId)", opening, TurnLimits(NAP_STEPS), TIMEOUT)
-        work.add(run)
-        if (run.status != RunStatus.DONE) return work.outcome(RunStatus.FAILED)
+        val rest = chronicle(work, context, name, from, to, last = true)
+        var report: String? = null
+        val status = if (work.budget != null) {
+            RunStatus.FAILED // the gateway's budget is spent: the nap comes back once it resets
+        } else {
+            val opening = napOpening(runId, chapter, end, name, entry)
+            if (opening == null) {
+                report = "nothing happened in the chapter"
+                RunStatus.SKIPPED
+            } else {
+                val run = agents.run(Role.CHRONICLER, context, "Nap of chapter $name (run $runId)", opening, TurnLimits(NAP_STEPS), TIMEOUT)
+                if (work.add(run)) RunStatus.DONE else RunStatus.FAILED
+            }
+        }
         sanctions.cover(chapter.conversationId, chapter.startedAt, end, runId)
-        return work.outcome(RunStatus.DONE)
+        if (rest == Step.FAILED && status != RunStatus.FAILED) {
+            decisions.record(
+                log, DecisionRecord.Kind.MEMORY, "window_passed", "run $runId",
+                "the last batch of the nap of chapter $name (${exchange.time(from)}–${exchange.time(to)}) failed; the nap went on without it: ${work.errors()}",
+                level = Log.Level.WARN,
+            )
+        }
+        return work.outcome(status, report)
     }
 
     private enum class Step { DONE, NOTHING, FAILED }
 
     /**
      * The batch over `]from, to]` of [context]'s chapter: one conversation per block of its exchange log, the
-     * known rows read again before each one (a block sees what the previous ones wrote). [last]: the batch
-     * that closes a nap.
+     * known rows read again before each one (a block sees what the previous ones wrote). A block that fails
+     * does not stop the next ones, but a 402 does: they would fail the same way. [last]: the batch that
+     * closes a nap.
      */
     private suspend fun chronicle(work: Work, context: RunContext, name: String, from: Instant, to: Instant, last: Boolean): Step {
         val chapter = checkNotNull(context.chapter)
@@ -103,16 +123,18 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val lines = exchange.lines(chapter, from, to)
         if (lines.none { it.kind != ExchangeLog.Kind.FACT }) return Step.NOTHING
         val blocks = exchange.blocks(lines, name, from, to, clock.instant())
+        var step = Step.DONE
         for ((index, block) in blocks.withIndex()) {
             val known = exchange.known(chapter, from, clock.instant(), block.players)
             val job = "<job kind=\"batch\" run=\"${context.runId}\" chapter=\"${ModelText.attribute(name)}\"${if (last) " closes=\"chapter\"" else ""}/>"
             val part = if (blocks.size > 1) ", part ${index + 1} of ${blocks.size}" else ""
             val label = "Batch of chapter $name (run ${context.runId}$part)"
             val run = agents.run(Role.CHRONICLER, context, label, listOf(job, block.text, known).joinToString("\n"), TurnLimits(BATCH_STEPS), TIMEOUT)
-            work.add(run)
-            if (run.status != RunStatus.DONE) return Step.FAILED
+            if (work.add(run)) continue
+            step = Step.FAILED
+            if (run.budget != null) break
         }
-        return Step.DONE
+        return step
     }
 
     /**
@@ -141,7 +163,8 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
 
     /**
      * The first message of the nap's consolidation (M3 §7.4): the summary, what the memory got during the
-     * chapter, its notable facts, its exchange log when it has no summary (three blocks at most), the players
+     * chapter or from this job (not what came after: the nap of an old chapter is not read against today's
+     * rows), its notable facts, its exchange log when it has no summary (three blocks at most), the players
      * who left and the memories the Director was shown. Null when nothing at all happened.
      */
     private suspend fun napOpening(runId: Long, chapter: ConversationRecord, end: Instant, name: String, entry: String?): String? {
@@ -154,7 +177,7 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val all = if (summary == null) exchange.lines(chapter.conversationId, start, end) else emptyList()
         val (written, left, shown) = services.journal.read(READ_TIMEOUT_MS) { connection ->
             Triple(
-                exchange.written(connection, Names.of(connection), start, now, zone),
+                exchange.written(connection, Names.of(connection), start, end, zone, runId),
                 exchange.left(connection, start, end.plus(LEFT_GRACE), zone),
                 exchange.shown(connection, chapter.conversationId, start, end),
             )
@@ -199,27 +222,46 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         connection.query("SELECT chapter FROM conversations WHERE conversation_id = ?", chapter) { intOrNull(1) }.firstOrNull()
     }?.toString() ?: chapter
 
-    /** What a job did so far: its conversations, their reports, and why it failed. */
+    /** What a job did so far: its conversations, their reports, and why some failed. */
     private inner class Work(val runId: Long) {
         private val conversations = mutableListOf<String>()
         private val reports = mutableListOf<String>()
-        private var error: String? = null
-        private var budget: GatewayError.Budget? = null
+        private val failures = mutableListOf<String>()
 
-        fun add(run: AgentRun) {
+        /** The gateway's 402, when a conversation stopped on it. */
+        var budget: GatewayError.Budget? = null
+            private set
+
+        /** Adds a conversation of the job; whether it is done. */
+        fun add(run: AgentRun): Boolean {
             conversations += run.conversationId
-            run.report?.let { reports += it }
-            if (run.status != RunStatus.DONE) {
-                error = run.error
-                budget = run.budget
+            if (run.status == RunStatus.DONE) {
+                run.report?.let { reports += it }
+                return true
             }
+            failures += run.error ?: "failed"
+            run.budget?.let { budget = it }
+            return false
         }
 
-        /** The job's outcome; its report is the models' reports, or [report], or why it failed. */
+        /** Why its conversations failed, each reason once. */
+        fun errors(): String = failures.distinct().joinToString(" / ")
+
+        /**
+         * The job's outcome. Its report: why it failed when [status] is failed; else [report], or what failed
+         * then the models' reports.
+         */
         suspend fun outcome(status: RunStatus, report: String? = null): RunOutcome {
             val (writes, rejected) = counts()
-            val text = if (status == RunStatus.FAILED) error ?: "failed" else report ?: reports.joinToString(" / ").ifEmpty { null }
-            log.info("run $runId ${status.id}: $writes write(s), $rejected refused, ${conversations.size} conversation(s)" + (error?.let { ": $it" } ?: ""))
+            val text = when {
+                status == RunStatus.FAILED -> errors().ifEmpty { "failed" }
+                report != null -> report
+                else -> (failures.distinct().map { "failed: $it" } + reports).joinToString(" / ").ifEmpty { null }
+            }
+            log.info(
+                "run $runId ${status.id}: $writes write(s), $rejected refused, ${conversations.size} conversation(s)" +
+                    if (failures.isEmpty()) "" else ", failed: ${errors()}",
+            )
             return RunOutcome(status, text?.let { ModelText.cut(it, MemoryAgents.REPORT_MAX_CHARS) }, writes, rejected, conversations.toList(), budget = budget)
         }
 

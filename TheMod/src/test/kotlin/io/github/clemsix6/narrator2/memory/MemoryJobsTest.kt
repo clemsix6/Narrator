@@ -15,16 +15,20 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.PositionSampled
 import io.github.clemsix6.narrator2.event.SampleReason
+import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeMemoryStore
+import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.MemorySamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.ConversationRecord
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -75,6 +79,52 @@ class MemoryJobsTest {
         assertEquals("ok", batches[0].report)
         assertEquals(START + Duration.ofMinutes(12), batches[0].endedAt)
         assertEquals(listOf("batch", "batch"), h.decisions())
+    }
+
+    @Test
+    fun `a batch window that fails twice from the same start is passed, with a warning and a decision, and the next batch starts after it`() = runTest {
+        val h = Harness(this)
+        h.openChapter("director-c1", START - Duration.ofMinutes(1))
+        h.online(bartok)
+        repeat(2) { h.runner.outcomes += RunOutcome(RunStatus.FAILED, "refused by the safety filter (category cyber)", 0, 0, listOf("chronicler-$it")) }
+        h.jobs.start()
+        h.advance(Duration.ZERO)
+        h.data.activity += START + Duration.ofMinutes(3)
+        h.data.activity += START + Duration.ofMinutes(25)
+
+        LogCapture().use { logs ->
+            h.advance(Duration.ofMinutes(10))
+            h.advance(Duration.ofMinutes(10))
+            h.advance(Duration.ofMinutes(10))
+            h.advance(Duration.ofMinutes(2))
+            assertTrue(logs.messages.any { it.startsWith("[Memory] window_passed run ") }, logs.text)
+        }
+
+        val from = START - Duration.ofMinutes(1)
+        assertEquals(
+            listOf(
+                "batch director-c1 $from..${START + Duration.ofMinutes(10) - LAG} at +10m",
+                "batch director-c1 $from..${START + Duration.ofMinutes(20) - LAG} at +20m",
+                "batch director-c1 ${START + Duration.ofMinutes(20) - LAG}..${START + Duration.ofMinutes(30) - LAG} at +30m",
+            ),
+            h.runner.calls,
+            "the second failure from 19:59 passes the window: the third batch starts where it ended",
+        )
+        val batches = h.data.runs(RunKind.BATCH)
+        assertEquals(listOf(RunStatus.FAILED, RunStatus.FAILED, RunStatus.DONE), batches.map { it.status })
+        assertEquals("refused by the safety filter (category cyber)", batches[0].error, "a first failure is tried again")
+        assertEquals(
+            "passed: the window 19:59:00–20:19:55 failed twice, the next batch starts after it: refused by the safety filter (category cyber)",
+            batches[1].error,
+        )
+        assertEquals(listOf("batch", "window_passed", "batch", "batch"), h.decisions())
+        val passed = h.services.traces.decisions.single { it.decision == "window_passed" }
+        assertEquals("run ${batches[1].runId}", passed.subject)
+        assertEquals(
+            "the batch window 19:59:00–20:19:55 of director-c1 failed twice: passed, the next batch starts at 20:19:55: " +
+                "refused by the safety filter (category cyber)",
+            passed.reason,
+        )
     }
 
     @Test
@@ -133,6 +183,48 @@ class MemoryJobsTest {
 
         assertEquals(listOf("nap director-c1 at +3m"), h.runner.calls)
         assertEquals(RunTrigger.STARTUP, h.data.runs.values.single { it.kind == RunKind.NAP && it.chapter == "director-c1" }.trigger)
+    }
+
+    @Test
+    fun `the catch-up naps only the chapters closed since the memory first started less catchUpDays, and tells how many it never will`() = runTest {
+        val h = Harness(this)
+        val quiet = ConversationRecord.EndReason.QUIET_LIMIT
+        h.data.chapters += record("director-c1", 1, START - Duration.ofDays(4), START - Duration.ofDays(3), quiet)
+        h.data.chapters += record("director-c2", 2, START - Duration.ofHours(25), START - Duration.ofDays(1), quiet)
+        h.data.chapters += record("director-c3", 3, START - Duration.ofHours(2), START - Duration.ofHours(1), ConversationRecord.EndReason.SHUTDOWN)
+        h.runner.outcomes += RunOutcome(RunStatus.FAILED, "no end within 10m", 0, 0, listOf("chronicler-x"))
+        h.online(bartok) // no dream in between
+
+        LogCapture().use { logs ->
+            h.jobs.start()
+            h.advance(Duration.ofMinutes(33))
+            assertTrue(
+                logs.messages.any {
+                    it == "[Memory] the memory starts on this world: the chapters closed since 2026-10-01 20:00 get their nap (memory.catchUpDays = 2); " +
+                        "the 1 older one(s) never will"
+                },
+                logs.text,
+            )
+        }
+
+        assertEquals(START.toEpochMilli().toString(), h.store.state[MemoryJobs.SINCE_KEY])
+        assertEquals(listOf("nap director-c2 at +30s", "nap director-c3 at +2m30s", "nap director-c2 at +30m"), h.runner.calls)
+        assertEquals(
+            listOf(RunTrigger.STARTUP, RunTrigger.STARTUP, RunTrigger.CATCH_UP),
+            h.data.runs(RunKind.NAP).map { it.trigger },
+            "the catch-up after the start, then the one every 30 minutes (the failed nap of chapter 2 tried again)",
+        )
+
+        // A later start keeps the first one's date, and says nothing more: chapter 1 stays out.
+        h.jobs.stop()
+        h.advance(Duration.ofHours(1))
+        LogCapture().use { logs ->
+            h.newJobs().start()
+            h.advance(Duration.ofMinutes(1))
+            assertTrue(logs.messages.none { "starts on this world" in it }, logs.text)
+        }
+        assertEquals(START.toEpochMilli().toString(), h.store.state[MemoryJobs.SINCE_KEY])
+        assertEquals(3, h.runner.calls.size)
     }
 
     @Test
@@ -229,6 +321,7 @@ class MemoryJobsTest {
         assertEquals(RunStatus.CANCELLED, cancelled.status)
         assertEquals("the server stopped", cancelled.error)
         assertEquals(first.toString(), h.store.state[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals("2", h.store.state[MemoryJobs.stepKey(first)], "kept to resume")
         assertTrue(h.saves > 0, "the clock is saved at the stop")
 
         h.runner.onDream = { _, _ -> }
@@ -242,6 +335,51 @@ class MemoryJobsTest {
         assertEquals(1, h.stats.count { it.second == "dream" }, "a resumed dream does not compute the stats again")
         assertEquals(RunStatus.DONE, h.data.runs.getValue(second).status)
         assertEquals("", h.store.state[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals(emptyList(), h.store.state.keys.filter { it.startsWith("dream:") && it.endsWith(":step") }, "no step is kept once the dream is over")
+    }
+
+    @Test
+    fun `a dream after an empty server waits dreamMinHours after the last one, an operator's dream does not`() = runTest {
+        val h = Harness(this)
+        h.store.state[MemoryJobs.DREAM_END_KEY] = (START - Duration.ofHours(1)).toEpochMilli().toString()
+        h.data.runs[900] = run(900, RunKind.NAP, RunStatus.DONE, START - Duration.ofMinutes(30))
+        h.jobs.start()
+        h.advance(Duration.ofMinutes(30))
+        assertEquals(emptyList(), h.runner.calls, "the server is empty for 30 minutes, but the last dream ended an hour before")
+        assertEquals(START + Duration.ofHours(5), h.jobs.status().nextDreamAt)
+
+        h.advance(Duration.ofMinutes(269))
+        assertEquals(emptyList(), h.runner.calls)
+        h.advance(Duration.ofMinutes(1))
+        assertEquals(listOf("dream from 1 at +5h00m"), h.runner.calls, "6 hours after the end of the last dream")
+        assertEquals(RunTrigger.SERVER_EMPTY, h.data.runs(RunKind.DREAM).single().trigger)
+
+        h.advance(Duration.ofMinutes(5))
+        h.data.runs[901] = run(901, RunKind.NAP, RunStatus.DONE, h.clock.instant())
+        h.jobs.requestDream("Clem").getOrThrow()
+        h.advance(Duration.ZERO)
+        assertEquals(listOf("dream from 1 at +5h00m", "dream from 1 at +5h05m"), h.runner.calls, "an operator's dream does not wait")
+    }
+
+    @Test
+    fun `the stop saves the clock first, waits 5 seconds at most for a job that holds on, and a chapter closed after it queues nothing`() = runTest {
+        val h = Harness(this)
+        h.runner.holdsOn = true
+        h.runner.took = Duration.ofHours(1)
+        h.jobs.start()
+        h.jobs.requestDream("Clem").getOrThrow()
+        h.advance(Duration.ofMinutes(1))
+        assertEquals(RunKind.DREAM, h.jobs.status().running?.kind)
+
+        val stopAt = testScheduler.currentTime
+        h.jobs.stop()
+
+        assertEquals(MemoryJobs.STOP_WAIT_MS, testScheduler.currentTime - stopAt, "the job that does not let go is left behind")
+        assertEquals(START.toEpochMilli() + stopAt, h.savedAt.last(), "saved when the stop began, before waiting for the jobs")
+        val next = h.services.trace.nextId(IdKind.MEMORY_RUN)
+        h.jobs.chapterClosed(record("director-c1", 1, START, START + Duration.ofMinutes(1), ConversationRecord.EndReason.SHUTDOWN))
+        assertEquals(emptyList(), h.jobs.status().queued)
+        assertEquals(next + 1, h.services.trace.nextId(IdKind.MEMORY_RUN), "no run id drawn for a nap that never runs")
     }
 
     // ── The gateway's budget (§7.1) ─────────────────────────────────────────────────────────────────
@@ -402,6 +540,23 @@ class MemoryJobsTest {
         assertEquals(listOf(bartok.uuid) to "left", h.stats.last())
     }
 
+    @Test
+    fun `the housekeeping writes its run when it only closed notes, and none when it changed nothing`() = runTest {
+        val h = Harness(this)
+        h.jobs.start()
+        h.advance(Duration.ZERO)
+        assertEquals(1, h.tidied.size)
+        assertEquals(emptyList(), h.data.runs(RunKind.HYGIENE), "nothing changed: no row")
+
+        h.tidyReport = HygieneReport(notesDone = listOf(Ref(RefKind.NOTE, 9)))
+        h.advance(Duration.ofMinutes(10))
+
+        val run = h.data.runs(RunKind.HYGIENE).single()
+        assertEquals(h.tidied.last(), run.runId, "the run id its memory_log rows carry")
+        assertEquals(RunStatus.DONE, run.status)
+        assertEquals("expired 0, worn 0, archived 0, notes done 1, merge candidates 0", run.report)
+    }
+
     // ── Harness ─────────────────────────────────────────────────────────────────────────────────────
 
     private inner class Harness(private val test: TestScope) {
@@ -415,6 +570,7 @@ class MemoryJobsTest {
         var world = 3_600L
         var ticks = 0
         var saves = 0
+        val savedAt = mutableListOf<Long>()
         val tidied = mutableListOf<Long>()
         val stats = mutableListOf<Pair<List<UUID>, String>>()
         val activeSince = mutableListOf<Instant>()
@@ -426,7 +582,7 @@ class MemoryJobsTest {
         val anniversaries = ArrayDeque<DirectorSignal.MemoryCue>()
         private val hooks = JobHooks(
             tickClock = { ticks++ },
-            saveClock = { saves++ },
+            saveClock = { saves++; savedAt += it },
             worldPlaySeconds = { world },
             tidy = { _, runId -> tidied += runId; tidyReport },
             refreshStats = { players, why -> stats += players.toList() to why },
@@ -502,13 +658,15 @@ class MemoryJobsTest {
     }
 
     /**
-     * The Chronicler and the Dreamer: each call takes [took] of virtual time, is written in [calls] with
-     * its time from [START], and ends with the next of [outcomes] (done otherwise).
+     * The Chronicler and the Dreamer: each call takes [took] of virtual time (not cancellable when it
+     * [holdsOn]), is written in [calls] with its time from [START], and ends with the next of [outcomes]
+     * (done otherwise).
      */
     private class FakeRunner(private val clock: java.time.Clock) : ChronicleRunner, DreamRunner {
         val calls = CopyOnWriteArrayList<String>()
         val outcomes = ArrayDeque<RunOutcome>()
         var took: Duration = Duration.ofMinutes(2)
+        var holdsOn = false
         var onDream: suspend (Long, Int) -> Unit = { _, _ -> }
 
         override suspend fun batch(runId: Long, chapter: String, from: Instant, to: Instant): RunOutcome {
@@ -528,7 +686,7 @@ class MemoryJobsTest {
         }
 
         private suspend fun end(runId: Long, role: String): RunOutcome {
-            delay(took.toMillis())
+            if (holdsOn) withContext(NonCancellable) { delay(took.toMillis()) } else delay(took.toMillis())
             return outcomes.removeFirstOrNull() ?: RunOutcome(RunStatus.DONE, "ok", 1, 0, listOf("$role-$runId"))
         }
 
@@ -558,20 +716,34 @@ class MemoryJobsTest {
             runs[run.runId] = run
         }
 
-        override suspend fun lastRun(kind: RunKind, statuses: Set<RunStatus>, chapter: String?): MemoryRun? =
-            runs.values.filter { it.kind == kind && (statuses.isEmpty() || it.status in statuses) && (chapter == null || it.chapter == chapter) }
-                .maxWithOrNull(compareBy<MemoryRun> { it.startedAt }.thenBy { it.runId })
+        override suspend fun lastRun(kind: RunKind): MemoryRun? =
+            runs.values.filter { it.kind == kind }.maxWithOrNull(compareBy<MemoryRun> { it.startedAt }.thenBy { it.runId })
+
+        override suspend fun batchEnd(chapter: String): Instant? = runs.values
+            .filter { it.kind == RunKind.BATCH && it.chapter == chapter }
+            .filter { it.status in setOf(RunStatus.DONE, RunStatus.SKIPPED) || it.status == RunStatus.FAILED && it.error?.startsWith(DuckJobsData.PASSED_PREFIX) == true }
+            .mapNotNull { it.windowTo }.maxOrNull()
+
+        override suspend fun batchFailedFrom(chapter: String, from: Instant, runId: Long): Boolean = runs.values.any {
+            it.kind == RunKind.BATCH && it.chapter == chapter && it.windowFrom == from && it.runId != runId && it.status == RunStatus.FAILED &&
+                it.error?.startsWith(DuckJobsData.BUDGET_PREFIX) != true
+        }
 
         override suspend fun firstNapDone(after: Instant?): Instant? =
             runs.values.filter { it.kind == RunKind.NAP && it.status == RunStatus.DONE && it.endedAt!!.isAfter(after ?: Instant.EPOCH) }
                 .minOfOrNull { it.endedAt!! }
 
-        override suspend fun chaptersToNap(maxFailures: Int, limit: Int): List<ConversationRecord> = chapters.filter { chapter ->
+        override suspend fun chaptersToNap(maxFailures: Int, limit: Int, closedSince: Instant): List<ConversationRecord> = chapters.filter { chapter ->
             val naps = runs.values.filter { it.kind == RunKind.NAP && it.chapter == chapter.conversationId }
-            chapter.endedAt != null &&
+            chapter.endedAt?.isBefore(closedSince) == false &&
                 naps.none { it.status in setOf(RunStatus.DONE, RunStatus.SKIPPED, RunStatus.RUNNING) } &&
                 naps.count { it.status == RunStatus.FAILED && it.error?.startsWith(DuckJobsData.BUDGET_PREFIX) != true } < maxFailures
         }.sortedBy { it.endedAt }.take(limit)
+
+        override suspend fun chaptersNeverNapped(closedBefore: Instant): Int = chapters.count { chapter ->
+            chapter.endedAt?.isBefore(closedBefore) == true &&
+                runs.values.none { it.kind == RunKind.NAP && it.chapter == chapter.conversationId && it.status in setOf(RunStatus.DONE, RunStatus.SKIPPED) }
+        }
 
         override suspend fun chapter(conversationId: String): ConversationRecord? = chapters.firstOrNull { it.conversationId == conversationId }
 
@@ -586,6 +758,10 @@ class MemoryJobsTest {
         }
 
         override suspend fun refusals(since: Instant) = Refusals(0, 0)
+
+        override suspend fun deleteState(key: String) {
+            store.state.remove(key)
+        }
     }
 
     companion object {

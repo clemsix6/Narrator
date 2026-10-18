@@ -37,6 +37,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -97,6 +98,10 @@ class MemoryServiceTest {
         return memory
     }
 
+    /** The event id of the Narrator's promise in [evening], for the model's evidence; set before any request reads it. */
+    @Volatile
+    private var promised = 0L
+
     /**
      * The evening of chapter 13: Bartok and Mimosa join, and the Narrator promises Mimosa her boots back in
      * an hour; the Director remembers nothing. The model's answers must be scripted before: the batch timer
@@ -106,14 +111,14 @@ class MemoryServiceTest {
         journal.journal.conversation(ConversationRecord(CHAPTER, Role.DIRECTOR, "Chapter 13", 13, null, at("20:00"), null, null, null, null))
         publish("20:00:01", PlayerJoined(bartok, OW, sessionId = 1, firstTime = false, isOp = false))
         publish("20:00:02", PlayerJoined(mimosa, OW, sessionId = 2, firstTime = false, isOp = false))
-        publish("20:04:00", NarratorSpoke(NarratorChannel.NARRATOR, "Mimosa, je te rends tes bottes dans une heure, promis.", null, 40, null))
+        promised = publish("20:04:00", NarratorSpoke(NarratorChannel.NARRATOR, "Mimosa, je te rends tes bottes dans une heure, promis.", null, 40, null))
         journal.sync()
         clock.now = at("20:10:05")
     }
 
-    private fun publish(time: String, event: GameEvent) {
+    private fun publish(time: String, event: GameEvent): Long {
         clock.now = at(time)
-        journal.publish(event)
+        return journal.publish(event).id
     }
 
     /**
@@ -142,16 +147,17 @@ class MemoryServiceTest {
         val memory = start()
         assertTrue(memory.available)
         assertNull(memory.unavailableReason)
-        fake.enqueue(
+        fake.enqueue { _ ->
             reply {
                 toolUse(
                     "remember",
                     """{"kind": "promise", "what": "Le Narrateur a promis à Mimosa de lui rendre ses bottes dans une heure.",
-                       "quote": "je te rends tes bottes dans une heure", "players": ["Mimosa"], "due_in_minutes": 60, "importance": 6}""",
+                       "quote": "je te rends tes bottes dans une heure", "players": ["Mimosa"], "evidence": ["e$promised"],
+                       "due_in_minutes": 60, "importance": 6}""",
                 )
-            },
-            reply { text("Promesse faite à Mimosa enregistrée.") },
-        )
+            }
+        }
+        fake.enqueue(reply { text("Promesse faite à Mimosa enregistrée.") })
         evening()
 
         requestBatch(memory)
@@ -240,6 +246,19 @@ class MemoryServiceTest {
         val broken = createMemory(TestServices(journal = journal.journal))
         assertFalse(broken.available)
         assertEquals("the Journal lacks the memory's schema (V2__memory.sql): schema version 1; tables missing: search_postings", broken.unavailableReason)
+    }
+
+    @Test
+    fun `the startup's reads share one bound of 30 seconds`() {
+        var nanos = 0L
+        val reads = StartupReads(nanoTime = { nanos })
+        assertEquals("schema", reads.run("reading the Journal's schema") { nanos += 20_000_000_000; "schema" })
+        assertEquals("clocks", reads.run("loading the play clocks") { nanos += 11_000_000_000; "clocks" }, "10 s were left: it ended within them")
+
+        var ran = false
+        val late = assertFailsWith<IllegalStateException> { reads.run("one more read") { ran = true; "never" } }
+        assertEquals("one more read went over the 30s the startup's reads may take", late.message)
+        assertFalse(ran, "nothing is left of the 30 s: the read does not even start")
     }
 
     /** `services.memory` before the memory exists, as the runtime's `lateinit` is; [memory] once created. */

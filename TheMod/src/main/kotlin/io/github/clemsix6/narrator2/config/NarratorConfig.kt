@@ -203,7 +203,7 @@ data class MemoryConfig(
     val enabled: Boolean = true,
     /** The Chronicler reads the Journal behind the Director this often while a chapter is open. */
     val chronicleMinutes: Int = 10,
-    /** A dream starts once nobody has been online for this long (and a nap happened since the last dream). */
+    /** A dream starts once nobody has been online for this long (a nap happened since the last dream, [dreamMinHours] passed). */
     val dreamAfterEmptyMinutes: Int = 20,
     /** A dream starts anyway when there was none for this long (and a nap happened since). */
     val dreamMaxHours: Int = 24,
@@ -217,6 +217,16 @@ data class MemoryConfig(
     val recallCooldownPlayMinutes: Int = 180,
     /** A player without the Narrator's attention for this much of their play shows in the situation. */
     val attentionMinutes: Int = 40,
+    /**
+     * A dream after an empty server waits this long after the end of the last one, so that several sessions a
+     * day make one or two dreams; the daily dream and an operator's do not wait.
+     */
+    val dreamMinHours: Int = 6,
+    /**
+     * When the memory first starts on a world, the chapters closed up to this many days before get their nap;
+     * older ones never do. Raising it later naps older chapters at the next catch-up.
+     */
+    val catchUpDays: Int = 2,
 )
 
 /** Limits the engine enforces whatever the model asks. */
@@ -432,6 +442,8 @@ object ConfigStore {
         range("memory.recallPerWake", memory.recallPerWake.toLong(), 0, 5)
         range("memory.recallCooldownPlayMinutes", memory.recallCooldownPlayMinutes.toLong(), 10, 1_440)
         range("memory.attentionMinutes", memory.attentionMinutes.toLong(), 10, 600)
+        range("memory.dreamMinHours", memory.dreamMinHours.toLong(), 0, 24)
+        range("memory.catchUpDays", memory.catchUpDays.toLong(), 0, 30)
 
         config.safety.protectedPlayers.forEachIndexed { index, name ->
             if (!PLAYER_NAME.matches(name)) {

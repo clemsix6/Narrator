@@ -21,8 +21,11 @@ enum class RunTrigger {
     /** `/narrator memory chronicle` or `dream`. */
     OPERATOR,
 
-    /** The catch-up after a start, then every 30 minutes. */
+    /** The catch-up 30 s after the server runs: the naps of the chapters a stop or a crash left without one. */
     STARTUP,
+
+    /** The catch-up every 30 minutes after that one: the naps still missing (a failed nap is tried 3 times at most). */
+    CATCH_UP,
     ;
 
     val id: String get() = name.lowercase()
@@ -40,7 +43,7 @@ enum class RunStatus {
     /** Found unfinished after a crash. */
     INTERRUPTED,
 
-    /** Nothing to do (no line nor tool call of the Narrator in the window). */
+    /** Nothing to do (no line nor tool call in the window, nothing in the chapter). */
     SKIPPED,
     ;
 
