@@ -76,7 +76,7 @@ class MemoryEndToEndTests {
             }
             awaitCondition("the Journal has the blocks and the death of ${joined.name}") {
                 val broken = runCatchingJournal(runtime, "SELECT count(*) FROM events WHERE type = 'block_break' AND player_uuid = ?", joined.uuid)?.single() as Long?
-                val deaths = runCatchingJournal(runtime, "SELECT count(*) FROM deaths WHERE player_uuid = ?", joined.uuid)?.single() as Long?
+                val deaths = runCatchingJournal(runtime, "SELECT count(*) FROM events WHERE type = 'death' AND player_uuid = ?", joined.uuid)?.single() as Long?
                 (broken ?: 0) >= 5 && (deaths ?: 0) >= 1
             }
 
@@ -95,6 +95,20 @@ class MemoryEndToEndTests {
             val output = operatorCommands(helper, "narrator memory status")
             awaitCondition("the answer of /narrator memory status") { output.lines.any { it.startsWith("Index: ") } }
             check(output.lines.any { it.startsWith("Memory: available · jobs running · world clock ") }) { "memory status: ${output.lines}" }
+
+            // 5. No chapter left open for the next test that wakes the Director: closed with its summary, then napped.
+            awaitQuiet(runtime, 30_000)
+            val chapter = runtime.director.status().conversationId
+            if (chapter != null) {
+                operatorCommands(helper, "narrator chapter close")
+                awaitCondition("the chapter $chapter is closed", timeoutMs = 45_000) {
+                    runCatchingJournal(runtime, "SELECT ended_at FROM conversations WHERE conversation_id = ?", chapter)?.single() != null
+                }
+                awaitCondition("the nap of $chapter", timeoutMs = 45_000) {
+                    val nap = runCatchingJournal(runtime, "SELECT status FROM memory_runs WHERE kind = 'nap' AND chapter = ? ORDER BY run_id DESC LIMIT 1", chapter)?.single()
+                    nap != null && nap != "running"
+                }
+            }
 
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
         } finally {

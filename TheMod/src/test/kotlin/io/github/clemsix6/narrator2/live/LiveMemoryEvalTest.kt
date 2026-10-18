@@ -152,7 +152,7 @@ class LiveMemoryEvalTest {
 
             val chapter = world.director.status().conversationId ?: error("no chapter opened")
             val opening = world.firstUserText(chapter)
-            val styleLine = opening.lines().firstOrNull { it.startsWith("Style: overused") }
+            val styleLine = opening.lines().firstOrNull { "Style: overused" in it }?.trim()
             val listed = styleLine?.let { line -> Regex("« ([^»]+) »").findAll(line).map { it.groupValues[1] }.toList() }.orEmpty()
             val tics = (listed + fixture.openers + fixture.phrases).map(::plain).filter { it.length >= 3 }.distinct()
             val repeats = wakes.count { (_, lines) -> lines.any { said -> tics.any { tic -> plain(said.text).startsWith(tic) || tic in plain(said.text) } } }
