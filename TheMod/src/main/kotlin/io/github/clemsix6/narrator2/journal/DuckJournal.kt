@@ -514,6 +514,8 @@ internal class DuckJournal private constructor(
          * ids (past the database and past `narrator.ids` next to it), and starts the writer. A failed
          * repair is logged and does not stop the Journal. After a failure, the writer opens the
          * database file again with the same settings; a database in memory is never opened again.
+         * [beforeReopen] runs on the writer thread before each of these attempts: a test orders them
+         * with another program there.
          */
         internal fun open(
             db: DuckDatabase,
@@ -521,6 +523,7 @@ internal class DuckJournal private constructor(
             clock: Clock,
             hookNanos: () -> Long? = { null },
             tuning: JournalTuning = JournalTuning(),
+            beforeReopen: () -> Unit = {},
         ): DuckJournal {
             require(db.readers.isNotEmpty()) { "the Journal needs at least one read connection" }
             val repair = try {
@@ -532,7 +535,10 @@ internal class DuckJournal private constructor(
             val file = db.file
             val ids = IdReservations.open(file?.resolveSibling(IdReservations.FILE_NAME), seeds(db.writer), tuning.idBlock, tuning.eventIdBlock)
             val reopen = file?.let { path ->
-                { DuckDatabase.open(path, DuckDatabase.Options.of(config).copy(timeZone = db.timeZone, readers = db.readers.size)) }
+                {
+                    beforeReopen()
+                    DuckDatabase.open(path, DuckDatabase.Options.of(config).copy(timeZone = db.timeZone, readers = db.readers.size))
+                }
             }
             val journal = DuckJournal(db, clock, config.queueCapacity, ids, hookNanos, config.flushIntervalMs, tuning, reopen)
             journal.start(repair)

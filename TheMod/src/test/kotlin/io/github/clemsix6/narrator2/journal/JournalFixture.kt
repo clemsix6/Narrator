@@ -24,9 +24,11 @@ internal class JournalFixture(
     hookNanos: () -> Long? = { null },
     /** DuckDB options; a low memory limit lets a test force a spill to `<db>.tmp/` cheaply (SqlFileAccessTest). */
     options: DuckDatabase.Options = OPTIONS,
+    /** Runs before each attempt to open a failed database again (JournalRecoveryTest). */
+    beforeReopen: () -> Unit = {},
 ) : AutoCloseable {
     val db: DuckDatabase = if (file == null) DuckDatabase.openInMemory(options) else DuckDatabase.open(file, options)
-    val journal: DuckJournal = DuckJournal.open(db, config, clock, hookNanos, tuning)
+    val journal: DuckJournal = DuckJournal.open(db, config, clock, hookNanos, tuning, beforeReopen)
     var gameTime = 1_000L
     val bus = EventBus(clock, { gameTime }, journal.nextIdSeed(IdKind.EVENT)).also { journal.attach(it) }
 

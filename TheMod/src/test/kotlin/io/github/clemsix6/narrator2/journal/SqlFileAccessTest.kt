@@ -16,6 +16,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
+import kotlin.random.Random
 import kotlin.test.assertContains
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -62,7 +63,8 @@ class SqlFileAccessTest {
             config = JournalConfig(queueCapacity = 1_048_576),
             options = DuckDatabase.Options(memoryLimitMb = 64, threads = 2, timeZone = java.time.ZoneId.of("UTC")),
         )
-        repeat(WHISPERS) { fixture.publish(ChatMessage(bartok, ChatChannel.WHISPER, "$SECRET #$it", listOf(mimosa.name))) }
+        val noise = Random(19)
+        repeat(WHISPERS) { fixture.publish(ChatMessage(bartok, ChatChannel.WHISPER, "$SECRET #$it ${noise.text(NOISE_CHARS)}", listOf(mimosa.name))) }
         fixture.publish(ChatMessage(bartok, ChatChannel.PUBLIC, "hello", emptyList()))
         fixture.sync()
         runner = SqlRunner(fixture.journal, fixture.clock)
@@ -76,6 +78,9 @@ class SqlFileAccessTest {
         // <db>.tmp/, where their bytes stay after the query. A second read connection then reads the spilled
         // files' bytes back: that is where the private message leaked in the M2 review. (The aggregate returns
         // one row, so no large result is materialised; the whole thing stays within the memory limit.)
+        // DuckDB compresses a block it spills (ZSTD) or not depending on how long its last writes took, plus a
+        // random pick: plain text in the spilled files was luck, and missing under load. The noise in each
+        // private message makes its blocks incompressible, so DuckDB always writes them as they are.
         fixture.db.readers[0].createStatement().use { statement ->
             statement.executeQuery(
                 "SELECT count(*) FROM (SELECT g, min(s) AS m FROM (SELECT range AS g, repeat('x', 50) AS s FROM range(3000000)) GROUP BY g)",
@@ -219,6 +224,18 @@ class SqlFileAccessTest {
 
     private companion object {
         /** Private messages, enough that some of their blocks are evicted to the spill files under the 64 MB limit. */
-        const val WHISPERS = 5_000
+        const val WHISPERS = 1_000
+
+        /** Characters of noise after each private message: about 3.7 kB, so its blocks hold almost nothing else. */
+        const val NOISE_CHARS = 3_000
+
+        /**
+         * Text that does not compress: 3 characters out of 4 are ASCII (U+0001 to U+007F), the others take 2 bytes
+         * in UTF-8 (U+0080 to U+07FF), which spreads the bytes over nearly every value (about 7.7 bits of entropy
+         * per byte). ZSTD cannot fit such a block into a smaller class (224 KiB at most), so DuckDB spills it raw.
+         */
+        fun Random.text(chars: Int): String = buildString {
+            repeat(chars) { append(if (nextInt(4) < 3) (1 + nextInt(0x7F)).toChar() else (0x80 + nextInt(0x800 - 0x80)).toChar()) }
+        }
     }
 }
