@@ -119,7 +119,7 @@ Branche `worktree-agent-aa76f60f4cd5f0bdf`. Ce lot corrige les constats **2, 5, 
 
 ## Ce que les autres lots doivent savoir
 
-- **Lot D** : `MemoryService.kt` (lot C) n'a pas changé. Si `Memory.briefing` prend la forme (`reduced`, constat 11), la délégation `sections.sections(chapter, now)` de `MemoryService` est la seule ligne à adapter.
+- **Lot D** (fusionné) : sa ligne de `MemoryService.kt` (`briefing(chapter, now, reduced)`) et celle de `LateMemory` dans `MemoryServiceTest` sont gardées telles quelles. `MemoryService` ne redéfinit pas `recordShown` : la version par défaut de `Memory` lui suffit.
 - **Lot F / docs** : le tableau de configuration de `design/M3.md` (§17) n'a pas `dreamMinHours` ni `catchUpDays`. Les KDoc de `MemoryConfig` font foi.
 - **Lot G** :
   - `memory:since` est une clé de `memory_state` de plus pour `MemoryState` ;
@@ -130,6 +130,8 @@ Branche `worktree-agent-aa76f60f4cd5f0bdf`. Ce lot corrige les constats **2, 5, 
 ## Vérification
 
 - Tests ciblés (`MemoryJobsTest` 17, `DuckJobsDataTest`, `ChroniclerTest`, `ChroniclerReplayTest`, `MemoryServiceTest`, `ConfigValidationTest`, `ExchangeLogTest`) : verts.
-- `git merge main` (lots E, F puis B) : sans conflit.
-- `.\gradlew.bat build` sur l'état fusionné : voir le rapport de fin de tâche.
+- `git merge main`, à chaque fusion d'un lot (E et F, puis B, puis A, puis D) : sans conflit.
+- `.\gradlew.bat build` sur l'état final fusionné (lots A, B, D, E et F compris) : **vert, 1 141 tests unitaires (0 échec, 0 sauté) et 171 GameTests** (`All 171 required tests passed`). Un premier passage avait échoué sur un test de ce lot : l'ordre des conversations lu par `started_at`, à égalité sous l'horloge de test figée. Il lit maintenant l'ordre de `RunOutcome.conversations`.
+- `MemoryServiceTest` est vert avec le magasin du lot A : la promesse cite sa ligne NARRATOR.
+- Log des GameTests : `the memory starts on this world: the chapters closed since … get their nap (memory.catchUpDays = 2)`, sans chapitre ancien. Aucun `window_passed` ni `did not end`.
 - Aucun appel réel à Claude ni à Jev ; pas de `runServer`.
