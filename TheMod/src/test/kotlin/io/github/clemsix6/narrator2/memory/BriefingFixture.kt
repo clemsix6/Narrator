@@ -62,6 +62,9 @@ internal class BriefingFixture(journal: Journal? = null) : AutoCloseable {
     suspend fun sections(chapter: ChapterMemory = chapter()): Map<String, BriefingSection> =
         briefing.sections(chapter, now).associateBy { it.tag }
 
+    /** The model accepted the request that showed what [chapter] holds: it is recorded, as the Director does ([Memory.recordShown]). */
+    suspend fun accept(chapter: ChapterMemory) = Shown.record(store, chapter.takeUnrecorded())
+
     fun put(row: MemoryRow) {
         store.rows[row.ref] = row
     }

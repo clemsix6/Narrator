@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.Decay
+import io.github.clemsix6.narrator2.memory.LogOp
 import io.github.clemsix6.narrator2.memory.PlayClock
 import io.github.clemsix6.narrator2.memory.Recall
 import io.github.clemsix6.narrator2.memory.RecallHit
@@ -32,10 +33,14 @@ import kotlin.random.Random
  *
  * 1. **Candidates**: the [BM25_CANDIDATES] best BM25 rows for the text, plus the rows that share a
  *    player, a tag or a game id with the query; filtered by kind, time and status ([RecallQuery.includeClosed]),
- *    minus [RecallQuery.exclude]. A query with neither words nor players, tags or ids lists the latest rows.
+ *    minus [RecallQuery.exclude]. A query with neither words nor players, tags or ids takes every row: the
+ *    [LATEST_CANDIDATES] latest of each table for [RecallPurpose.TOOL], which lists them by time; all of
+ *    them otherwise, ranked by score (the strongest of the server, for a briefing without anyone online).
+ *    Even with closed rows, a row an operator archived (`/narrator memory forget`) is never a candidate: it
+ *    is forgotten; one the hygiene archived, or merged into another, is.
  * 2. **Relevance** ∈ [0, 1]: `0.6 × bm25 / best bm25 + 0.4 × structured`, where structured is 0.5 when one
  *    of the query's players is among the row's, plus 0.25 per tag or id in common (at most 1). Without text,
- *    structured alone; when listing the latest, 1.
+ *    structured alone; without any criterion, 1.
  * 3. **Score**: `relevance × (0.4 + 0.4 × importance / 10 + 0.2 × 2^(−days / 30)) × strength`. Strength: the
  *    decay of a memory ([Decay.strength], world play); 1 for open canon, [CLOSED_CANON_STRENGTH] for closed
  *    canon, 1 for the chronicle; an interaction fades by half every [INTERACTION_HALF_LIFE_H] hours of its
@@ -43,7 +48,8 @@ import kotlin.random.Random
  *    own: `3 + 2 × |valence|` for the former, by level for the latter. Days count from when it happened.
  * 4. [RecallPurpose.REMINISCENCE] keeps the hits with a score of at least [REMINISCENCE_SCORE] and a relevance
  *    of at least [REMINISCENCE_RELEVANCE], then draws them with a probability proportional to the squared
- *    score, seeded by [RecallQuery.seed] (M3 §10.6). Every other purpose sorts by score; the latest by time.
+ *    score, seeded by [RecallQuery.seed] (M3 §10.6). Every other purpose sorts by score, except
+ *    [RecallPurpose.TOOL] without any criterion, which lists the latest by time.
  *
  * Reads only: the caller records what it shows. The cooldowns and per-wake caps of the reminiscences are
  * the caller's (M3-14), which passes what to leave out in [RecallQuery.exclude].
@@ -77,13 +83,13 @@ class HybridRecall(
         if (query.limit <= 0 || kinds.isEmpty()) return emptyList()
         val terms = query.text?.let(FrenchAnalyzer::terms).orEmpty().distinct()
         val bm25 = index.bm25(connection, terms, kinds, BM25_CANDIDATES)
-        val latest = terms.isEmpty() && query.players.isEmpty() && query.tags.isEmpty() && query.entities.isEmpty()
-        val match = Match(query, bm25, latest, now)
+        val any = terms.isEmpty() && query.players.isEmpty() && query.tags.isEmpty() && query.entities.isEmpty()
+        val match = Match(query, bm25, any, any && query.purpose == RecallPurpose.TOOL, now)
         val candidates = kinds.flatMap { candidates(connection, it, match) }.filter { it.ref !in query.exclude }
         val best = candidates.maxOfOrNull { bm25[it.ref] ?: 0.0 }?.takeIf { it > 0 } ?: 1.0
         val scored = candidates.map { candidate ->
             val relevance = when {
-                latest -> 1.0
+                any -> 1.0
                 terms.isEmpty() -> candidate.structured
                 else -> TEXT_WEIGHT * (bm25[candidate.ref] ?: 0.0) / best + (1 - TEXT_WEIGHT) * candidate.structured
             }
@@ -93,7 +99,7 @@ class HybridRecall(
         }.sortedWith(compareByDescending<Scored> { it.score }.thenByDescending { it.candidate.ref.id })
         val chosen = when {
             query.purpose == RecallPurpose.REMINISCENCE -> draw(scored, query)
-            latest -> scored.sortedWith(compareByDescending<Scored> { it.candidate.at }.thenByDescending { it.candidate.ref.id }).take(query.limit)
+            match.latest -> scored.sortedWith(compareByDescending<Scored> { it.candidate.at }.thenByDescending { it.candidate.ref.id }).take(query.limit)
             else -> scored.take(query.limit)
         }
         val lines = lines(connection, chosen.map { it.candidate.ref }, now)
@@ -117,8 +123,11 @@ class HybridRecall(
 
     // ── Candidates ──────────────────────────────────────────────────────────────────────────────────
 
-    /** What the candidates of a search must match: the BM25 rows, or the query's players, tags and ids; and the filters. */
-    private class Match(val query: RecallQuery, val bm25: Map<Ref, Double>, val latest: Boolean, val now: Instant) {
+    /**
+     * What the candidates of a search must match: the BM25 rows, or the query's players, tags and ids; and the
+     * filters. [any]: the query has no criterion, every row matches; [latest]: and only the latest are listed.
+     */
+    private class Match(val query: RecallQuery, val bm25: Map<Ref, Double>, val any: Boolean, val latest: Boolean, val now: Instant) {
         fun ids(kind: RefKind): List<Long> = bm25.keys.filter { it.kind == kind }.map { it.id }
 
         /** Whether rows of [kind] may match without a word in common (their players, tags or ids). */
@@ -137,7 +146,7 @@ class HybridRecall(
     private class Alternative(val condition: String, val value: Any?)
 
     private fun candidates(connection: Connection, kind: RefKind, match: Match): List<Candidate> {
-        if (!match.latest && match.ids(kind).isEmpty() && !match.structured(kind)) return emptyList()
+        if (!match.any && match.ids(kind).isEmpty() && !match.structured(kind)) return emptyList()
         return when (kind) {
             RefKind.MEMORY -> memories(CandidateQuery(connection, match, kind, "occurred_to"))
             RefKind.CANON -> canon(CandidateQuery(connection, match, kind, "created_at"))
@@ -159,7 +168,7 @@ class HybridRecall(
             query.byIds(), query.anyPlayer("players"), query.anyOf("tags", query.match.query.tags),
             query.anyOf("entities", query.match.query.entities),
         )
-        if (!query.match.query.includeClosed) query.where("NOT archived AND merged_into IS NULL")
+        if (!query.match.query.includeClosed) query.where("NOT archived AND merged_into IS NULL") else query.notForgotten()
         return query.rows("memories") {
             Candidate(Ref(RefKind.MEMORY, getLong(1)), getLong(2), getInt(3), Decay.strength(getDouble(4), getLong(5), world), getDouble(6))
         }
@@ -173,7 +182,11 @@ class HybridRecall(
             query.players(), query.tags(),
         )
         query.matching(query.byIds(), query.anyPlayer("players"), query.oneOf("kind", query.match.query.tags))
-        if (!query.match.query.includeClosed) query.where("status IN ('${CanonStatus.PLANNED.id}', '${CanonStatus.ACTIVE.id}') AND NOT archived")
+        if (!query.match.query.includeClosed) {
+            query.where("status IN ('${CanonStatus.PLANNED.id}', '${CanonStatus.ACTIVE.id}') AND NOT archived")
+        } else {
+            query.notForgotten()
+        }
         return query.rows("canon") {
             val open = enumOfId<CanonStatus>(getString(4))?.open ?: false
             Candidate(Ref(RefKind.CANON, getLong(1)), getLong(2), getInt(3), if (open) 1.0 else CLOSED_CANON_STRENGTH, getDouble(5))
@@ -189,7 +202,7 @@ class HybridRecall(
             query.players(), query.tags(),
         )
         query.matching(query.byIds(), query.onePlayer("player_uuid"), query.oneOf("kind", query.match.query.tags))
-        if (!query.match.query.includeClosed) query.where("NOT archived")
+        if (!query.match.query.includeClosed) query.where("NOT archived") else query.notForgotten()
         return query.rows("interactions") {
             val played = playClock.playerPlaySeconds(UUID.fromString(getString(5)), now)
             val hours = max(0L, played - getLong(4)) / 3_600.0
@@ -212,8 +225,8 @@ class HybridRecall(
 
     /**
      * The query of the candidates of [kind]: its columns (DuckDB computes the structured share of the
-     * relevance), what a row must match (nothing when listing the latest, which keeps the [LATEST_CANDIDATES]
-     * most recent rows instead), its time ([dateColumn], for [RecallQuery.sinceMillis]) and its status.
+     * relevance), what a row must match (nothing without any criterion; listing the latest keeps the
+     * [LATEST_CANDIDATES] most recent rows), its time ([dateColumn], for [RecallQuery.sinceMillis]) and its status.
      */
     private class CandidateQuery(val connection: Connection, val match: Match, val kind: RefKind, val dateColumn: String) {
         private var columns = ""
@@ -235,9 +248,20 @@ class HybridRecall(
             conditionValues.addAll(parameters)
         }
 
-        /** The row matches one of [alternatives] (those the query gives a value for); anything when listing the latest. */
+        /**
+         * Even closed, the row was not archived by an operator (`/narrator memory forget`, M3 review finding 18):
+         * its last archive or restore in `memory_log` is not an `archive` by `operator:…`. What the hygiene
+         * archived and what a merge archived stay.
+         */
+        fun notForgotten() = where(
+            "NOT (archived AND id IN (SELECT CAST(row_key AS BIGINT) FROM memory_log WHERE table_name = ? AND op IN ('${LogOp.ARCHIVE.id}', " +
+                "'${LogOp.RESTORE.id}') GROUP BY row_key HAVING arg_max(op, rowid) = '${LogOp.ARCHIVE.id}' AND arg_max(actor, rowid) LIKE 'operator:%'))",
+            kind.table,
+        )
+
+        /** The row matches one of [alternatives] (those the query gives a value for); anything without any criterion. */
         fun matching(vararg alternatives: Alternative?) {
-            if (match.latest) return
+            if (match.any) return
             val given = alternatives.filterNotNull()
             if (given.isEmpty()) where("false") else where(given.joinToString(" OR ") { it.condition }, *given.map { it.value }.toTypedArray())
         }

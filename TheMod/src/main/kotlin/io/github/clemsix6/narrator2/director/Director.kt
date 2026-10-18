@@ -15,6 +15,7 @@ import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.ChapterMemory
+import io.github.clemsix6.narrator2.memory.WakeAttachments
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -85,7 +86,9 @@ interface GameView {
  * - **Memory** (M3 §11): a chapter's briefing holds the memory's sections; the memory's signals are lines
  *   of `<events>` (`DUE` wakes the Director, `NOTE`, `RETURN` and `ANNIVERSARY` wait for a wake-up); the
  *   memory attaches a `<memory>` block (the sheet of a player who joins, the memories the events bring
- *   back) after `</events>` and `</new_events>`, and adds its lines to `<situation>`. Without a memory
+ *   back) after `</events>` and `</new_events>`, and adds its lines to `<situation>`. What the memory
+ *   shows in a request is recorded once the request is accepted; a request that is not puts the chapter's
+ *   memory back as it was, and so does a memory that fails or takes too long. Without a memory
  *   (`DisabledMemory`) none of it is there, and the Director runs as in M2.
  * - **Never blocked.** Events that arrive during a turn are given to the model between two tool calls,
  *   in a `<new_events>` block placed after the tool results; operator whispers become notes.
@@ -551,7 +554,7 @@ class Director(
         val skipped = inbox.takeOverflow()
         val now = clock.millis()
         val shown = beat ?: silence?.let { digest.takeWindow().takeIf { it.isNotEmpty() }?.let { lines -> Beat(lines, now - it.since, null) } }
-        val mark = MemoryMark(open.memory)
+        val mark = open.memory.mark()
         // A new chapter's first message starts with its briefing, which tells the chat up to these events
         // and the sheets of the players online: it comes before the memory attached to these events.
         val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders(), reducedBriefing)
@@ -575,19 +578,29 @@ class Director(
     /**
      * The memory's `<memory>` block for [events] told in [chapter] (M3 §11.2, §11.3): the sheet of a
      * player who joins, the memories the events bring back. Null when there is nothing to attach, no
-     * memory, or the memory failed or took too long (logged: the events go without it).
+     * memory, or the memory failed (logged: the events go without it). A memory that fails or takes too
+     * long showed nothing: the chapter's memory is put back as it was before the call, so the same sheets
+     * come again with the next items. Past [ATTACH_TIMEOUT_MS], a line tells the Narrator, for each sheet
+     * that would have come, how to read it ([WakeAttachments.late]).
      */
     private suspend fun attachments(events: List<Item>, chapter: Chapter, now: Long): String? {
         val memory = services.memory
         if (events.isEmpty() || !memory.available) return null
+        val signals = events.map { it.signal }
+        val mark = chapter.memory.mark()
         return try {
-            val attached = withTimeoutOrNull(ATTACH_TIMEOUT_MS) { Result.success(memory.attachments(events.map { it.signal }, chapter.memory, now)) }
-            if (attached == null) log.warn("the memory attached nothing to ${events.size} items: it took more than ${duration(ATTACH_TIMEOUT_MS)}")
-            attached?.getOrNull()?.trimEnd()?.takeIf { it.isNotBlank() }
+            val attached = withTimeoutOrNull(ATTACH_TIMEOUT_MS) { Result.success(memory.attachments(signals, chapter.memory, now)) }
+            if (attached == null) {
+                mark.restore()
+                log.warn("the memory attached nothing to ${events.size} items: it took more than ${duration(ATTACH_TIMEOUT_MS)}")
+                return WakeAttachments.late(signals, chapter.memory, now)
+            }
+            attached.getOrNull()?.trimEnd()?.takeIf { it.isNotBlank() }
                 ?.also { log.debug { "memory attached to ${events.size} items: ${it.length} characters" } }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            mark.restore()
             log.error("the memory failed to attach anything to ${events.size} items", e)
             null
         }
@@ -606,7 +619,7 @@ class Director(
         openingSkipped: Map<String, Int>,
         private val beat: Beat?,
         /** What the chapter's memory held before the last request's items were attached: put back when they go back to the inbox. */
-        private var mark: MemoryMark,
+        private var mark: ChapterMemory.Mark,
     ) {
         private val id = services.trace.nextId(IdKind.TURN)
         private val caller = Caller(Role.DIRECTOR, chapter.conversation.id, id, taskId = null)
@@ -735,7 +748,7 @@ class Director(
             val items = if (take) unseen(inbox.takeAll(), chapter) else emptyList()
             if (!take) log.debug { "turn $id is past its step limit: ${inbox.items().size} items wait for the next turn" }
             val skipped = if (items.isEmpty()) emptyMap() else inbox.takeOverflow()
-            if (sentCommitted) mark = MemoryMark(chapter.memory)
+            if (sentCommitted) mark = chapter.memory.mark()
             sent = if (sentCommitted) items else sent + items
             sentSkipped = if (sentCommitted) skipped else merged(sentSkipped, skipped)
             sentCommitted = false
@@ -753,17 +766,19 @@ class Director(
 
         /**
          * Puts the items of the last request back in the inbox ([putBack]), and the chapter's memory as it
-         * was before they were attached: their sheets and memories are attached again when they are told.
+         * was before they were attached: their sheets and memories are attached again when they are told,
+         * and what they showed is never recorded.
          */
         private fun giveBack(failed: Boolean) {
             putBack(sent, failed, sentSkipped)
             mark.restore()
         }
 
-        /** The request that carried [items] got a usable reply: they are in the history now. */
+        /** The request that carried [items] got a usable reply: they are in the history now, and what the memory showed in it is recorded. */
         private fun commit(items: List<Item>) {
             chapter.seen += items.mapNotNull { it.eventId }
             sentCommitted = true
+            recordShown()
             if (openingCommitted) return
             openingCommitted = true
             silence = null
@@ -772,6 +787,24 @@ class Director(
             backoffStep = 0
             reopenStep = 0
             reducedBriefing = false
+        }
+
+        /**
+         * What the memory showed in the requests just accepted (briefing, sheets, reminiscences: M3 §10.6) is
+         * recorded off this coroutine: the Director never waits for the database between two requests.
+         */
+        private fun recordShown() {
+            val shown = chapter.memory.takeUnrecorded()
+            if (shown.isEmpty()) return
+            scope.launch {
+                try {
+                    services.memory.recordShown(shown)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.error("turn $id: what the memory showed could not be recorded", e)
+                }
+            }
         }
 
         /** A refused or cut-off answer to the wake-up message: its items come back in 30 s, with a note. */
@@ -974,21 +1007,6 @@ class Director(
         fun note(now: Long) =
             "You could not act for ${duration(now - since)} ($why). The events below include what is still waiting; " +
                 "answer what still matters now, do not try to catch up on everything."
-    }
-
-    /**
-     * What [memory] showed so far (refs, sheets), taken before a request's items are attached: a request
-     * that is not committed told the model nothing, so the memory may show the same again (M3 §10.6).
-     */
-    private class MemoryMark(private val memory: ChapterMemory) {
-        private val refs = memory.shownRefs.toSet()
-        private val sheets = memory.sheetsShownAt.toMap()
-
-        fun restore() {
-            memory.shownRefs.retainAll(refs)
-            memory.sheetsShownAt.clear()
-            memory.sheetsShownAt.putAll(sheets)
-        }
     }
 
     /** A heartbeat: what the players did during [windowMs], and the reflexes' [hint]. */

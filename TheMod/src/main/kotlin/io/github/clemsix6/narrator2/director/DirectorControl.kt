@@ -137,7 +137,7 @@ data class PendingReminder(val id: Long, val note: String, val at: Long)
  * @property turnId the running turn, if any.
  * @property turnsThisHour the turns started within the last hour, against [turnsPerHour]
  *   (`director.turnsPerHour`, M2 review, finding 26): once they are all used, only addressed chat,
- *   prayers and whispers wake the Director.
+ *   prayers, whispers and the commitments that come due (`DUE`, M3 §11.3) wake the Director.
  */
 data class DirectorStatus(
     val state: DirectorState,
