@@ -19,6 +19,7 @@ object NarratorCommand {
         DirectorCommands.attach(root)
         GuardCommands.attach(root)
         TraceCommands.attach(root)
+        MemoryCommands.attach(root)
         dispatcher.register(root)
         PrayCommand.register(dispatcher)
     }
