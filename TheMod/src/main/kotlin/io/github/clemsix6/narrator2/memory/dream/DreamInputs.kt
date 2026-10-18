@@ -23,6 +23,7 @@ import io.github.clemsix6.narrator2.memory.Note
 import io.github.clemsix6.narrator2.memory.Relation
 import io.github.clemsix6.narrator2.memory.SheetDetail
 import io.github.clemsix6.narrator2.memory.SheetStat
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.Trait
 import io.github.clemsix6.narrator2.memory.TraitAxis
 import io.github.clemsix6.narrator2.memory.chronicle.ExchangeLog
@@ -89,7 +90,8 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     /**
      * A player the Dreamer may reflect on, and what they did since their [last] reflection: [playedSeconds]
-     * of play, [memories] about them and [interactions] of theirs written since.
+     * of play, [memories] about them (not the Dreamer's own, see [candidates]) and [interactions] of theirs
+     * written since.
      */
     data class Candidate(val player: PlayerRef, val last: Reflection?, val playedSeconds: Long, val memories: Int, val interactions: Int)
 
@@ -113,6 +115,10 @@ internal class DreamInputs(private val services: NarratorServices) {
     /**
      * The players with something new since their last reflection (play, memories about them, interactions of
      * theirs), the most active first (play time, then new rows), [max] at most.
+     *
+     * The memories the Dreamer wrote itself do not count, here nor in [player]: they are its conclusions
+     * from a reflection (an observation drawn from the chat), written after the reflection's time, and
+     * nothing the player did. Counted, they made the player a candidate at every dream, without playing.
      */
     suspend fun candidates(now: Instant, max: Int): List<Candidate> = journal.read(READ_TIMEOUT_MS) { connection ->
         val players = connection.query("SELECT player_uuid, name FROM players") { PlayerRef(uuidAt(1), getString(2)) }
@@ -123,9 +129,9 @@ internal class DreamInputs(private val services: NarratorServices) {
         val sessions = connection.query(
             "SELECT player_uuid, session_id, joined_at, left_at FROM sessions WHERE left_at IS NULL OR left_at > ?", oldest,
         ) { played() }
-        val memories = connection.query("SELECT players, created_at FROM memories WHERE NOT archived AND created_at > ?", oldest) {
-            uuids(1) to instant(2)
-        }
+        val memories = connection.query(
+            "SELECT players, created_at FROM memories WHERE NOT archived AND created_at > ? AND source <> ?", oldest, Source.DREAMER.id,
+        ) { uuids(1) to instant(2) }
         val interactions = connection.query(
             "SELECT i.player_uuid, l.ts FROM memory_log l JOIN interactions i ON i.id = TRY_CAST(l.row_key AS BIGINT) " +
                 "WHERE l.table_name = 'interactions' AND l.op = 'insert' AND l.ts > ? AND NOT i.archived",
@@ -158,9 +164,9 @@ internal class DreamInputs(private val services: NarratorServices) {
             val names = Names.of(connection)
             PlayerRead(
                 memories = connection.query(
-                    "SELECT $MEMORY_COLUMNS FROM memories WHERE NOT archived AND list_contains(players, ?) AND created_at > ? " +
+                    "SELECT $MEMORY_COLUMNS FROM memories WHERE NOT archived AND list_contains(players, ?) AND created_at > ? AND source <> ? " +
                         "ORDER BY importance DESC, occurred_from DESC, id DESC LIMIT ?",
-                    uuid, since, MEMORIES_COUNT,
+                    uuid, since, Source.DREAMER.id, MEMORIES_COUNT,
                 ) { memoryEntry(names) },
                 interactions = connection.query(
                     "SELECT $INTERACTION_COLUMNS FROM interactions WHERE player_uuid = ? AND NOT archived AND id IN (SELECT TRY_CAST(row_key AS BIGINT) " +
