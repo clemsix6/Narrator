@@ -91,6 +91,12 @@ object PairStats {
         }
     }
 
+    /**
+     * Every pair, with `{now}`. The distance of two players: first [RADIUS] on each axis, then the squared 3D
+     * distance in `BIGINT`. Positions are `INTEGER`, and the square of a gap over 46 340 blocks overflows 32
+     * bits: the whole query failed as soon as two players were that far apart. The filter on each axis keeps
+     * the squares to players close to each other, but DuckDB may reorder the conditions, hence the `BIGINT`.
+     */
     private val SQL = """
         WITH grid AS (
             SELECT s.player_uuid, s.joined_at, m AS minute, least(m + INTERVAL 1 MINUTE, coalesce(s.left_at, {now})) AS upto
@@ -104,7 +110,9 @@ object PairStats {
             SELECT a.player_uuid AS a_uuid, b.player_uuid AS b_uuid, count(*) AS minutes,
                    count(*) FILTER (WHERE a.minute >= {now} - INTERVAL 7 DAY) AS minutes_7d
             FROM located a JOIN located b ON a.minute = b.minute AND a.dim = b.dim AND a.player_uuid < b.player_uuid
-            WHERE (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z) <= $RADIUS * $RADIUS
+            WHERE abs(a.x - b.x) <= $RADIUS AND abs(a.y - b.y) <= $RADIUS AND abs(a.z - b.z) <= $RADIUS
+              AND (CAST(a.x AS BIGINT) - b.x) * (CAST(a.x AS BIGINT) - b.x) + (CAST(a.y AS BIGINT) - b.y) * (CAST(a.y AS BIGINT) - b.y)
+                + (CAST(a.z AS BIGINT) - b.z) * (CAST(a.z AS BIGINT) - b.z) <= $RADIUS * $RADIUS
             GROUP BY 1, 2),
         kills AS (
             SELECT e.player_uuid AS killer, n.player_uuid AS victim, count(*) AS n
