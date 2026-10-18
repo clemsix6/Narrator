@@ -5,6 +5,8 @@ import io.github.clemsix6.narrator2.memory.RecallPurpose
 import io.github.clemsix6.narrator2.memory.RecallQuery
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.SqlArray
+import io.github.clemsix6.narrator2.memory.update
 import org.junit.jupiter.api.Test
 import java.util.Locale
 import java.util.UUID
@@ -56,14 +58,14 @@ class SearchLatencyTest {
                     unnest(?::VARCHAR[]) AS entities, unnest(?::VARCHAR[]) AS tags, unnest(?::INTEGER[]) AS importance,
                     unnest(?::DOUBLE[]) AS at_s, unnest(?::BIGINT[]) AS reinforced)
                 """.trimIndent(),
-                fixture.connection.array("BIGINT", ids),
-                fixture.connection.array("VARCHAR", docs.map { it.text }),
-                fixture.connection.array("VARCHAR", docs.map { uuid(it.players.single()).toString() }),
-                fixture.connection.array("VARCHAR", docs.map { d -> d.labels.filter { ':' in it }.joinToString(" ") }),
-                fixture.connection.array("VARCHAR", docs.map { d -> d.labels.filter { ':' !in it }.joinToString(" ") }),
-                fixture.connection.array("INTEGER", docs.map { random.nextInt(1, 11) }),
-                fixture.connection.array("DOUBLE", docs.map { now - random.nextDouble(0.0, 90 * 86_400.0) }),
-                fixture.connection.array("BIGINT", docs.map { -random.nextLong(0, 300 * 3_600L) }),
+                SqlArray("BIGINT", ids),
+                SqlArray("VARCHAR", docs.map { it.text }),
+                SqlArray("VARCHAR", docs.map { uuid(it.players.single()).toString() }),
+                SqlArray("VARCHAR", docs.map { d -> d.labels.filter { ':' in it }.joinToString(" ") }),
+                SqlArray("VARCHAR", docs.map { d -> d.labels.filter { ':' !in it }.joinToString(" ") }),
+                SqlArray("INTEGER", docs.map { random.nextInt(1, 11) }),
+                SqlArray("DOUBLE", docs.map { now - random.nextDouble(0.0, 90 * 86_400.0) }),
+                SqlArray("BIGINT", docs.map { -random.nextLong(0, 300 * 3_600L) }),
             )
 
             // The first rows go through SearchIndex one by one, as the store writes them; the rest in bulk, same terms.
@@ -148,11 +150,11 @@ class SearchLatencyTest {
         val connection = fixture.connection
         connection.update(
             "INSERT INTO search_docs SELECT unnest(?::BIGINT[]), 'memory', unnest(?::INTEGER[])",
-            connection.array("BIGINT", ids), connection.array("INTEGER", lengths),
+            SqlArray("BIGINT", ids), SqlArray("INTEGER", lengths),
         )
         connection.update(
             "INSERT INTO search_postings SELECT unnest(?::BIGINT[]), unnest(?::VARCHAR[]), unnest(?::INTEGER[])::SMALLINT",
-            connection.array("BIGINT", postingIds), connection.array("VARCHAR", terms), connection.array("INTEGER", frequencies),
+            SqlArray("BIGINT", postingIds), SqlArray("VARCHAR", terms), SqlArray("INTEGER", frequencies),
         )
         connection.commit()
     }

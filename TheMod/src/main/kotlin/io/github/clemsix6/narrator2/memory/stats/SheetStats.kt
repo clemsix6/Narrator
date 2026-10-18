@@ -1,6 +1,9 @@
 package io.github.clemsix6.narrator2.memory.stats
 
 import io.github.clemsix6.narrator2.memory.SheetStat
+import io.github.clemsix6.narrator2.memory.doubleOrNull
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.uuid
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -80,8 +83,8 @@ object SheetStats {
      */
     internal fun compute(connection: Connection, player: UUID, now: Instant, rates: List<Rates>): List<Computed>? {
         if (!known(connection, player)) return null
-        val computed = query(connection, bind(QUERY, player, now)) { rows ->
-            buildList { while (rows.next()) add(Computed(rows.getString(1), rows.getDouble(2).takeUnless { rows.wasNull() }, rows.getString(3))) }
+        val computed = connection.query(bind(QUERY, player, now), timeoutSeconds = QUERY_TIMEOUT_SECONDS) {
+            Computed(getString(1), doubleOrNull(2), getString(3))
         }
         val mine = rates.firstOrNull { it.player == player }
         val luck = mine?.let { Luck.of(it, rates) }
@@ -109,19 +112,13 @@ object SheetStats {
     }
 
     /** The stats of [player] as stored, by name; empty before the first refresh. */
-    fun read(connection: Connection, player: UUID): Map<String, SheetStat> = query(
-        connection,
+    fun read(connection: Connection, player: UUID): Map<String, SheetStat> = connection.query(
         "SELECT stat, value, CAST(detail AS VARCHAR), epoch_ms(computed_at) FROM sheet_stats WHERE player_uuid = ${uuid(player)}",
-    ) { rows ->
-        buildMap {
-            while (rows.next()) {
-                val stat = rows.getString(1)
-                val value = rows.getDouble(2).takeUnless { rows.wasNull() }
-                val detail = rows.getString(3)?.let { Json.parseToJsonElement(it) as? JsonObject }
-                put(stat, SheetStat(stat, value, detail, Instant.ofEpochMilli(rows.getLong(4))))
-            }
-        }
-    }
+        timeoutSeconds = QUERY_TIMEOUT_SECONDS,
+    ) {
+        val detail = getString(3)?.let { Json.parseToJsonElement(it) as? JsonObject }
+        SheetStat(getString(1), doubleOrNull(2), detail, Instant.ofEpochMilli(getLong(4)))
+    }.associateBy { it.stat }
 
     /**
      * [sql] with `{player}` and `{now}` replaced by literals. Literals rather than parameters or a one-row CTE:
@@ -132,13 +129,6 @@ object SheetStats {
         val withNow = sql.replace("{now}", "CAST('$now' AS TIMESTAMPTZ)")
         return if (player == null) withNow else withNow.replace("{player}", uuid(player))
     }
-
-    /** Runs the query [sql] with the stats' time limit and reads its result. */
-    internal fun <T> query(connection: Connection, sql: String, read: (java.sql.ResultSet) -> T): T =
-        connection.createStatement().use { statement ->
-            statement.queryTimeout = QUERY_TIMEOUT_SECONDS
-            statement.executeQuery(sql).use(read)
-        }
 
     /** [expression] (a TIMESTAMPTZ) as an ISO-8601 UTC string. */
     internal fun iso(expression: String) = "strftime(($expression) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ')"
@@ -162,8 +152,10 @@ object SheetStats {
 
     private fun ids(vararg names: String) = names.map { "minecraft:$it" }
 
-    private fun known(connection: Connection, player: UUID): Boolean =
-        query(connection, "SELECT count(*) FROM players WHERE player_uuid = ${uuid(player)}") { it.next() && it.getLong(1) > 0 }
+    private fun known(connection: Connection, player: UUID): Boolean = connection.query(
+        "SELECT count(*) FROM players WHERE player_uuid = ${uuid(player)}",
+        timeoutSeconds = QUERY_TIMEOUT_SECONDS,
+    ) { getLong(1) }.single() > 0
 
     /** One stat of the query: a `SELECT` of its name, [value] and [detail], reading the CTEs. */
     internal class Stat(val name: String, val value: String, val detail: String, val ctes: List<String> = emptyList()) {
@@ -441,21 +433,15 @@ internal data class Rates(
         """.trimIndent()
 
         /** The rates of every player seen by [now], on a read connection. */
-        fun read(connection: Connection, now: Instant): List<Rates> = SheetStats.query(connection, SheetStats.bind(SQL, null, now)) { rows ->
-            buildList {
-                while (rows.next()) {
-                    add(
-                        Rates(
-                            player = rows.getObject(1) as UUID, playedSeconds = rows.getLong(2), mined = rows.getLong(3),
-                            rare = rows.getLong(4), dug = rows.getLong(5), farmed = rows.getLong(6), absurd = rows.getLong(7),
-                            placed = rows.getLong(8), kills = rows.getLong(9), damage = rows.getDouble(10), discoveries = rows.getLong(11),
-                            caught = rows.getLong(12), treasure = rows.getLong(13), messages = rows.getLong(14), metres = rows.getDouble(15),
-                            won = rows.getLong(16), decided = rows.getLong(17), together = rows.getDouble(18),
-                        ),
-                    )
-                }
+        fun read(connection: Connection, now: Instant): List<Rates> =
+            connection.query(SheetStats.bind(SQL, null, now), timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS) {
+                Rates(
+                    player = uuid(1), playedSeconds = getLong(2), mined = getLong(3), rare = getLong(4), dug = getLong(5),
+                    farmed = getLong(6), absurd = getLong(7), placed = getLong(8), kills = getLong(9), damage = getDouble(10),
+                    discoveries = getLong(11), caught = getLong(12), treasure = getLong(13), messages = getLong(14),
+                    metres = getDouble(15), won = getLong(16), decided = getLong(17), together = getDouble(18),
+                )
             }
-        }
     }
 }
 

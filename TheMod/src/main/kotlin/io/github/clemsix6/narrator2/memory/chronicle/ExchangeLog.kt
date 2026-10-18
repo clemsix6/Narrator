@@ -22,6 +22,7 @@ import io.github.clemsix6.narrator2.memory.Note
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.canonEntry
 import io.github.clemsix6.narrator2.memory.chronicleEntry
+import io.github.clemsix6.narrator2.memory.doubleOrNull
 import io.github.clemsix6.narrator2.memory.instant
 import io.github.clemsix6.narrator2.memory.interaction
 import io.github.clemsix6.narrator2.memory.intOrNull
@@ -566,8 +567,6 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         }
 
         private const val CUT_NOTE = "(… cut: the rest went over the budget)"
-
-        private fun ResultSet.doubleOrNull(column: Int): Double? = getDouble(column).takeUnless { wasNull() }
 
         private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 

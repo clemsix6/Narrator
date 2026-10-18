@@ -34,14 +34,8 @@ enum class RecallPurpose {
     /** The `<memories>` section of a chapter's briefing. */
     BRIEFING,
 
-    /** The sheet of a player who joins. */
-    JOIN,
-
     /** Automatic reminiscences for the events of a wake-up: thresholds, then a draw weighted by the squared score. */
     REMINISCENCE,
-
-    /** The Dreamer's inputs. */
-    DREAM,
 }
 
 /**

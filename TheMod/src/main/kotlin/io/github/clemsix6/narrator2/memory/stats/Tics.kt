@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.memory.stats
 
+import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.tool.ToolText
 import java.sql.Connection
 import java.time.Instant
@@ -31,12 +32,10 @@ object Tics {
     data class Tic(val text: String, val count: Int, val last: Instant, val share: Double? = null)
 
     /** The Narrator's latest [LINES] lines, oldest first, on a read connection, within the stats' time limit. */
-    fun lines(connection: Connection): List<Line> = SheetStats.query(
-        connection,
+    fun lines(connection: Connection): List<Line> = connection.query(
         "SELECT text, epoch_ms(ts) FROM (SELECT text, ts, id FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT $LINES) ORDER BY ts, id",
-    ) { rows ->
-        buildList { while (rows.next()) add(Line(rows.getString(1), Instant.ofEpochMilli(rows.getLong(2)))) }
-    }
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) { Line(getString(1), Instant.ofEpochMilli(getLong(2))) }
 
     /** The tics of [lines] (oldest first), the most frequent first, [MAX] at most. */
     fun find(lines: List<Line>): List<Tic> {

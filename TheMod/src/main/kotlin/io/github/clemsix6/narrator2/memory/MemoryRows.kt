@@ -6,84 +6,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.sql.Connection
-import java.sql.PreparedStatement
 import java.sql.ResultSet
-import java.sql.Timestamp
-import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
 import java.util.UUID
 
 /*
- * The SQL plumbing of the store (M3-03): binding, reading the memory's rows back, the JSON snapshots of
- * the audit. Every function takes the connection it runs on: the writer's inside a `Journal.write` job,
- * a read connection otherwise. Each statement has its own timeout and closes its result set.
+ * The memory's rows (M3-03): reading them back, the refs they name, the JSON snapshots of the audit, the
+ * text the index holds. Every function takes the connection it runs on, through the plumbing of `Jdbc.kt`.
  */
-
-/** Seconds a statement of the store may run. */
-internal const val STATEMENT_TIMEOUT_SECONDS = 10
-
-/** A list bound as a typed SQL array: a Kotlin list does not know its element type, so it is said here. */
-internal class SqlArray(val type: String, val values: List<Any>)
-
-internal fun uuidArray(values: Collection<UUID>) = SqlArray("UUID", values.toList())
-
-internal fun longArray(values: Collection<Long>) = SqlArray("BIGINT", values.toList())
-
-internal fun stringArray(values: Collection<String>) = SqlArray("VARCHAR", values.toList())
-
-private fun Connection.prepare(sql: String, parameters: Array<out Any?>): PreparedStatement {
-    val statement = prepareStatement(sql)
-    try {
-        statement.queryTimeout = STATEMENT_TIMEOUT_SECONDS
-        parameters.forEachIndexed { index, value ->
-            val parameter = index + 1
-            when (value) {
-                null -> statement.setObject(parameter, null)
-                is Instant -> statement.setObject(parameter, OffsetDateTime.ofInstant(value, ZoneOffset.UTC))
-                is SqlArray -> statement.setArray(parameter, createArrayOf(value.type, value.values.toTypedArray()))
-                else -> statement.setObject(parameter, value)
-            }
-        }
-    } catch (e: Exception) {
-        statement.close()
-        throw e
-    }
-    return statement
-}
-
-/** Every row of [sql] with [parameters], each read by [row]. */
-internal fun <T> Connection.query(sql: String, vararg parameters: Any?, row: ResultSet.() -> T): List<T> =
-    prepare(sql, parameters).use { statement ->
-        statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.row()) } }
-    }
-
-/** Runs [sql] with [parameters]; returns the number of rows changed. */
-internal fun Connection.update(sql: String, vararg parameters: Any?): Int = prepare(sql, parameters).use { it.executeUpdate() }
-
-internal fun ResultSet.instantOrNull(column: Int): Instant? = when (val value = getObject(column)) {
-    null -> null
-    is OffsetDateTime -> value.toInstant()
-    is Timestamp -> value.toInstant()
-    is Instant -> value
-    else -> error("column $column is not a timestamp: ${value.javaClass}")
-}
-
-internal fun ResultSet.instant(column: Int): Instant = instantOrNull(column) ?: error("column $column is null")
-
-internal fun ResultSet.longOrNull(column: Int): Long? = getLong(column).takeUnless { wasNull() }
-
-internal fun ResultSet.intOrNull(column: Int): Int? = getInt(column).takeUnless { wasNull() }
-
-private fun ResultSet.list(column: Int): List<Any> = (getArray(column)?.array as Array<*>?)?.filterNotNull().orEmpty()
-
-internal fun ResultSet.uuids(column: Int): List<UUID> = list(column).map { it as? UUID ?: UUID.fromString(it.toString()) }
-
-internal fun ResultSet.longs(column: Int): List<Long> = list(column).map { (it as Number).toLong() }
-
-internal fun ResultSet.strings(column: Int): List<String> = list(column).map { it.toString() }
-
-private fun ResultSet.uuid(column: Int): UUID = getObject(column).let { it as? UUID ?: UUID.fromString(it.toString()) }
 
 private fun ResultSet.pos(column: Int): Pos? {
     val dim = getString(column) ?: return null
@@ -102,6 +31,9 @@ internal class Names(private val names: Map<UUID, String>) {
     fun refs(players: List<UUID>): List<PlayerRef> = players.map(::ref)
 
     fun known(player: UUID): Boolean = player in names
+
+    /** Every name, to mask in a text ([VoiceGuard]). */
+    val all: Collection<String> get() = names.values
 
     companion object {
         /** Every player of the world: the table is small (one row per player ever seen). */
@@ -224,7 +156,7 @@ internal fun ResultSet.chronicleEntry() = ChronicleEntry(
     source = code(11),
 )
 
-internal const val NOTE_COLUMNS = "id, created_at, kind, text, players, refs, status, shown_count, expires_at"
+internal const val NOTE_COLUMNS = "id, created_at, kind, text, players, refs, status, shown_count"
 
 /** A note, and the ids of its refs (resolved with [refsOf]). */
 internal fun ResultSet.note(names: Names): Pair<Note, List<Long>> = Note(
@@ -236,7 +168,6 @@ internal fun ResultSet.note(names: Names): Pair<Note, List<Long>> = Note(
     refs = emptyList(),
     status = code(7),
     shownCount = getInt(8),
-    expiresAt = instantOrNull(9),
 ) to longs(6)
 
 /** Reads the row [ref] names, whatever its table; null when there is none. */

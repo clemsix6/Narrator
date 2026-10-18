@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory.search
 
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.query
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -13,10 +14,10 @@ class SearchIndexTest {
     private val promise = Ref(RefKind.CANON, 3)
 
     private fun SearchFixture.postings(ref: Ref): Map<String, Int> =
-        connection.rows("SELECT term, tf FROM search_postings WHERE ref_id = ${ref.id}") { getString(1) to getInt(2) }.toMap()
+        connection.query("SELECT term, tf FROM search_postings WHERE ref_id = ${ref.id}") { getString(1) to getInt(2) }.toMap()
 
     private fun SearchFixture.doc(ref: Ref): Pair<String, Int>? =
-        connection.rows("SELECT kind, len FROM search_docs WHERE ref_id = ${ref.id}") { getString(1) to getInt(2) }.singleOrNull()
+        connection.query("SELECT kind, len FROM search_docs WHERE ref_id = ${ref.id}") { getString(1) to getInt(2) }.singleOrNull()
 
     private fun SearchFixture.filled() {
         index.index(connection, lava, "Bartok est mort dans la lave du Nether, la lave l'a englouti. death lava minecraft:lava")

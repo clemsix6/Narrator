@@ -1,9 +1,12 @@
 package io.github.clemsix6.narrator2.memory.stats
 
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.memory.longOrNull
+import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.shownName
 import java.sql.Connection
+import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
 import kotlin.math.pow
@@ -173,50 +176,44 @@ object Favor {
         connection,
         "SELECT CAST(round(${SheetStats.PLAYED}) AS BIGINT) FROM players pl WHERE pl.player_uuid = {player}",
         player, now,
-    ) { if (next()) getLong(1) else null }
+    ) { getLong(1) }.firstOrNull()
 
     private fun rated(connection: Connection, player: UUID, now: Instant): List<Rated> = query(
         connection,
         "SELECT played_s, valence FROM interactions WHERE player_uuid = {player} AND counts AND NOT archived AND ts <= {now} ORDER BY ts",
         player, now,
-    ) { buildList { while (next()) add(Rated(getLong(1), getInt(2))) } }
+    ) { Rated(getLong(1), getInt(2)) }
 
     /** The player's conduct toward the Narrator: [judged] samples oldest first, of which [messages] messages and [disrespect] interactions. */
     private class Toward(val judged: List<Judged>, val messages: Int, val disrespect: Int)
 
-    private fun toward(connection: Connection, player: UUID, now: Instant): Toward = query(
-        connection,
-        """
-        SELECT ts, 'message' AS what, tone, tone_confidence FROM chat_signals
-        WHERE player_uuid = {player} AND ts <= {now} AND to_narrator >= $ADDRESSED
-        UNION ALL
-        SELECT ts, 'disrespect', NULL, NULL FROM interactions WHERE player_uuid = {player} AND disrespect AND NOT archived AND ts <= {now}
-        ORDER BY ts, what DESC
-        """.trimIndent(),
-        player, now,
-    ) {
-        var messages = 0
-        var disrespect = 0
-        val judged = buildList {
-            while (next()) {
-                if (getString(2) == "disrespect") {
-                    disrespect++
-                    repeat(2) { add(Judged.DISRESPECTFUL) }
-                    continue
-                }
-                messages++
+    private fun toward(connection: Connection, player: UUID, now: Instant): Toward {
+        // A message to the Narrator, as judged; null for an interaction marked as disrespect, which counts twice.
+        val samples = query(
+            connection,
+            """
+            SELECT ts, 'message' AS what, tone, tone_confidence FROM chat_signals
+            WHERE player_uuid = {player} AND ts <= {now} AND to_narrator >= $ADDRESSED
+            UNION ALL
+            SELECT ts, 'disrespect', NULL, NULL FROM interactions WHERE player_uuid = {player} AND disrespect AND NOT archived AND ts <= {now}
+            ORDER BY ts, what DESC
+            """.trimIndent(),
+            player, now,
+        ) {
+            if (getString(2) == "disrespect") {
+                null
+            } else {
                 val confident = getDouble(4) >= TONE_CONFIDENT && !wasNull()
-                add(
-                    when {
-                        !confident -> Judged.NEUTRAL
-                        getString(3) == "respectful" -> Judged.RESPECTFUL
-                        getString(3) == "disrespectful" || getString(3) == "hostile" -> Judged.DISRESPECTFUL
-                        else -> Judged.NEUTRAL
-                    },
-                )
+                when {
+                    !confident -> Judged.NEUTRAL
+                    getString(3) == "respectful" -> Judged.RESPECTFUL
+                    getString(3) == "disrespectful" || getString(3) == "hostile" -> Judged.DISRESPECTFUL
+                    else -> Judged.NEUTRAL
+                }
             }
         }
-        Toward(judged, messages, disrespect)
+        val judged = samples.flatMap { if (it == null) List(2) { Judged.DISRESPECTFUL } else listOf(it) }
+        return Toward(judged, messages = samples.count { it != null }, disrespect = samples.count { it == null })
     }
 
     /** When the Narrator last paid attention to the player, and the player's play since then (all of it when never). */
@@ -234,12 +231,9 @@ object Favor {
         GROUP BY last.t
         """.trimIndent(),
         player, now,
-    ) {
-        next()
-        getLong(1).takeUnless { wasNull() }?.let(Instant::ofEpochMilli) to getDouble(2).roundToLong()
-    }
+    ) { longOrNull(1)?.let(Instant::ofEpochMilli) to getDouble(2).roundToLong() }.single()
 
-    /** Runs [sql] with `{player}` and `{now}` bound ([SheetStats.bind]) and reads its result. */
-    private fun <T> query(connection: Connection, sql: String, player: UUID, now: Instant, read: java.sql.ResultSet.() -> T): T =
-        SheetStats.query(connection, SheetStats.bind(sql, player, now)) { it.read() }
+    /** Every row of [sql], `{player}` and `{now}` bound ([SheetStats.bind]), within the stats' time limit. */
+    private fun <T> query(connection: Connection, sql: String, player: UUID, now: Instant, row: ResultSet.() -> T): List<T> =
+        connection.query(SheetStats.bind(sql, player, now), timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS, row = row)
 }

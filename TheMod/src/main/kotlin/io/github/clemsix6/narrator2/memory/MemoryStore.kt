@@ -124,7 +124,11 @@ interface MemoryStore {
      */
     suspend fun merge(keep: Ref, merged: List<Ref>, content: String?, author: Author): MemoryEntry
 
-    /** Archives a row (it stays searchable with `include_closed`), or restores it. */
+    /**
+     * Archives a row, or restores it. A row the code archived (the hygiene, a merge) stays searchable with
+     * `include_closed`; one an operator archived (`/narrator memory forget`) does not: `recall` never finds
+     * it again, even with `include_closed` (the raw tables stay readable by `sql`).
+     */
     suspend fun archive(ref: Ref, archived: Boolean, reason: String, author: Author)
 
     /** [refs] were shown through [channel]: one `recalls` row each, and the memories are reinforced (M3 §9.2). */
@@ -150,11 +154,6 @@ interface MemoryStore {
      *   before the run, so a `DUE` already signaled since may be signaled again.
      */
     suspend fun revertRun(runId: Long, author: Author): Int
-
-    /** A value of `memory_state`; null when unset. */
-    suspend fun state(key: String): String?
-
-    suspend fun setState(key: String, value: String)
 
     // ── Reads (the Journal's read pool, never the writer) ───────────────────────────────────────────
 
@@ -186,7 +185,7 @@ interface MemoryStore {
     /** The latest entries of [level] that are not superseded, newest first. */
     suspend fun chronicle(level: ChronicleLevel, limit: Int): List<ChronicleEntry>
 
-    /** Notes that are not done and not expired, oldest first. */
+    /** Notes that are not done, oldest first. */
     suspend fun openNotes(): List<Note>
 
     /** The changes of [ref]'s row, oldest first. */

@@ -17,7 +17,6 @@ import io.github.clemsix6.narrator2.memory.MemoryKind
 import io.github.clemsix6.narrator2.memory.MergeCandidate
 import io.github.clemsix6.narrator2.memory.NoteDraft
 import io.github.clemsix6.narrator2.memory.NoteKind
-import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RelationKind
 import io.github.clemsix6.narrator2.memory.SheetSection
 import io.github.clemsix6.narrator2.memory.Source
@@ -107,7 +106,7 @@ class DreamInputsTest {
         others.forEach { other -> store.setRelation(bartok, other.uuid, RelationKind.RIVAL, text(160), memories.take(3), dreamer) }
         StatsRefresher(f.journal.journal, f.clock).refresh(listOf(bartok) + others.map { it.uuid }, "dream")
         f.playClock.players[bartok] = 3_600_000 // 1 000 hours since the traits: they all faded
-        store.setState(DreamInputs.reflectedKey(bartok), DreamInputs.Reflection(at("19:00").toEpochMilli(), mapOf("deaths" to 0.0, "playtime" to 60.0)).encode())
+        f.state.setState(DreamInputs.reflectedKey(bartok), DreamInputs.Reflection(at("19:00").toEpochMilli(), mapOf("deaths" to 0.0, "playtime" to 60.0)).encode())
 
         // Step 2: the most lines, gags, and the longest review.
         f.clock.now = at("21:56")
@@ -196,7 +195,7 @@ class DreamInputsTest {
         val bartok = f.inputs.candidates(now, 8).first()
         assertEquals(listOf(2, 2), listOf(bartok.memories, bartok.interactions))
 
-        f.store.setState(DreamInputs.reflectedKey(f.bartok.uuid), DreamInputs.Reflection(now.toEpochMilli(), emptyMap()).encode())
+        f.state.setState(DreamInputs.reflectedKey(f.bartok.uuid), DreamInputs.Reflection(now.toEpochMilli(), emptyMap()).encode())
         assertEquals(listOf("Mimosa"), f.inputs.candidates(now, 8).map { it.player.name }, "nothing new about Bartok since")
 
         f.clock.now = at("22:20")
@@ -210,7 +209,7 @@ class DreamInputsTest {
     fun `the Dreamer's own memories are nothing new about a player`() = runBlocking<Unit> {
         f.evening()
         val now = at("22:10")
-        listOf(f.bartok, f.mimosa).forEach { f.store.setState(DreamInputs.reflectedKey(it.uuid), DreamInputs.Reflection(now.toEpochMilli(), emptyMap()).encode()) }
+        listOf(f.bartok, f.mimosa).forEach { f.state.setState(DreamInputs.reflectedKey(it.uuid), DreamInputs.Reflection(now.toEpochMilli(), emptyMap()).encode()) }
         // What the Dreamer drew from the chat while it reflected on Bartok, after the time of the reflection.
         f.clock.now = at("22:12")
         val observation = f.store.addMemory(
@@ -232,7 +231,7 @@ class DreamInputsTest {
     fun `the stats before and after the last reflection, and only what is new since`() = runBlocking<Unit> {
         val e = f.evening()
         val now = at("22:10")
-        f.store.setState(
+        f.state.setState(
             DreamInputs.reflectedKey(f.bartok.uuid),
             DreamInputs.Reflection(at("20:30").toEpochMilli(), mapOf("playtime" to 3_600.0, "deaths" to 0.0, "kills" to 0.0, "luck" to 50.0)).encode(),
         )

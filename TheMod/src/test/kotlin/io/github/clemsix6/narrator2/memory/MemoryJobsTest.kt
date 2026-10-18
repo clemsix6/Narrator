@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.runtime.Phase
+import io.github.clemsix6.narrator2.testing.FakeMemoryState
 import io.github.clemsix6.narrator2.testing.FakeMemoryStore
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.MemorySamples
@@ -207,7 +208,7 @@ class MemoryJobsTest {
             )
         }
 
-        assertEquals(START.toEpochMilli().toString(), h.store.state[MemoryJobs.SINCE_KEY])
+        assertEquals(START.toEpochMilli().toString(), h.state.values[MemoryJobs.SINCE_KEY])
         assertEquals(listOf("nap director-c2 at +30s", "nap director-c3 at +2m30s", "nap director-c2 at +30m"), h.runner.calls)
         assertEquals(
             listOf(RunTrigger.STARTUP, RunTrigger.STARTUP, RunTrigger.CATCH_UP),
@@ -223,7 +224,7 @@ class MemoryJobsTest {
             h.advance(Duration.ofMinutes(1))
             assertTrue(logs.messages.none { "starts on this world" in it }, logs.text)
         }
-        assertEquals(START.toEpochMilli().toString(), h.store.state[MemoryJobs.SINCE_KEY])
+        assertEquals(START.toEpochMilli().toString(), h.state.values[MemoryJobs.SINCE_KEY])
         assertEquals(3, h.runner.calls.size)
     }
 
@@ -279,7 +280,7 @@ class MemoryJobsTest {
         val dream = h.data.runs(RunKind.DREAM).single()
         assertEquals(RunTrigger.SERVER_EMPTY, dream.trigger)
         assertEquals(RunStatus.DONE, dream.status)
-        assertEquals("", h.store.state[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals("", h.state.values[MemoryJobs.DREAM_PENDING_KEY])
         assertEquals(listOf(listOf(bartok.uuid, mimosa.uuid) to "dream"), h.stats, "the stats of the players active since the last dream, first")
         assertEquals(listOf(Instant.EPOCH), h.activeSince)
 
@@ -296,7 +297,7 @@ class MemoryJobsTest {
     fun `a daily dream comes 24 hours after the last one even with players online`() = runTest {
         val h = Harness(this)
         h.online(bartok)
-        h.store.state[MemoryJobs.DREAM_END_KEY] = (START - Duration.ofHours(23)).toEpochMilli().toString()
+        h.state.values[MemoryJobs.DREAM_END_KEY] = (START - Duration.ofHours(23)).toEpochMilli().toString()
         h.data.runs[900] = run(900, RunKind.NAP, RunStatus.DONE, START - Duration.ofHours(2))
         h.jobs.start()
         h.advance(Duration.ofMinutes(59))
@@ -310,7 +311,7 @@ class MemoryJobsTest {
     fun `a dream stopped with the server is cancelled and resumes at its step after a restart`() = runTest {
         val h = Harness(this)
         h.data.runs[900] = run(900, RunKind.NAP, RunStatus.DONE, START - Duration.ofHours(1))
-        h.runner.onDream = { runId, _ -> h.store.setState(MemoryJobs.stepKey(runId), "2") } // the Dreamer saves each step
+        h.runner.onDream = { runId, _ -> h.state.setState(MemoryJobs.stepKey(runId), "2") } // the Dreamer saves each step
         h.runner.took = Duration.ofHours(2)
         h.jobs.start()
         val first = h.jobs.requestDream("Clem").getOrThrow()
@@ -320,8 +321,8 @@ class MemoryJobsTest {
         val cancelled = h.data.runs.getValue(first)
         assertEquals(RunStatus.CANCELLED, cancelled.status)
         assertEquals("the server stopped", cancelled.error)
-        assertEquals(first.toString(), h.store.state[MemoryJobs.DREAM_PENDING_KEY])
-        assertEquals("2", h.store.state[MemoryJobs.stepKey(first)], "kept to resume")
+        assertEquals(first.toString(), h.state.values[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals("2", h.state.values[MemoryJobs.stepKey(first)], "kept to resume")
         assertTrue(h.saves > 0, "the clock is saved at the stop")
 
         h.runner.onDream = { _, _ -> }
@@ -334,14 +335,14 @@ class MemoryJobsTest {
         assertEquals(listOf("dream from 1 at +0s", "dream from 3 at +10m"), h.runner.calls)
         assertEquals(1, h.stats.count { it.second == "dream" }, "a resumed dream does not compute the stats again")
         assertEquals(RunStatus.DONE, h.data.runs.getValue(second).status)
-        assertEquals("", h.store.state[MemoryJobs.DREAM_PENDING_KEY])
-        assertEquals(emptyList(), h.store.state.keys.filter { it.startsWith("dream:") && it.endsWith(":step") }, "no step is kept once the dream is over")
+        assertEquals("", h.state.values[MemoryJobs.DREAM_PENDING_KEY])
+        assertEquals(emptyList(), h.state.values.keys.filter { it.startsWith("dream:") && it.endsWith(":step") }, "no step is kept once the dream is over")
     }
 
     @Test
     fun `a dream after an empty server waits dreamMinHours after the last one, an operator's dream does not`() = runTest {
         val h = Harness(this)
-        h.store.state[MemoryJobs.DREAM_END_KEY] = (START - Duration.ofHours(1)).toEpochMilli().toString()
+        h.state.values[MemoryJobs.DREAM_END_KEY] = (START - Duration.ofHours(1)).toEpochMilli().toString()
         h.data.runs[900] = run(900, RunKind.NAP, RunStatus.DONE, START - Duration.ofMinutes(30))
         h.jobs.start()
         h.advance(Duration.ofMinutes(30))
@@ -499,7 +500,7 @@ class MemoryJobsTest {
         assertEquals(listOf("anniversary (online Bartok) at +390s", "anniversary (online Bartok) at +420s"), h.asked)
         assertEquals(listOf<DirectorSignal>(cue), h.director.signals)
         assertEquals(emptyList(), h.decisions(), "the reminiscence records its cue decision itself")
-        assertNull(h.store.state[Reminiscence.ANNIVERSARY_STATE], "the reminiscence keeps the day, not the jobs")
+        assertNull(h.state.values[Reminiscence.ANNIVERSARY_STATE], "the reminiscence keeps the day, not the jobs")
     }
 
     // ── Code jobs ───────────────────────────────────────────────────────────────────────────────────
@@ -564,6 +565,7 @@ class MemoryJobsTest {
         val director = ChapterDirector()
         val players = PlayerStates()
         val store = FakeMemoryStore(clock).apply { names[bartok.uuid] = bartok.name }
+        val state = FakeMemoryState()
         val data = FakeJobsData(store)
         val runner = FakeRunner(clock)
         val services = TestServices(clock = clock, scope = test.backgroundScope, director = director, players = players)
@@ -599,7 +601,7 @@ class MemoryJobsTest {
         )
         val jobs = newJobs()
 
-        fun newJobs() = MemoryJobs(services, store, data, runner, runner, hooks)
+        fun newJobs() = MemoryJobs(services, store, state, data, runner, runner, hooks)
 
         private fun names(online: Collection<UUID>) = "(online ${listOf(bartok, mimosa).filter { it.uuid in online }.joinToString("+") { it.name }})"
 
@@ -758,10 +760,6 @@ class MemoryJobsTest {
         }
 
         override suspend fun refusals(since: Instant) = Refusals(0, 0)
-
-        override suspend fun deleteState(key: String) {
-            store.state.remove(key)
-        }
     }
 
     companion object {

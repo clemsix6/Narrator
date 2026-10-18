@@ -26,6 +26,7 @@ import io.github.clemsix6.narrator2.memory.MemoryJobsControl
 import io.github.clemsix6.narrator2.memory.MemoryLogRow
 import io.github.clemsix6.narrator2.memory.MemoryRejected
 import io.github.clemsix6.narrator2.memory.MemoryRow
+import io.github.clemsix6.narrator2.memory.MemoryState
 import io.github.clemsix6.narrator2.memory.MemoryStatus
 import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.Note
@@ -207,7 +208,6 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
     val skills = ConcurrentHashMap<Pair<UUID, Skill>, SkillScore>()
     val relations = ConcurrentHashMap<Pair<UUID, UUID>, Relation>()
     val docs = ConcurrentHashMap<String, List<MemoryDoc>>()
-    val state = ConcurrentHashMap<String, String>()
     private val ids = AtomicLong(1)
 
     private fun now(): Instant = clock.instant()
@@ -324,7 +324,7 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
     }
 
     override suspend fun addNote(draft: NoteDraft, author: Author): Note {
-        val row = Note(next(RefKind.NOTE), now(), draft.kind, draft.text, draft.players.map(::player), draft.refs, NoteStatus.OPEN, 0, draft.expiresAt)
+        val row = Note(next(RefKind.NOTE), now(), draft.kind, draft.text, draft.players.map(::player), draft.refs, NoteStatus.OPEN, 0)
         rows[row.ref] = row
         wrote("addNote", row.ref, author)
         return row
@@ -382,12 +382,6 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         return 0
     }
 
-    override suspend fun state(key: String): String? = state[key]
-
-    override suspend fun setState(key: String, value: String) {
-        state[key] = value
-    }
-
     override suspend fun row(ref: Ref): MemoryRow? = rows[ref]
 
     override suspend fun memory(ref: Ref): MemoryEntry? = rows[ref] as? MemoryEntry
@@ -427,4 +421,19 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         rows.values.filterIsInstance<Note>().filter { it.status != NoteStatus.DONE }.sortedBy { it.ref.id }
 
     override suspend fun log(ref: Ref): List<MemoryLogRow> = emptyList()
+}
+
+/** `memory_state` in memory: [values] by key, set and read by the test as by the code. */
+class FakeMemoryState : MemoryState {
+    val values = ConcurrentHashMap<String, String>()
+
+    override suspend fun state(key: String): String? = values[key]
+
+    override suspend fun setState(key: String, value: String) {
+        values[key] = value
+    }
+
+    override suspend fun deleteState(key: String) {
+        values.remove(key)
+    }
 }

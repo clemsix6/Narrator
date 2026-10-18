@@ -14,7 +14,13 @@ import io.github.clemsix6.narrator2.memory.RecallPurpose
 import io.github.clemsix6.narrator2.memory.RecallQuery
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.SqlArray
 import io.github.clemsix6.narrator2.memory.enumOfId
+import io.github.clemsix6.narrator2.memory.longArray
+import io.github.clemsix6.narrator2.memory.longOrNull
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.stringArray
+import io.github.clemsix6.narrator2.memory.uuids
 import java.sql.Connection
 import java.sql.ResultSet
 import java.time.Clock
@@ -268,7 +274,7 @@ class HybridRecall(
 
         /** One of the BM25 rows. */
         fun byIds(): Alternative? =
-            match.ids(kind).takeIf { it.isNotEmpty() }?.let { Alternative("id IN (SELECT unnest(?::BIGINT[]))", connection.array("BIGINT", it)) }
+            match.ids(kind).takeIf { it.isNotEmpty() }?.let { Alternative("id IN (SELECT unnest(?::BIGINT[]))", longArray(it)) }
 
         /** One of the query's players among the row's ([column] is a `UUID[]`). */
         fun anyPlayer(column: String): Alternative? =
@@ -286,18 +292,18 @@ class HybridRecall(
         fun oneOf(column: String, values: List<String>): Alternative? =
             if (values.isEmpty()) null else Alternative("list_contains(?::VARCHAR[], $column)", strings(values))
 
-        fun players(): java.sql.Array = strings(match.query.players.map { it.toString() })
+        fun players(): SqlArray = strings(match.query.players.map { it.toString() })
 
-        fun tags(): java.sql.Array = strings(match.query.tags)
+        fun tags(): SqlArray = strings(match.query.tags)
 
-        fun entities(): java.sql.Array = strings(match.query.entities)
+        fun entities(): SqlArray = strings(match.query.entities)
 
-        private fun strings(values: List<String>): java.sql.Array = connection.array("VARCHAR", values.distinct())
+        private fun strings(values: List<String>): SqlArray = stringArray(values.distinct())
 
         fun <T> rows(table: String, row: ResultSet.() -> T): List<T> {
             val where = if (conditions.isEmpty()) "" else " WHERE ${conditions.joinToString(" AND ")}"
             val order = if (match.latest) " ORDER BY $dateColumn DESC, id DESC LIMIT $LATEST_CANDIDATES" else ""
-            return connection.rows("SELECT $columns FROM $table$where$order", *(columnValues + conditionValues).toTypedArray(), row = row)
+            return connection.query("SELECT $columns FROM $table$where$order", *(columnValues + conditionValues).toTypedArray(), row = row)
         }
     }
 
@@ -326,10 +332,10 @@ class HybridRecall(
     /** A row ready to render once the names of its [players] are known. */
     private class Row(val ref: Ref, val players: List<UUID>, val render: (Map<UUID, String>, Instant) -> String)
 
-    private fun memoryRows(connection: Connection, ids: List<Long>): List<Row> = connection.rows(
+    private fun memoryRows(connection: Connection, ids: List<Long>): List<Row> = connection.query(
         "SELECT id, epoch_ms(occurred_from), players::VARCHAR[], importance, title, content, archived, merged_into " +
             "FROM memories WHERE id IN (SELECT unnest(?::BIGINT[]))",
-        connection.array("BIGINT", ids),
+        longArray(ids),
     ) {
         val ref = Ref(RefKind.MEMORY, getLong(1))
         val at = getLong(2)
@@ -338,7 +344,7 @@ class HybridRecall(
         val title = getString(5)
         val content = getString(6)
         val archived = getBoolean(7)
-        val mergedInto = getLong(8).takeUnless { wasNull() }
+        val mergedInto = longOrNull(8)
         Row(ref, players) { names, now ->
             buildString {
                 append("$ref · ${dayTime.format(instant(at))} (${ago(now.toEpochMilli() - at)}) · ${names(players, names)} · ★$importance · ")
@@ -348,18 +354,18 @@ class HybridRecall(
         }
     }
 
-    private fun canonRows(connection: Connection, ids: List<Long>): List<Row> = connection.rows(
+    private fun canonRows(connection: Connection, ids: List<Long>): List<Row> = connection.query(
         "SELECT id, kind, players::VARCHAR[], importance, status, epoch_ms(due_at), epoch_ms(resolved_at), resolution, statement, " +
             "quote, stakes, archived FROM canon WHERE id IN (SELECT unnest(?::BIGINT[]))",
-        connection.array("BIGINT", ids),
+        longArray(ids),
     ) {
         val ref = Ref(RefKind.CANON, getLong(1))
         val kind = getString(2)
         val players = uuids(3)
         val importance = getInt(4)
         val status = getString(5)
-        val due = getLong(6).takeUnless { wasNull() }
-        val resolved = getLong(7).takeUnless { wasNull() }
+        val due = longOrNull(6)
+        val resolved = longOrNull(7)
         val resolution = getString(8)
         val statement = getString(9)
         val quote = getString(10)
@@ -379,10 +385,10 @@ class HybridRecall(
         }
     }
 
-    private fun interactionRows(connection: Connection, ids: List<Long>): List<Row> = connection.rows(
+    private fun interactionRows(connection: Connection, ids: List<Long>): List<Row> = connection.query(
         "SELECT id, epoch_ms(ts), player_uuid::VARCHAR, player, kind, valence, summary, quote, archived " +
             "FROM interactions WHERE id IN (SELECT unnest(?::BIGINT[]))",
-        connection.array("BIGINT", ids),
+        longArray(ids),
     ) {
         val ref = Ref(RefKind.INTERACTION, getLong(1))
         val at = getLong(2)
@@ -403,10 +409,10 @@ class HybridRecall(
         }
     }
 
-    private fun chronicleRows(connection: Connection, ids: List<Long>): List<Row> = connection.rows(
+    private fun chronicleRows(connection: Connection, ids: List<Long>): List<Row> = connection.query(
         "SELECT id, level, epoch_ms(period_from), epoch_ms(period_to), title, summary, superseded_by " +
             "FROM chronicle WHERE id IN (SELECT unnest(?::BIGINT[]))",
-        connection.array("BIGINT", ids),
+        longArray(ids),
     ) {
         val ref = Ref(RefKind.CHRONICLE, getLong(1))
         val level = getString(2)
@@ -414,7 +420,7 @@ class HybridRecall(
         val to = instant(getLong(4))
         val title = getString(5)
         val summary = getString(6)
-        val supersededBy = getLong(7).takeUnless { wasNull() }
+        val supersededBy = longOrNull(7)
         Row(ref, emptyList()) { _, _ ->
             val sameDay = day.format(from) == day.format(to)
             val period = "${dayTime.format(from)}–${(if (sameDay) hourTime else dayTime).format(to)}"
@@ -428,9 +434,9 @@ class HybridRecall(
     /** The latest name of each of [players], escaped. */
     private fun names(connection: Connection, players: List<UUID>): Map<UUID, String> {
         if (players.isEmpty()) return emptyMap()
-        return connection.rows(
+        return connection.query(
             "SELECT player_uuid::VARCHAR, name FROM players WHERE player_uuid IN (SELECT unnest(?::VARCHAR[]::UUID[]))",
-            connection.array("VARCHAR", players.distinct().map { it.toString() }),
+            stringArray(players.distinct().map { it.toString() }),
         ) { UUID.fromString(getString(1)) to ModelText.name(getString(2)) }.toMap()
     }
 
@@ -485,8 +491,3 @@ class HybridRecall(
         }
     }
 }
-
-private fun ResultSet.strings(column: Int): List<String> =
-    (getArray(column)?.array as? Array<*>)?.mapNotNull { it?.toString() }.orEmpty()
-
-private fun ResultSet.uuids(column: Int): List<UUID> = strings(column).map(UUID::fromString)

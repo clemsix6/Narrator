@@ -10,8 +10,8 @@ import java.time.Instant
 /**
  * What the memory jobs read and write in the Journal besides the store (M3 §6.6, §7.1, §8.1, §18): the
  * `memory_runs` rows, the chapters waiting for their nap, the Narrator's activity in a window, the canon
- * come due, the refusals of the day, the `memory_state` keys done with. [DuckJobsData] in production; a
- * fake in tests.
+ * come due, the refusals of the day. [DuckJobsData] in production; a fake in tests. The scheduler's own keys
+ * are in [MemoryState].
  */
 interface JobsData {
     /** Rows left `running` by a crash become `interrupted`; how many. */
@@ -61,18 +61,15 @@ interface JobsData {
 
     /** The `memory` decisions `rejected` and `voice_warning` recorded since [since]. */
     suspend fun refusals(since: Instant): Refusals
-
-    /** Removes the `memory_state` row [key], done with (the step of a dream run once the dream is over). */
-    suspend fun deleteState(key: String)
 }
 
 /** Counts of the store's refusals and voice warnings (`/narrator memory status`). */
 data class Refusals(val rejected: Int, val voiceWarnings: Int)
 
 /**
- * [JobsData] on the Journal: reads on its read connections, writes as `Journal.write` jobs (with the SQL
- * plumbing of the store, `MemoryRows.kt`). A read that must see facts just published (the Narrator's
- * lines, the tokens of a conversation that just ended) passes a `barrier()` first.
+ * [JobsData] on the Journal: reads on its read connections, writes as `Journal.write` jobs (with the
+ * memory's plumbing, `Jdbc.kt`). A read that must see facts just published (the Narrator's lines, the
+ * tokens of a conversation that just ended) passes a `barrier()` first.
  *
  * `canon.due_signaled_at` is written here, not through [MemoryStore]: it is the engine's bookkeeping of a
  * signal, not a change of what the memory holds (no audit, like `sheet_stats`).
@@ -207,10 +204,6 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         ) { Refusals(getInt(1), getInt(2)) }.first()
     }
 
-    override suspend fun deleteState(key: String) {
-        journal.write(WRITE_TIMEOUT_MS) { c -> c.update("DELETE FROM memory_state WHERE key = ?", key) }
-    }
-
     // ── Rows ────────────────────────────────────────────────────────────────────────────────────────
 
     private fun ResultSet.run() = MemoryRun(
@@ -223,7 +216,7 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         windowFrom = instantOrNull(7),
         windowTo = instantOrNull(8),
         chapter = getString(9),
-        conversations = (getArray(10)?.array as? Array<*>).orEmpty().map { it.toString() },
+        conversations = strings(10),
         writes = getInt(11),
         rejected = getInt(12),
         inputTokens = longOrNull(13),

@@ -15,7 +15,6 @@ import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZoneId
-import java.util.UUID
 
 private val log = Log.memory
 
@@ -76,16 +75,16 @@ private fun assemble(services: NarratorServices, reads: StartupReads): MemorySer
     val settings = { services.settings.get().config.memory }
 
     val index = SearchIndex()
-    val storeClock = LatePlayClock()
-    val store = DuckMemoryStore(journal, index, storeClock, clock, services.trace)
-    val playClock = DuckPlayClock(store, journal, services.players).also { storeClock.clock = it }
+    val state = DuckMemoryState(journal, clock)
+    val playClock = DuckPlayClock(state, journal, services.players)
     reads.run("loading the play clocks") { playClock.load(clock.millis()) }
+    val store = DuckMemoryStore(journal, index, playClock, clock, services.trace)
 
     val recall = HybridRecall(journal, index, playClock, clock)
     val sheets = DuckPlayerSheets(journal, playClock, services.players, zone)
     val hygiene = Hygiene(store, journal, playClock, index, Decisions(services.trace, clock), zone)
     val refresher = StatsRefresher(journal, clock)
-    val reminiscence = Reminiscence(recall, store, journal, playClock, settings, clock, services.trace)
+    val reminiscence = Reminiscence(recall, store, state, journal, playClock, settings, clock, services.trace)
     val agents = MemoryAgents(services)
     val hooks = JobHooks(
         tickClock = playClock::tick,
@@ -101,7 +100,7 @@ private fun assemble(services: NarratorServices, reads: StartupReads): MemorySer
         placeReturn = reminiscence::placeReturn,
         anniversary = reminiscence::anniversary,
     )
-    val jobs = MemoryJobs(services, store, DuckJobsData(journal), Chronicler(services, agents), Dreamer(services, agents, hygiene), hooks)
+    val jobs = MemoryJobs(services, store, state, DuckJobsData(journal), Chronicler(services, agents), Dreamer(services, agents, hygiene, state), hooks)
     val memory = MemoryService(
         store, recall, sheets, playClock, jobs, agents,
         MemoryBriefing(store, recall, sheets, journal, { services.players.online.map { it.ref } }, zone),
@@ -116,17 +115,13 @@ private fun assemble(services: NarratorServices, reads: StartupReads): MemorySer
 
 /** What the Journal lacks of the memory's schema: an older schema version, missing tables; empty when nothing. */
 private suspend fun schemaProblems(journal: Journal): List<String> = journal.read(START_TIMEOUT_MS) { connection ->
-    connection.createStatement().use { statement ->
-        val version = statement.executeQuery("SELECT coalesce(max(version), 0) FROM schema_version").use { it.next(); it.getInt(1) }
-        val tables = statement.executeQuery("SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main'").use { rows ->
-            buildSet { while (rows.next()) add(rows.getString(1)) }
-        }
-        val missing = MemorySchema.TABLES.filterNot { it in tables }
-        listOfNotNull(
-            "schema version $version".takeIf { version < DuckDatabase.versionOf(MemorySchema.MIGRATION) },
-            "tables missing: ${missing.joinToString()}".takeIf { missing.isNotEmpty() },
-        )
-    }
+    val version = connection.query("SELECT coalesce(max(version), 0) FROM schema_version") { getInt(1) }.single()
+    val tables = connection.query("SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main'") { getString(1) }.toSet()
+    val missing = MemorySchema.TABLES.filterNot { it in tables }
+    listOfNotNull(
+        "schema version $version".takeIf { version < DuckDatabase.versionOf(MemorySchema.MIGRATION) },
+        "tables missing: ${missing.joinToString()}".takeIf { missing.isNotEmpty() },
+    )
 }
 
 /**
@@ -142,17 +137,4 @@ internal class StartupReads(private val totalMs: Long = START_TIMEOUT_MS, privat
         val result = if (left > 0) runBlocking { withTimeoutOrNull(left) { block() } } else null
         return result ?: throw IllegalStateException("$what went over the ${ToolText.duration(totalMs)} the startup's reads may take")
     }
-}
-
-/**
- * The store's play clock. The store needs the play clocks to date what it writes, and [DuckPlayClock] keeps
- * its state in the store: the store gets this one, bound to the real clock as soon as it exists, before
- * anything is written.
- */
-private class LatePlayClock : PlayClock {
-    lateinit var clock: PlayClock
-
-    override fun worldPlaySeconds(atMillis: Long): Long = clock.worldPlaySeconds(atMillis)
-
-    override fun playerPlaySeconds(player: UUID, atMillis: Long): Long = clock.playerPlaySeconds(player, atMillis)
 }

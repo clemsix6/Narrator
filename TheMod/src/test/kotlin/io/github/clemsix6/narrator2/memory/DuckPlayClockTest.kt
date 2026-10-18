@@ -9,7 +9,7 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
-import io.github.clemsix6.narrator2.testing.FakeMemoryStore
+import io.github.clemsix6.narrator2.testing.FakeMemoryState
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import io.github.clemsix6.narrator2.testing.MemorySamples
@@ -24,9 +24,9 @@ import kotlin.test.assertEquals
 class DuckPlayClockTest {
     private val fixture = JournalFixture()
     private val start: Instant = fixture.clock.now
-    private val store = FakeMemoryStore(fixture.clock)
+    private val state = FakeMemoryState()
     private val players = PlayerStates()
-    private val clock = DuckPlayClock(store, fixture.journal, players)
+    private val clock = DuckPlayClock(state, fixture.journal, players)
 
     @AfterEach
     fun close() = fixture.close()
@@ -78,8 +78,8 @@ class DuckPlayClockTest {
         session(6, bartok, 200, null) // left open by a crash: counts for nothing
         clock.load(ms(300))
         assertEquals((90 + 10 + 30) * 60L, clock.worldPlaySeconds(ms(300)))
-        assertEquals("7800", store.state[DuckPlayClock.WORLD_KEY], "saved at once")
-        assertEquals(ms(300).toString(), store.state[DuckPlayClock.SAVED_AT_KEY])
+        assertEquals("7800", state.values[DuckPlayClock.WORLD_KEY], "saved at once")
+        assertEquals(ms(300).toString(), state.values[DuckPlayClock.SAVED_AT_KEY])
     }
 
     @Test
@@ -87,8 +87,8 @@ class DuckPlayClockTest {
         session(1, bartok, 0, 60)
         session(2, mimosa, 95, 110) // straddles the save: 10 minutes after it
         session(3, bartok, 120, 150)
-        store.state[DuckPlayClock.WORLD_KEY] = "1000"
-        store.state[DuckPlayClock.SAVED_AT_KEY] = ms(100).toString()
+        state.values[DuckPlayClock.WORLD_KEY] = "1000"
+        state.values[DuckPlayClock.SAVED_AT_KEY] = ms(100).toString()
         clock.load(ms(300))
         assertEquals(1_000 + (10 + 30) * 60L, clock.worldPlaySeconds(ms(300)))
     }
@@ -108,7 +108,7 @@ class DuckPlayClockTest {
         players.remove(bartok.uuid)
         assertEquals(180, clock.worldPlaySeconds(ms(60)), "nobody online: nothing pending")
         clock.save(ms(60))
-        assertEquals("180", store.state[DuckPlayClock.WORLD_KEY])
+        assertEquals("180", state.values[DuckPlayClock.WORLD_KEY])
     }
 
     @Test

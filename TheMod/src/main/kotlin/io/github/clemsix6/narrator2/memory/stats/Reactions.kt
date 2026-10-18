@@ -1,6 +1,11 @@
 package io.github.clemsix6.narrator2.memory.stats
 
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.memory.doubleOrNull
+import io.github.clemsix6.narrator2.memory.longOrNull
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.strings
+import io.github.clemsix6.narrator2.memory.uuid
 import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
 import io.github.clemsix6.narrator2.reflex.HeuristicWords
 import java.sql.Connection
@@ -74,74 +79,40 @@ object Reactions {
             .distinctBy { it.uuid }
     }
 
-    private fun lines(connection: Connection, from: Instant, to: Instant): List<Line> = connection.prepareStatement(
-        "SELECT id, epoch_ms(ts), text, recipients FROM chat WHERE channel = 'narrator' AND ts >= CAST(? AS TIMESTAMPTZ) AND ts < CAST(? AS TIMESTAMPTZ) ORDER BY ts, id",
-    ).use { statement ->
-        statement.setString(1, from.toString())
-        statement.setString(2, to.toString())
-        statement.executeQuery().use { rows ->
-            buildList {
-                while (rows.next()) {
-                    val recipients = (rows.getObject(4) as? java.sql.Array)?.let { array -> (array.array as Array<*>).mapNotNull { it?.toString() } }
-                    add(Line(rows.getLong(1), Instant.ofEpochMilli(rows.getLong(2)), rows.getString(3), recipients))
-                }
-            }
-        }
+    private fun lines(connection: Connection, from: Instant, to: Instant): List<Line> = connection.query(
+        "SELECT id, epoch_ms(ts), text, recipients FROM chat WHERE channel = 'narrator' AND ts >= ? AND ts < ? ORDER BY ts, id",
+        from, to,
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) {
+        // No recipients (null) for a line said to everyone; a private line lists them.
+        Line(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), getArray(4)?.let { strings(4) })
     }
 
     /** Every name a player used, the latest owner of a name winning. */
-    private fun names(connection: Connection): Map<String, UUID> = connection.createStatement().use { statement ->
-        statement.executeQuery("SELECT name, player_uuid FROM player_names ORDER BY first_seen").use { rows ->
-            buildMap { while (rows.next()) put(rows.getString(1), rows.getObject(2) as UUID) }
-        }
-    }
+    private fun names(connection: Connection): Map<String, UUID> = connection.query(
+        "SELECT name, player_uuid FROM player_names ORDER BY first_seen",
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) { getString(1) to uuid(2) }.toMap()
 
-    private fun replies(connection: Connection, from: Instant, to: Instant): List<Reply> = connection.prepareStatement(
+    private fun replies(connection: Connection, from: Instant, to: Instant): List<Reply> = connection.query(
         """
         SELECT c.player_uuid, epoch_ms(c.ts), c.text, s.humor, s.tone, s.tone_confidence
         FROM chat c LEFT JOIN chat_signals s ON s.event_id = c.id
-        WHERE c.channel IN ('public', 'pray') AND c.player_uuid IS NOT NULL AND c.ts > CAST(? AS TIMESTAMPTZ) AND c.ts <= CAST(? AS TIMESTAMPTZ)
+        WHERE c.channel IN ('public', 'pray') AND c.player_uuid IS NOT NULL AND c.ts > ? AND c.ts <= ?
         ORDER BY c.ts, c.id
         """.trimIndent(),
-    ).use { statement ->
-        statement.setString(1, from.toString())
-        statement.setString(2, to.toString())
-        statement.executeQuery().use { rows ->
-            buildList {
-                while (rows.next()) {
-                    add(
-                        Reply(
-                            player = rows.getObject(1) as UUID,
-                            ts = Instant.ofEpochMilli(rows.getLong(2)),
-                            text = rows.getString(3),
-                            humor = rows.getDouble(4).takeUnless { rows.wasNull() },
-                            tone = rows.getString(5),
-                            toneConfidence = rows.getDouble(6).takeUnless { rows.wasNull() },
-                        ),
-                    )
-                }
-            }
-        }
+        from, to,
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) {
+        Reply(
+            player = uuid(1), ts = Instant.ofEpochMilli(getLong(2)), text = getString(3), humor = doubleOrNull(4), tone = getString(5),
+            toneConfidence = doubleOrNull(6),
+        )
     }
 
-    private fun sessions(connection: Connection, from: Instant, to: Instant): List<Session> = connection.prepareStatement(
-        "SELECT player_uuid, epoch_ms(joined_at), epoch_ms(left_at) FROM sessions WHERE joined_at < CAST(? AS TIMESTAMPTZ) AND (left_at IS NULL OR left_at >= CAST(? AS TIMESTAMPTZ))",
-    ).use { statement ->
-        statement.setString(1, to.toString())
-        statement.setString(2, from.toString())
-        statement.executeQuery().use { rows ->
-            buildList {
-                while (rows.next()) {
-                    add(
-                        Session(
-                            rows.getObject(1) as UUID,
-                            Instant.ofEpochMilli(rows.getLong(2)),
-                            rows.getLong(3).takeUnless { rows.wasNull() }?.let(Instant::ofEpochMilli),
-                        ),
-                    )
-                }
-            }
-        }
-    }
-
+    private fun sessions(connection: Connection, from: Instant, to: Instant): List<Session> = connection.query(
+        "SELECT player_uuid, epoch_ms(joined_at), epoch_ms(left_at) FROM sessions WHERE joined_at < ? AND (left_at IS NULL OR left_at >= ?)",
+        to, from,
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) { Session(uuid(1), Instant.ofEpochMilli(getLong(2)), longOrNull(3)?.let(Instant::ofEpochMilli)) }
 }

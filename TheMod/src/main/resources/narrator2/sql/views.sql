@@ -280,9 +280,9 @@ SELECT 'M-' || m.id AS ref, m.kind, m.occurred_from AS occurred, m.title, m.cont
        END AS strength
 FROM memories m, n, clock
 WHERE NOT m.archived;
-COMMENT ON VIEW mem_memories IS 'Episodes, observations, reflections (French); strength: 1 fresh to 0.02 faded';
+COMMENT ON VIEW mem_memories IS 'Episodes and observations (French); strength: 1 fresh to 0.02 faded';
 COMMENT ON COLUMN mem_memories.ref IS 'its reference for the memory tools, e.g. M-812';
-COMMENT ON COLUMN mem_memories.kind IS 'episode, observation or reflection';
+COMMENT ON COLUMN mem_memories.kind IS 'episode or observation';
 COMMENT ON COLUMN mem_memories.occurred IS 'when it began';
 COMMENT ON COLUMN mem_memories.players IS 'who it is about, the main player first; empty: the whole server';
 COMMENT ON COLUMN mem_memories.tags IS 'controlled tags: death, lava, insult, promise, nether, gag:slug, arc:C-45…';

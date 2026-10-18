@@ -1,6 +1,9 @@
 package io.github.clemsix6.narrator2.memory.stats
 
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.uuid
 import java.sql.Connection
+import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
 
@@ -34,20 +37,8 @@ object PairStats {
     )
 
     /** Every pair at [now], on a read connection, the most time together first. */
-    fun compute(connection: Connection, now: Instant): List<PlayerPair> = SheetStats.query(connection, SheetStats.bind(SQL, null, now)) { rows ->
-        buildList {
-            while (rows.next()) {
-                add(
-                    PlayerPair(
-                        a = rows.getObject(1) as UUID, b = rows.getObject(2) as UUID,
-                        minutesTogether = rows.getDouble(3), minutesTogether7d = rows.getDouble(4),
-                        pvpAOnB = rows.getInt(5), pvpBOnA = rows.getInt(6), griefsAOnB = rows.getInt(7), griefsBOnA = rows.getInt(8),
-                        computedAt = now,
-                    ),
-                )
-            }
-        }
-    }
+    fun compute(connection: Connection, now: Instant): List<PlayerPair> =
+        connection.query(SheetStats.bind(SQL, null, now), timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS) { pair(now) }
 
     /** Writes [pairs] (inside a `Journal.write` job). */
     fun write(connection: Connection, pairs: List<PlayerPair>) {
@@ -70,26 +61,19 @@ object PairStats {
     }
 
     /** The stored pairs [player] is in (every pair when null), the most time together first. */
-    fun read(connection: Connection, player: UUID? = null): List<PlayerPair> = SheetStats.query(
-        connection,
+    fun read(connection: Connection, player: UUID? = null): List<PlayerPair> = connection.query(
         "SELECT a_uuid, b_uuid, minutes_together, minutes_together_7d, pvp_a_on_b, pvp_b_on_a, griefs_a_on_b, griefs_b_on_a, " +
             "epoch_ms(computed_at) FROM pair_stats " +
             (if (player == null) "" else "WHERE CAST('$player' AS UUID) IN (a_uuid, b_uuid) ") +
             "ORDER BY minutes_together DESC, a_uuid, b_uuid",
-    ) { rows ->
-        buildList {
-            while (rows.next()) {
-                add(
-                    PlayerPair(
-                        a = rows.getObject(1) as UUID, b = rows.getObject(2) as UUID,
-                        minutesTogether = rows.getDouble(3), minutesTogether7d = rows.getDouble(4),
-                        pvpAOnB = rows.getInt(5), pvpBOnA = rows.getInt(6), griefsAOnB = rows.getInt(7), griefsBOnA = rows.getInt(8),
-                        computedAt = Instant.ofEpochMilli(rows.getLong(9)),
-                    ),
-                )
-            }
-        }
-    }
+        timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+    ) { pair(Instant.ofEpochMilli(getLong(9))) }
+
+    /** The pair of the row, its first eight columns those of `pair_stats`, computed at [computedAt]. */
+    private fun ResultSet.pair(computedAt: Instant) = PlayerPair(
+        a = uuid(1), b = uuid(2), minutesTogether = getDouble(3), minutesTogether7d = getDouble(4),
+        pvpAOnB = getInt(5), pvpBOnA = getInt(6), griefsAOnB = getInt(7), griefsBOnA = getInt(8), computedAt = computedAt,
+    )
 
     /**
      * Every pair, with `{now}`. The distance of two players: first [RADIUS] on each axis, then the squared 3D
