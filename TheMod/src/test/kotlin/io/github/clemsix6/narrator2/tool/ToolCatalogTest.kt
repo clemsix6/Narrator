@@ -78,10 +78,7 @@ class ToolCatalogTest {
     @Test
     fun `the Chronicler and the Dreamer get their own family and the tools they share`() {
         assertEquals(listOf("note_interaction", "note_to_director", "recall", "record_episode", "remember", "resolve"), names(Role.CHRONICLER))
-        assertEquals(
-            listOf("note_to_director", "player_profile", "recall", "remember", "resolve", "set_trait", "sql", "write_grimoire"),
-            names(Role.DREAMER),
-        )
+        assertEquals(listOf("note_to_director", "recall", "remember", "resolve", "set_trait", "write_grimoire"), names(Role.DREAMER))
     }
 
     @Test
@@ -89,7 +86,7 @@ class ToolCatalogTest {
         assertEquals(listOf("delegate", "list_players", "remind_me", "say", "sql"), names(Role.DIRECTOR, memoryOff))
         assertEquals(listOf("list_players", "sql"), names(Role.ANALYST, memoryOff))
         assertEquals(emptyList(), names(Role.CHRONICLER, memoryOff))
-        assertEquals(listOf("sql"), names(Role.DREAMER, memoryOff))
+        assertEquals(emptyList(), names(Role.DREAMER, memoryOff))
     }
 
     @Test
@@ -105,7 +102,9 @@ class ToolCatalogTest {
         )
         assertEquals(emptyList(), ToolCatalog.toolSetFor(Role.DIRECTOR, memoryOff, services).names.filter { it in shared })
         assertTrue(ToolCatalog.toolSetFor(Role.CHRONICLER, everythingWired, services).names.containsAll(listOf("remember", "resolve", "note_interaction", "recall")))
-        assertTrue(ToolCatalog.toolSetFor(Role.DREAMER, everythingWired, services).names.containsAll(listOf("remember", "resolve", "recall", "player_profile", "sql")))
+        val dreamer = ToolCatalog.toolSetFor(Role.DREAMER, everythingWired, services).names
+        assertTrue(dreamer.containsAll(listOf("remember", "resolve", "recall", "note_to_director")), "$dreamer")
+        assertTrue("sql" !in dreamer && "player_profile" !in dreamer, "$dreamer")
     }
 
     @Test
