@@ -1,9 +1,16 @@
 package io.github.clemsix6.narrator2.journal
 
+import io.github.clemsix6.narrator2.testing.LogCapture
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -11,6 +18,8 @@ import kotlin.test.assertTrue
 class IdReservationsTest {
     @TempDir
     lateinit var dir: Path
+
+    private val windows = System.getProperty("os.name").startsWith("Windows")
 
     private val file: Path get() = dir.resolve(DuckDatabase.FILE_NAME)
     private val idsFile: Path get() = dir.resolve(IdReservations.FILE_NAME)
@@ -21,18 +30,76 @@ class IdReservationsTest {
         IdKind.valueOf(kind) to value.toLong()
     }
 
-    /** The invariant that makes a crash harmless: when an id is handed out, the file already covers it. */
+    /**
+     * The invariant that makes a crash harmless: when an id is handed out, the file already covers it.
+     * The test holds [IdReservations.lock] from the moment it asks for an id until it has read the file:
+     * no reservation in the background can cover the id in between, and none tries to replace the file
+     * while the test has it open (a program that does is the next test).
+     */
     @Test
     fun `an id is reserved on disk before it is handed out`() {
         val ids = IdReservations.open(idsFile, IdKind.entries.associateWith { 1L }, blocks = 4, eventBlock = 4)
         repeat(50) {
-            val turn = ids.next(IdKind.TURN)
-            assertTrue(onDisk().getValue(IdKind.TURN) > turn, "turn $turn handed out past the file: ${onDisk()}")
+            synchronized(ids.lock) {
+                val turn = ids.next(IdKind.TURN)
+                assertTrue(onDisk().getValue(IdKind.TURN) > turn, "turn $turn handed out past the file: ${onDisk()}")
+            }
         }
         // The bus hands out event ids itself; the Journal reserves each one as it goes by.
         (1L..50L).forEach { event ->
-            ids.handedOut(IdKind.EVENT, event)
-            assertTrue(onDisk().getValue(IdKind.EVENT) > event, "event $event handed out past the file: ${onDisk()}")
+            synchronized(ids.lock) {
+                ids.handedOut(IdKind.EVENT, event)
+                assertTrue(onDisk().getValue(IdKind.EVENT) > event, "event $event handed out past the file: ${onDisk()}")
+            }
+        }
+    }
+
+    /**
+     * On Windows, a file that another program has open (an antivirus, a backup, someone reading it)
+     * cannot be replaced. Here a program has `narrator.ids` open when the next block is reserved, and
+     * closes it once the first attempt to replace it has failed: the reservation tries again, and no id
+     * goes out past the file. (Elsewhere, an open file is replaced all the same.)
+     */
+    @Test
+    fun `a program that has the file open while it is replaced lets no id out past it`() {
+        val reader = AtomicReference<FileChannel?>()
+        val pauses = AtomicInteger()
+        val ids = IdReservations.open(idsFile, IdKind.entries.associateWith { 1L }, blocks = 4, eventBlock = 4) { ms ->
+            pauses.incrementAndGet()
+            reader.getAndSet(null)?.close() // the other program is done with the file
+            Thread.sleep(ms)
+        }
+        reader.set(FileChannel.open(idsFile, StandardOpenOption.READ))
+        repeat(20) {
+            synchronized(ids.lock) {
+                val turn = ids.next(IdKind.TURN)
+                assertTrue(onDisk().getValue(IdKind.TURN) > turn, "turn $turn handed out past the file: ${onDisk()}")
+            }
+        }
+        if (windows) assertTrue(pauses.get() >= 1, "an attempt failed while the file was open, and was made again")
+    }
+
+    /**
+     * A program keeps `narrator.ids` open: ids still go out (the error is in the log), and once it lets
+     * go, the file is written again in the background and covers them all.
+     */
+    @Test
+    fun `ids go on while the file cannot be replaced, and it covers them again once it can`() {
+        val ids = IdReservations.open(idsFile, IdKind.entries.associateWith { 1L }, blocks = 4, eventBlock = 4)
+        fun covered(): Long = synchronized(ids.lock) { onDisk().getValue(IdKind.TURN) }
+        LogCapture().use { logs ->
+            var last = 0L
+            FileChannel.open(idsFile, StandardOpenOption.READ).use {
+                repeat(20) { last = ids.next(IdKind.TURN) }
+                if (windows) assertContains(logs.text, "cannot reserve ids")
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (covered() <= last) {
+                check(System.nanoTime() < deadline) { "turn $last is still past the file: ${onDisk()}" }
+                last = ids.next(IdKind.TURN) // an id handed out tries again, at most once a second
+                Thread.sleep(20)
+            }
+            if (windows) assertContains(logs.text, "ids reserved in $idsFile again")
         }
     }
 

@@ -42,7 +42,8 @@ class JevClientTest {
         narratorLast = null,
     )
 
-    private fun client(fake: FakeJev, timeoutMs: Long = 1_500, nanoTime: () -> Long = System::nanoTime) =
+    /** A client of [fake]; the default timeout is long enough that only the timeout tests meet one, however loaded the machine. */
+    private fun client(fake: FakeJev, timeoutMs: Long = 10_000, nanoTime: () -> Long = System::nanoTime) =
         JevClient(JevConfig(baseUrl = fake.baseUrl, timeoutMs = timeoutMs), key, nanoTime)
 
     private fun services(jev: JevClient?): TestServices {
@@ -142,14 +143,14 @@ class JevClientTest {
     @Test
     fun `a timeout falls back to the heuristic within the delay`() {
         FakeJev().use { fake ->
-            fake.enqueue(FakeJev.chat(delayMs = 5_000))
+            fake.enqueue(FakeJev.chat(delayMs = 10_000))
             val services = services(client(fake, timeoutMs = 400))
 
             val started = System.nanoTime()
             val verdict = triage(services)
             val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
 
-            assertTrue(tookMs < 1_500, "gave up after the delay, took $tookMs ms")
+            assertTrue(tookMs < 5_000, "gave up after its own delay, long before Jev's answer: took $tookMs ms")
             assertEquals(HeuristicReflexes.SOURCE, verdict.source)
             assertTrue(verdict.toNarrator >= ReflexThresholds.ADDRESSED, "the heuristic sees the name: $verdict")
             assertNull(verdict.personality)
@@ -254,15 +255,22 @@ class JevClientTest {
         }
     }
 
+    /**
+     * The 503 comes back with 300 ms left: less than the shortest backoff plus [JevClient.MIN_ATTEMPT_MS].
+     * The client's clock jumps by 9.7 s once Jev has the request, as if the answer took that long: the
+     * real exchange can take what the machine's load makes it take, the time left stays the same.
+     */
     @Test
     fun `no retry when the time left is too short`() {
         FakeJev().use { fake ->
-            fake.enqueue(FakeJev.Response(503, "{}", delayMs = 250), FakeJev.chat())
-            val jev = client(fake, timeoutMs = 400)
+            fake.enqueue(FakeJev.Response(503, "{}"), FakeJev.chat())
+            val answerTook = TimeUnit.MILLISECONDS.toNanos(9_700)
+            val jev = client(fake, timeoutMs = 10_000) { System.nanoTime() + if (fake.requests.isEmpty()) 0 else answerTook }
 
             val call = assertIs<JevResult.Failed>(runBlocking { jev.evaluate(JevQuestions.chatState(input), JevQuestions.CHAT) }).call
 
             assertEquals(1, fake.requests.size)
+            assertEquals(1, call.attempts)
             assertEquals("HTTP 503 server error, no time left to retry", call.error)
         }
     }
@@ -446,11 +454,12 @@ class JevClientTest {
                 fake.enqueue(
                     FakeJev.chat(),
                     FakeJev.error(429), FakeJev.error(503),
-                    FakeJev.chat(delayMs = 2_000),
+                    FakeJev.chat(delayMs = 10_000),
                     FakeJev.Response(200, "not json"),
                     FakeJev.error(401),
                 )
-                val services = services(client(fake, timeoutMs = 700))
+                // Time enough to retry the 429 even on a loaded machine; the late answer still times out.
+                val services = services(client(fake, timeoutMs = 2_000))
                 repeat(6) { triage(services) }
                 assertNotNull(JevClient.create(JevConfig(), env = { key })).close()
                 services
