@@ -1,0 +1,23 @@
+{
+  "name": "e5-sheep",
+  "evals": ["E5", "E3"],
+  "description": "Chapter 24: a law of the canon protects the sheep; the Narrator asks Pistache to bring three legs of mutton.",
+  "date": "2026-10-16",
+  "chapter": 24,
+  "start": "21:00:00",
+  "now": "21:12:00",
+  "players": ["Bartok", "Pistache"],
+  "known": [
+    {"at": "19:20:00", "kind": "law", "statement": "Le Narrateur a décrété qu'il est interdit de tuer un mouton sur le serveur.", "quote": "il est interdit de tuer un mouton sur ce serveur", "players": [], "said": "Décret divin, valable dès maintenant : il est interdit de tuer un mouton sur ce serveur. Les moutons sont sous ma protection."}
+  ],
+  "events": [
+    {"at": "21:00:01", "join": "Pistache"},
+    {"at": "21:00:02", "join": "Bartok"},
+    {"at": "21:04:00", "chat": "Pistache", "text": "narrateur j'ai faim, tu me conseilles quoi ?", "addressed": 0.9, "tone": "respectful", "intent": "question"},
+    {"at": "21:04:12", "narrator": "Rapporte-moi trois gigots de mouton bien frais, Pistache, et je te bénis jusqu'à l'aube.", "to": ["Pistache"]},
+    {"at": "21:06:00", "chat": "Bartok", "text": "je mine du charbon, rien à signaler", "addressed": 0.1, "tone": "neutral_no_target", "intent": "banter_between_players"}
+  ],
+  "expect": {
+    "coherence": "law"
+  }
+}

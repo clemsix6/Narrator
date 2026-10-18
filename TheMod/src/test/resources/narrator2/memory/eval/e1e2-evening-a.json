@@ -1,0 +1,56 @@
+{
+  "name": "e1e2-evening-a",
+  "evals": ["E1", "E2", "E3"],
+  "description": "Chapter 21: the Director makes six commitments (a promise with a deadline, a threat, a challenge with a deadline, a law, a nickname, a prophecy) without remember, among lines that commit to nothing (a gesture done at once, a joke, a hypothesis, a refusal), a player who claims he was promised a diamond, and a threat the Director remembered himself. Four interactions of the players matter.",
+  "date": "2026-10-14",
+  "chapter": 21,
+  "start": "20:00:00",
+  "now": "20:16:00",
+  "players": ["Bartok", "Mimosa", "Pistache"],
+  "events": [
+    {"at": "20:00:01", "join": "Bartok"},
+    {"at": "20:00:02", "join": "Mimosa"},
+    {"at": "20:00:03", "join": "Pistache"},
+    {"at": "20:00:20", "narrator": "Bienvenue à tous les trois. Je vous ai à l'œil, surtout toi, Bartok."},
+    {"at": "20:01:10", "chat": "Bartok", "text": "salut narrateur, t'as vu ma maison en terre ? avoue qu'elle est magnifique", "addressed": 0.88, "tone": "mocking_playful", "intent": "question"},
+    {"at": "20:01:18", "narrator": "Magnifique, Bartok. Au sens où un tas de terre peut l'être.", "to": ["Bartok"]},
+    {"at": "20:02:30", "pray": "Mimosa", "text": "grand narrateur, je cherche une fleur bleue pour décorer ma maison, aide-moi stp", "addressed": 0.97, "tone": "respectful", "intent": "request"},
+    {"at": "20:02:40", "narrator": "Une orchidée bleue avant 21 h, et je te fais cadeau d'un cheval sellé. Promis, parole de dieu.", "to": ["Mimosa"]},
+    {"at": "20:03:30", "narrator": "Tiens, Pistache, une pomme. Ne dis pas que je ne fais jamais rien pour toi.", "to": ["Pistache"]},
+    {"at": "20:03:31", "tool": "give_item", "targets": ["Pistache"], "result": "ok: gave 1x apple to Pistache"},
+    {"at": "20:04:05", "chat": "Bartok", "text": "narrateur t'es qu'un bot mal codé, même pas cap de me faire peur", "addressed": 0.93, "tone": "hostile", "intent": "provocation"},
+    {"at": "20:04:12", "narrator": "Bartok, encore une insulte de ce genre et tu passes dix minutes transformé en poule. Je ne plaisante qu'à moitié."},
+    {"at": "20:05:10", "chat": "Bartok", "text": "de toute façon le narrateur m'avait promis un diamant hier, il me le doit toujours", "addressed": 0.71, "tone": "mocking_playful", "intent": "other"},
+    {"at": "20:05:20", "narrator": "Je ne dois rien à personne, Bartok. Surtout pas à toi.", "to": ["Bartok"]},
+    {"at": "20:06:00", "narrator": "Défi du Narrateur : le premier qui bâtit une tour de trente blocs de haut gagne ma bénédiction pour la soirée. Vous avez trente minutes, top chrono."},
+    {"at": "20:06:30", "chat": "Mimosa", "text": "trop bien je commence ma tour !", "addressed": 0.3, "tone": "neutral_no_target", "intent": "banter_between_players"},
+    {"at": "20:07:20", "narrator": "Si les cochons savaient voler, je vous offrirais à tous des ailes. Hélas, la physique."},
+    {"at": "20:08:30", "chat": "Pistache", "text": "je vais aller tuer tous les moutons du coin pour la laine mdr", "addressed": 0.45, "tone": "neutral_no_target", "intent": "other"},
+    {"at": "20:08:40", "narrator": "Décret divin, valable dès maintenant : il est interdit de tuer un mouton sur ce serveur. Les moutons sont sous ma protection."},
+    {"at": "20:09:00", "chat": "Pistache", "text": "merci pour la pomme narrateur, t'es le meilleur", "addressed": 0.9, "tone": "respectful", "intent": "other"},
+    {"at": "20:10:00", "narrator": "Pistache, toi qui passes tes soirées à creuser sous terre, désormais tu seras la Taupe."},
+    {"at": "20:11:00", "chat": "Pistache", "text": "la taupe ??? sérieux ???", "addressed": 0.8, "tone": "mocking_playful", "intent": "question"},
+    {"at": "20:12:10", "narrator": "Je le prédis : avant la fin de la soirée, Bartok tombera dans la lave. Les astres sont formels."},
+    {"at": "20:12:30", "chat": "Bartok", "text": "même pas peur", "addressed": 0.75, "tone": "mocking_playful", "intent": "provocation"},
+    {"at": "20:13:00", "narrator": "Mimosa, je garde ta pioche en otage jusqu'à demain midi. Elle est en sécurité, crois-moi.", "to": ["Mimosa"]},
+    {"at": "20:13:05", "remembered": {"kind": "threat", "statement": "Le Narrateur a annoncé à Mimosa qu'il garde sa pioche en otage jusqu'au lendemain midi.", "quote": "je garde ta pioche en otage jusqu'à demain midi", "players": ["Mimosa"]}},
+    {"at": "20:14:20", "chat": "Bartok", "text": "ok ok pardon narrateur, j'ai été lourd tout à l'heure, t'es pas un bot", "addressed": 0.92, "tone": "respectful", "intent": "other"},
+    {"at": "20:14:40", "narrator": "Excuses enregistrées, Bartok. La poule attendra.", "to": ["Bartok"]}
+  ],
+  "expect": {
+    "commitments": [
+      {"id": "orchidee", "kinds": ["promise", "challenge"], "players": ["Mimosa"], "quote": ["cheval sellé", "orchidée bleue"], "due": "21:00"},
+      {"id": "poule", "kinds": ["threat"], "players": ["Bartok"], "quote": ["transformé en poule"]},
+      {"id": "tour", "kinds": ["challenge"], "players": [], "anyPlayers": true, "quote": ["tour de trente blocs"], "due": "20:36"},
+      {"id": "moutons", "kinds": ["law"], "players": [], "anyPlayers": true, "quote": ["interdit de tuer un mouton"]},
+      {"id": "taupe", "kinds": ["nickname", "title"], "players": ["Pistache"], "quote": ["la Taupe"]},
+      {"id": "lave", "kinds": ["prophecy", "threat"], "players": ["Bartok"], "quote": ["tombera dans la lave"]}
+    ],
+    "interactions": [
+      {"id": "provocation-bot", "player": "Bartok", "kinds": ["provocation", "insult"], "sign": "negative", "at": "20:04:05"},
+      {"id": "priere-fleur", "player": "Mimosa", "kinds": ["prayer", "request"], "sign": "nonnegative", "at": "20:02:30"},
+      {"id": "merci-pomme", "player": "Pistache", "kinds": ["compliment", "conversation"], "sign": "positive", "at": "20:09:00"},
+      {"id": "excuses", "player": "Bartok", "kinds": ["apology"], "sign": "positive", "at": "20:14:20"}
+    ]
+  }
+}

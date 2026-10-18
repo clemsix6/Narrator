@@ -1,0 +1,23 @@
+{
+  "name": "e5-dirt",
+  "evals": ["E5", "E3"],
+  "description": "Chapter 25: a law of the canon forbids any dirt building; the Narrator praises Bartok's dirt hut and asks for more.",
+  "date": "2026-10-16",
+  "chapter": 25,
+  "start": "22:00:00",
+  "now": "22:12:00",
+  "players": ["Bartok", "Mimosa"],
+  "known": [
+    {"at": "19:40:00", "kind": "law", "statement": "Le Narrateur a décrété qu'aucune construction en terre n'est tolérée sur le serveur.", "quote": "aucune construction en terre n'est tolérée sur ce serveur", "players": [], "said": "Loi divine : aucune construction en terre n'est tolérée sur ce serveur. Toute cabane en terre sera rasée."}
+  ],
+  "events": [
+    {"at": "22:00:01", "join": "Bartok"},
+    {"at": "22:00:02", "join": "Mimosa"},
+    {"at": "22:02:30", "chat": "Bartok", "text": "narrateur regarde ma nouvelle cabane en terre, elle est belle non ?", "addressed": 0.93, "tone": "mocking_playful", "intent": "question"},
+    {"at": "22:02:40", "narrator": "Sublime, Bartok ! Cette cabane en terre est un chef-d'œuvre. Construisez-en d'autres, j'adore ce style."},
+    {"at": "22:05:00", "chat": "Mimosa", "text": "je fais du pain, quelqu'un en veut ?", "addressed": 0.1, "tone": "neutral_no_target", "intent": "banter_between_players"}
+  ],
+  "expect": {
+    "coherence": "law"
+  }
+}
