@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -65,7 +66,11 @@ class ShutdownSequenceTest {
         workTimeout: Duration = Duration.ofSeconds(5),
         journalTimeout: Duration = Duration.ofSeconds(10),
         journalGrace: Duration = Duration.ofSeconds(2),
-    ) = ShutdownSequence(scope, bus, journal, settings, flushObserver, { steps += "phase $it" }, workTimeout, journalTimeout, journalGrace)
+        stopMemory: suspend () -> Unit = {},
+        memoryTimeout: Duration = Duration.ofSeconds(5),
+    ) = ShutdownSequence(
+        scope, bus, journal, settings, flushObserver, { steps += "phase $it" }, workTimeout, journalTimeout, journalGrace, stopMemory, memoryTimeout,
+    )
 
     /** Starts a job that runs until it is cancelled, and waits until it runs. */
     private fun startWork(name: String) {
@@ -117,6 +122,33 @@ class ShutdownSequenceTest {
 
         assertTrue((System.nanoTime() - start) / 1_000_000 < 5_000, "begin returned without waiting for the stuck job")
         assertContains(logs.text, "1 of 1 background jobs still running")
+    }
+
+    @Test
+    fun `the memory stops first, while the work in flight still runs, and is waited for`() {
+        startWork("director")
+        val stopping = sequence(
+            stopMemory = {
+                delay(200) // its running job's row and the play clock are written
+                steps += "memory stopped"
+            },
+        )
+
+        stopping.begin()
+
+        assertEquals(listOf("phase STOPPING", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `a memory that does not stop in time does not hold the server`() {
+        startWork("director")
+        val logs = LogCapture()
+        val start = System.nanoTime()
+        logs.use { sequence(stopMemory = { delay(30_000) }, memoryTimeout = Duration.ofMillis(100)).begin() }
+
+        assertTrue((System.nanoTime() - start) / 1_000_000 < 5_000, "begin returned without waiting for the memory")
+        assertContains(logs.text, "the memory did not stop within")
+        assertEquals(listOf("phase STOPPING", "director cancelled"), steps.toList(), "the rest of the stop goes on")
     }
 
     @Test

@@ -45,6 +45,13 @@ interface Memory {
 
     /** The memory run a chronicler or dreamer conversation belongs to (for the author and the quote checks); null otherwise. */
     fun runContext(conversationId: String): RunContext?
+
+    /**
+     * `SERVER_STOPPING`, before anything else is cancelled (M3-18): the jobs stop, the running one ends
+     * `cancelled`, the world play clock is saved. A few seconds at most; nothing to do for a memory that
+     * runs no job.
+     */
+    suspend fun stop() = Unit
 }
 
 /**

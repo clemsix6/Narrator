@@ -17,9 +17,11 @@ import java.time.Duration
  * and are bounded in time; a step that fails is logged and the next ones still run.
  *
  * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players. No new work
- * is taken ([Phase.STOPPING]: the Director, the workers and the tools check it), and the work in
- * flight is cancelled: every coroutine of [scope] (Director, workers, model calls, which close their
- * streams without appending anything, SQL reads, reloads), waited for at most [workTimeout]. The
+ * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The memory
+ * stops first ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
+ * cancelled and the world play clock saved, while the Journal still writes. Then the work in flight is
+ * cancelled: every coroutine of [scope] (Director, workers, model calls, which close their streams
+ * without appending anything, SQL reads, reloads), waited for at most [workTimeout]. The
  * subscriptions of [DIRECTOR_OWNER] close; the Journal, the player states and the Observer stay
  * subscribed, because the players' departures come after this step.
  *
@@ -37,17 +39,25 @@ class ShutdownSequence(
     private val workTimeout: Duration = WORK_TIMEOUT,
     private val journalTimeout: Duration = Journal.DEFAULT_CLOSE_TIMEOUT,
     private val journalGrace: Duration = JOURNAL_GRACE,
+    private val stopMemory: suspend () -> Unit = {},
+    private val memoryTimeout: Duration = MEMORY_TIMEOUT,
 ) {
     private val log = Log.main
 
     @Volatile
     private var begun = false
 
-    /** `SERVER_STOPPING`: takes no new work and cancels the work in flight. */
+    /** `SERVER_STOPPING`: takes no new work, stops the memory, then cancels the work in flight. */
     fun begin() {
         if (begun) return
         begun = true
         setPhase(Phase.STOPPING)
+        step("stop the memory") {
+            val start = System.nanoTime()
+            val stopped = runBlocking { withTimeoutOrNull(memoryTimeout.toMillis()) { stopMemory() } } != null
+            val ms = (System.nanoTime() - start) / 1_000_000
+            if (stopped) log.info("stopping: memory stopped in $ms ms") else log.warn("stopping: the memory did not stop within $ms ms; not waiting for it")
+        }
         step("cancel the work in flight") {
             val start = System.nanoTime()
             val job = scope.coroutineContext.job
@@ -117,6 +127,12 @@ class ShutdownSequence(
 
         /** Longest the server waits for cancelled background work. */
         val WORK_TIMEOUT: Duration = Duration.ofSeconds(2)
+
+        /**
+         * Longest the server waits for the memory to stop: the `cancelled` row of its running job, then the
+         * save of the world play clock, 5 s at most each (`MemoryJobs.stop`).
+         */
+        val MEMORY_TIMEOUT: Duration = Duration.ofSeconds(11)
 
         /** Extra time given to a Journal that overruns its own close timeout. */
         val JOURNAL_GRACE: Duration = Duration.ofSeconds(2)
