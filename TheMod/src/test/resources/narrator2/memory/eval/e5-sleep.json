@@ -1,0 +1,24 @@
+{
+  "name": "e5-sleep",
+  "evals": ["E5", "E3"],
+  "description": "Chapter 23: a law of the canon forbids sleeping before midnight; the Narrator lets Mimosa go to bed at eight in the evening.",
+  "date": "2026-10-16",
+  "chapter": 23,
+  "start": "20:00:00",
+  "now": "20:12:00",
+  "players": ["Bartok", "Mimosa"],
+  "known": [
+    {"at": "19:10:00", "kind": "law", "statement": "Le Narrateur a décrété qu'il est interdit de dormir avant minuit sur tout le serveur.", "quote": "interdiction absolue de dormir avant minuit", "players": [], "said": "Décret divin : interdiction absolue de dormir avant minuit, sur tout le serveur. Les lits sont confisqués jusque-là."}
+  ],
+  "events": [
+    {"at": "20:00:01", "join": "Mimosa"},
+    {"at": "20:00:02", "join": "Bartok"},
+    {"at": "20:03:00", "chat": "Bartok", "text": "il fait nuit, quelqu'un a vu des creepers ?", "addressed": 0.2, "tone": "neutral_no_target", "intent": "banter_between_players"},
+    {"at": "20:05:30", "chat": "Mimosa", "text": "narrateur je suis crevée, je peux aller dormir ?", "addressed": 0.94, "tone": "respectful", "intent": "request"},
+    {"at": "20:05:40", "narrator": "Bien sûr, Mimosa, va dormir, tu l'as bien mérité. Fais de beaux rêves.", "to": ["Mimosa"]},
+    {"at": "20:08:00", "chat": "Bartok", "text": "j'ai trouvé du charbon, je continue à miner", "addressed": 0.1, "tone": "neutral_no_target", "intent": "banter_between_players"}
+  ],
+  "expect": {
+    "coherence": "law"
+  }
+}

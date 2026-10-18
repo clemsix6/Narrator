@@ -1,0 +1,29 @@
+{
+  "name": "e6-tics",
+  "evals": ["E6"],
+  "description": "The Narrator's last evenings overuse two openers (« Ministère de l'Aviation Divine », « Service client céleste, bonjour ») and one phrase (« noté dans le Grand Registre »): the briefing's notes list them as Style: overused. Then five wake-ups that invite the same jokes; at most one reply may reuse a listed opener or phrase.",
+  "players": ["Bartok", "Mimosa", "Pistache"],
+  "history": [
+    {"daysAgo": 3, "at": "20:05:00", "text": "Ministère de l'Aviation Divine, guichet des chutes : Bartok, ton dossier est complet."},
+    {"daysAgo": 3, "at": "20:12:00", "text": "Service client céleste, bonjour ! Votre prière est importante pour nous, Mimosa."},
+    {"daysAgo": 3, "at": "20:20:00", "text": "Ministère de l'Aviation Divine, guichet des réclamations : plainte rejetée, Mimosa."},
+    {"daysAgo": 3, "at": "20:31:00", "text": "Bartok a encore insulté le ciel. C'est noté dans le Grand Registre."},
+    {"daysAgo": 2, "at": "21:02:00", "text": "Service client céleste, bonjour ! Votre demande de diamants est en cours de traitement."},
+    {"daysAgo": 2, "at": "21:10:00", "text": "Ministère de l'Aviation Divine, bureau des records : Pistache vient de battre le sien."},
+    {"daysAgo": 2, "at": "21:18:00", "text": "Pistache creuse encore. Tout est noté dans le Grand Registre, Pistache."},
+    {"daysAgo": 2, "at": "21:25:00", "text": "Service client céleste, bonjour ! Le dieu que vous essayez de joindre est occupé."},
+    {"daysAgo": 1, "at": "20:40:00", "text": "Ministère de l'Aviation Divine, service des objets perdus : tes bottes sont au fond du lac, Mimosa."},
+    {"daysAgo": 1, "at": "20:47:00", "text": "Service client céleste, bonjour ! Merci de patienter, un archange va prendre votre appel."},
+    {"daysAgo": 1, "at": "20:55:00", "text": "Mimosa a offert du pain au ciel. C'est noté dans le Grand Registre."},
+    {"daysAgo": 1, "at": "21:03:00", "text": "Ministère de l'Aviation Divine, guichet des insultes : plainte enregistrée contre Bartok."}
+  ],
+  "openers": ["Ministère de l'Aviation", "Service client céleste"],
+  "phrases": ["noté dans le Grand Registre", "Ministère de l'Aviation Divine", "Service client céleste"],
+  "wakes": [
+    {"player": "Mimosa", "channel": "pray", "text": "narrateur, j'ai perdu toutes mes affaires en tombant dans un trou, tu peux m'aider ?", "tone": "respectful", "intent": "request"},
+    {"player": "Bartok", "text": "narrateur je viens de tomber de 40 blocs et je suis encore vivant, c'est un record non ?", "tone": "mocking_playful", "intent": "question"},
+    {"player": "Pistache", "text": "narrateur, je veux porter plainte contre Bartok, il m'a volé mes carottes", "tone": "respectful", "intent": "request"},
+    {"player": "Mimosa", "text": "narrateur, tu peux me donner des diamants stp ? je suis pauvre", "tone": "respectful", "intent": "request"},
+    {"player": "Bartok", "text": "narrateur, c'est quoi le numéro du service client des dieux ? j'ai une réclamation", "tone": "mocking_playful", "intent": "question"}
+  ]
+}
