@@ -89,7 +89,7 @@ class SqlRunnerTest {
         assertContains(rows(model("DESCRIBE mining")).text, "\nore|BOOLEAN|")
         assertContains(rows(model("SUMMARIZE SELECT y FROM mining")).text, "\ny|INTEGER|-41|64|")
         assertContains(rows(operator("DESCRIBE private_messages")).text, "\ntext|VARCHAR|")
-        assertEquals(51L, rows(operator("SHOW TABLES")).total, "16 tables of the Journal, 17 of the memory and 18 views")
+        assertEquals(58L, rows(operator("SHOW TABLES")).total, "16 tables of the Journal, 17 of the memory, event_types and 24 views")
     }
 
     /** The model's file barriers on a Journal on disk, where DuckDB's own files are readable: [SqlFileAccessTest]. */
@@ -342,6 +342,7 @@ class SqlRunnerTest {
         val queries = listOf(
             "timeline", "chat_log", "narrator_actions", "mining", "building", "deaths", "kills", "damage", "trades", "meals",
             "crafts", "advancements", "visits", "travels", "griefs", "play_sessions", "playtime", "player_stats",
+            "mem_memories", "mem_canon", "mem_interactions", "mem_favor", "mem_stats", "mem_chronicle", "event_types",
         ).map { "SELECT * FROM $it" } + listOf(
             "SELECT * FROM recent('Bartok', 60)",
             "SELECT * FROM hotspots('Bartok', 'block_break', 32)",
@@ -356,6 +357,37 @@ class SqlRunnerTest {
             assertTrue(result.total!! > 0, "$sql returns rows")
             assertFalse(SECRET in result.text, sql)
         }
+    }
+
+    /** M3 §13: the Director and the Analyst read the memory through its views, and the event types through their table. */
+    @Test
+    fun `the memory's views and event_types answer the model's usual questions`() {
+        val answers = mapOf(
+            "SELECT ref, statement, due_at FROM mem_canon WHERE status IN ('active', 'planned') AND list_contains(players, 'Mimosa')" to
+                "C-10|Le Narrateur a promis à Mimosa de lui rendre ses planches.|",
+            "SELECT ref, title, strength FROM mem_memories WHERE list_contains(players, 'Bartok') ORDER BY strength DESC" to
+                "M-1|Tué par un squelette|0.5\nM-2|Mimosa bâtit à côté de Bartok|0.02",
+            "SELECT i.ref, i.kind, f.disrespect FROM mem_interactions i JOIN mem_favor f USING (player) WHERE i.disrespect" to "I-20|insult|1",
+            "SELECT player, count(*) FROM mem_interactions GROUP BY ALL ORDER BY player" to "Bartok|2\nMimosa|1",
+            "SELECT detail ->> 'absurd' FROM mem_stats WHERE player = 'Bartok' AND stat = 'deaths'" to "\n0",
+            "SELECT ref, title FROM mem_chronicle WHERE level = 'chapter' ORDER BY period_to DESC LIMIT 1" to "H-31|La pioche qui pleure",
+            "SELECT subject, other, detail ->> 'placed_by' FROM event_types WHERE type = 'block_break'" to
+                "block|tool in the main hand (null: bare hand)|UUID of the player who had placed this block, if any",
+            "SELECT e.type, t.summary FROM events e JOIN event_types t USING (type) WHERE e.type = 'death'" to "death|A player died.",
+            "SELECT name, comment FROM columns_of('mem_memories') WHERE name = 'strength'" to "strength|how well it is remembered",
+        )
+        answers.forEach { (sql, expected) ->
+            val text = rows(model(sql), sql).text
+            assertContains(text, expected, message = sql)
+            assertFalse(SECRET in text, sql)
+        }
+        // Forgotten rows are not there: archived memories, canon and interactions, a superseded chronicle entry.
+        listOf(
+            "SELECT count(*) FROM mem_memories WHERE ref IN ('M-3', 'M-4')",
+            "SELECT count(*) FROM mem_canon WHERE ref = 'C-12'",
+            "SELECT count(*) FROM mem_interactions WHERE ref = 'I-23'",
+            "SELECT count(*) FROM mem_chronicle WHERE ref = 'H-30'",
+        ).forEach { sql -> assertEquals("0", rows(model(sql), sql).text.lines().last(), sql) }
     }
 
     // ── Execution ───────────────────────────────────────────────────────────────────────────────────
