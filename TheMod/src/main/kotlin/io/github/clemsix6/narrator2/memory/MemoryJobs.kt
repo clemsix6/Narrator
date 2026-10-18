@@ -262,6 +262,17 @@ class MemoryJobs(
         else -> null
     }
 
+    /**
+     * Whether a signal posted now reaches the Director: the server runs and the Director is not disabled
+     * (§6.6: a due commitment is then signaled at a later pass). A [cue] also needs a Director that is not
+     * paused nor blocked: it drops cues while muted (M3-15), and the cue would be spent for nothing.
+     */
+    private fun directorListens(cue: Boolean = false): Boolean {
+        if (stopping || services.phase != Phase.RUNNING) return false
+        val state = services.director.status().state
+        return state !in (if (cue) MUTED else setOf(DirectorState.DISABLED, DirectorState.STOPPED))
+    }
+
     private fun remember(key: String, value: String) {
         services.scope.launch(CoroutineName(COROUTINE)) {
             runCatching { store.setState(key, value) }.onFailure { log.warn("could not save $key: ${it.message}") }
@@ -281,8 +292,10 @@ class MemoryJobs(
         attempt("recover") {
             val interrupted = data.interruptRunning(now)
             if (interrupted > 0) log.info("$interrupted memory run(s) found running after a crash: marked interrupted")
-            paused = store.state(PAUSED_KEY) == "true"
-            if (paused) log.info("the memory jobs stay paused (/narrator memory resume)")
+            if (store.state(PAUSED_KEY) == "true" && !paused) {
+                paused = true
+                log.info("the memory jobs stay paused (/narrator memory resume)")
+            }
             anniversaryDay = store.state(ANNIVERSARY_KEY)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         }
     }
@@ -549,11 +562,11 @@ class MemoryJobs(
 
     /** §6.6: every active canon come due is told to the Director once (not while it is disabled). */
     private suspend fun signalDue(now: Instant) {
-        if (services.director.status().state == DirectorState.DISABLED) return
+        if (!directorListens()) return
         for (ref in data.dueCanon(now)) {
             val entry = store.canon(ref) ?: continue
             val line = dueLine(entry, now)
-            services.director.post(DirectorSignal.MemoryDue(ref, line, now.toEpochMilli()))
+            services.director.post(DirectorSignal.MemoryDue(ref, line, (entry.dueAt ?: now).toEpochMilli()))
             data.markDueSignaled(ref, now)
             decisions.record(log, DecisionRecord.Kind.MEMORY, "due", ref.toString(), "DUE $line")
         }
@@ -651,7 +664,7 @@ class MemoryJobs(
     private fun placeCue(sample: PositionSampled, at: Long) {
         val near = grid.near(sample.pos)
         if (near.isEmpty()) return
-        if (services.director.status().state == DirectorState.DISABLED) return
+        if (!directorListens(cue = true)) return
         val online = services.players.online.map { it.ref.uuid }.toSet() + sample.player.uuid
         val world = hooks.worldPlaySeconds(at)
         val oldest = Instant.ofEpochMilli(at) - CUE_MIN_AGE
@@ -671,7 +684,7 @@ class MemoryJobs(
         val zone = clock.zone
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         if (anniversaryDay == today) return
-        if (services.director.status().state == DirectorState.DISABLED) return
+        if (!directorListens(cue = true)) return
         anniversaryDay = today
         store.setState(ANNIVERSARY_KEY, today.toString())
         val days = anniversaryDays(today)
@@ -800,6 +813,7 @@ class MemoryJobs(
         private val SUCCESS = setOf(RunStatus.DONE, RunStatus.SKIPPED)
         private val PRIORITY = mapOf(RunKind.NAP to 0, RunKind.BATCH to 1, RunKind.DREAM to 2)
         private val ORDER = compareBy<QueuedJob> { PRIORITY[it.kind] ?: 3 }
+        private val MUTED = setOf(DirectorState.DISABLED, DirectorState.STOPPED, DirectorState.PAUSED, DirectorState.BLOCKED)
         private val TIME = DateTimeFormatter.ofPattern("HH:mm")
 
         /**
@@ -820,15 +834,15 @@ class MemoryJobs(
             return days
         }
 
-        /** A coarse age: `5h12m`, `3d`, `2w`, `1 month`, `4 months`, `2 years`. */
+        /** A coarse age: `5h12m`, `3d`, `4w`, `1 month`, `4 months`, `1 year`, `2 years`. */
         fun ago(age: Duration): String {
             val days = age.toDays()
             return when {
                 days < 2 -> ToolText.duration(age.toMillis())
                 days < 14 -> "${days}d"
-                days < 60 -> "${days / 7}w"
-                days < 730 -> (days / 30).let { if (it == 1L) "1 month" else "$it months" }
-                else -> "${days / 365} years"
+                days < 45 -> "${days / 7}w"
+                days < 365 -> (days / 30).let { if (it == 1L) "1 month" else "$it months" }
+                else -> (days / 365).let { if (it == 1L) "1 year" else "$it years" }
             }
         }
     }
