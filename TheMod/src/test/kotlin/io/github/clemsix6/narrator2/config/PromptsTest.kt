@@ -28,11 +28,15 @@ class PromptsTest {
 
     /**
      * What enters a prompt has a budget (M3 §2, decision 11). The system prompts are sent with every request
-     * of their conversations: the Director's at each turn, the Chronicler's every ten minutes.
+     * of their conversations: the Director's at each turn, the Chronicler's every ten minutes, the Dreamer's at each
+     * step of a dream.
      */
     @Test
     fun `the bundled prompts stay within their budgets`() {
-        val budgets = mapOf("director" to 30_000, "analyst" to 8_000, "chapter_summary" to 4_000, "chronicler" to 11_000, "ping" to 1_000)
+        val budgets = mapOf(
+            "director" to 30_000, "analyst" to 8_000, "chapter_summary" to 4_000, "chronicler" to 11_000, "dreamer" to 15_000, "ping" to 1_000,
+        )
+        assertEquals(Prompts.NAMES.toSet(), budgets.keys, "every prompt has a budget")
         budgets.forEach { (name, max) ->
             val length = bundled(name).length
             assertTrue(length <= max, "$name.md has $length characters, over its budget of $max")
