@@ -452,3 +452,34 @@ Ordre conseillé :
 - C et D portent les trois importants de robustesse (2, 3, 5).
 - E (paires) est court et peut partir tout de suite.
 - G en dernier.
+
+## Décisions du superviseur
+
+Prises le 18/10/2026, après lecture de la relecture. Les « C » sont les numéros des constats.
+
+- **C1 : contrat accepté** (lots A et B).
+  - **Chroniqueur** : la citation (`quote`) est obligatoire pour les sortes dites aux joueurs. Elle fait au
+    moins 3 mots, et elle est citée en preuve par une réplique du Narrateur (une ligne `narrator` ou
+    `operator`, ou un appel `say`, `give_book` ou `show_title`).
+  - **Rêveur** : canon limité à `arc` (`planned`), `lore` et `running_gag` ; souvenirs `observation` ;
+    `resolve` pour les `arc` seulement.
+- **C4 : doublon sans preuve à ±10 min** (lot A) : une interaction sans aucune preuve, de même joueur et même
+  sorte à ±10 min, est un doublon. Le Directeur donne en preuve les lignes de chat du réveil (lot B,
+  obligatoire).
+- **C5 : `memory:since` et `memory.catchUpDays = 2`** (lot C).
+- **C8 : `memory.dreamMinHours = 6`** (lot C).
+- **C9 : accepté** (lots A et E).
+- **C17 : `SqlLimits.maxCellChars = 400`** (lot F), avec `SqlRunnerTest` et `SqlFormatTest`. Le total reste
+  plafonné à 8 000 caractères.
+- **C18 : `forget` d'opérateur exclu de `recall`, même avec `include_closed`** (lot D). Les tables brutes
+  restent lisibles par `sql` (lot F) : la réponse de `/narrator memory forget` dit exactement cela
+  (« out of the briefings, reminiscences and recall (even with include_closed); the raw tables stay
+  readable by sql »), et la passation M3-08 est corrigée.
+- **C21 : exception documentée, borne de 30 s au total** (lots C et F) : « au démarrage, avant la première
+  tick, une lecture bornée de la base (30 s au total) est permise sur le thread serveur »
+  (`ARCHITECTURE.md` §17, point 8).
+- **C22, C24 (le reste) et C25 (plomberie)** : lot G, après les lots A à F.
+- **Tous les autres constats** : correctif de la relecture accepté, dans le lot proposé.
+
+Le lot F a aussi réglé le constat 23 (KDoc de `Journal.write`, passations M3-14 et M3-12) et le constat 28 (le
+modèle scénarisé de `DirectorEndToEndTests` répond `text` aux conversations `chronicler-` et `dreamer-`).
