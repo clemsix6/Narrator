@@ -9,8 +9,6 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import java.sql.Connection
 import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -29,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Call [load] once at start, before any player joins, then [subscribe].
  */
 class DuckPlayClock(
-    private val store: MemoryStore,
+    private val state: MemoryState,
     private val journal: Journal,
     private val players: PlayerStates,
 ) : PlayClock {
@@ -41,11 +39,11 @@ class DuckPlayClock(
 
     /**
      * Reads the world clock (saved, or recomputed from `sessions` the first time) and the players' closed
-     * play time, at [nowMillis]. Journal and store exceptions propagate.
+     * play time, at [nowMillis]. Journal exceptions propagate.
      */
     suspend fun load(nowMillis: Long) {
-        val saved = store.state(WORLD_KEY)?.toLongOrNull()
-        val savedAt = store.state(SAVED_AT_KEY)?.toLongOrNull()
+        val saved = state.state(WORLD_KEY)?.toLongOrNull()
+        val savedAt = state.state(SAVED_AT_KEY)?.toLongOrNull()
         val now = Instant.ofEpochMilli(nowMillis)
         val world = if (saved == null) {
             journal.read(READ_TIMEOUT_MS) { unionSeconds(it, null, now, emptySet()) }.also {
@@ -57,12 +55,8 @@ class DuckPlayClock(
             saved + since
         }
         val playtimes = journal.read(READ_TIMEOUT_MS) { connection ->
-            connection.createStatement().use { statement ->
-                statement.queryTimeout = QUERY_TIMEOUT_S
-                statement.executeQuery("SELECT player_uuid, playtime_s FROM players").use { rows ->
-                    buildMap { while (rows.next()) put(rows.getObject(1) as UUID, rows.getLong(2)) }
-                }
-            }
+            connection.query("SELECT player_uuid, playtime_s FROM players", timeoutSeconds = QUERY_TIMEOUT_S) { uuid(1) to getLong(2) }
+                .toMap()
         }
         synchronized(lock) {
             worldMillis = world * 1_000
@@ -96,8 +90,8 @@ class DuckPlayClock(
     /** Saves the world clock as read at [nowMillis] in `memory_state`. */
     suspend fun save(nowMillis: Long) {
         val world = worldPlaySeconds(nowMillis)
-        store.setState(WORLD_KEY, world.toString())
-        store.setState(SAVED_AT_KEY, nowMillis.toString())
+        state.setState(WORLD_KEY, world.toString())
+        state.setState(SAVED_AT_KEY, nowMillis.toString())
         log.debug { "world play clock saved: ${world}s" }
     }
 
@@ -184,17 +178,7 @@ class DuckPlayClock(
                 SELECT coalesce(sum(date_diff('millisecond', s, e)), 0)
                 FROM (SELECT min(a) AS s, max(b) AS e FROM islands GROUP BY island)
             """.trimIndent()
-            return connection.prepareStatement(sql).use { statement ->
-                statement.queryTimeout = QUERY_TIMEOUT_S
-                val end = OffsetDateTime.ofInstant(to, ZoneOffset.UTC)
-                statement.setObject(1, OffsetDateTime.ofInstant(from ?: Instant.EPOCH, ZoneOffset.UTC))
-                statement.setObject(2, end)
-                statement.setObject(3, end)
-                statement.executeQuery().use { rows ->
-                    rows.next()
-                    rows.getLong(1) / 1_000
-                }
-            }
+            return connection.query(sql, from ?: Instant.EPOCH, to, to, timeoutSeconds = QUERY_TIMEOUT_S) { getLong(1) / 1_000 }.single()
         }
     }
 }

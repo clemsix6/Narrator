@@ -181,11 +181,11 @@ object AdminCommands {
 
     /**
      * The budget of turns (`director.turnsPerHour`): `turns this hour 12 of 30 (18 left)`, or, once spent,
-     * `turns this hour 30 of 30 (none left: only addressed chat, prayers and whispers wake it)`.
+     * `turns this hour 30 of 30 (none left: only addressed chat, prayers, whispers and due commitments wake it)`.
      */
     private fun turnsLine(director: DirectorStatus): String {
         val left = (director.turnsPerHour - director.turnsThisHour).coerceAtLeast(0)
-        val rest = if (left > 0) "$left left" else "none left: only addressed chat, prayers and whispers wake it"
+        val rest = if (left > 0) "$left left" else "none left: only addressed chat, prayers, whispers and due commitments wake it"
         return "turns this hour ${director.turnsThisHour} of ${director.turnsPerHour} ($rest)"
     }
 

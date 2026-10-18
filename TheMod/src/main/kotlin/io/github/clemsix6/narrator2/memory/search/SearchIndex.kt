@@ -3,9 +3,12 @@ package io.github.clemsix6.narrator2.memory.search
 import io.github.clemsix6.narrator2.memory.Indexer
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.SqlArray
+import io.github.clemsix6.narrator2.memory.longArray
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.stringArray
+import io.github.clemsix6.narrator2.memory.update
 import java.sql.Connection
-import java.sql.PreparedStatement
-import java.sql.ResultSet
 import kotlin.math.ln
 
 /**
@@ -25,8 +28,8 @@ class SearchIndex : Indexer {
         connection.update(
             "INSERT INTO search_postings (ref_id, term, tf) SELECT ?, unnest(?::VARCHAR[]), unnest(?::INTEGER[])::SMALLINT",
             ref.id,
-            connection.array("VARCHAR", frequencies.keys.toList()),
-            connection.array("INTEGER", frequencies.values.map { it.coerceAtMost(Short.MAX_VALUE.toInt()) }),
+            stringArray(frequencies.keys),
+            SqlArray("INTEGER", frequencies.values.map { it.coerceAtMost(Short.MAX_VALUE.toInt()) }),
         )
     }
 
@@ -42,12 +45,12 @@ class SearchIndex : Indexer {
         val terms = FrenchAnalyzer.terms(text)
         if (terms.isEmpty() || candidates.isEmpty()) return zero
         val query = terms.distinct()
-        val (count, averageLength) = connection.rows("SELECT count(*)::DOUBLE, coalesce(avg(len), 0) FROM search_docs") {
+        val (count, averageLength) = connection.query("SELECT count(*)::DOUBLE, coalesce(avg(len), 0) FROM search_docs") {
             getDouble(1) to getDouble(2)
         }.single()
-        val frequencies = connection.rows(
+        val frequencies = connection.query(
             "SELECT term, count(*)::DOUBLE FROM search_postings WHERE term IN (SELECT unnest(?::VARCHAR[])) GROUP BY term",
-            connection.array("VARCHAR", query),
+            stringArray(query),
         ) { getString(1) to getDouble(2) }.toMap()
         val stats = Stats(count, averageLength.takeIf { it > 0 } ?: terms.size.toDouble())
         val own = terms.groupingBy { it }.eachCount()
@@ -55,11 +58,11 @@ class SearchIndex : Indexer {
 
         val byId = candidates.associateBy { it.id }
         val scores = HashMap<Long, Double>()
-        connection.rows(
+        connection.query(
             "SELECT p.ref_id, p.term, p.tf, d.len FROM search_postings p JOIN search_docs d USING (ref_id) " +
                 "WHERE p.ref_id IN (SELECT unnest(?::BIGINT[])) AND p.term IN (SELECT unnest(?::VARCHAR[]))",
-            connection.array("BIGINT", byId.keys.toList()),
-            connection.array("VARCHAR", query),
+            longArray(byId.keys),
+            stringArray(query),
         ) {
             val id = getLong(1)
             scores.merge(id, stats.weight(getString(2), frequencies, getInt(3), getInt(4)), Double::plus)
@@ -74,11 +77,11 @@ class SearchIndex : Indexer {
     fun bm25(connection: Connection, terms: Collection<String>, kinds: Collection<RefKind>, limit: Int): Map<Ref, Double> {
         if (terms.isEmpty() || kinds.isEmpty() || limit <= 0) return emptyMap()
         val kindIds = kinds.map { it.id }
-        return connection.rows(
+        return connection.query(
             BM25,
-            connection.array("VARCHAR", terms.distinct()),
-            connection.array("VARCHAR", kindIds),
-            connection.array("VARCHAR", kindIds),
+            stringArray(terms.distinct()),
+            stringArray(kindIds),
+            stringArray(kindIds),
             limit,
         ) { Ref(RefKind.entries.first { it.id == getString(2) }, getLong(1)) to getDouble(3) }.toMap(LinkedHashMap())
     }
@@ -108,30 +111,5 @@ class SearchIndex : Indexer {
             WHERE d.kind = ANY(?::VARCHAR[])
             GROUP BY p.ref_id ORDER BY bm25 DESC, p.ref_id DESC LIMIT ?
         """.trimIndent()
-    }
-}
-
-// ── JDBC helpers of the search ─────────────────────────────────────────────────────────────────────
-
-/** Statements of the search stop after this long, whatever the caller's own limit. */
-internal const val SEARCH_QUERY_TIMEOUT_SECONDS = 10
-
-internal fun Connection.array(type: String, values: List<Any>): java.sql.Array = createArrayOf(type, values.toTypedArray())
-
-internal fun <T> Connection.rows(sql: String, vararg parameters: Any?, row: ResultSet.() -> T): List<T> =
-    prepareStatement(sql).use { statement ->
-        statement.bind(parameters)
-        statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.row()) } }
-    }
-
-internal fun Connection.update(sql: String, vararg parameters: Any?): Int = prepareStatement(sql).use { statement ->
-    statement.bind(parameters)
-    statement.executeUpdate()
-}
-
-private fun PreparedStatement.bind(parameters: Array<out Any?>) {
-    queryTimeout = SEARCH_QUERY_TIMEOUT_SECONDS
-    parameters.forEachIndexed { index, value ->
-        if (value is java.sql.Array) setArray(index + 1, value) else setObject(index + 1, value)
     }
 }

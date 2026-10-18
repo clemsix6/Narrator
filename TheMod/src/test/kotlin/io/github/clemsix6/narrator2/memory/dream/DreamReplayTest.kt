@@ -98,7 +98,7 @@ class DreamReplayTest {
             "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read",
             outcome.report,
         )
-        assertEquals("5", f.write { state(MemoryJobs.stepKey(12)) })
+        assertEquals("5", f.state.state(MemoryJobs.stepKey(12)))
 
         // The conversations, in the order of the steps; all of them dreamer's, with the prompt and the tools of the role.
         val labels = f.rows("SELECT label, role, end_reason FROM conversations WHERE role = 'dreamer' ORDER BY started_at, conversation_id") {
@@ -145,7 +145,7 @@ class DreamReplayTest {
         assertTrue(f.write { doc("sheet:${f.bartok.uuid}:recap") }!!.content.startsWith("Bartok insulte le Narrateur"))
         assertEquals(1L, f.count("notes", "kind = 'dream_hint' AND run_id = 12"))
         listOf(f.bartok, f.mimosa).forEach { player ->
-            val reflection = DreamInputs.Reflection.decode(f.write { state(DreamInputs.reflectedKey(player.uuid)) })
+            val reflection = DreamInputs.Reflection.decode(f.state.state(DreamInputs.reflectedKey(player.uuid)))
             assertNotNull(reflection, player.name)
             assertEquals(Instant.parse("2026-10-01T22:10:00Z").toEpochMilli(), reflection.at)
             assertEquals(1.0, reflection.stats["deaths"])
@@ -201,7 +201,7 @@ class DreamReplayTest {
         assertEquals(Instant.parse("2026-10-01T23:00:00Z"), cut.budget?.resetAt)
         assertEquals(2, cut.lastStep, "steps 1 and 2 passed; step 3 to do again")
         assertEquals(4, cut.conversations.size)
-        assertEquals("2", f.write { state(MemoryJobs.stepKey(20)) })
+        assertEquals("2", f.state.state(MemoryJobs.stepKey(20)))
         assertTrue(cut.report!!.endsWith("step 3 budget: budget: the LLMGW budget is spent until 23:00"), cut.report)
 
         // MemoryJobs starts the next attempt at the step after the last one passed.
@@ -218,7 +218,7 @@ class DreamReplayTest {
         assertEquals(RunStatus.DONE, resumed.status, resumed.report)
         assertEquals(5, resumed.lastStep)
         assertEquals("resumed at step 3 · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read", resumed.report)
-        assertEquals("5", f.write { state(MemoryJobs.stepKey(21)) })
+        assertEquals("5", f.state.state(MemoryJobs.stepKey(21)))
         val steps = f.fake.requests.drop(4).filter { it.json.path("messages").size() == 1 }.map { text(it.json.path("messages").first()).substringBefore("/>") }
         assertEquals(
             listOf("<job kind=\"dream\" run=\"21\" step=\"3\" of=\"5\" task=\"chronicle\"", "<job kind=\"dream\" run=\"21\" step=\"4\" of=\"5\" task=\"grimoire\"", "<job kind=\"dream\" run=\"21\" step=\"5\" of=\"5\" task=\"merges\""),

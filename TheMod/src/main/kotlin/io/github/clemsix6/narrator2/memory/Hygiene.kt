@@ -7,12 +7,10 @@ import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import java.sql.Connection
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /** Two memories the Dreamer may merge (M3 §8.6): [similarity] is the larger of the two directions. */
@@ -169,8 +167,11 @@ class Hygiene(
     private suspend fun archive(now: Instant, author: Author): List<Ref> {
         val world = clock.worldPlaySeconds(now.toEpochMilli())
         val faded = journal.read(READ_TIMEOUT_MS) { connection ->
-            query(connection, "SELECT id, importance, stability_h, reinforced_play_s FROM memories " +
-                "WHERE NOT archived AND importance <= ${Decay.ARCHIVE_MAX_IMPORTANCE} ORDER BY id") {
+            connection.query(
+                "SELECT id, importance, stability_h, reinforced_play_s FROM memories " +
+                    "WHERE NOT archived AND importance <= ${Decay.ARCHIVE_MAX_IMPORTANCE} ORDER BY id",
+                timeoutSeconds = QUERY_TIMEOUT_S,
+            ) {
                 val id = getLong(1)
                 id.takeIf { Decay.archivable(getInt(2), getDouble(3), getLong(4), world) }
             }.filterNotNull()
@@ -190,13 +191,13 @@ class Hygiene(
     /**
      * Marks done the notes the Director has seen enough: a dream hint once shown (it is shown once, at its
      * player's join), or after [DREAM_HINT_LIFE] without being shown; any other note once shown
-     * [COHERENCE_SHOWINGS] times, as many as the briefing shows it.
+     * [NOTE_SHOWINGS] times, as many as the briefing shows it.
      */
     private suspend fun closeNotes(now: Instant, author: Author): List<Ref> =
         store.openNotes().filter { note ->
             when (note.kind) {
                 NoteKind.DREAM_HINT -> note.shownCount > 0 || !now.isBefore(note.createdAt + DREAM_HINT_LIFE)
-                else -> note.shownCount >= COHERENCE_SHOWINGS
+                else -> note.shownCount >= NOTE_SHOWINGS
             }
         }.filter { note ->
             try {
@@ -215,7 +216,7 @@ class Hygiene(
      */
     suspend fun mergeCandidates(since: Instant?): List<MergeCandidate> = journal.read(READ_TIMEOUT_MS) { connection ->
         val recent = if (since == null) "" else "AND greatest(a.created_at, b.created_at) >= ?"
-        val pairs = connection.prepareStatement(
+        val pairs = connection.query(
             """
             SELECT a.id, b.id FROM memories a JOIN memories b ON a.id < b.id
             WHERE NOT a.archived AND NOT b.archived
@@ -225,15 +226,16 @@ class Hygiene(
               $recent
             ORDER BY a.id, b.id LIMIT $MAX_PAIRS
             """.trimIndent(),
-        ).use { statement ->
-            statement.queryTimeout = QUERY_TIMEOUT_S
-            if (since != null) statement.setObject(1, OffsetDateTime.ofInstant(since, ZoneOffset.UTC))
-            statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getLong(1) to rows.getLong(2)) } }
-        }
+            *listOfNotNull(since).toTypedArray(),
+            timeoutSeconds = QUERY_TIMEOUT_S,
+        ) { getLong(1) to getLong(2) }
         if (pairs.isEmpty()) return@read emptyList()
         val ids = pairs.flatMap { listOf(it.first, it.second) }.toSet()
-        val texts = query(connection, "SELECT id, title, content, tags, entities FROM memories WHERE id IN (${ids.joinToString(",")})") {
-            getLong(1) to listOf(getString(2), getString(3), words(getArray(4)), words(getArray(5))).joinToString(" ")
+        val texts = connection.query(
+            "SELECT id, title, content, tags, entities FROM memories WHERE id IN (${ids.joinToString(",")})",
+            timeoutSeconds = QUERY_TIMEOUT_S,
+        ) {
+            getLong(1) to (listOf(getString(2), getString(3)) + strings(4) + strings(5)).joinToString(" ")
         }.toMap()
         val partners = pairs.flatMap { (a, b) -> listOf(a to b, b to a) }.groupBy({ it.first }, { it.second })
         val scores = HashMap<Pair<Long, Long>, Double>()
@@ -250,14 +252,6 @@ class Hygiene(
             .take(MAX_MERGE_CANDIDATES)
     }
 
-    private fun <T> query(connection: Connection, sql: String, row: java.sql.ResultSet.() -> T): List<T> =
-        connection.createStatement().use { statement ->
-            statement.queryTimeout = QUERY_TIMEOUT_S
-            statement.executeQuery(sql).use { rows -> buildList { while (rows.next()) add(rows.row()) } }
-        }
-
-    private fun words(array: java.sql.Array?): String = (array?.array as? Array<*>)?.joinToString(" ") { it.toString() }.orEmpty()
-
     companion object {
         /** The resolution of an expired entry. */
         const val NO_RESOLUTION = "no resolution recorded"
@@ -270,9 +264,9 @@ class Hygiene(
 
         /**
          * Times a note other than a dream hint (`coherence`, `expired`, `operator`) is shown before it is done:
-         * as many as the briefing shows it (`MemoryBriefing.NOTE_SHOWINGS`).
+         * `MemoryBriefing` shows it in that many accepted briefings (and at the wake-up of its kind).
          */
-        const val COHERENCE_SHOWINGS = 2
+        const val NOTE_SHOWINGS = 2
 
         /** How long a dream hint waits for its player's join before it is done. */
         val DREAM_HINT_LIFE: Duration = Duration.ofDays(7)

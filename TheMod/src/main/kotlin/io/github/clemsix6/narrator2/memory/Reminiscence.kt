@@ -64,12 +64,14 @@ import kotlin.math.sqrt
  * Threads: [forWake] runs on the Director's coroutine (it touches the chapter); [placeReturn] and
  * [anniversary] on the memory jobs' coroutine. Each of the three keeps its own state, one call at a time.
  *
+ * @param state keeps the day of the last anniversary ([ANNIVERSARY_STATE]).
  * @param config the live `memory` settings.
  * @param clock its zone is the day of the anniversaries.
  */
 class Reminiscence(
     private val recall: Recall,
     private val store: MemoryStore,
+    private val state: MemoryState,
     private val journal: Journal,
     private val playClock: PlayClock,
     private val config: () -> MemoryConfig,
@@ -354,8 +356,8 @@ class Reminiscence(
         val today = LocalDate.ofInstant(Instant.ofEpochMilli(now), clock.zone)
         val present = online.associateBy { it.uuid }
         return safely("anniversary of $today") {
-            if (store.state(ANNIVERSARY_STATE) == today.toString()) return@safely null
-            store.setState(ANNIVERSARY_STATE, today.toString())
+            if (state.state(ANNIVERSARY_STATE) == today.toString()) return@safely null
+            state.setState(ANNIVERSARY_STATE, today.toString())
             val candidates = journal.read(READ_TIMEOUT_MS) { connection ->
                 connection.query(
                     "SELECT id, importance, players, epoch_ms(occurred_from) FROM memories " +

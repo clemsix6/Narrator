@@ -17,6 +17,7 @@ import io.github.clemsix6.narrator2.memory.RecallQuery
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.Source
+import io.github.clemsix6.narrator2.memory.update
 import io.github.clemsix6.narrator2.testing.MemorySamples.bartok
 import io.github.clemsix6.narrator2.testing.MemorySamples.mimosa
 import kotlinx.coroutines.runBlocking

@@ -121,13 +121,13 @@ class MemoryAuditTest {
         fun status(id: Long) = f.rows("SELECT status, error FROM memory_runs WHERE run_id = ?", id) { getString(1) to getString(2) }.single()
         val bartok = DreamInputs.reflectedKey(f.bartok.uuid)
         val mimosa = DreamInputs.reflectedKey(f.mimosa.uuid)
-        store.setState(mimosa, """{"at":1,"stats":{}}""") // an earlier dream's
+        f.state.setState(mimosa, """{"at":1,"stats":{}}""") // an earlier dream's
         run(80, RunKind.DREAM, 10, 40)
         f.clock.advance(Duration.ofMinutes(20))
         val dream = Author(Source.DREAMER, runId = 80)
         store.addMemory(MemoryDraft(MemoryKind.OBSERVATION, "Plongeur", "Bartok plonge souvent dans la lave.", listOf(f.bartok.uuid)), dream)
         store.writeDoc(DocKey.Review, "Les bulletins météo font rire Mimosa.", emptyList(), dream)
-        store.setState(bartok, """{"at":2,"stats":{}}""")
+        f.state.setState(bartok, """{"at":2,"stats":{}}""")
         run(81, RunKind.NAP, 50, 55)
         run(82, RunKind.BATCH, 56, 58)
         f.clock.advance(Duration.ofMinutes(40))
@@ -137,8 +137,8 @@ class MemoryAuditTest {
 
         assertEquals(2, store.revertRun(80, f.operator))
         assertEquals("failed" to "reverted by operator:Clement", status(80))
-        assertNull(store.state(bartok), "the dream's reflection is forgotten: Bartok is read again at the next dream")
-        assertEquals("""{"at":1,"stats":{}}""", store.state(mimosa), "an earlier reflection stays")
+        assertNull(f.state.state(bartok), "the dream's reflection is forgotten: Bartok is read again at the next dream")
+        assertEquals("""{"at":1,"stats":{}}""", f.state.state(mimosa), "an earlier reflection stays")
         val decision = f.journal.sink.decisions.last { it.kind == DecisionRecord.Kind.MEMORY && it.decision == "reverted" }
         assertContains(decision.reason.orEmpty(), "2 writes undone on 2 rows; dream run 80 marked failed; reflections forgotten: $bartok (by operator:Clement)")
 

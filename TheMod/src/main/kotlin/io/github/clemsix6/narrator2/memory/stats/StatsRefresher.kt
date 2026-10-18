@@ -3,6 +3,8 @@ package io.github.clemsix6.narrator2.memory.stats
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.JournalUnavailableException
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.uuid
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
@@ -78,10 +80,11 @@ class StatsRefresher(private val journal: Journal, private val clock: Clock) {
 
     /** The players online at some point since [since] (still online, or left after it): those a dream reflects on. */
     suspend fun activeSince(since: Instant): List<UUID> = journal.read(READ_TIMEOUT_MS) { connection: Connection ->
-        SheetStats.query(
-            connection,
-            "SELECT DISTINCT player_uuid FROM sessions WHERE left_at IS NULL OR left_at >= CAST('$since' AS TIMESTAMPTZ) ORDER BY player_uuid",
-        ) { rows -> buildList { while (rows.next()) add(rows.getObject(1) as UUID) } }
+        connection.query(
+            "SELECT DISTINCT player_uuid FROM sessions WHERE left_at IS NULL OR left_at >= ? ORDER BY player_uuid",
+            since,
+            timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
+        ) { uuid(1) }
     }
 
     /** Runs [block]; its result, or null when it failed (logged). The Journal's unavailability and cancellation go through. */

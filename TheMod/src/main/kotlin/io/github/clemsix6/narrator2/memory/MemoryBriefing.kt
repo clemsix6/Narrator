@@ -303,7 +303,7 @@ class MemoryBriefing(
     // ── <notes> ─────────────────────────────────────────────────────────────────────────────────────
 
     /**
-     * The open notes for the Director, until they have been shown in [NOTE_SHOWINGS] accepted briefings; the
+     * The open notes for the Director, until they have been shown in [Hygiene.NOTE_SHOWINGS] accepted briefings; the
      * dream hints of the players online, until one is shown. A note is marked only once a request that showed
      * it is accepted: a briefing built again shows the same notes.
      */
@@ -312,7 +312,7 @@ class MemoryBriefing(
         val notes = store.openNotes().filter { note ->
             when (note.kind) {
                 NoteKind.DREAM_HINT -> note.players.any { it.uuid in online } && note.status == NoteStatus.OPEN
-                else -> note.shownCount < NOTE_SHOWINGS
+                else -> note.shownCount < Hygiene.NOTE_SHOWINGS
             }
         }
         val style = style(now)
@@ -410,9 +410,6 @@ class MemoryBriefing(
 
         /** Memories of `<memories>` (M3 §10.6). */
         const val MEMORIES = 12
-
-        /** Times a note other than a dream hint is shown in a briefing (and at the wake-up of its kind), as many as `Hygiene` waits for. */
-        const val NOTE_SHOWINGS = Hygiene.COHERENCE_SHOWINGS
 
         internal const val MEMORIES_TAG = "memories"
 

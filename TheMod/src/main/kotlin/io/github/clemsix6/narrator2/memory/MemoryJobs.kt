@@ -96,6 +96,7 @@ class JobHooks(
 class MemoryJobs(
     private val services: NarratorServices,
     private val store: MemoryStore,
+    private val state: MemoryState,
     private val data: JobsData,
     private val chronicler: ChronicleRunner,
     private val dreamer: DreamRunner,
@@ -292,13 +293,13 @@ class MemoryJobs(
      */
     private fun directorListens(cue: Boolean = false): Boolean {
         if (stopping || services.phase != Phase.RUNNING) return false
-        val state = services.director.status().state
-        return state !in (if (cue) MUTED else setOf(DirectorState.DISABLED, DirectorState.STOPPED))
+        val director = services.director.status().state
+        return director !in (if (cue) MUTED else setOf(DirectorState.DISABLED, DirectorState.STOPPED))
     }
 
     private fun remember(key: String, value: String) {
         services.scope.launch(CoroutineName(COROUTINE)) {
-            runCatching { store.setState(key, value) }.onFailure { log.warn("could not save $key: ${it.message}") }
+            runCatching { state.setState(key, value) }.onFailure { log.warn("could not save $key: ${it.message}") }
         }
     }
 
@@ -315,7 +316,7 @@ class MemoryJobs(
         attempt("recover") {
             val interrupted = data.interruptRunning(now)
             if (interrupted > 0) log.info("$interrupted memory run(s) found running after a crash: marked interrupted")
-            if (store.state(PAUSED_KEY) == "true" && !paused) {
+            if (state.state(PAUSED_KEY) == "true" && !paused) {
                 paused = true
                 log.info("the memory jobs stay paused (/narrator memory resume)")
             }
@@ -328,7 +329,7 @@ class MemoryJobs(
      * ([SINCE_KEY], set then), less `memory.catchUpDays`.
      */
     private suspend fun catchUpSince(now: Instant): Instant {
-        val since = memorySince ?: (store.state(SINCE_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: firstStart(now)).also { memorySince = it }
+        val since = memorySince ?: (state.state(SINCE_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: firstStart(now)).also { memorySince = it }
         return since - Duration.ofDays(config.catchUpDays.toLong())
     }
 
@@ -337,7 +338,7 @@ class MemoryJobs(
         val days = config.catchUpDays
         val since = now - Duration.ofDays(days.toLong())
         val never = data.chaptersNeverNapped(since)
-        store.setState(SINCE_KEY, now.toEpochMilli().toString())
+        state.setState(SINCE_KEY, now.toEpochMilli().toString())
         log.info(
             "the memory starts on this world: the chapters closed since ${DAY_TIME.format(since.atZone(clock.zone))} get their nap " +
                 "(memory.catchUpDays = $days)${if (never > 0) "; the $never older one(s) never will" else ""}",
@@ -436,13 +437,13 @@ class MemoryJobs(
                 windowTo = job.record.endedAt
             }
             is QueuedJob.Dream -> {
-                val pending = store.state(DREAM_PENDING_KEY)?.toLongOrNull()
-                val done = pending?.let { store.state(stepKey(it))?.toIntOrNull() } ?: 0
+                val pending = state.state(DREAM_PENDING_KEY)?.toLongOrNull()
+                val done = pending?.let { state.state(stepKey(it))?.toIntOrNull() } ?: 0
                 job.fromStep = done + 1
-                store.setState(DREAM_PENDING_KEY, job.runId.toString())
-                store.setState(stepKey(job.runId), done.toString())
+                state.setState(DREAM_PENDING_KEY, job.runId.toString())
+                state.setState(stepKey(job.runId), done.toString())
                 if (pending != null) {
-                    data.deleteState(stepKey(pending)) // its step is this run's now
+                    state.deleteState(stepKey(pending)) // its step is this run's now
                     log.info("dream run ${job.runId} resumes dream run $pending at step ${job.fromStep}")
                 }
             }
@@ -461,7 +462,7 @@ class MemoryJobs(
 
     /** §8.2: before a new dream, the stats of every player online since the last dream ended. */
     private suspend fun refreshBeforeDream() {
-        val since = store.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: Instant.EPOCH
+        val since = state.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: Instant.EPOCH
         hooks.refreshStats(hooks.activeSince(since), "dream")
     }
 
@@ -528,11 +529,11 @@ class MemoryJobs(
     private suspend fun endDream(runId: Long, lastStep: Int?, forGood: Boolean) {
         attempt("end dream run $runId") {
             if (forGood) {
-                store.setState(DREAM_PENDING_KEY, "")
-                store.setState(DREAM_END_KEY, clock.millis().toString())
-                data.deleteState(stepKey(runId))
+                state.setState(DREAM_PENDING_KEY, "")
+                state.setState(DREAM_END_KEY, clock.millis().toString())
+                state.deleteState(stepKey(runId))
             } else if (lastStep != null) {
-                store.setState(stepKey(runId), lastStep.toString())
+                state.setState(stepKey(runId), lastStep.toString())
             }
         }
     }
@@ -626,7 +627,7 @@ class MemoryJobs(
 
     private suspend fun refresh(now: Long, settings: MemoryConfig) {
         val at = Instant.ofEpochMilli(now)
-        val lastEnd = store.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
+        val lastEnd = state.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
         val firstNap = data.firstNapDone(lastEnd)
         val nextDream = firstNap?.let {
             val daily = (lastEnd ?: it) + Duration.ofHours(settings.dreamMaxHours.toLong())
@@ -747,7 +748,7 @@ class MemoryJobs(
      */
     private suspend fun dream(now: Long, settings: MemoryConfig) {
         if (synchronized(lock) { jobFor(RunKind.DREAM, null) } != null) return
-        val lastEnd = store.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
+        val lastEnd = state.state(DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
         val firstNap = data.firstNapDone(lastEnd) ?: return
         val at = Instant.ofEpochMilli(now)
         val rested = lastEnd == null || !at.isBefore(lastEnd + Duration.ofHours(settings.dreamMinHours.toLong()))

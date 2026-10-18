@@ -468,7 +468,7 @@ class ReminiscenceTest {
             assertEquals(bartok, cue.player)
             assertEquals("M-40, one year ago today (★9): « Bartok a vaincu l'Ender Dragon seul. »", cue.line)
             assertNull(f.reminiscence().anniversary(f.now + 3_600_000, listOf(bartok, mimosa)), "one per day, kept in memory_state")
-            assertEquals("2026-10-18", f.store.state(Reminiscence.ANNIVERSARY_STATE))
+            assertEquals("2026-10-18", f.state.state(Reminiscence.ANNIVERSARY_STATE))
 
             f.clock.advance(Duration.ofDays(1))
             val next = f.reminiscence().anniversary(f.clock.millis(), listOf(mimosa)) ?: error("no anniversary the next day")
@@ -489,6 +489,7 @@ class ReminiscenceTest {
         val playClock = FakeMemory.FakePlayClock().apply { world = WORLD }
         val index = SearchIndex()
         val store = DuckMemoryStore(journal, index, playClock, clock)
+        val state = DuckMemoryState(journal, clock)
         val recall = HybridRecall(journal, index, playClock, clock)
         var config = MemoryConfig()
         val now: Long get() = clock.millis()
@@ -499,7 +500,7 @@ class ReminiscenceTest {
             }
         }
 
-        fun reminiscence(store: MemoryStore = this.store) = Reminiscence(recall, store, journal, playClock, { config }, clock)
+        fun reminiscence(store: MemoryStore = this.store) = Reminiscence(recall, store, state, journal, playClock, { config }, clock)
 
         /** One wake-up of a new chapter and a new reminiscence, its request accepted: only the database remembers. */
         suspend fun wake(event: GameEvent): List<Reminiscence.Recalled> {
