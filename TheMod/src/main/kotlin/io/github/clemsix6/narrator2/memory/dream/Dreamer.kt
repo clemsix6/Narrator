@@ -11,6 +11,7 @@ import io.github.clemsix6.narrator2.memory.DreamRunner
 import io.github.clemsix6.narrator2.memory.Hygiene
 import io.github.clemsix6.narrator2.memory.MemoryAgents
 import io.github.clemsix6.narrator2.memory.MemoryJobs
+import io.github.clemsix6.narrator2.memory.MemoryState
 import io.github.clemsix6.narrator2.memory.RunContext
 import io.github.clemsix6.narrator2.memory.RunKind
 import io.github.clemsix6.narrator2.memory.RunOutcome
@@ -66,6 +67,7 @@ class Dreamer(
     private val services: NarratorServices,
     private val agents: MemoryAgents,
     private val hygiene: Hygiene,
+    private val state: MemoryState,
 ) : DreamRunner {
     private val log = Log.memory
     private val clock = services.clock
@@ -75,7 +77,7 @@ class Dreamer(
 
     override suspend fun dream(runId: Long, fromStep: Int): RunOutcome {
         val dream = Dream(runId, fromStep)
-        val lastEnd = store.state(MemoryJobs.DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
+        val lastEnd = state.state(MemoryJobs.DREAM_END_KEY)?.toLongOrNull()?.let(Instant::ofEpochMilli)
         log.info("dream run $runId: from step $fromStep" + (lastEnd?.let { ", last dream ended $it" } ?: ", first dream"))
         if (fromStep == 1) beforeDream(runId, lastEnd)
         for (step in fromStep..DreamInputs.STEPS) {
@@ -89,7 +91,7 @@ class Dreamer(
             dream.results[step] = result
             log.info("dream run $runId: step $step ${result.status.id}${result.note?.let { ": $it" } ?: ""}")
             if (result.status == Status.BUDGET) return dream.outcome(lastStep = step - 1, lastEnd)
-            store.setState(MemoryJobs.stepKey(runId), step.toString())
+            state.setState(MemoryJobs.stepKey(runId), step.toString())
             if (step == GRIMOIRE_STEP) audit(runId)
         }
         services.journal.checkpointAsync()
@@ -121,7 +123,7 @@ class Dreamer(
             when {
                 run.budget != null -> return StepResult(Status.BUDGET, "budget spent at ${candidate.player.name}")
                 run.status == RunStatus.DONE -> {
-                    store.setState(DreamInputs.reflectedKey(candidate.player.uuid), input.reflection.encode())
+                    state.setState(DreamInputs.reflectedKey(candidate.player.uuid), input.reflection.encode())
                     done += candidate.player.name
                 }
                 else -> failed += "${candidate.player.name} (${run.error?.let { ModelText.cut(it, ERROR_MAX_CHARS) }})"

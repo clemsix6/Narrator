@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.DuckDatabase
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.testing.FakeMemory
+import io.github.clemsix6.narrator2.testing.FakeMemoryState
 import io.github.clemsix6.narrator2.testing.FakeMemoryStore
 import io.github.clemsix6.narrator2.testing.MemorySamples
 import io.github.clemsix6.narrator2.testing.TestClock
@@ -52,7 +53,7 @@ internal class BriefingFixture(journal: Journal? = null) : AutoCloseable {
     val briefing = MemoryBriefing(store, recall, sheets, this.journal, { online }, UTC)
     val joins = JoinBrief(store, sheets, this.journal, UTC)
     val playClock = FakeMemory.FakePlayClock()
-    val reminiscence = Reminiscence(recall, store, this.journal, playClock, { MemoryConfig() }, clock)
+    val reminiscence = Reminiscence(recall, store, FakeMemoryState(), this.journal, playClock, { MemoryConfig() }, clock)
     val attachments = WakeAttachments(joins, reminiscence)
     val now: Long get() = clock.millis()
     private var nextEvent = 50_000L
@@ -78,7 +79,7 @@ internal class BriefingFixture(journal: Journal? = null) : AutoCloseable {
     ) = ChronicleEntry(Ref(RefKind.CHRONICLE, id), level, from, to, title, summary, emptyList(), null, open, null, Source.DREAMER).also(::put)
 
     fun note(id: Long, kind: NoteKind, text: String, players: List<PlayerRef> = emptyList(), shown: Int = 0, at: Instant = NOW.minus(Duration.ofHours(2))) =
-        Note(Ref(RefKind.NOTE, id), at, kind, text, players, emptyList(), if (shown > 0) NoteStatus.SHOWN else NoteStatus.OPEN, shown, null).also(::put)
+        Note(Ref(RefKind.NOTE, id), at, kind, text, players, emptyList(), if (shown > 0) NoteStatus.SHOWN else NoteStatus.OPEN, shown).also(::put)
 
     fun hit(id: Long, line: String) = RecallHit(Ref(RefKind.MEMORY, id), 0.8, 0.7, 1.0, line)
 

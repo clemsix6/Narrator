@@ -110,6 +110,7 @@ internal class StoreFixture : AutoCloseable {
     val playClock = FakeMemory.FakePlayClock()
     val indexer = FakeIndexer()
     val store = DuckMemoryStore(journal, indexer, playClock, clock)
+    val state = DuckMemoryState(journal, clock)
 
     val bartok = MemorySamples.bartok
     val mimosa = MemorySamples.mimosa

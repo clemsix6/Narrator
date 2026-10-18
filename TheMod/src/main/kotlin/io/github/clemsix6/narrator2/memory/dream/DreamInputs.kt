@@ -39,6 +39,7 @@ import io.github.clemsix6.narrator2.memory.stats.Reactions
 import io.github.clemsix6.narrator2.memory.stats.SheetStats
 import io.github.clemsix6.narrator2.memory.stats.Signals
 import io.github.clemsix6.narrator2.memory.stats.Tics
+import io.github.clemsix6.narrator2.memory.uuid
 import io.github.clemsix6.narrator2.memory.uuids
 import io.github.clemsix6.narrator2.reflex.HeuristicWords
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -121,7 +122,7 @@ internal class DreamInputs(private val services: NarratorServices) {
      * nothing the player did. Counted, they made the player a candidate at every dream, without playing.
      */
     suspend fun candidates(now: Instant, max: Int): List<Candidate> = journal.read(READ_TIMEOUT_MS) { connection ->
-        val players = connection.query("SELECT player_uuid, name FROM players") { PlayerRef(uuidAt(1), getString(2)) }
+        val players = connection.query("SELECT player_uuid, name FROM players") { PlayerRef(uuid(1), getString(2)) }
         val last = connection.query("SELECT key, value FROM memory_state WHERE starts_with(key, ?)", REFLECTED_PREFIX) {
             getString(1).removePrefix(REFLECTED_PREFIX) to Reflection.decode(getString(2))
         }.mapNotNull { (key, reflection) -> runCatching { UUID.fromString(key) }.getOrNull()?.let { it to reflection } }.toMap()
@@ -136,7 +137,7 @@ internal class DreamInputs(private val services: NarratorServices) {
             "SELECT i.player_uuid, l.ts FROM memory_log l JOIN interactions i ON i.id = TRY_CAST(l.row_key AS BIGINT) " +
                 "WHERE l.table_name = 'interactions' AND l.op = 'insert' AND l.ts > ? AND NOT i.archived",
             oldest,
-        ) { uuidAt(1) to instant(2) }
+        ) { uuid(1) to instant(2) }
         players.map { player ->
             val since = Instant.ofEpochMilli(last[player.uuid]?.at ?: 0L)
             Candidate(
@@ -433,7 +434,7 @@ internal class DreamInputs(private val services: NarratorServices) {
         val store = memory.store
         val sheets = memory.sheets
         val players = journal.read(READ_TIMEOUT_MS) { connection ->
-            connection.query("SELECT player_uuid FROM players ORDER BY last_seen DESC, name LIMIT ?", PLAYERS_COUNT) { uuidAt(1) }
+            connection.query("SELECT player_uuid FROM players ORDER BY last_seen DESC, name LIMIT ?", PLAYERS_COUNT) { uuid(1) }
         }
         val lines = players.mapNotNull { player -> sheets.sheet(player, nowMs)?.let { "- " + sheets.render(it, SheetDetail.LINE, nowMs) } }
         val session = store.chronicle(ChronicleLevel.SESSION, 1).firstOrNull()
@@ -557,7 +558,7 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     /** A row of `sessions` read as `player_uuid, session_id, joined_at, left_at`; running when its player is still in it. */
     private fun ResultSet.played(): Played {
-        val player = uuidAt(1)
+        val player = uuid(1)
         val id = getLong(2)
         val left = instantOrNull(4)
         return Played(player, instant(3), left, left == null && services.players.get(player)?.sessionId == id)
@@ -671,8 +672,6 @@ internal class DreamInputs(private val services: NarratorServices) {
         private val DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd", Locale.ROOT)
         private val DAY_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.ROOT)
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
-
-        private fun ResultSet.uuidAt(column: Int): UUID = getObject(column).let { it as? UUID ?: UUID.fromString(it.toString()) }
 
         private fun JsonObject.number(key: String): Double? = (this[key] as? JsonPrimitive)?.let { it.doubleOrNull ?: it.longOrNull?.toDouble() }
 

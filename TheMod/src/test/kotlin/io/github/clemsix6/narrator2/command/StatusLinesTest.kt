@@ -91,7 +91,7 @@ class StatusLinesTest {
             override fun status() = FakeDirector(clock).status().copy(turnsThisHour = 31, turnsPerHour = 30)
         }
         assertEquals(
-            "Director: idle · turns this hour 31 of 30 (none left: only addressed chat, prayers and whispers wake it) · inbox 0 · reminders none",
+            "Director: idle · turns this hour 31 of 30 (none left: only addressed chat, prayers, whispers and due commitments wake it) · inbox 0 · reminders none",
             lines(TestServices(clock = clock, director = director))[4],
         )
     }

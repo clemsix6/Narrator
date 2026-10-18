@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.memory
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.testing.FakeMemoryState
 import io.github.clemsix6.narrator2.testing.FakeMemoryStore
 import io.github.clemsix6.narrator2.testing.MemoryTraceSink
 import io.github.clemsix6.narrator2.trace.Decisions
@@ -32,7 +33,8 @@ class HygieneTest {
     }
     private val store = AuditedStore(fake)
     private val players = PlayerStates()
-    private val playClock = DuckPlayClock(store, fixture.journal, players)
+    private val state = FakeMemoryState()
+    private val playClock = DuckPlayClock(state, fixture.journal, players)
     private val indexer = WordIndexer()
     private val trace = MemoryTraceSink()
     private val hygiene = Hygiene(store, fixture.journal, playClock, indexer, Decisions(trace, time), ZoneOffset.UTC)
@@ -226,8 +228,8 @@ class HygieneTest {
 
     @Test
     fun `trivial memories at the floor for over 50 hours of play are archived`() = runBlocking {
-        fake.state[DuckPlayClock.WORLD_KEY] = (100 * 3_600).toString()
-        fake.state[DuckPlayClock.SAVED_AT_KEY] = start.toEpochMilli().toString()
+        state.values[DuckPlayClock.WORLD_KEY] = (100 * 3_600).toString()
+        state.values[DuckPlayClock.SAVED_AT_KEY] = start.toEpochMilli().toString()
         playClock.load(start.toEpochMilli())
         val faded = memory(1, "Une poule", "Bartok a croisé une poule.", importance = 1, stability = 4.0)
         val recent = memory(2, "Un cochon", "Bartok a croisé un cochon.", importance = 2, stability = 4.0, reinforcedHours = 28.0)

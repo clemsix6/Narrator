@@ -119,16 +119,14 @@ class DuckMemoryStore(
             return Facts(first, last, place)
         }
 
-        /** The names of the players of the world, masked by [voice]. */
-        private val playerNames: List<String> by lazy { connection.query("SELECT name FROM players") { getString(1) }.filterNotNull() }
-
         /**
-         * [VoiceGuard]: [text] is factual and in the third person, within [max]; the players' names are
-         * masked (a player may be called `Moi`). The passages between quotes are bounded for the texts of
-         * the models, not for those of the code (which quotes statements already checked) nor of operators.
+         * [VoiceGuard]: [text] is factual and in the third person, within [max]; the names of the world's
+         * players are masked (a player may be called `Moi`). The passages between quotes are bounded for the
+         * texts of the models, not for those of the code (which quotes statements already checked) nor of
+         * operators.
          */
         fun voice(text: String, field: String, max: Int) {
-            VoiceGuard.check(text, field, max, playerNames, boundQuotes = author.source in MODELS)?.let(::reject)
+            VoiceGuard.check(text, field, max, names.all, boundQuotes = author.source in MODELS)?.let(::reject)
         }
 
         /** What the Dreamer, which reads the players' chat and never hears the Narrator, may remember: observations. */
@@ -602,9 +600,9 @@ class DuckMemoryStore(
             val refs = job.refs(draft.refs, "refs", RefKind.entries.toSet(), MAX_NOTE_REFS)
             val ref = job.next(RefKind.NOTE)
             job.connection.update(
-                "INSERT INTO notes (id, created_at, kind, text, players, refs, status, expires_at, source, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO notes (id, created_at, kind, text, players, refs, status, source, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ref.id, job.now, draft.kind.id, draft.text, uuidArray(players), longArray(refs.map { it.id }), NoteStatus.OPEN.id,
-                draft.expiresAt, author.source.id, author.runId,
+                author.source.id, author.runId,
             )
             job.logRow(ref, LogOp.INSERT, null)
             job.row<Note>(ref, RefKind.NOTE, "a note")
@@ -775,16 +773,6 @@ class DuckMemoryStore(
         return result.writes
     }
 
-    override suspend fun state(key: String): String? = read { connection ->
-        connection.query("SELECT value FROM memory_state WHERE key = ?", key) { getString(1) }.singleOrNull()
-    }
-
-    override suspend fun setState(key: String, value: String) {
-        journal.write(WRITE_TIMEOUT_MS) { connection ->
-            connection.update("INSERT OR REPLACE INTO memory_state VALUES (?, ?, ?)", key, value, clock.instant())
-        }
-    }
-
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 
     override suspend fun row(ref: Ref): MemoryRow? = read { it.readRow(ref) }
@@ -836,10 +824,7 @@ class DuckMemoryStore(
     }
 
     override suspend fun openNotes(): List<Note> = read { connection ->
-        connection.notes(
-            "SELECT $NOTE_COLUMNS FROM notes WHERE status <> 'done' AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at, id",
-            clock.instant(),
-        )
+        connection.notes("SELECT $NOTE_COLUMNS FROM notes WHERE status <> 'done' ORDER BY created_at, id")
     }
 
     override suspend fun log(ref: Ref): List<MemoryLogRow> = read { MemoryLog.of(it, ref) }

@@ -12,6 +12,9 @@ import io.github.clemsix6.narrator2.memory.RecallHit
 import io.github.clemsix6.narrator2.memory.RecallQuery
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.SqlArray
+import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.update
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.TestClock
 import org.duckdb.DuckDBConnection
@@ -142,9 +145,9 @@ internal class SearchFixture(
         return ref
     }
 
-    fun count(sql: String): Long = connection.rows(sql) { getLong(1) }.single()
+    fun count(sql: String): Long = connection.query(sql) { getLong(1) }.single()
 
-    private fun strings(values: List<String>) = connection.array("VARCHAR", values)
+    private fun strings(values: List<String>) = SqlArray("VARCHAR", values)
 
     private fun seconds(at: Instant): Double = at.toEpochMilli() / 1_000.0
 

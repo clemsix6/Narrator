@@ -90,13 +90,6 @@ class DuckJobsDataTest {
     }
 
     @Test
-    fun `a memory_state key done with is deleted`() = runBlocking<Unit> {
-        fixture.sql("INSERT INTO memory_state VALUES ('dream:7:step', '3', ?), ('dream:pending', '7', ?)", start, start)
-        data.deleteState("dream:7:step")
-        assertEquals(listOf("dream:pending"), fixture.rows("SELECT key FROM memory_state ORDER BY key") { getString(1) })
-    }
-
-    @Test
     fun `the first nap done after a time`() = runBlocking<Unit> {
         data.insertRun(run(1, RunKind.NAP, RunStatus.DONE, at(0)))
         data.insertRun(run(2, RunKind.NAP, RunStatus.FAILED, at(10)))

@@ -200,7 +200,7 @@ class MemoryScenariosTest {
                 null
             }
         }
-        h.memory.store.rows[Ref(RefKind.NOTE, 9)] = Note(Ref(RefKind.NOTE, 9), h.clock.instant(), NoteKind.COHERENCE, "…", emptyList(), emptyList(), NoteStatus.OPEN, 0, null)
+        h.memory.store.rows[Ref(RefKind.NOTE, 9)] = Note(Ref(RefKind.NOTE, 9), h.clock.instant(), NoteKind.COHERENCE, "…", emptyList(), emptyList(), NoteStatus.OPEN, 0)
         h.fake.enqueue(httpError(529))
         h.fake.enqueue(reply { text("…") })
 

@@ -335,7 +335,7 @@ object MemoryCommands {
         val text = text(services)
         val status = services.memory.jobs.status()
         val counts = try {
-            services.journal.read(READ_TIMEOUT_MS) { connection -> connection.query(COUNTS_SQL, Instant.ofEpochMilli(text.now)) { Counts.of(this) }.single() }
+            services.journal.read(READ_TIMEOUT_MS) { connection -> connection.query(COUNTS_SQL) { Counts.of(this) }.single() }
         } catch (e: Exception) {
             log.warn("memory status: the rows could not be counted: ${describeFailure(e)}")
             null
@@ -556,7 +556,7 @@ object MemoryCommands {
         }
         is Note -> "${row.ref} · note ${row.kind.id} · ${row.status.id}" to buildList {
             add(Out("Text: ${row.text}"))
-            add(Out("Created ${text.time(row.createdAt)} · shown ${row.shownCount} ${TraceText.plural(row.shownCount, "time")}${row.expiresAt?.let { " · expires ${text.time(it)}" }.orEmpty()}"))
+            add(Out("Created ${text.time(row.createdAt)} · shown ${row.shownCount} ${TraceText.plural(row.shownCount, "time")}"))
             if (row.players.isNotEmpty() || row.refs.isNotEmpty()) {
                 add(Out("About: ${listOfNotNull(row.players.takeIf { it.isNotEmpty() }?.let(::names), row.refs.takeIf { it.isNotEmpty() }?.joinToString()).joinToString(" · ")}"))
             }
@@ -861,12 +861,12 @@ object MemoryCommands {
         "OR player_uuid IN (SELECT player_uuid FROM player_names WHERE lower(name) = lower(?)) " +
         "ORDER BY lower(name) = lower(?) DESC, last_seen DESC LIMIT 1"
 
-    /** What `/narrator memory status` counts, in [Counts] order; the parameter is now (open notes not expired). */
+    /** What `/narrator memory status` counts, in [Counts] order. */
     private const val COUNTS_SQL = "SELECT " +
         "(SELECT count(*) FROM memories WHERE NOT archived), (SELECT count(*) FROM memories WHERE archived), " +
         "(SELECT count(*) FROM canon WHERE NOT archived AND status IN ('planned', 'active')), (SELECT count(*) FROM canon WHERE NOT archived), " +
         "(SELECT count(*) FROM interactions WHERE NOT archived), (SELECT count(*) FROM chronicle WHERE superseded_by IS NULL), " +
-        "(SELECT count(*) FROM notes WHERE status <> 'done' AND (expires_at IS NULL OR expires_at > ?)), " +
+        "(SELECT count(*) FROM notes WHERE status <> 'done'), " +
         "(SELECT count(*) FROM player_traits WHERE NOT retired), (SELECT count(*) FROM player_skills), (SELECT count(*) FROM player_relations), " +
         "(SELECT count(DISTINCT key) FROM memory_docs), (SELECT count(*) FROM memory_docs), " +
         "(SELECT count(*) FROM search_docs), (SELECT count(*) FROM search_postings), (SELECT count(DISTINCT term) FROM search_postings), " +

@@ -9,7 +9,7 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.sql.Connection
-import java.sql.Statement
+import java.sql.PreparedStatement
 import java.time.Instant
 import kotlin.test.assertEquals
 
@@ -101,11 +101,11 @@ class TicsTest {
         }
     }
 
-    /** [connection], whose statements add the time limit they are given to [timeouts]. */
+    /** [connection], whose prepared statements add the time limit they are given to [timeouts]. */
     private fun recordingTimeouts(connection: Connection, timeouts: MutableList<Int>): Connection = proxy(connection) { method, args ->
         val result = method.invoke(connection, *args)
-        if (result !is Statement) return@proxy result
-        proxy<Statement>(result) { call, callArgs ->
+        if (result !is PreparedStatement) return@proxy result
+        proxy<PreparedStatement>(result) { call, callArgs ->
             if (call.name == "setQueryTimeout") timeouts += callArgs.single() as Int
             call.invoke(result, *callArgs)
         }

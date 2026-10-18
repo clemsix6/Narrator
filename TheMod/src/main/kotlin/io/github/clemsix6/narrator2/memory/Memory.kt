@@ -280,12 +280,6 @@ class DisabledMemory(private val reason: String) : Memory {
 
         override suspend fun revertRun(runId: Long, author: Author): Int = refuse()
 
-        override suspend fun state(key: String): String? = null
-
-        override suspend fun setState(key: String, value: String) {
-            refuse()
-        }
-
         override suspend fun row(ref: Ref): MemoryRow? = null
 
         override suspend fun memory(ref: Ref): MemoryEntry? = null

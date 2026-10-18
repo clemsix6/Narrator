@@ -22,6 +22,7 @@ import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.ChronicleDraft
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
+import io.github.clemsix6.narrator2.memory.DuckMemoryState
 import io.github.clemsix6.narrator2.memory.DuckMemoryStore
 import io.github.clemsix6.narrator2.memory.DuckPlayClock
 import io.github.clemsix6.narrator2.memory.DuckPlayerSheets
@@ -88,6 +89,7 @@ internal class DreamerFixture : AutoCloseable {
     private val index = SearchIndex()
     val playClock = FakeMemory.FakePlayClock()
     val store = DuckMemoryStore(journal.journal, index, playClock, clock)
+    val state = DuckMemoryState(journal.journal, clock)
     val players = PlayerStates()
     val sheets: PlayerSheets = DuckPlayerSheets(journal.journal, playClock, players, ZoneId.of("UTC"))
     private val stub = FakeMemory(clock)
@@ -114,10 +116,10 @@ internal class DreamerFixture : AutoCloseable {
         memory = memory,
     )
     val hygiene = Hygiene(
-        store, journal.journal, DuckPlayClock(store, journal.journal, players), index, Decisions(journal.journal, clock), ZoneId.of("UTC"),
+        store, journal.journal, DuckPlayClock(state, journal.journal, players), index, Decisions(journal.journal, clock), ZoneId.of("UTC"),
     )
     val agents = MemoryAgents(services)
-    val dreamer = Dreamer(services, agents, hygiene)
+    val dreamer = Dreamer(services, agents, hygiene, state)
     val inputs = DreamInputs(services)
 
     val bartok = PlayerRef(UUID.fromString("00000000-0000-4000-8000-0000000000b1"), "Bartok")

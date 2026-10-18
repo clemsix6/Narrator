@@ -45,11 +45,11 @@ class DreamerTest {
         assertTrue(" · step 4 failed: the conversation ended without writing the Grimoire · step 5 failed: " in report, report)
         assertTrue(report.endsWith(" · no Grimoire written: the dream failed"), report)
         assertTrue(report.length <= 500, report)
-        assertEquals("5", f.write { state(MemoryJobs.stepKey(30)) })
+        assertEquals("5", f.state.state(MemoryJobs.stepKey(30)))
 
         // Bartok is reflected on, Mimosa is not: the next dream reads only her.
-        assertNotNull(DreamInputs.Reflection.decode(f.write { state(DreamInputs.reflectedKey(f.bartok.uuid)) }))
-        assertNull(f.write { state(DreamInputs.reflectedKey(f.mimosa.uuid)) })
+        assertNotNull(DreamInputs.Reflection.decode(f.state.state(DreamInputs.reflectedKey(f.bartok.uuid))))
+        assertNull(f.state.state(DreamInputs.reflectedKey(f.mimosa.uuid)))
         assertEquals(listOf("Mimosa"), f.inputs.candidates(at("22:20"), 8).map { it.player.name })
 
         // The voice audit ran after step 4, over nothing written.

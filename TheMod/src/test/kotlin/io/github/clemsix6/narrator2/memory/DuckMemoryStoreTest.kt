@@ -575,9 +575,9 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `notes are shown, done, and expire`() = runBlocking<Unit> {
+    fun `notes are shown, then done`() = runBlocking<Unit> {
         val note = store.addNote(MemorySamples.noteDraft.copy(refs = emptyList()), MemorySamples.chronicler)
-        val hint = store.addNote(NoteDraft(NoteKind.DREAM_HINT, "Bartok est mort trois fois de chute cette semaine.", listOf(f.bartok.uuid), expiresAt = evening.plusSeconds(60)), f.dreamer)
+        val hint = store.addNote(NoteDraft(NoteKind.DREAM_HINT, "Bartok est mort trois fois de chute cette semaine.", listOf(f.bartok.uuid)), f.dreamer)
         rejected("text is longer than 200 characters") { store.addNote(NoteDraft(NoteKind.DREAM_HINT, "a".repeat(201)), f.dreamer) }
         rejected("refs: C-404 does not exist") { store.addNote(MemorySamples.noteDraft.copy(refs = listOf(Ref(RefKind.CANON, 404))), f.dreamer) }
         assertEquals(listOf(note.ref, hint.ref), store.openNotes().map { it.ref })
@@ -585,8 +585,8 @@ class DuckMemoryStoreTest {
         assertEquals(NoteStatus.SHOWN, shown.status)
         assertEquals(1, shown.shownCount)
         assertEquals(2, store.markNote(note.ref, NoteStatus.SHOWN, f.director).shownCount)
-        f.clock.advance(Duration.ofMinutes(2))
-        assertEquals(listOf(note.ref), store.openNotes().map { it.ref }, "the hint expired")
+        store.markNote(hint.ref, NoteStatus.DONE, f.director)
+        assertEquals(listOf(note.ref), store.openNotes().map { it.ref }, "the hint is done")
         store.markNote(note.ref, NoteStatus.DONE, f.director)
         assertEquals(emptyList(), store.openNotes())
         rejected("never open again") { store.markNote(note.ref, NoteStatus.OPEN, f.director) }
@@ -645,14 +645,6 @@ class DuckMemoryStoreTest {
         assertEquals(2, store.memory(memory.ref)!!.recalls, "shown to the Dreamer: not reinforced")
         assertEquals(4L, f.count("recalls"))
         assertEquals(0L, f.count("memory_log", "op = 'update'"), "recalls are not audited row by row")
-    }
-
-    @Test
-    fun `the memory state is a small key value store`() = runBlocking<Unit> {
-        assertNull(store.state("world_play_s"))
-        store.setState("world_play_s", "120")
-        store.setState("world_play_s", "180")
-        assertEquals("180", store.state("world_play_s"))
     }
 
     @Test

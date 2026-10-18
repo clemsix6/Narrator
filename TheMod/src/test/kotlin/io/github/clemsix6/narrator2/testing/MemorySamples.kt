@@ -192,7 +192,6 @@ object MemorySamples {
         refs = listOf(Ref(RefKind.CANON, 25)),
         status = NoteStatus.OPEN,
         shownCount = 0,
-        expiresAt = null,
     )
 
     val log = MemoryLogRow(

@@ -134,9 +134,9 @@ data class Author(
     val actor: String get() = if (source == Source.OPERATOR && operator != null) "operator:$operator" else source.id
 }
 
-/** What kind of memory: a moment (`episode`), a fact a player revealed (`observation`), or a conclusion (`reflection`). */
+/** What kind of memory: a moment (`episode`), or a fact a player revealed (`observation`). */
 enum class MemoryKind {
-    EPISODE, OBSERVATION, REFLECTION;
+    EPISODE, OBSERVATION;
 
     val id: String get() = name.lowercase()
 }
@@ -368,7 +368,7 @@ enum class GagState {
 
 /** What a memory job does (`memory_runs.kind`). */
 enum class RunKind {
-    BATCH, NAP, DREAM, STATS, HYGIENE;
+    BATCH, NAP, DREAM, HYGIENE;
 
     val id: String get() = name.lowercase()
 }
@@ -598,7 +598,6 @@ data class Note(
     val refs: List<Ref>,
     val status: NoteStatus,
     val shownCount: Int,
-    val expiresAt: Instant?,
 ) : MemoryRow
 
 /**
@@ -720,5 +719,4 @@ data class NoteDraft(
     val text: String,
     val players: List<UUID> = emptyList(),
     val refs: List<Ref> = emptyList(),
-    val expiresAt: Instant? = null,
 )
