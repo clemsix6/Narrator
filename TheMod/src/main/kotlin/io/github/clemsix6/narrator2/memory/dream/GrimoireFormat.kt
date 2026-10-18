@@ -1,0 +1,49 @@
+package io.github.clemsix6.narrator2.memory.dream
+
+import io.github.clemsix6.narrator2.memory.MemoryLimits
+import io.github.clemsix6.narrator2.memory.VoiceGuard
+
+/**
+ * The form of the Grimoire (M3 §8.4), checked before it is written: the store checks its budget and its
+ * voice like any document, not its sections. The Grimoire is the Narrator's compact core memory, always in
+ * its briefing, rewritten whole by every dream within the same budget:
+ *
+ * - the seven sections of [SECTIONS], each as a `## ` heading in English, in this order, nothing before the
+ *   first one and no other heading (a line starting with `#`);
+ * - at least one non-blank line under each heading (`- aucun` when there is nothing to say);
+ * - [MemoryLimits.GRIMOIRE] characters at most, no `<` nor `>`, factual and in the third person
+ *   ([VoiceGuard]).
+ *
+ * [problems] lists every problem at once, for the model to fix them all in one go.
+ */
+object GrimoireFormat {
+    /** The sections of the Grimoire, in order: their headings are `## Players`, `## Running gags`… */
+    val SECTIONS: List<String> = listOf("Players", "Running gags", "Arcs", "What works", "What falls flat", "Plans", "Watch out")
+
+    /** Every problem of [text] as a Grimoire, in English, each with its fix; empty when it can be written. */
+    fun problems(text: String): List<String> = buildList {
+        VoiceGuard.check(text, "text", MemoryLimits.GRIMOIRE)?.let(::add)
+        val lines = text.lines()
+        val headings = lines.withIndex().filter { it.value.trimStart().startsWith("#") }
+        val names = headings.map { it.value.trim().removePrefix("##").trim() }
+        val unknown = headings.filter { heading -> heading.value.trim().let { !it.startsWith("## ") || it.removePrefix("## ").trim() !in SECTIONS } }
+        if (unknown.isNotEmpty()) {
+            add("headings: ${unknown.joinToString { "\"${it.value.trim().take(40)}\"" }} ${if (unknown.size > 1) "are" else "is"} not a section; the only headings are ${headingList()}")
+        }
+        val missing = SECTIONS.filter { it !in names }
+        if (missing.isNotEmpty()) add("sections: ${missing.joinToString { "## $it" }} missing; write all seven: ${headingList()}")
+        val repeated = SECTIONS.filter { section -> names.count { it == section } > 1 }
+        if (repeated.isNotEmpty()) add("sections: ${repeated.joinToString { "## $it" }} written twice; each section once")
+        val order = names.filter { it in SECTIONS }.distinct()
+        if (missing.isEmpty() && repeated.isEmpty() && order != SECTIONS) add("sections: out of order; keep this order: ${headingList()}")
+        val first = lines.indexOfFirst { it.isNotBlank() }
+        if (first >= 0 && headings.firstOrNull()?.index != first) add("text: it starts with ## ${SECTIONS.first()}, nothing before it")
+        val empty = headings.withIndex().filter { (i, heading) ->
+            val end = headings.getOrNull(i + 1)?.index ?: lines.size
+            lines.subList(heading.index + 1, end).all { it.isBlank() }
+        }.map { it.value.value.trim() }
+        if (empty.isNotEmpty()) add("sections: ${empty.joinToString { "\"$it\"" }} ${if (empty.size > 1) "have" else "has"} no line; write at least one (« - aucun » when there is nothing)")
+    }
+
+    private fun headingList(): String = SECTIONS.joinToString(", ") { "## $it" }
+}
