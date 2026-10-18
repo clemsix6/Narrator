@@ -207,6 +207,28 @@ class DreamInputsTest {
     }
 
     @Test
+    fun `the Dreamer's own memories are nothing new about a player`() = runBlocking<Unit> {
+        f.evening()
+        val now = at("22:10")
+        listOf(f.bartok, f.mimosa).forEach { f.store.setState(DreamInputs.reflectedKey(it.uuid), DreamInputs.Reflection(now.toEpochMilli(), emptyMap()).encode()) }
+        // What the Dreamer drew from the chat while it reflected on Bartok, after the time of the reflection.
+        f.clock.now = at("22:12")
+        val observation = f.store.addMemory(
+            MemoryDraft(MemoryKind.OBSERVATION, "Bartok cherche le Narrateur", "Bartok provoque le Narrateur dans le chat pour le faire réagir.", listOf(f.bartok.uuid, f.mimosa.uuid), importance = 4),
+            dreamer,
+        ).row.ref
+        assertEquals(emptyList(), f.inputs.candidates(at("23:00"), 8), "nobody played since, nothing new")
+
+        f.clock.now = at("23:00")
+        val back = f.store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Le retour de Bartok", "Bartok est revenu narguer le Narrateur devant la base.", listOf(f.bartok.uuid)), director).row.ref
+        val candidate = f.inputs.candidates(at("23:05"), 8).single()
+        assertEquals(f.bartok to 1, candidate.player to candidate.memories)
+        val memories = blocks(f.inputs.player(14, candidate, at("23:05")).text).getValue("new_memories")
+        assertTrue("count=\"1\"" in memories && "- $back " in memories, memories)
+        assertTrue("- $observation " !in memories, memories)
+    }
+
+    @Test
     fun `the stats before and after the last reflection, and only what is new since`() = runBlocking<Unit> {
         val e = f.evening()
         val now = at("22:10")

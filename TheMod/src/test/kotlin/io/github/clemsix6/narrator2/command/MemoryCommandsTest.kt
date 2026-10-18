@@ -287,7 +287,13 @@ class MemoryCommandsTest {
 
         val forgot = MemoryCommands.archive(services, "Clement", ref.lowercase(), archived = true, reason = "  souvenir inventé  ")
         assertTrue(forgot.done)
-        assertEquals(listOf("[Narrator] $ref forgotten: archived, the Narrator no longer recalls it; /narrator memory restore $ref brings it back."), forgot.text())
+        assertEquals(
+            listOf(
+                "[Narrator] $ref forgotten: archived, out of the briefings, reminiscences and recall (even with include_closed); " +
+                    "the raw tables stay readable by sql; /narrator memory restore $ref brings it back.",
+            ),
+            forgot.text(),
+        )
         assertTrue(f.store.memory(row.ref)!!.archived)
         assertEquals(listOf("[Narrator] refused: $ref is archived already"), MemoryCommands.archive(services, "Clement", ref, archived = true, reason = null).text())
 
@@ -437,7 +443,7 @@ class MemoryCommandsTest {
     fun `revert undoes every write of a run, once, and never the running one`() = runBlocking<Unit> {
         val dream = Author(Source.DREAMER, runId = 80)
         val kept = f.store.addMemory(MemoryDraft(MemoryKind.EPISODE, "Plongeon", "Bartok a sauté dans la lave.", listOf(bartok.uuid)), f.director).row
-        val written = f.store.addMemory(MemoryDraft(MemoryKind.REFLECTION, "Téméraire", "Bartok saute toujours dans la lave.", listOf(bartok.uuid)), dream).row
+        val written = f.store.addMemory(MemoryDraft(MemoryKind.OBSERVATION, "Téméraire", "Bartok saute toujours dans la lave.", listOf(bartok.uuid)), dream).row
         f.store.writeDoc(DocKey.Grimoire, "## Players\n- Bartok plonge.", emptyList(), dream)
 
         val reverted = MemoryCommands.revert(services, "Clement", 80)

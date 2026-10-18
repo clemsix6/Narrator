@@ -28,6 +28,7 @@ import io.github.clemsix6.narrator2.memory.SheetDetail
 import io.github.clemsix6.narrator2.memory.SheetPart
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.query
+import io.github.clemsix6.narrator2.memory.stats.Favor
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
@@ -101,6 +102,10 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
  * player in the memories (`M-`). A nickname or title replaces the player's active one; a place is where
  * [RememberArgs.atPlayer] stands now; a due time posts a `DUE` event to the Director then. An arc the
  * Dreamer remembers starts `planned` (M3 §8.2, step 4): the Director starts it with `resolve … active`.
+ *
+ * Who may remember what (M3 review, finding 1), checked before the store: the Director anything; the
+ * Chronicler what was told to the players ([RememberKind.told]) only with the Narrator's words in `quote`;
+ * the Dreamer only [DREAMER_KINDS], never with a quote.
  */
 class RememberTool : MemoryTool<RememberArgs>(
     name = "remember",
@@ -113,7 +118,7 @@ class RememberTool : MemoryTool<RememberArgs>(
     effect = ToolEffect.ENGINE,
 ) {
     override suspend fun act(ctx: ToolContext, args: RememberArgs): ToolResult {
-        checkApplies(args)
+        checkApplies(args, ctx.caller.role)
         val evidence = evidenceOf(args.evidence)
         val players = ctx.knownPlayers(args.players.orEmpty(), "players")
         val canon = args.kind.canon
@@ -168,13 +173,25 @@ class RememberTool : MemoryTool<RememberArgs>(
         return ToolResult.ok("ok: remembered ${row.ref} ($what)", row.players)
     }
 
-    /** The arguments that do not go with the kind, all at once. */
-    private fun checkApplies(args: RememberArgs) {
+    /** The arguments that do not go with the kind or with the caller's [role], all at once. */
+    private fun checkApplies(args: RememberArgs, role: Role) {
         val kind = args.kind
+        if (role == Role.DREAMER && kind !in DREAMER_KINDS) {
+            refuse(
+                ToolResult.invalid(
+                    "the Dreamer remembers only an arc (planned), lore or an observation, not ${an(kind.id)}: " +
+                        "what the Narrator tells the players is recorded from its own words, by itself or the Chronicler",
+                ),
+            )
+        }
         val problems = buildList {
             if (args.dueInMinutes != null && kind.canon?.dueAllowed != true) add("due_in_minutes does not apply to ${an(kind.id)}: leave it out")
             if (args.stakes != null && kind != RememberKind.CHALLENGE) add("stakes only go with a challenge: leave stakes out")
             if (args.quote != null && kind.canon == null) add("quote does not apply to ${an(kind.id)}: put the player's own words in what, between « »")
+            if (args.quote != null && kind.canon != null && role == Role.DREAMER) add("quote does not apply to the Dreamer, who never heard the Narrator: leave it out")
+            if (args.quote == null && kind.told && role == Role.CHRONICLER) {
+                add("${an(kind.id)} needs quote: copy 3 words or more exactly from the Narrator's NARRATOR line, and cite that line in evidence")
+            }
             if (args.atPlayer != null && kind != RememberKind.PLACE) add("at_player only goes with a place: name who it concerns in players")
             if (args.atPlayer == null && kind == RememberKind.PLACE) add("a place needs its spot: give at_player, a player online who stands on it")
         }
@@ -186,11 +203,19 @@ class RememberTool : MemoryTool<RememberArgs>(
 
     private fun memoryLine(row: MemoryEntry): String =
         if (row.players.isEmpty()) row.kind.id else "${row.kind.id} about ${names(row.players)}"
+
+    private companion object {
+        /** What the Dreamer remembers: it plans arcs, keeps lore and observes players; it never commits the Narrator. */
+        val DREAMER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE, RememberKind.OBSERVATION)
+    }
 }
 
 // ── resolve ─────────────────────────────────────────────────────────────────────────────────────────
 
-/** `resolve` (M3 §5.2): a canon entry kept, broken, won, lost, retired…, or a planned arc started. */
+/**
+ * `resolve` (M3 §5.2): a canon entry kept, broken, won, lost, retired…, or a planned arc started. The
+ * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge.
+ */
 class ResolveTool : MemoryTool<ResolveArgs>(
     name = "resolve",
     description = "Settles a canon entry as soon as it is settled: a promise kept or broken, a challenge won or lost, a law, " +
@@ -202,6 +227,12 @@ class ResolveTool : MemoryTool<ResolveArgs>(
     override suspend fun act(ctx: ToolContext, args: ResolveArgs): ToolResult {
         val ref = Ref.parse(args.id)?.takeIf { it.kind == RefKind.CANON }
             ?: return ToolResult.invalid("id must be a canon entry, like C-45 (got ${ModelText.quote(args.id, REF_MAX)})")
+        if (ctx.caller.role == Role.DREAMER) {
+            val entry = ctx.memory.store.row(ref) as? CanonEntry
+            if (entry != null && entry.kind != CanonKind.ARC) {
+                return ToolResult.invalid("the Dreamer resolves only arcs, and $ref is ${an(entry.kind.id)}: the Narrator and the Chronicler settle the rest")
+            }
+        }
         val winners = ctx.knownPlayers(args.winners.orEmpty(), "winners")
         val row = ctx.memory.store.resolveCanon(ref, args.outcome.status, args.note.trim(), winners.map { it.uuid }, ctx.author())
         val by = if (row.winners.isEmpty()) "" else " by ${names(row.winners)}"
@@ -213,9 +244,12 @@ class ResolveTool : MemoryTool<ResolveArgs>(
 // ── note_interaction ────────────────────────────────────────────────────────────────────────────────
 
 /**
- * `note_interaction` (M3 §5.3): a line of a player's history with the Narrator. A punishment, a blessing or
- * a gift noted by the Director is linked to the successful world calls of its turn that targeted the
- * player (M3 §6.5): the code then knows it is covered. The favor before and after is read from the sheet.
+ * `note_interaction` (M3 §5.3): a line of a player's history with the Narrator. What the Director notes
+ * cites as its evidence the player's own chat lines among the events that woke its turn (M3 review,
+ * finding 4): the Chronicler's note of the same line, ten minutes later, is then the same interaction. A
+ * punishment, a blessing or a gift noted by the Director is linked to the successful world calls of its
+ * turn that targeted the player (M3 §6.5): the code then knows it is covered. The favor before and after
+ * is read by [Favor.read].
  */
 class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
     name = "note_interaction",
@@ -230,8 +264,10 @@ class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
         val evidence = evidenceOf(args.evidence)
         val player = ctx.knownPlayers(listOf(args.player), "player").single()
         val linking = args.kind in SANCTIONS && ctx.caller.turnId != null
-        val linked = if (linking) ctx.turnCallsOn(player).filter { it !in evidence.tools } else emptyList()
+        val turn = ctx.turnOn(player, linking)
         val room = (EVIDENCE_MAX - evidence.events.size - evidence.tools.size).coerceAtLeast(0)
+        val linked = turn.calls.filter { it !in evidence.tools }.take(room)
+        val lines = turn.lines.filter { it !in evidence.events }.take(room - linked.size)
         val before = if (args.kind.counts) ctx.favor(player) else null
         val draft = InteractionDraft(
             player = player.uuid,
@@ -239,8 +275,8 @@ class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
             valence = args.valence,
             summary = args.summary.trim(),
             quote = args.quote?.trim(),
-            toolCalls = evidence.tools + linked.take(room),
-            evidenceEvents = evidence.events,
+            toolCalls = evidence.tools + linked,
+            evidenceEvents = evidence.events + lines,
         )
         val added = ctx.memory.store.addInteraction(draft, ctx.author())
         val row = added.row
@@ -251,7 +287,9 @@ class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
             linking -> "; none of your calls of this turn acted on ${row.player.shownName}, nothing linked"
             else -> ""
         }
-        if (linked.isNotEmpty()) log.debug { "${row.ref} linked to ${linked.joinToString { "t$it" }} of turn ${ctx.caller.turnId}" }
+        if (linked.isNotEmpty() || lines.isNotEmpty()) {
+            log.debug { "${row.ref} cites ${(lines.map { "e$it" } + linked.map { "t$it" }).joinToString()} of turn ${ctx.caller.turnId}" }
+        }
         val favor = if (row.kind.counts) favorChange(row.player, before, ctx.favor(row.player)) else ""
         return ToolResult.ok("ok: noted ${row.ref} ($what)$calls$favor", listOf(row.player))
     }
@@ -263,18 +301,29 @@ class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
         else -> "; favor of ${player.shownName} ${signed(before.roundToInt())} → ${signed(after.roundToInt())}"
     }
 
-    /** The successful world calls of the caller's turn whose targets include [player], oldest first. */
-    private suspend fun ToolContext.turnCallsOn(player: PlayerRef): List<Long> {
-        val turn = caller.turnId ?: return emptyList()
-        services.journal.barrier() // the calls of this turn so far are written
+    /** What the caller's turn shows of a player: their [lines] among the events that woke it, its world [calls] on them. */
+    private class TurnEvidence(val lines: List<Long>, val calls: List<Long>)
+
+    /**
+     * What the caller's turn shows of [player], oldest first: their own chat lines (public, prayers) among
+     * the events that woke it, and, with [calls], its successful world calls on them. Nothing outside a
+     * Director turn (the memory jobs cite their own evidence).
+     */
+    private suspend fun ToolContext.turnOn(player: PlayerRef, calls: Boolean): TurnEvidence {
+        val turn = caller.turnId ?: return TurnEvidence(emptyList(), emptyList())
+        services.journal.barrier() // the turn's row and its calls so far are written
         return services.journal.read(READ_TIMEOUT_MS) { connection ->
-            connection.query(TURN_CALLS_SQL, caller.conversationId, turn, player.name) { getLong(1) }
+            TurnEvidence(
+                lines = connection.query(TURN_LINES_SQL, player.uuid, turn) { getLong(1) },
+                calls = if (calls) connection.query(TURN_CALLS_SQL, caller.conversationId, turn, player.name) { getLong(1) } else emptyList(),
+            )
         }
     }
 
-    /** The player's favor now (M3 §6.2), read from their sheet; null when it cannot be read. */
+    /** The player's favor now (M3 §6.2); null without an interaction that counts, or when it cannot be read. */
     private suspend fun ToolContext.favor(player: PlayerRef): Double? = try {
-        memory.sheets.sheet(player.uuid, clock.millis())?.favor
+        val now = clock.instant()
+        services.journal.read(READ_TIMEOUT_MS) { Favor.read(it, player.uuid, now) }?.favor
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -288,6 +337,10 @@ class NoteInteractionTool : MemoryTool<NoteInteractionArgs>(
 
         const val TURN_CALLS_SQL = "SELECT id FROM tool_calls WHERE conversation_id = ? AND turn_id = ? AND status = 'ok' " +
             "AND effect = 'world' AND list_contains(targets, ?) ORDER BY id"
+
+        /** The player's own lines among the events that woke a turn (`turns.trigger_events`, written when it starts). */
+        const val TURN_LINES_SQL = "SELECT id FROM chat WHERE player_uuid = ? AND channel IN ('public', 'pray') " +
+            "AND id IN (SELECT unnest(trigger_events) FROM turns WHERE turn_id = ?) ORDER BY id"
     }
 }
 

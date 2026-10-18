@@ -65,6 +65,27 @@ class ChroniclerToolsTest {
     }
 
     @Test
+    fun `what the Narrator told the players is remembered only with its own words`() {
+        val e = f.scenario()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        val threat = """"kind": "threat", "what": "Le Narrateur a menacé Bartok d'une pluie de slimes s'il recommence.", "players": ["Bartok"]"""
+
+        val bare = f.call(RememberTool(), """{$threat, "evidence": ["e${e.slimes}"]}""", batch)
+        assertEquals(
+            "Invalid arguments: a threat needs quote: copy 3 words or more exactly from the Narrator's NARRATOR line, and cite that line in evidence",
+            bare.text,
+        )
+        assertEquals(0L, f.count("canon", "source = 'chronicler'"))
+
+        val quoted = f.call(RememberTool(), """{$threat, "quote": "une pluie de slimes si tu recommences", "evidence": ["e${e.slimes}"]}""", batch)
+        assertEquals(ToolStatus.OK, quoted.status, quoted.text)
+        assertEquals(
+            listOf(listOf("threat", "une pluie de slimes si tu recommences", "[${e.slimes}]")),
+            f.rows("SELECT kind, quote, evidence_events::VARCHAR FROM canon WHERE source = 'chronicler'") { listOf(getString(1), getString(2), getString(3)) },
+        )
+    }
+
+    @Test
     fun `the refusals say how to do better`() {
         val e = f.scenario()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")

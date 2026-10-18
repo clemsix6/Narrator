@@ -120,8 +120,8 @@ class DreamReplayTest {
         assertEquals(Prompts.bundled().get("dreamer"), first.path("system").first().path("text").asText())
         assertEquals(
             listOf(
-                "dream_hint", "merge_memories", "note_to_director", "player_profile", "recall", "remember", "resolve", "retire_trait", "set_gag",
-                "set_relation", "set_skill", "set_trait", "sql", "write_chronicle", "write_grimoire", "write_review", "write_sheet",
+                "dream_hint", "merge_memories", "note_to_director", "recall", "remember", "resolve", "retire_trait", "set_gag",
+                "set_relation", "set_skill", "set_trait", "write_chronicle", "write_grimoire", "write_review", "write_sheet",
             ),
             first.path("tools").map { it.path("name").asText() },
         )

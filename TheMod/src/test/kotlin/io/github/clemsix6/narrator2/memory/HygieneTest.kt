@@ -16,7 +16,9 @@ import java.sql.Connection
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The memory's housekeeping (M3 §6.6, §8.6, §9.3): expirations, worn gags, archival, notes, merge candidates. */
@@ -80,8 +82,8 @@ class HygieneTest {
         val notes = fake.rows.values.filterIsInstance<Note>().sortedBy { it.ref.id }
         assertEquals(
             listOf(
-                "$late promise (Mimosa) came due 09-25 20:30 with no resolution recorded: « Le Narrateur a promis à Mimosa de lui rendre ses bottes. »",
-                "$threat threat (Bartok) went 103h of world play without mention: « Le Narrateur a menacé Bartok de pluie de grenouilles. »",
+                "$late promise (« Mimosa ») came due 09-25 20:30 with no resolution recorded: « Le Narrateur a promis à Mimosa de lui rendre ses bottes. »",
+                "$threat threat (« Bartok ») went 103h of world play without mention: « Le Narrateur a menacé Bartok de pluie de grenouilles. »",
             ),
             notes.map { it.text },
         )
@@ -103,7 +105,25 @@ class HygieneTest {
         val note = fake.rows.values.filterIsInstance<Note>().single()
         assertTrue(note.text.length <= MemoryLimits.NOTE_TEXT, "${note.text.length} characters")
         assertTrue(note.text.endsWith("… »"), note.text)
-        assertTrue(note.text.startsWith("$promise promise (Mimosa) came due"), note.text)
+        assertTrue(note.text.startsWith("$promise promise (« Mimosa ») came due"), note.text)
+    }
+
+    @Test
+    fun `the names of the note are quoted, so a player called Moi does not read as the Narrator's voice`() = runBlocking<Unit> {
+        val moi = PlayerRef(UUID.fromString("00000000-0000-4000-8000-0000000000d1"), "Moi")
+        val toi = PlayerRef(UUID.fromString("00000000-0000-4000-8000-0000000000d2"), "Toi")
+        fake.names[moi.uuid] = moi.name
+        fake.names[toi.uuid] = toi.name
+        playClock.load(start.toEpochMilli())
+        val bet = fake.addCanon(
+            CanonDraft(CanonKind.CHALLENGE, "Le Narrateur a parié contre Bartok.", players = listOf(moi.uuid, toi.uuid), dueAt = at(1.0)),
+            Author(Source.DIRECTOR),
+        ).row.ref
+        time.now = at(30.0)
+        hygiene.tidy(time.now)
+        val note = fake.rows.values.filterIsInstance<Note>().single()
+        assertEquals("$bet challenge (« Moi », « Toi ») came due 09-25 20:30 with no resolution recorded: « Le Narrateur a parié contre Bartok. »", note.text)
+        assertNull(VoiceGuard.check(note.text, "text", MemoryLimits.NOTE_TEXT))
     }
 
     private fun use(ref: Ref, uses: Int, at: Instant) = MemoryLogRow(
@@ -223,7 +243,7 @@ class HygieneTest {
     }
 
     @Test
-    fun `coherence notes shown twice and dream hints never shown in 7 days are done`() = runBlocking {
+    fun `every 10 minutes, notes shown as often as the briefing shows them and dream hints shown or 7 days old are done`() = runBlocking<Unit> {
         playClock.load(start.toEpochMilli())
         suspend fun note(kind: NoteKind, shown: Int): Ref {
             val ref = fake.addNote(NoteDraft(kind, "Bartok a été vu deux fois au même endroit."), engine).ref
@@ -234,14 +254,21 @@ class HygieneTest {
         val once = note(NoteKind.COHERENCE, 1)
         val oldHint = note(NoteKind.DREAM_HINT, 0)
         val operator = note(NoteKind.OPERATOR, 5)
+        val operatorOnce = note(NoteKind.OPERATOR, 1)
+        val expired = note(NoteKind.EXPIRED, 2)
+        val expiredNew = note(NoteKind.EXPIRED, 0)
         time.now = start + Duration.ofDays(2)
         val youngHint = note(NoteKind.DREAM_HINT, 0)
+        val shownHint = note(NoteKind.DREAM_HINT, 1)
         time.now = start + Duration.ofDays(8)
+        val before = fake.writes.size
 
-        val report = hygiene.beforeDream(time.now, null)
+        val report = hygiene.tidy(time.now)
 
-        assertEquals(listOf(twice, oldHint), report.notesDone)
-        assertEquals(listOf(once, operator, youngHint), fake.openNotes().map { it.ref })
+        assertEquals(listOf(twice, oldHint, operator, expired, shownHint), report.notesDone)
+        assertEquals(listOf(once, operatorOnce, expiredNew, youngHint), fake.openNotes().map { it.ref })
+        assertEquals(report.notesDone.map { "markNote $it by engine" }, fake.writes.drop(before))
+        assertEquals(emptyList(), hygiene.beforeDream(time.now, null).notesDone, "the dream finds nothing more to close")
     }
 
     @Test

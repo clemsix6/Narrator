@@ -41,8 +41,12 @@ object ToolCatalog {
     /** What the Chronicler has besides its own family (M3 §7.5). */
     private val CHRONICLER_SHARED = setOf("remember", "resolve", "note_interaction", "recall")
 
-    /** What the Dreamer has besides its own family (M3 §8.3); `note_to_director` is of the Chronicler's family. */
-    private val DREAMER_SHARED = setOf("remember", "resolve", "recall", "player_profile", "sql", "note_to_director")
+    /**
+     * What the Dreamer has besides its own family (M3 §8.3); `note_to_director` is of the Chronicler's family.
+     * Neither `sql` nor `player_profile` (M3 review, finding 7): each step's opening holds what it needs, the
+     * sheet included, and `recall` finds the rest.
+     */
+    private val DREAMER_SHARED = setOf("remember", "resolve", "recall", "note_to_director")
 
     /** Every tool, family by family, built for the running server's [services]. */
     fun allTools(services: NarratorServices): List<NarratorTool<*>> = listOf(

@@ -40,16 +40,25 @@ data class RecallContext(val conversationId: String?, val turnId: Long?, val eve
  *
  * 1. vocabularies and bounds are checked (kinds, statuses and their transitions, tags, axes, lengths of
  *    [MemoryLimits], [SheetSection] and [ChronicleLevel], known players, existing refs);
- * 2. [VoiceGuard] checks every text a model wrote (`quote` fields are exempt, but bounded);
- * 3. quotes are checked for [Source.CHRONICLER]: a canon quote must be words the Narrator said in the
- *    run's window, an interaction quote words of that player;
+ * 2. [VoiceGuard] checks every text written, the players' names masked (`quote` fields are exempt, but
+ *    bounded); in a model's text, a passage between quotes stays short;
+ * 3. what each author may write is checked (decision 8: a commitment of the Narrator comes from its own
+ *    words):
+ *    - [Source.CHRONICLER]: a promise, threat, challenge, prophecy, law, nickname, title or place needs a
+ *      quote; any canon quote is 3 words or 15 characters at least, copied from a Narrator line cited in
+ *      its evidence (an `e…` line of the `narrator` or `operator` channel, a `t…` call of `say`,
+ *      `give_book` or `show_title`). An interaction quote is words of that player in the run's window;
+ *    - [Source.DREAMER] (it reads the players' chat, never hears the Narrator): only observations among
+ *      the memories; only planned arcs and lore in the canon, without quote; resolves arcs only; no
+ *      interaction. Its running gags change through [setGag];
  * 4. duplicates are looked for (M3 §4.3): an equivalent open row makes the add an [Added.Duplicate];
  * 5. the row, its index terms ([Indexer]) and its `memory_log` row are written;
  * 6. a `memory` decision is recorded (`written`, `duplicate`, `rejected`).
  *
  * A broken rule throws [MemoryRejected], with nothing written. A Journal that cannot write throws its
  * own exception (`JournalUnavailableException`, `JournalTimeoutException`). Reads run on the Journal's
- * read pool, never on the writer. Rows are never deleted.
+ * read pool, never on the writer. Rows are never deleted, but by [revertRun] (their content stays in
+ * `memory_log`).
  */
 interface MemoryStore {
     // ── Writes ──────────────────────────────────────────────────────────────────────────────────────
@@ -124,7 +133,22 @@ interface MemoryStore {
     /** Copies [version] of the document [key] as its new version. */
     suspend fun rollbackDoc(key: String, version: Int, author: Author): MemoryDoc
 
-    /** Undoes every write of the run [runId], newest first, from `memory_log`; returns how many were undone. */
+    /**
+     * Undoes every write of the run [runId] from `memory_log`, newest first; returns how many were undone.
+     * A row the run inserted is **deleted** (with its index terms; its content stays in `memory_log`), a row
+     * it changed gets back its columns from before the run. Refused when the run was reverted already, or
+     * when a row it touched changed since (by another author or run).
+     *
+     * A reverted nap or dream that wrote something did not happen: its `memory_runs` row turns `failed`
+     * (`reverted by …`), so that the catch-up naps the chapter again; a dream also forgets its reflections
+     * on players (`memory_state` `reflected:<uuid>` written while it ran), so the next dream reads them
+     * again. What it does not undo:
+     * - `recalls` rows and reinforcements, the rest of `memory_state`, and other `memory_runs` rows;
+     * - refs to a deleted row left elsewhere: the `covers` of a later chronicle entry, the evidence of a
+     *   trait, skill or relation written by another run, `recalls.ref_id`;
+     * - `canon.due_signaled_at`, which is not audited: an entry the run changed gets back the value it had
+     *   before the run, so a `DUE` already signaled since may be signaled again.
+     */
     suspend fun revertRun(runId: Long, author: Author): Int
 
     /** A value of `memory_state`; null when unset. */
