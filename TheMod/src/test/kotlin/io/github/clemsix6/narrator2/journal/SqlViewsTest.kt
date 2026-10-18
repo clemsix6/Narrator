@@ -10,19 +10,27 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.PositionSampled
 import io.github.clemsix6.narrator2.event.SampleReason
 import io.github.clemsix6.narrator2.journal.SqlDataset.SECRET
+import io.github.clemsix6.narrator2.memory.Decay
+import io.github.clemsix6.narrator2.memory.MemoryDataset
+import io.github.clemsix6.narrator2.memory.stats.Favor
 import io.github.clemsix6.narrator2.testing.TestClock
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Every view and macro of `views.sql` (M1_M2 §6.4) on the rows the Journal writes for [SqlDataset]. */
+/**
+ * Every view and macro of `views.sql` (M1_M2 §6.4, and the memory's views of M3 §13) on the rows the Journal
+ * writes for [SqlDataset]; the memory's strength and favor also against `Decay` and `Favor` on known values.
+ */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SqlViewsTest {
     private val fixture = SqlDataset.journal()
@@ -274,6 +282,177 @@ class SqlViewsTest {
         assertEquals(listOf(listOf<Any?>("stone", "create:brass_ore", null)), values("SELECT bare('minecraft:stone'), bare('create:brass_ore'), bare(NULL)"))
     }
 
+    // ── The memory (M3 §13) ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `mem_memories gives refs, current names and strength, without archived or merged memories`() {
+        assertEquals(
+            listOf(
+                listOf<Any?>("M-1", "episode", "Tué par un squelette", listOf("Bartok"), listOf("death", "mob", "insult"), 5.toByte(), (-2).toByte(), 0.5),
+                listOf<Any?>(
+                    "M-2", "observation", "Mimosa bâtit à côté de Bartok", listOf("Mimosa", "Bartok", "00000000-0000-4000-8000-0000000000ff"),
+                    listOf("build"), 2.toByte(), 1.toByte(), Decay.FLOOR,
+                ),
+            ),
+            values("SELECT ref, kind, title, players, tags, importance, valence, strength FROM mem_memories ORDER BY ref"),
+        )
+        assertEquals(
+            listOf(listOf<Any?>("Bartok est mort sous les flèches d'un squelette, puis a insulté le Narrateur.", true)),
+            values("SELECT content, occurred < now() - INTERVAL 39 MINUTE FROM mem_memories WHERE list_contains(players, 'Bartok') AND ref = 'M-1'"),
+        )
+    }
+
+    @Test
+    fun `mem_canon gives what the Narrator said, open or closed, without archived entries`() {
+        assertEquals(
+            listOf(
+                listOf<Any?>(
+                    "C-10", "promise", "active", "Le Narrateur a promis à Mimosa de lui rendre ses planches.", "tu auras tes planches",
+                    listOf("Mimosa"), true, null, null,
+                ),
+                listOf<Any?>(
+                    "C-11", "nickname", "retired", "Bartok est surnommé « le Pleureur ».", "le Pleureur", listOf("Bartok"), null, true,
+                    "remplacé par un autre surnom",
+                ),
+            ),
+            values(
+                "SELECT ref, kind, status, statement, quote, players, due_at > now(), resolved_at < now(), resolution FROM mem_canon ORDER BY ref",
+            ),
+        )
+        assertEquals(1L, values("SELECT count(*) FROM mem_canon WHERE created_at > now() - INTERVAL 25 MINUTE").single().single())
+    }
+
+    @Test
+    fun `mem_interactions names players by their current name, without archived interactions`() {
+        assertEquals(
+            listOf(
+                listOf<Any?>("I-22", "Mimosa", "compliment", 2.toByte(), false, "a remercié le Narrateur", null),
+                listOf<Any?>("I-20", "Bartok", "insult", (-2).toByte(), true, "a traité le Narrateur de nul", "narrateur, t'es nul"),
+                listOf<Any?>("I-21", "Bartok", "punishment", 0.toByte(), false, "foudroyé pour son insulte", null),
+            ),
+            values("SELECT ref, player, kind, valence, disrespect, summary, quote FROM mem_interactions ORDER BY ts"),
+        )
+    }
+
+    @Test
+    fun `mem_stats and mem_chronicle`() {
+        assertEquals(
+            listOf(listOf<Any?>("Bartok", "deaths", 1.0, "0", "arrow")),
+            values("SELECT player, stat, value, detail ->> 'absurd', detail -> 'top' ->> '$[0][0]' FROM mem_stats"),
+        )
+        assertEquals(
+            listOf(listOf<Any?>("H-31", "chapter", "La pioche qui pleure", "Bartok mine, meurt sous les flèches et insulte le Narrateur.", true)),
+            values("SELECT ref, level, title, summary, period_from < period_to FROM mem_chronicle"),
+        )
+    }
+
+    /** M3-05 handed over the formula; the view must give what `Favor.read` gives, at the same instant. */
+    @Test
+    fun `mem_favor gives Favor's favor, trend and lacks of respect`() {
+        checkFavor(fixture, listOf(SqlDataset.bartok.uuid, SqlDataset.mimosa.uuid))
+        MemoryDataset.journal().use { journal ->
+            checkFavor(journal, listOf(MemoryDataset.bartok.uuid, MemoryDataset.mimosa.uuid, MemoryDataset.kelvin.uuid))
+            // Kelvin has no interaction: a row, without favor nor trend.
+            assertEquals(listOf(listOf<Any?>(null, null, 0L)), journal.values("SELECT favor, trend, disrespect FROM mem_favor WHERE player = 'Kelvin'"))
+        }
+    }
+
+    /** [players]' row of `mem_favor` against `Favor.read` at the view's `now()`; each has a row, a null favor without interactions. */
+    private fun checkFavor(journal: JournalFixture, players: List<UUID>) {
+        journal.sync()
+        val (view, kotlin) = runBlocking {
+            journal.journal.read(10_000) { connection ->
+                val view = connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "SELECT p.player_uuid, f.favor, f.trend, f.disrespect, epoch_ms(now()) FROM mem_favor f JOIN players p ON p.name = f.player",
+                    ).use { rows ->
+                        buildMap {
+                            while (rows.next()) {
+                                put(rows.getObject(1) as UUID, listOf(rows.getObject(2) as Double?, rows.getObject(3) as Double?, rows.getLong(4).toDouble(), rows.getLong(5).toDouble()))
+                            }
+                        }
+                    }
+                }
+                val now = Instant.ofEpochMilli(view.values.first()[3]!!.toLong())
+                view to players.associateWith { Favor.read(connection, it, now)!! }
+            }
+        }
+        assertEquals(players.toSet(), view.keys intersect players.toSet())
+        assertTrue(kotlin.values.any { it.favor != null }, "$kotlin")
+        kotlin.forEach { (player, reading) ->
+            val (favor, trend, disrespect) = view.getValue(player)
+            // An open session's clock moves between the view's now() and Favor.read's millisecond: far less than 1e-3.
+            if (reading.favor == null) assertEquals(null, favor, "$player") else assertEquals(reading.favor!!, favor!!, 1e-3, "$player favor")
+            if (reading.trend == null) assertEquals(null, trend, "$player") else assertEquals(reading.trend!!, trend!!, 1e-3, "$player trend")
+            assertEquals(reading.disrespect.toDouble(), disrespect, "$player disrespect")
+        }
+    }
+
+    /** `Decay.strength` and `Favor`, on clocks and interactions the test sets: the view is checked on known values, not only on the dataset. */
+    @Test
+    fun `strength and favor follow Decay and Favor on known values`() = JournalFixture().use { journal ->
+        val world = 2_000_000L
+        val memories = listOf(
+            40.0 to world, // just reinforced: 1
+            40.0 to world - 40 * 3_600, // one half-life: 0.5
+            40.0 to world - 80 * 3_600, // two: 0.25
+            4.0 to 0L, // long faded: the floor
+            Decay.initialStability(7) to world - 50 * 3_600, // an importance-7 memory, 50 h on
+            Decay.initialStability(10) to world - 1_000 * 3_600,
+            12.0 to world + 3_600, // reinforced after the saved clock (it is saved every 5 min): 1, never above
+        )
+        val favorPlayer = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
+        val quietPlayer = UUID.fromString("00000000-0000-4000-8000-0000000000f2")
+        val played = 40 * 3_600L
+        // One interaction every 1 h 40 min of play, valences -3..3 in turn; a punishment that does not count; an archived insult.
+        val rated = (0 until 24).map { Favor.Rated(it * 6_000L, it % 7 - 3) }
+        runBlocking<Unit> {
+            journal.journal.write(10_000) { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute(
+                        buildString {
+                            append("INSERT INTO memory_state VALUES ('world_play_s', '$world', now());\n")
+                            append("INSERT INTO players VALUES ('$favorPlayer', 'Favori', now(), now(), 3, $played, false), ('$quietPlayer', 'Discret', now(), now(), 1, 600, false);\n")
+                            memories.forEachIndexed { index, (stability, reinforced) ->
+                                append(
+                                    "INSERT INTO memories (id, kind, created_at, occurred_from, occurred_to, title, content, players, entities, tags, importance, " +
+                                        "valence, stability_h, reinforced_play_s, source, evidence_events, evidence_tools) VALUES (${index + 1}, 'episode', now(), " +
+                                        "now(), now(), 't', 'c', [], [], [], 5, 0, $stability, $reinforced, 'chronicler', [], []);\n",
+                                )
+                            }
+                            (rated.map { it to true } + (Favor.Rated(39 * 3_600L, 0) to false)).forEachIndexed { index, (interaction, counts) ->
+                                append(
+                                    "INSERT INTO interactions (id, ts, player_uuid, player, kind, valence, counts, disrespect, summary, played_s, tool_calls, " +
+                                        "source, evidence_events) VALUES (${index + 1}, now(), '$favorPlayer', 'Favori', '${if (counts) "conversation" else "punishment"}', " +
+                                        "${interaction.valence}, $counts, false, 's', ${interaction.playedSeconds}, [], 'director', []);\n",
+                                )
+                            }
+                            append(
+                                "INSERT INTO interactions (id, ts, player_uuid, player, kind, valence, counts, disrespect, summary, played_s, tool_calls, source, " +
+                                    "evidence_events, archived) VALUES (99, now(), '$favorPlayer', 'Favori', 'insult', -3, true, true, 's', ${played - 60}, [], 'director', [], true);\n",
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        val strengths = journal.values("SELECT strength FROM mem_memories ORDER BY ref").map { it.single() as Double }
+        assertEquals(listOf(1.0, 0.5, 0.25, Decay.FLOOR), strengths.take(4))
+        memories.zip(strengths).forEach { (memory, strength) ->
+            assertEquals(Decay.strength(memory.first, memory.second, world), strength, 1e-12, "$memory")
+        }
+        assertEquals(listOf(listOf<Any?>(null, null, 0L)), journal.values("SELECT favor, trend, disrespect FROM mem_favor WHERE player = 'Discret'"))
+        val (favor, trend, disrespect) = journal.values("SELECT favor, trend, disrespect FROM mem_favor WHERE player = 'Favori'").single()
+        assertEquals(Favor.favor(rated, played), favor as Double, 1e-9)
+        assertEquals(Favor.trend(rated, played), trend as Double, 1e-9)
+        assertTrue(abs(trend) > 1, "a trend worth checking: $trend")
+        assertEquals(0L, disrespect, "the archived insult is left out")
+
+        // Without the world clock (the memory never ran), strength is unknown rather than full.
+        runBlocking<Unit> { journal.journal.write(10_000) { c -> c.createStatement().use { it.execute("DELETE FROM memory_state") } } }
+        assertEquals(List(memories.size) { listOf<Any?>(null) }, journal.values("SELECT strength FROM mem_memories"))
+    }
+
     // ── Order ───────────────────────────────────────────────────────────────────────────────────────
 
     /** Facts of one tick share their millisecond (T07): `ts, id` keeps the order they happened in, in views and macros. */
@@ -312,7 +491,7 @@ class SqlViewsTest {
     @Test
     fun `no view reads a hidden table, and only columns_of names one, to leave it out`() {
         val views = values("SELECT view_name, sql FROM duckdb_views() WHERE NOT internal")
-        assertEquals(18, views.size, "$views")
+        assertEquals(24, views.size, "$views")
         views.forEach { (name, sql) ->
             Journal.HIDDEN_FROM_MODEL.forEach { table -> assertFalse(table in (sql as String).lowercase(), "view $name reads $table") }
         }

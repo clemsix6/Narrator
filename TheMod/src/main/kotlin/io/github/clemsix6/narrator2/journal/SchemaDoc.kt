@@ -1,25 +1,42 @@
 package io.github.clemsix6.narrator2.journal
 
-import io.github.clemsix6.narrator2.event.EventCatalog
-import io.github.clemsix6.narrator2.event.EventTable
-import io.github.clemsix6.narrator2.event.EventType
 import io.github.clemsix6.narrator2.memory.MemorySchema
 import java.sql.Connection
 import java.time.ZoneId
 
 /**
  * The description of the Journal given to the model: the body of the `sql` tool's description
- * (M1_M2 §6.5). It is generated from the database itself (tables, views, macros and their comments, in
- * `duckdb_tables()`, `duckdb_views()`, `duckdb_columns()`, `duckdb_functions()`) and from [EventCatalog]
- * for the event types. The tables of [Journal.HIDDEN_FROM_MODEL] never appear in it.
+ * (M1_M2 §6.5, M3 §13). It is generated from the database itself (tables, views, macros and their
+ * comments, in `duckdb_tables()`, `duckdb_views()`, `duckdb_columns()`, `duckdb_functions()`). The tables
+ * of [Journal.HIDDEN_FROM_MODEL] never appear in it.
+ *
+ * It only says what it takes to write a query, within [MAX_CHARS]: reference data (the event types) is
+ * a table the model queries ([EventTypesTable]), and each [Section] has its own budget. A new view must fit
+ * in its section's budget, or replace another one.
  *
  * It is part of the tools, hence of the prompt prefix the cache keeps: it must be the same bytes from
  * one conversation to the next. [text] is therefore generated once per JVM, from an in-memory database
- * built by the same scripts as the Journal ([DuckDatabase.MIGRATIONS] and [DuckDatabase.VIEWS]): the
- * same schema as the Journal's by construction, available even when the Journal is not, and never a
- * read on the Journal's connections.
+ * built by the same code as the Journal ([DuckDatabase.MIGRATIONS], [DuckDatabase.VIEWS] and
+ * [EventTypesTable]): the same schema as the Journal's by construction, available even when the Journal
+ * is not, and never a read on the Journal's connections.
  */
 object SchemaDoc {
+    /** The parts of the description, in order, each with its budget in characters (M3 §13), checked by `SchemaDocTest`. */
+    enum class Section(val budget: Int) {
+        HEADER(700),
+        VIEWS(2_300),
+        MACROS(900),
+        TABLES(1_800),
+        MEMORY(1_200),
+        EXAMPLES(500),
+    }
+
+    /** The whole description's budget: 2 500 tokens, at a pessimistic 3 characters a token. */
+    const val MAX_CHARS = 7_500
+
+    /** Views of the memory (M3 §13), described in their own section. */
+    private const val MEMORY_PREFIX = "mem_"
+
     /**
      * Tables left out of the description: `schema_version`, which the model has no use for, and the
      * memory's tables ([MemorySchema.TABLES]), still readable by `sql`: the model reads the memory through
@@ -48,40 +65,48 @@ object SchemaDoc {
             "JSON: (detail ->> 'key') is text; keep the parentheses. " +
             "columns_of('<table>') lists columns with comments. The catalog (duckdb_*, information_schema, SHOW) is closed."
 
+    private const val MEMORY =
+        "MEMORY (what the Narrator remembers: ref as the memory tools take it, M-812, C-45…; players by current name; forgotten rows left out)"
+
     private val EXAMPLES = listOf(
         "SELECT block, count(*) FROM mining WHERE player = 'Bartok' AND ore AND ts > now() - INTERVAL 1 DAY GROUP BY 1 ORDER BY 2 DESC",
         "SELECT * FROM hotspots('Mimosa', 'block_break', 32)",
         "SELECT victim, count(*) FROM kills WHERE player = 'Bartok' GROUP BY 1 ORDER BY 2 DESC",
         "SELECT ago(ts), speaker, player, text FROM chat_log ORDER BY ts DESC, id DESC LIMIT 20",
+        "SELECT ref, statement, due_at FROM mem_canon WHERE status = 'active' AND list_contains(players, 'Mimosa')",
     )
 
     /** The description of the schema [connection] sees. Deterministic: same schema, same text. */
-    fun generate(connection: Connection): String {
+    fun generate(connection: Connection): String = sections(connection).values.joinToString("\n")
+
+    /** The description's sections, in order, each its lines joined by `\n`. */
+    fun sections(connection: Connection): Map<Section, String> {
         val columns = columns(connection)
-        return buildString {
-            append(HEADER).append('\n')
-            append("VIEWS\n")
-            relations(connection, "SELECT view_name, comment FROM duckdb_views() WHERE $MAIN AND NOT internal ORDER BY view_oid")
-                .forEach { (name, comment) -> append(signature(name, columns)).append(describe(comment)).append('\n') }
-            append("MACROS\n")
-            macros(connection).forEach { append(it).append('\n') }
-            append("TABLES (traces without columns: see columns_of)\n")
-            relations(connection, "SELECT table_name, comment FROM duckdb_tables() WHERE $MAIN AND NOT internal ORDER BY table_oid")
-                .filter { (name, _) -> name !in Journal.HIDDEN_FROM_MODEL && name !in PLUMBING }
-                .forEach { (name, comment) ->
-                    append(if (name in TRACES) name else signature(name, columns)).append(describe(comment)).append('\n')
-                }
-            append("EVENT TYPES (events.type: subject; amount; other; detail keys)\n")
-            EventCatalog.types(EventTable.EVENTS).forEach { append(eventType(it)).append('\n') }
-            append("EXAMPLES\n")
-            EXAMPLES.forEach { append(it).append('\n') }
-        }.trimEnd()
+        val (memory, views) = relations(connection, "SELECT view_name, comment FROM duckdb_views() WHERE $MAIN AND NOT internal ORDER BY view_oid")
+            .map { (name, comment) -> name to signature(name, columns) + describe(comment) }
+            .partition { (name, _) -> name.startsWith(MEMORY_PREFIX) }
+        val (types, tables) = relations(connection, "SELECT table_name, comment FROM duckdb_tables() WHERE $MAIN AND NOT internal ORDER BY table_oid")
+            .filter { (name, _) -> name !in Journal.HIDDEN_FROM_MODEL && name !in PLUMBING }
+            .map { (name, comment) -> name to (if (name in TRACES) name else signature(name, columns)) + describe(comment) }
+            .partition { (name, _) -> name == EventTypesTable.NAME }
+        // event_types, recreated at every opening, is the newest table: it goes right under the events it describes.
+        val tableLines = tables.flatMap { (name, line) -> listOf(line) + if (name == "events") types.map { it.second } else emptyList() }
+        return linkedMapOf(
+            Section.HEADER to HEADER,
+            Section.VIEWS to lines("VIEWS", views.map { it.second }),
+            Section.MACROS to lines("MACROS", macros(connection)),
+            Section.TABLES to lines("TABLES (traces: see columns_of)", tableLines),
+            Section.MEMORY to lines(MEMORY, memory.map { it.second }),
+            Section.EXAMPLES to lines("EXAMPLES", EXAMPLES),
+        )
     }
 
     /** The examples of the description, which must run as they are (checked by `SchemaDocTest`). */
     internal val examples: List<String> get() = EXAMPLES
 
     private const val MAIN = "database_name = current_database() AND schema_name = 'main'"
+
+    private fun lines(title: String, lines: List<String>) = (listOf(title) + lines).joinToString("\n")
 
     /** `name(col, col JSON, col[])`: types are only shown where they matter for writing a query. */
     private fun signature(name: String, columns: Map<String, List<Pair<String, String>>>): String =
@@ -126,13 +151,5 @@ object SchemaDoc {
                 }
             }
         }
-    }
-
-    /** `block_break: block; -; tool in the main hand; creative, correct_tool, placed_by`, trailing `-` left out. */
-    private fun eventType(type: EventType): String {
-        val parts = (listOf(type.subject, type.amount, type.other) + type.detail.keys.joinToString(", ").ifEmpty { null })
-            .map { it ?: "-" }
-            .dropLastWhile { it == "-" }
-        return if (parts.isEmpty()) type.name else "${type.name}: ${parts.joinToString("; ")}"
     }
 }

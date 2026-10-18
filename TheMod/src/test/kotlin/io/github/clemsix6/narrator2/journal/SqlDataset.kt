@@ -41,6 +41,7 @@ import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
+import kotlinx.coroutines.runBlocking
 import java.time.Duration
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -71,7 +72,59 @@ internal object SqlDataset {
     fun journal(): JournalFixture {
         val fixture = JournalFixture(clock = TestClock(Instant.now().truncatedTo(ChronoUnit.SECONDS).minus(Duration.ofMinutes(60))))
         fill(fixture)
+        remember(fixture)
         return fixture
+    }
+
+    /** The world play clock of [MEMORY_ROWS]: 100 hours. */
+    const val WORLD_PLAY_S = 360_000L
+
+    /**
+     * What the memory holds about the hour above, as the memory store writes it (M3 §13): one row of each sort
+     * the `mem_*` views show, plus rows they leave out (archived, superseded). Memory M-1 is at half strength
+     * (40 h of world play since it was reinforced, half-life 40 h), M-2 at the floor.
+     */
+    private val MEMORY_ROWS = """
+        INSERT INTO memory_state VALUES ('world_play_s', '$WORLD_PLAY_S', now());
+        INSERT INTO memories (id, kind, created_at, occurred_from, occurred_to, title, content, players, entities, tags, importance, valence,
+                              stability_h, reinforced_play_s, source, evidence_events, evidence_tools, archived, merged_into) VALUES
+            (1, 'episode', now(), now() - INTERVAL 40 MINUTE, now() - INTERVAL 39 MINUTE, 'Tué par un squelette',
+             'Bartok est mort sous les flèches d''un squelette, puis a insulté le Narrateur.', ['${bartok.uuid}'::UUID],
+             ['minecraft:skeleton'], ['death', 'mob', 'insult'], 5, -2, 40.0, ${WORLD_PLAY_S - 40 * 3_600}, 'chronicler', [], [], false, NULL),
+            (2, 'observation', now(), now() - INTERVAL 50 MINUTE, now() - INTERVAL 50 MINUTE, 'Mimosa bâtit à côté de Bartok',
+             'Mimosa pose ses planches à dix blocs de Bartok.', ['${mimosa.uuid}'::UUID, '${bartok.uuid}'::UUID, '00000000-0000-4000-8000-0000000000ff'::UUID],
+             [], ['build'], 2, 1, 4.0, 0, 'chronicler', [], [], false, NULL),
+            (3, 'episode', now(), now() - INTERVAL 45 MINUTE, now() - INTERVAL 45 MINUTE, 'Oublié', 'Bartok a creusé.', ['${bartok.uuid}'::UUID],
+             [], ['mining'], 1, 0, 4.0, 0, 'chronicler', [], [], true, NULL),
+            (4, 'episode', now(), now() - INTERVAL 45 MINUTE, now() - INTERVAL 45 MINUTE, 'Fusionné', 'Bartok est mort.', ['${bartok.uuid}'::UUID],
+             [], ['death'], 3, -1, 12.0, 0, 'chronicler', [], [], true, 1);
+        INSERT INTO canon (id, kind, created_at, statement, quote, players, importance, status, due_at, resolved_at, resolution, source,
+                           evidence_events, evidence_tools, archived) VALUES
+            (10, 'promise', now() - INTERVAL 20 MINUTE, 'Le Narrateur a promis à Mimosa de lui rendre ses planches.', 'tu auras tes planches',
+             ['${mimosa.uuid}'::UUID], 6, 'active', now() + INTERVAL 1 DAY, NULL, NULL, 'director', [], [], false),
+            (11, 'nickname', now() - INTERVAL 30 MINUTE, 'Bartok est surnommé « le Pleureur ».', 'le Pleureur', ['${bartok.uuid}'::UUID], 4,
+             'retired', NULL, now() - INTERVAL 5 MINUTE, 'remplacé par un autre surnom', 'director', [], [], false),
+            (12, 'law', now() - INTERVAL 30 MINUTE, 'Nul ne creuse sous le village.', NULL, [], 7, 'active', NULL, NULL, NULL, 'director', [], [], true);
+        INSERT INTO interactions (id, ts, player_uuid, player, kind, valence, counts, disrespect, summary, quote, played_s, tool_calls, source,
+                                  evidence_events, archived) VALUES
+            (20, now() - INTERVAL 10 MINUTE, '${bartok.uuid}', 'Bartok_', 'insult', -2, true, true, 'a traité le Narrateur de nul',
+             'narrateur, t''es nul', 3000, [], 'director', [], false),
+            (21, now() - INTERVAL 9 MINUTE, '${bartok.uuid}', 'Bartok', 'punishment', 0, false, false, 'foudroyé pour son insulte', NULL, 3060,
+             [], 'director', [], false),
+            (22, now() - INTERVAL 30 MINUTE, '${mimosa.uuid}', 'Mimosa', 'compliment', 2, true, false, 'a remercié le Narrateur', NULL, 1800,
+             [], 'director', [], false),
+            (23, now() - INTERVAL 30 MINUTE, '${mimosa.uuid}', 'Mimosa', 'insult', -3, true, true, 'insulte retirée', NULL, 1700,
+             [], 'director', [], true);
+        INSERT INTO chronicle (id, level, period_from, period_to, title, summary, covers, conversation_id, open, superseded_by, written_at, source) VALUES
+            (30, 'chapter', now() - INTERVAL 60 MINUTE, now() - INTERVAL 5 MINUTE, 'Brouillon', 'Une première version.', [], 'director-1', false, 31,
+             now(), 'chronicler'),
+            (31, 'chapter', now() - INTERVAL 60 MINUTE, now() - INTERVAL 5 MINUTE, 'La pioche qui pleure',
+             'Bartok mine, meurt sous les flèches et insulte le Narrateur.', [], 'director-1', false, NULL, now(), 'chronicler');
+        INSERT INTO sheet_stats VALUES ('${bartok.uuid}', 'deaths', 1, '{"top":[["arrow",1]],"absurd":0}', now());
+    """.trimIndent()
+
+    private fun remember(fixture: JournalFixture) = runBlocking<Unit> {
+        fixture.journal.write(10_000) { connection -> connection.createStatement().use { it.execute(MEMORY_ROWS) } }
     }
 
     private fun fill(fixture: JournalFixture) {
