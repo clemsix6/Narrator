@@ -1,30 +1,16 @@
 package io.github.clemsix6.narrator2.memory
 
-import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.util.UUID
-
-/** A memory as the cues need it (M3 §10.5): its date, its text, whom it concerns, where it happened. */
-data class CueMemory(
-    val ref: Ref,
-    val occurredFrom: Instant,
-    val content: String,
-    val players: List<UUID>,
-    val importance: Int,
-    val place: Pos?,
-)
 
 /**
- * What the memory jobs read and write in the Journal besides the store (M3 §6.6, §7.1, §8.1, §10.5,
- * §18): the `memory_runs` rows, the chapters waiting for their nap, the Narrator's activity in a window,
- * the canon come due, the memories the cues look for. [DuckJobsData] in production; a fake in tests.
+ * What the memory jobs read and write in the Journal besides the store (M3 §6.6, §7.1, §8.1, §18): the
+ * `memory_runs` rows, the chapters waiting for their nap, the Narrator's activity in a window, the canon
+ * come due, the refusals of the day. [DuckJobsData] in production; a fake in tests.
  */
 interface JobsData {
     /** Rows left `running` by a crash become `interrupted`; how many. */
@@ -59,12 +45,6 @@ interface JobsData {
 
     /** Sets `canon.due_signaled_at`: [ref] is never signaled again. */
     suspend fun markDueSignaled(ref: Ref, at: Instant)
-
-    /** The memories not archived, of importance [minImportance] or more, with a place, that happened before [before]. */
-    suspend fun placedMemories(minImportance: Int, before: Instant): List<CueMemory>
-
-    /** The memories not archived, of importance [minImportance] or more, that happened on one of [days] in [zone]. */
-    suspend fun memoriesOn(days: List<LocalDate>, zone: ZoneId, minImportance: Int): List<CueMemory>
 
     /** The `memory` decisions `rejected` and `voice_warning` recorded since [since]. */
     suspend fun refusals(since: Instant): Refusals
@@ -184,26 +164,6 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         journal.write(WRITE_TIMEOUT_MS) { c -> c.update("UPDATE canon SET due_signaled_at = ? WHERE id = ?", at, ref.id) }
     }
 
-    override suspend fun placedMemories(minImportance: Int, before: Instant): List<CueMemory> = journal.read(READ_TIMEOUT_MS) { c ->
-        c.query(
-            "SELECT $CUE_COLUMNS FROM memories WHERE NOT archived AND importance >= ? AND dim IS NOT NULL AND occurred_from <= ? " +
-                "ORDER BY id LIMIT $MAX_PLACED",
-            minImportance, before,
-        ) { cue() }
-    }
-
-    override suspend fun memoriesOn(days: List<LocalDate>, zone: ZoneId, minImportance: Int): List<CueMemory> {
-        if (days.isEmpty()) return emptyList()
-        val ranges = days.map { it.atStartOfDay(zone).toInstant() to it.plusDays(1).atStartOfDay(zone).toInstant() }
-        val within = ranges.joinToString(" OR ") { "(occurred_from >= ? AND occurred_from < ?)" }
-        val parameters = listOf<Any?>(minImportance) + ranges.flatMap { listOf(it.first, it.second) }
-        return journal.read(READ_TIMEOUT_MS) { c ->
-            c.query("SELECT $CUE_COLUMNS FROM memories WHERE NOT archived AND importance >= ? AND ($within) ORDER BY id", *parameters.toTypedArray()) {
-                cue()
-            }
-        }
-    }
-
     override suspend fun refusals(since: Instant): Refusals = journal.read(READ_TIMEOUT_MS) { c ->
         c.query(
             "SELECT count(*) FILTER (WHERE decision = 'rejected'), count(*) FILTER (WHERE decision = 'voice_warning') " +
@@ -246,15 +206,6 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         transcript = getString(10),
     )
 
-    private fun ResultSet.cue() = CueMemory(
-        ref = Ref(RefKind.MEMORY, getLong(1)),
-        occurredFrom = instant(2),
-        content = getString(3),
-        players = (getArray(4)?.array as? Array<*>).orEmpty().map { it as? UUID ?: UUID.fromString(it.toString()) },
-        importance = getInt(5),
-        place = getString(6)?.let { Pos(it, getInt(7), getInt(8), getInt(9)) },
-    )
-
     companion object {
         /** How a run stopped by the gateway's 402 starts its `error` (M3 §7.1): such a failure is not counted against a nap. */
         const val BUDGET_PREFIX = "budget:"
@@ -263,10 +214,6 @@ class DuckJobsData(private val journal: Journal) : JobsData {
             "conversations, writes, rejected, input_tokens, output_tokens, report, error"
         private const val CONVERSATION_COLUMNS =
             "c.conversation_id, c.role, c.label, c.chapter, c.task_id, c.started_at, c.ended_at, c.end_reason, c.summary, c.transcript"
-        private const val CUE_COLUMNS = "id, occurred_from, content, players, importance, dim, x, y, z"
-
-        /** Placed memories the cue grid holds at most. */
-        private const val MAX_PLACED = 20_000
         private const val READ_TIMEOUT_MS = 30_000L
         private const val WRITE_TIMEOUT_MS = 30_000L
     }
