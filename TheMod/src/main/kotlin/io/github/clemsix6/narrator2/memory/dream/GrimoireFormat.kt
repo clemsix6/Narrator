@@ -1,28 +1,25 @@
 package io.github.clemsix6.narrator2.memory.dream
 
-import io.github.clemsix6.narrator2.memory.MemoryLimits
-import io.github.clemsix6.narrator2.memory.VoiceGuard
-
 /**
- * The form of the Grimoire (M3 §8.4), checked before it is written: the store checks its budget and its
- * voice like any document, not its sections. The Grimoire is the Narrator's compact core memory, always in
- * its briefing, rewritten whole by every dream within the same budget:
+ * The form of the Grimoire (M3 §8.4), checked before it is written. The Grimoire is the Narrator's compact
+ * core memory, always in its briefing, rewritten whole by every dream within the same budget:
  *
  * - the seven sections of [SECTIONS], each as a `## ` heading in English, in this order, nothing before the
  *   first one and no other heading (a line starting with `#`);
- * - at least one non-blank line under each heading (`- aucun` when there is nothing to say);
- * - [MemoryLimits.GRIMOIRE] characters at most, no `<` nor `>`, factual and in the third person
- *   ([VoiceGuard]).
+ * - at least one non-blank line under each heading (`- aucun` when there is nothing to say).
  *
- * [problems] lists every problem at once, for the model to fix them all in one go.
+ * Its budget, its chevrons and its voice are left to the store: `MemoryStore.writeDoc` checks them like
+ * any document's, with the names of the players masked first (a player called `Moi` is not the Narrator's
+ * voice). A check of the voice here, without the names, would refuse a Grimoire that names such a player.
+ *
+ * [problems] lists every problem of form at once, for the model to fix them all in one go.
  */
 object GrimoireFormat {
     /** The sections of the Grimoire, in order: their headings are `## Players`, `## Running gags`… */
     val SECTIONS: List<String> = listOf("Players", "Running gags", "Arcs", "What works", "What falls flat", "Plans", "Watch out")
 
-    /** Every problem of [text] as a Grimoire, in English, each with its fix; empty when it can be written. */
+    /** Every problem of form of [text] as a Grimoire, in English, each with its fix; empty when the store may check the rest. */
     fun problems(text: String): List<String> = buildList {
-        VoiceGuard.check(text, "text", MemoryLimits.GRIMOIRE)?.let(::add)
         val lines = text.lines()
         val headings = lines.withIndex().filter { it.value.trimStart().startsWith("#") }
         val names = headings.map { it.value.trim().removePrefix("##").trim() }
