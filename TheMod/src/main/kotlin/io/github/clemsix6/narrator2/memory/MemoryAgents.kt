@@ -27,6 +27,7 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -80,7 +81,7 @@ class MemoryAgents(
      */
     suspend fun run(role: Role, context: RunContext, label: String, opening: String, limits: TurnLimits, timeout: Duration): AgentRun {
         require(role == Role.CHRONICLER || role == Role.DREAMER) { "${role.id} is not a memory role" }
-        val id = Conversation.newId(role)
+        val id = "${role.id}-${UUID.randomUUID().toString().take(8)}"
         val started = clock.instant()
         var opened: Opened? = null
         contexts[id] = context

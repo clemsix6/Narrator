@@ -100,6 +100,9 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
     val zone: ZoneId
         get() = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: services.clock.zone
 
+    /** `21:06`, in the Journal's zone. */
+    fun time(at: Instant): String = time(at, zone)
+
     /**
      * The lines of the Director's [chapter] (its conversation id) in `]from, to]`, oldest first; the facts
      * only when [chat] is false. The caller passes a barrier first.
@@ -224,8 +227,8 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
             at = instant(3),
             line = buildString {
                 append("${ModelText.name(getString(2))} left at ${time(instant(3), zone)} after ${ToolText.duration((intOrNull(4) ?: 0) * 1_000L)}: ")
-                append(listOf("death" to getLong(5), "block broken" to getLong(6), "kill" to getLong(7), "advancement" to getLong(8))
-                    .joinToString { (what, n) -> "$n $what${if (n == 1L) "" else "s"}" })
+                val counts = listOf(getLong(5) to "death", getLong(6) to "block broken", getLong(7) to "kill", getLong(8) to "advancement")
+                append(counts.joinToString { (n, what) -> "$n ${if (n == 1L) what else what.replaceFirst(Regex("^(\\w+)"), "$1s")}" })
                 val ores = strings(9)
                 if (ores.isNotEmpty()) append(" (rare ores: ${ores.joinToString { EventFormatter.id(it) }})")
             },
@@ -591,25 +594,28 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
         /**
          * The facts the salience routes to the Director (T18), but teleports, dimension changes, respawns and
-         * loot chests; the owner of a block broken by another player. Advancements are sorted in code.
+         * loot chests; the owner of a block broken by another player. Advancements are sorted in code. (The
+         * JSON arrows bind looser than comparisons in DuckDB: they stay between parentheses.)
          */
         private const val FACTS_SQL = """
-            SELECT e.id, e.ts, e.type, e.player_uuid, e.player, e.dim, e.x, e.y, e.z, e.subject, e.amount, e.other,
-                   e.detail::VARCHAR, owner.name,
-                   coalesce(e.type = 'block_break' AND e.detail->>'placed_by' IS NOT NULL AND e.detail->>'placed_by' <> e.player_uuid::VARCHAR, false)
-            FROM events e
-            LEFT JOIN players owner ON e.type = 'block_break' AND e.detail->>'placed_by' IS NOT NULL
-                 AND owner.player_uuid::VARCHAR = e.detail->>'placed_by' AND owner.player_uuid IS DISTINCT FROM e.player_uuid
-            WHERE e.ts > ? AND e.ts <= ? AND (
-                e.type IN ('death', 'join', 'leave', 'health_low', 'advancement')
-                OR (e.type = 'kill' AND e.detail->>'pvp' = 'true')
-                OR (e.type = 'structure_enter' AND (e.detail->>'first_visit' = 'true' OR list_contains(?, e.subject)))
-                OR (e.type = 'biome_enter' AND e.detail->>'first_visit' = 'true')
-                OR (e.type = 'block_break' AND (list_contains(?, e.subject)
-                    OR (e.detail->>'placed_by' IS NOT NULL AND e.detail->>'placed_by' <> e.player_uuid::VARCHAR)))
-                OR (e.type = 'explosion' AND coalesce(e.detail->>'narrator', 'false') <> 'true'
-                    AND (coalesce(TRY_CAST(e.detail->>'player_blocks_hit' AS INTEGER), 0) > 0 OR coalesce(json_array_length(e.detail->'nearby'), 0) > 0))
+            WITH e AS (
+                SELECT id, ts, type, player_uuid, player, dim, x, y, z, subject, amount, other, detail,
+                       (detail ->> 'placed_by') AS placed_by, (detail ->> 'first_visit') = 'true' AS first_visit
+                FROM events WHERE ts > ? AND ts <= ?
             )
+            SELECT e.id, e.ts, e.type, e.player_uuid, e.player, e.dim, e.x, e.y, e.z, e.subject, e.amount, e.other,
+                   e.detail::VARCHAR, owner.name, coalesce(e.type = 'block_break' AND e.placed_by <> e.player_uuid::VARCHAR, false)
+            FROM e
+            LEFT JOIN players owner ON e.type = 'block_break' AND owner.player_uuid::VARCHAR = e.placed_by
+                 AND owner.player_uuid IS DISTINCT FROM e.player_uuid
+            WHERE e.type IN ('death', 'join', 'leave', 'health_low', 'advancement')
+                OR (e.type = 'kill' AND (e.detail ->> 'pvp') = 'true')
+                OR (e.type = 'structure_enter' AND (coalesce(e.first_visit, false) OR list_contains(?, e.subject)))
+                OR (e.type = 'biome_enter' AND coalesce(e.first_visit, false))
+                OR (e.type = 'block_break' AND (list_contains(?, e.subject) OR coalesce(e.placed_by <> e.player_uuid::VARCHAR, false)))
+                OR (e.type = 'explosion' AND coalesce((e.detail ->> 'narrator'), 'false') <> 'true'
+                    AND (coalesce(TRY_CAST((e.detail ->> 'player_blocks_hit') AS INTEGER), 0) > 0
+                         OR coalesce(json_array_length((e.detail -> 'nearby')), 0) > 0))
             ORDER BY e.ts, e.id"""
 
         private const val OPEN_CANON_SQL = "SELECT $CANON_COLUMNS FROM canon WHERE status IN ('planned', 'active') AND NOT archived ORDER BY created_at, id"
