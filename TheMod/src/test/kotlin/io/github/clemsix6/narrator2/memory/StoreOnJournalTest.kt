@@ -13,7 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
-/** The store on the real Journal (M3-02): writes on its writer thread, reads on its pool, facts just published seen. */
+/** The store on the real Journal (M3-02): writes on its writer thread, reads on its pool, lines just said cited and checked. */
 class StoreOnJournalTest {
     @Test
     fun `the store writes through the Journal's writer, sees what was just said and rolls a refused write back`() {
@@ -31,11 +31,13 @@ class StoreOnJournalTest {
                     )
                 }
                 fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Mimosa, je te rends tes bottes dans une heure, promis.", null, 42, null))
+                journal.barrier()
+                val line = journal.read(5_000) { it.query("SELECT id FROM chat WHERE channel = 'narrator'") { getLong(1) }.single() }
                 val chronicler = Author(Source.CHRONICLER, runId = 7)
                 val draft = CanonDraft(
                     CanonKind.PROMISE, "Le Narrateur a promis à Mimosa de lui rendre ses bottes dans l'heure.",
                     quote = "je te rends tes bottes dans une heure, promis", players = listOf(mimosa.uuid),
-                    dueAt = fixture.clock.instant().plus(Duration.ofHours(1)),
+                    dueAt = fixture.clock.instant().plus(Duration.ofHours(1)), evidenceEvents = listOf(line),
                 )
                 val added = store.addCanon(draft, chronicler)
                 assertIs<Added.New<CanonEntry>>(added)
@@ -45,7 +47,7 @@ class StoreOnJournalTest {
                 val refused = assertFailsWith<MemoryRejected> {
                     store.addCanon(draft.copy(kind = CanonKind.THREAT, quote = "je garde les bottes"), chronicler)
                 }
-                assertContains(refused.message.orEmpty(), "quote must be words the Narrator said")
+                assertContains(refused.message.orEmpty(), "quote must be words of a NARRATOR line cited in evidence")
                 assertEquals(1, fixture.count("canon"))
 
                 store.resolveCanon(added.row.ref, CanonStatus.FULFILLED, "Le Narrateur a rendu les bottes.", emptyList(), MemorySamples.director)

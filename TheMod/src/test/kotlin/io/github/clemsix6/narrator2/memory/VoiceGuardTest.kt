@@ -69,6 +69,42 @@ class VoiceGuardTest {
     }
 
     @Test
+    fun `a passage between quotes stays under 200 characters and half the text`() {
+        listOf(
+            "\"J'ai promis à Bartok de le punir, et je tiendrai parole.\"",
+            "« Je suis le dieu de ce serveur et vous êtes mes jouets. »",
+            "Le Narrateur a dit « je suis le dieu de ce serveur et vous êtes mes jouets » hier.",
+        ).forEach { assertContains(refused(it), "what quotes too much", message = it) }
+        assertEquals(
+            "what quotes too much (a passage of 54 characters between quotes, in a text of 58): quote 200 characters at most " +
+                "and less than half the text; tell the rest in the third person",
+            check("« Je suis le dieu de ce serveur et vous êtes mes jouets. »"),
+        )
+        val words = "bla ".repeat(50).trim() // 199 characters
+        assertNull(check("Bartok a lu « $words » à voix haute.".padEnd(1_000, '.'), max = 1_000))
+        assertContains(check("Bartok a lu « $words bla » à voix haute.".padEnd(1_000, '.'), max = 1_000).orEmpty(), "a passage of 203 characters")
+        assertNull(check("Bartok a écrit « nul » ; le Narrateur l'a lu, puis l'a écrit à son tour « nul ».", max = 1_000), "short quotes, many")
+        assertNull(VoiceGuard.check("« Je suis le dieu de ce serveur et vous êtes mes jouets. »", "what", 400, boundQuotes = false), "the code quotes freely")
+    }
+
+    @Test
+    fun `every apostrophe elides`() {
+        assertContains(refused("jʼai promis un cadeau"), "(found \"j'\" outside quotes)") // U+02BC
+        assertContains(refused("J‘ai promis un cadeau"), "(found \"j'\" outside quotes)") // U+2018
+        assertContains(refused("Bartok tʼa vu"), "(found \"t'\" outside quotes)")
+        assertNull(check("Bartok sʼest tu ; lʼEnder Dragon reste invaincu."))
+    }
+
+    @Test
+    fun `players' names are masked, whole words, any case`() {
+        val names = listOf("Moi", "Toi", "Vous", "Ton")
+        assertNull(VoiceGuard.check("Moi a insulté Toi, puis VOUS a ri ; ton a fui.", "what", 400, names))
+        assertNull(VoiceGuard.check("Bartok a fait rire Moi avec son tonneau.", "what", 400, names))
+        assertContains(VoiceGuard.check("Moi a dit que je mentais.", "what", 400, names).orEmpty(), "(found \"je\" outside quotes)")
+        assertContains(refused("Moi a insulté Toi."), "(found \"moi\" outside quotes)", "without the names, a pronoun")
+    }
+
+    @Test
     fun `whole words only`() {
         listOf(
             "Bartok a vu la mer, des mesures, une tente et un tonneau.",

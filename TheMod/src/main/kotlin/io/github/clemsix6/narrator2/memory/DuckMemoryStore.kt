@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
+import io.github.clemsix6.narrator2.memory.dream.DreamInputs
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
@@ -16,16 +17,17 @@ import java.util.UUID
 /**
  * The memory's store on the Journal's DuckDB database (M3 §4.2): the one point of writing of the memory.
  * Each write is one [Journal.write] job in which the store checks the vocabularies, bounds, players and
- * refs, runs [VoiceGuard] on every text a model wrote, checks the Chronicler's quotes against its job's
- * window ([Quotes]), looks for duplicates ([Dedup]), then writes the row, its index terms ([indexer]) and
+ * refs, runs [VoiceGuard] on every text written (players' names masked), checks what each author may write
+ * and the Chronicler's quotes against the Narrator lines it cites ([Quotes], [SAID_KINDS],
+ * [DREAMER_CANON]), looks for duplicates ([Dedup]), then writes the row, its index terms ([indexer]) and
  * its `memory_log` row ([MemoryLog]). A broken rule throws [MemoryRejected] (nothing written) with a
  * message for the model; each write ends with a `memory` decision (`written`, `duplicate`, `rejected`).
  * Reads run on the Journal's read pool.
  *
  * What the store computes, never the writer: ids ([IdKind.MEMORY]), times of writing, play clocks
- * ([playClock]), the initial stability of a memory (M3 §9.1), `counts` and `disrespect`, the time and
- * place of a memory from its evidence, the entry a nickname or title replaces, a trait's `since` and
- * `trend`.
+ * ([playClock]; an interaction's from the sessions at its time, [DuckPlayClock.playerSecondsAt]), the
+ * initial stability of a memory (M3 §9.1), `counts` and `disrespect`, the time and place of a memory from
+ * its evidence, the entry a nickname or title replaces, a trait's `since` and `trend`.
  */
 class DuckMemoryStore(
     private val journal: Journal,
@@ -117,20 +119,94 @@ class DuckMemoryStore(
             return Facts(first, last, place)
         }
 
-        /** The Chronicler's [quote] was said in its job's window: by the Narrator, or by [player] when given. */
-        fun checkQuote(quote: String?, player: UUID? = null) {
+        /** The names of the players of the world, masked by [voice]. */
+        private val playerNames: List<String> by lazy { connection.query("SELECT name FROM players") { getString(1) }.filterNotNull() }
+
+        /**
+         * [VoiceGuard]: [text] is factual and in the third person, within [max]; the players' names are
+         * masked (a player may be called `Moi`). The passages between quotes are bounded for the texts of
+         * the models, not for those of the code (which quotes statements already checked) nor of operators.
+         */
+        fun voice(text: String, field: String, max: Int) {
+            VoiceGuard.check(text, field, max, playerNames, boundQuotes = author.source in MODELS)?.let(::reject)
+        }
+
+        /** What the Dreamer, which reads the players' chat and never hears the Narrator, may remember: observations. */
+        fun memoryKind(kind: MemoryKind) {
+            if (author.source == Source.DREAMER && kind != MemoryKind.OBSERVATION) {
+                reject("the Dreamer remembers observations only, not ${an(kind.id)}: remember it as an observation")
+            }
+        }
+
+        /**
+         * Who may put what in the canon (decision 8): the Narrator's commitments come from its own words.
+         * - The Dreamer plans arcs (`planned`) and keeps lore, without quote: it never heard the Narrator.
+         * - The Chronicler copies the Narrator's words: for the kinds said to players ([SAID_KINDS]) a quote
+         *   is required, and any quote must be [Quotes.substantial] and inside a Narrator line cited in the
+         *   evidence ([Quotes.narratorLines]).
+         */
+        fun canonSource(draft: CanonDraft, status: CanonStatus) {
+            when (author.source) {
+                Source.DREAMER -> {
+                    if (draft.kind !in DREAMER_CANON) {
+                        reject("the Dreamer plans arcs and keeps lore; ${an(draft.kind.id)} is recorded from the Narrator's own words, not by the Dreamer")
+                    }
+                    if (draft.kind == CanonKind.ARC && status != CanonStatus.PLANNED) reject("an arc the Dreamer prepares starts planned: the Narrator starts it")
+                    if (draft.quote != null) reject("quote: the Dreamer never heard the Narrator, it quotes nobody: remove quote")
+                }
+                Source.CHRONICLER -> narratorQuote(draft.kind, draft.quote, draft.evidenceEvents, draft.evidenceTools)
+                else -> Unit
+            }
+        }
+
+        private fun narratorQuote(kind: CanonKind, quote: String?, events: List<Long>, tools: List<Long>) {
+            val fix = "cite the NARRATOR line in evidence and copy its words"
+            if (quote == null) {
+                if (kind in SAID_KINDS) reject("quote is required for ${an(kind.id)}, the Narrator's exact words: $fix")
+                return
+            }
+            if (!Quotes.substantial(quote)) {
+                reject("quote is too short to show what the Narrator said (${Quotes.MIN_WORDS} words or ${Quotes.MIN_CHARS} characters at least): $fix")
+            }
+            if (!Quotes.saidIn(quote, Quotes.narratorLines(connection, events, tools))) {
+                reject("quote must be words of a NARRATOR line cited in evidence (an e… NARRATOR line, or a t… say, give_book or show_title call): $fix")
+            }
+        }
+
+        /** The Chronicler's interaction [quote] is words [player] said in its job's window (public chat or prayer). */
+        fun playerQuote(quote: String?, player: UUID) {
             if (quote == null || author.source != Source.CHRONICLER) return
             val runId = author.runId ?: reject("quote cannot be checked without a memory job: leave quote out")
             val (from, to) = Quotes.window(connection, runId, now)
                 ?: reject("quote cannot be checked: memory job $runId is unknown; leave quote out")
-            val said = if (player == null) {
-                Quotes.saidByNarrator(connection, quote, from, to)
-            } else {
-                Quotes.saidByPlayer(connection, player, quote, from, to)
-            }
-            if (said) return
-            val whose = if (player == null) "the Narrator" else names.ref(player).name
-            reject("quote must be words $whose said in this window; leave quote out or copy them exactly")
+            if (Quotes.saidByPlayer(connection, player, quote, from, to)) return
+            reject("quote must be words ${names.ref(player).name} said in this window; leave quote out or copy them exactly")
+        }
+
+        /**
+         * What reverting a nap or a dream undoes besides its rows (M3-FIX-A): its `memory_runs` row turns
+         * `failed` (« reverted by … »), so that the catch-up naps the chapter again and the next dream does
+         * not take it for done; a dream's reflections on players (`memory_state` `reflected:<uuid>`, written
+         * while it ran) are forgotten, so that its players are read again. Returns what it did, for the log.
+         */
+        fun forgetRun(runId: Long): List<String> {
+            val (kind, started, ended) = connection.query("SELECT kind, started_at, ended_at FROM memory_runs WHERE run_id = ?", runId) {
+                Triple(getString(1), instant(2), instantOrNull(3))
+            }.singleOrNull() ?: return emptyList()
+            if (kind != RunKind.NAP.id && kind != RunKind.DREAM.id) return emptyList()
+            connection.update(
+                "UPDATE memory_runs SET status = ?, error = ? WHERE run_id = ?",
+                RunStatus.FAILED.id, "reverted by ${author.actor}", runId,
+            )
+            val done = listOf("$kind run $runId marked failed")
+            if (kind != RunKind.DREAM.id) return done
+            val reflections = connection.query(
+                "SELECT key FROM memory_state WHERE starts_with(key, ?) AND updated_at BETWEEN ? AND ? ORDER BY key",
+                DreamInputs.REFLECTED_PREFIX, started, ended ?: now,
+            ) { getString(1) }
+            if (reflections.isEmpty()) return done
+            connection.update("DELETE FROM memory_state WHERE list_contains(?, key)", stringArray(reflections))
+            return done + "reflections forgotten: ${reflections.joinToString()}"
         }
     }
 
@@ -143,8 +219,9 @@ class DuckMemoryStore(
         if (draft.evidenceEvents.isNotEmpty() || draft.evidenceTools.isNotEmpty()) journal.barrier()
         val what = "memory ${draft.kind.id}"
         val added = write<Added<MemoryEntry>>(what, author) { job ->
-            voice(draft.title, "title", MemoryLimits.MEMORY_TITLE)
-            voice(draft.content, "what", MemoryLimits.MEMORY_CONTENT)
+            job.memoryKind(draft.kind)
+            job.voice(draft.title, "title", MemoryLimits.MEMORY_TITLE)
+            job.voice(draft.content, "what", MemoryLimits.MEMORY_CONTENT)
             within(draft.importance, MemoryLimits.IMPORTANCE, "importance")
             within(draft.valence, MemoryLimits.VALENCE, "valence")
             tags(draft.tags)
@@ -185,11 +262,11 @@ class DuckMemoryStore(
         val kind = draft.kind
         val what = "canon ${kind.id}"
         val added = write<Added<CanonEntry>>(what, author) { job ->
-            voice(draft.statement, "what", MemoryLimits.CANON_STATEMENT)
+            job.voice(draft.statement, "what", MemoryLimits.CANON_STATEMENT)
             quote(draft.quote, MemoryLimits.CANON_QUOTE)
             draft.stakes?.let {
                 if (kind != CanonKind.CHALLENGE) reject("stakes only go with a challenge, not ${an(kind.id)}: leave stakes out")
-                voice(it, "stakes", MemoryLimits.CANON_STAKES)
+                job.voice(it, "stakes", MemoryLimits.CANON_STAKES)
             }
             within(draft.importance, MemoryLimits.IMPORTANCE, "importance")
             val status = draft.status ?: CanonStatus.ACTIVE
@@ -199,7 +276,7 @@ class DuckMemoryStore(
             if (kind.onePerPlayer && players.size != 1) reject("${an(kind.id)} is given to exactly one player: name one")
             if (kind == CanonKind.PLACE && draft.place == null) reject("a place needs where it is: give at_player")
             job.evidence(draft.evidenceEvents, draft.evidenceTools)
-            job.checkQuote(draft.quote)
+            job.canonSource(draft, status)
             val replaced = if (kind.onePerPlayer) dedup.active(job.connection, kind, players.single()) else null
             val duplicate = if (replaced != null) {
                 replaced.takeIf { sameName(job.row(it, RefKind.CANON, "a canon entry"), draft) }
@@ -241,11 +318,14 @@ class DuckMemoryStore(
                 val since = old.resolvedAt?.let { " (${shortTime.format(it)})" }.orEmpty()
                 reject("$ref is already ${old.status.id}$since; remember a new entry instead")
             }
+            if (author.source == Source.DREAMER && old.kind != CanonKind.ARC) {
+                reject("the Dreamer settles arcs only; $ref is ${an(old.kind.id)}, settled by the Narrator from what happens in game")
+            }
             if (!old.kind.allows(old.status, status)) {
                 val allowed = old.kind.closedBy.joinToString(", ") { it.id }
                 reject("${an(old.kind.id)} cannot be ${status.id}; use $allowed")
             }
-            voice(note, "note", MemoryLimits.RESOLUTION)
+            job.voice(note, "note", MemoryLimits.RESOLUTION)
             val players = if (status == CanonStatus.WON) {
                 if (winners.isEmpty()) reject("won needs its winners: name them")
                 job.players(winners, "winners")
@@ -287,14 +367,15 @@ class DuckMemoryStore(
         if (draft.evidenceEvents.isNotEmpty() || draft.toolCalls.isNotEmpty() || draft.quote != null) journal.barrier()
         val what = "interaction ${draft.kind.id} ${draft.valence}"
         val added = write<Added<Interaction>>(what, author) { job ->
+            if (author.source == Source.DREAMER) reject("the Dreamer does not rate interactions: the Narrator and the Chronicler note them as they happen")
             val player = job.players(listOf(draft.player), "player").single()
             within(draft.valence, MemoryLimits.VALENCE, "valence")
-            voice(draft.summary, "summary", MemoryLimits.INTERACTION_SUMMARY)
+            job.voice(draft.summary, "summary", MemoryLimits.INTERACTION_SUMMARY)
             quote(draft.quote, MemoryLimits.INTERACTION_QUOTE)
             draft.canon?.let { job.refs(listOf(it), "canon", setOf(RefKind.CANON), 1) }
             draft.memory?.let { job.refs(listOf(it), "memory", setOf(RefKind.MEMORY), 1) }
             job.evidence(draft.evidenceEvents, draft.toolCalls)
-            job.checkQuote(draft.quote, player)
+            job.playerQuote(draft.quote, player)
             val at = draft.at ?: job.facts(draft.evidenceEvents, emptyList()).first ?: job.facts(emptyList(), draft.toolCalls).first ?: job.now
             val text = interactionText(draft.summary, draft.quote, draft.kind)
             dedup.interaction(job.connection, player, draft.kind, at, draft.evidenceEvents, draft.toolCalls, text)?.let { ref ->
@@ -306,7 +387,7 @@ class DuckMemoryStore(
                     "canon_id, memory_id, tool_calls, source, run_id, turn_id, conversation_id, evidence_events) " +
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ref.id, at, player, job.names.ref(player).name, draft.kind.id, draft.valence, draft.kind.counts,
-                draft.kind.isDisrespect(draft.valence), draft.summary, draft.quote, playClock.playerPlaySeconds(player, at.toEpochMilli()),
+                draft.kind.isDisrespect(draft.valence), draft.summary, draft.quote, DuckPlayClock.playerSecondsAt(job.connection, player, at),
                 draft.canon?.id, draft.memory?.id, longArray(draft.toolCalls.distinct()), author.source.id, author.runId, author.turnId,
                 author.conversationId, longArray(draft.evidenceEvents.distinct()),
             )
@@ -332,11 +413,11 @@ class DuckMemoryStore(
                 if (draft.label != null) reject("label only goes with a free trait: leave it out")
             } else {
                 if (draft.side != 0) reject("a free trait has no side: leave it out")
-                voice(draft.label ?: reject("a free trait needs its label"), "label", MemoryLimits.TRAIT_LABEL)
+                job.voice(draft.label ?: reject("a free trait needs its label"), "label", MemoryLimits.TRAIT_LABEL)
             }
             within(draft.intensity, MemoryLimits.INTENSITY, "intensity")
             if (!(draft.confidence in 0.0..1.0)) reject("confidence must be between 0 and 1")
-            draft.note?.let { voice(it, "note", MemoryLimits.TRAIT_NOTE) }
+            draft.note?.let { job.voice(it, "note", MemoryLimits.TRAIT_NOTE) }
             if (draft.evidence.isEmpty()) reject("evidence: cite at least one M- or I- row about this player")
             val evidence = job.refs(draft.evidence, "evidence", setOf(RefKind.MEMORY, RefKind.INTERACTION), MAX_TRAIT_EVIDENCE)
             evidence.firstOrNull { !concerns(job.connection.readRow(it), player) }?.let {
@@ -398,7 +479,7 @@ class DuckMemoryStore(
         val row = write("skill $key", author) { job ->
             job.players(listOf(player), "player")
             within(score, MemoryLimits.SKILL_SCORE, "score")
-            voice(rationale, "rationale", MemoryLimits.SKILL_RATIONALE)
+            job.voice(rationale, "rationale", MemoryLimits.SKILL_RATIONALE)
             val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_SHEET_EVIDENCE)
             val where = "player_uuid = ? AND skill = ?"
             val before = job.connection.snapshot("player_skills", where, player, skill.id)
@@ -427,7 +508,7 @@ class DuckMemoryStore(
             job.players(listOf(player), "player")
             job.players(listOf(other), "other")
             if (player == other) reject("a relation is between two different players")
-            voice(note, "note", MemoryLimits.RELATION_NOTE)
+            job.voice(note, "note", MemoryLimits.RELATION_NOTE)
             if (evidence.isEmpty()) reject("evidence: cite at least one row")
             val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_SHEET_EVIDENCE)
             val where = "player_uuid = ? AND other_uuid = ?"
@@ -451,7 +532,7 @@ class DuckMemoryStore(
                 DocKey.Review -> MemoryLimits.REVIEW
                 is DocKey.Sheet -> key.section.maxChars.also { job.players(listOf(key.player), "player") }
             }
-            voice(content, "text", max)
+            job.voice(content, "text", max)
             val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_DOC_EVIDENCE)
             val doc = MemoryDocs.write(job.connection, key.key, content, refs, job.now, author)
             val rowKey = MemoryDocs.rowKey(doc.key, doc.version)
@@ -465,8 +546,8 @@ class DuckMemoryStore(
     override suspend fun addChronicle(draft: ChronicleDraft, author: Author): ChronicleEntry {
         val level = draft.level
         val row = write("chronicle ${level.id}", author) { job ->
-            voice(draft.title, "title", MemoryLimits.CHRONICLE_TITLE)
-            voice(draft.summary, "text", level.maxChars)
+            job.voice(draft.title, "title", MemoryLimits.CHRONICLE_TITLE)
+            job.voice(draft.summary, "text", level.maxChars)
             if (draft.from > draft.to) reject("the period ends before it starts")
             val below = level.below
             if (below == null) {
@@ -516,7 +597,7 @@ class DuckMemoryStore(
     override suspend fun addNote(draft: NoteDraft, author: Author): Note {
         val row = write("note ${draft.kind.id}", author) { job ->
             val max = if (draft.kind == NoteKind.DREAM_HINT) MemoryLimits.DREAM_HINT else MemoryLimits.NOTE_TEXT
-            voice(draft.text, "text", max)
+            job.voice(draft.text, "text", max)
             val players = job.players(draft.players, "players")
             val refs = job.refs(draft.refs, "refs", RefKind.entries.toSet(), MAX_NOTE_REFS)
             val ref = job.next(RefKind.NOTE)
@@ -556,7 +637,7 @@ class DuckMemoryStore(
             val old = job.row<CanonEntry>(ref, RefKind.CANON, "a canon entry")
             if (old.kind != CanonKind.RUNNING_GAG) reject("$ref is ${an(old.kind.id)}, not a running gag")
             if (!old.status.open) reject("$ref is ${old.status.id}: remember a new running gag instead")
-            voice(note, "note", MemoryLimits.GAG_NOTE)
+            job.voice(note, "note", MemoryLimits.GAG_NOTE)
             val before = job.connection.snapshot(ref)
             if (state == GagState.RETIRED) {
                 job.connection.update(
@@ -580,7 +661,7 @@ class DuckMemoryStore(
             if (merged.isEmpty()) reject("merged: name the memories to merge into $keep")
             if (merged.size > MAX_MERGED) reject("merged: $MAX_MERGED memories at most")
             if (keep in merged) reject("merged: $keep cannot be merged into itself")
-            content?.let { voice(it, "text", MemoryLimits.MEMORY_CONTENT) }
+            content?.let { job.voice(it, "text", MemoryLimits.MEMORY_CONTENT) }
             val others = merged.distinct().map { ref ->
                 job.row<MemoryEntry>(ref, RefKind.MEMORY, "a memory").also { if (it.archived) reject("merged: $ref is archived already") }
             }
@@ -686,10 +767,12 @@ class DuckMemoryStore(
                 val changes = result.conflicts.take(5).joinToString("; ") { "${it.table} ${it.rowKey} by ${it.actor} (${shortTime.format(it.at)})" }
                 reject("run $runId cannot be reverted: rows it wrote changed since: $changes")
             }
-            result
+            result to if (result.writes > 0) job.forgetRun(runId) else emptyList()
         }
-        decide("reverted", "run $runId", "${reverted.writes} writes undone on ${reverted.rows.size} rows (by ${author.actor})", author, Log.Level.INFO)
-        return reverted.writes
+        val (result, forgotten) = reverted
+        val also = forgotten.joinToString("") { "; $it" }
+        decide("reverted", "run $runId", "${result.writes} writes undone on ${result.rows.size} rows$also (by ${author.actor})", author, Log.Level.INFO)
+        return result.writes
     }
 
     override suspend fun state(key: String): String? = read { connection ->
@@ -826,15 +909,25 @@ class DuckMemoryStore(
         const val MAX_REASON = 300
 
         private val ARCHIVABLE = setOf(RefKind.MEMORY, RefKind.CANON, RefKind.INTERACTION)
+
+        /** The authors whose texts are a model's: the passages they quote are bounded ([VoiceGuard.MAX_QUOTED]). */
+        private val MODELS = setOf(Source.DIRECTOR, Source.CHRONICLER, Source.DREAMER)
+
+        /**
+         * The kinds of canon the Narrator says to the players: what the Chronicler records of them quotes the
+         * Narrator's line it cites (decision 8). The Dreamer never records them.
+         */
+        val SAID_KINDS = setOf(
+            CanonKind.PROMISE, CanonKind.THREAT, CanonKind.CHALLENGE, CanonKind.PROPHECY, CanonKind.LAW,
+            CanonKind.NICKNAME, CanonKind.TITLE, CanonKind.PLACE,
+        )
+
+        /** What the Dreamer may add to the canon: an arc it plans, lore. Its running gags only change freshness ([setGag]). */
+        val DREAMER_CANON = setOf(CanonKind.ARC, CanonKind.LORE)
     }
 }
 
 private fun reject(message: String): Nothing = throw MemoryRejected(message)
-
-/** [VoiceGuard]: the text a model wrote is factual and in the third person, within [max]. */
-private fun voice(text: String, field: String, max: Int) {
-    VoiceGuard.check(text, field, max)?.let(::reject)
-}
 
 /** Someone's exact words: exempt from [VoiceGuard], but bounded. */
 private fun quote(quote: String?, max: Int) {
@@ -868,12 +961,25 @@ private fun entities(entities: List<String>) {
 /** A game id or a ref in a memory's `entities`: `minecraft:trial_chambers`, `C-45`. */
 private val ENTITY_ID = Regex("[A-Za-z0-9_:./-]{1,64}")
 
-/** Whether a nickname or title draft says the same as [active]: the same quote, or else the same statement, normalized. */
+/**
+ * Whether a nickname or title draft gives the same name as [active]: the same name between « » in both
+ * statements, else the same quote, else the same statement, normalized. The name comes first because the
+ * quotes differ for one name: the Chronicler copies a few words around it (« Salut, le Plongeur ! »), the
+ * Director often the name alone.
+ */
 private fun sameName(active: CanonEntry, draft: CanonDraft): Boolean {
+    val name = named(draft.statement)
+    val activeName = named(active.statement)
+    if (name != null && activeName != null) return name == activeName
     val quote = draft.quote?.let(Quotes::normalize)
-    val other = active.quote?.let(Quotes::normalize)
-    return if (quote != null && other != null) quote == other else Quotes.normalize(active.statement) == Quotes.normalize(draft.statement)
+    val activeQuote = active.quote?.let(Quotes::normalize)
+    return if (quote != null && activeQuote != null) quote == activeQuote else Quotes.normalize(active.statement) == Quotes.normalize(draft.statement)
 }
+
+/** The first name between « » of [statement], normalized; null when it has none. */
+private fun named(statement: String): String? = NAMED.find(statement)?.groupValues?.get(1)?.let(Quotes::normalize)?.takeIf { it.isNotEmpty() }
+
+private val NAMED = Regex("«([^«»]+)»")
 
 /** [word] with its indefinite article: `a promise`, `an arc`. */
 private fun an(word: String): String = if (word.first() in "aeiou") "an $word" else "a $word"

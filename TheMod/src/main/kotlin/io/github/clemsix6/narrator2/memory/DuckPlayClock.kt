@@ -106,6 +106,11 @@ class DuckPlayClock(
         (worldMillis + pending) / 1_000
     }
 
+    /**
+     * The player's clock now, its running session read until [atMillis]: every closed session known
+     * counts, even one that ended after [atMillis]. For a past instant (an interaction recorded late), read
+     * [playerSecondsAt] from the sessions instead.
+     */
     override fun playerPlaySeconds(player: UUID, atMillis: Long): Long {
         val closed = closedSeconds[player] ?: 0
         val live = players.get(player) ?: return closed
@@ -143,6 +148,18 @@ class DuckPlayClock(
         const val OWNER = "memory"
         private const val READ_TIMEOUT_MS = 30_000L
         private const val QUERY_TIMEOUT_S = 20
+
+        /**
+         * Seconds [player] had played at [at], from `sessions`: each session opened by then counts until it
+         * closed, or until [at] when it was still running then (the `playtime` formula of the sheet,
+         * bounded at [at]). The Journal closes at its opening the sessions a crash left open, so an open
+         * session is one being played. Runs on [connection] (the writer's, inside a write job).
+         */
+        fun playerSecondsAt(connection: Connection, player: UUID, at: Instant): Long = connection.query(
+            "SELECT CAST(round(coalesce(sum(greatest(0, epoch(least(coalesce(left_at, ?), ?) - joined_at))), 0)) AS BIGINT) " +
+                "FROM sessions WHERE player_uuid = ? AND joined_at <= ?",
+            at, at, player, at,
+        ) { getLong(1) }.single()
 
         /**
          * Seconds covered by at least one session between [from] (null: the beginning) and [to]: the union
