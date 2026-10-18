@@ -68,6 +68,7 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - `.\gradlew.bat runGameTest` lance les tests en jeu (Fabric GameTest, sur un serveur de test sans EULA).
 - `.\gradlew.bat liveTest` lance les tests de fumée réels (tag JUnit `live`, hors de `test`, `build` et `check`) contre LLMGW via le tunnel ouvert sur `localhost:8088` ; clé lue dans `NARRATOR_LLMGW_KEY` ou `.secrets/llmgw.key`, tests ignorés sans clé ni tunnel.
 - **Aucun appel réel à Claude ni à Jev dans les tests automatisés** : ils utilisent le faux serveur Anthropic des tests.
+- **Piège `runBlocking`** : `@Test fun x() = runBlocking { … }` prend pour type de retour celui de la dernière expression, et JUnit ignore sans bruit toute méthode de test qui ne renvoie pas `void` ; écris `runBlocking<Unit> { … }` (ou un corps en bloc). Le test `testing/TestMethodsReturnUnitTest` échoue en listant les méthodes fautives.
 - Une tâche n'est finie que si le build et les tests passent. Le rapport indique ce qui a été vérifié et comment.
 
 ## EULA de Minecraft
