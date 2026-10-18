@@ -44,7 +44,7 @@ class ConfigValidationTest {
             assertEquals(30, turnsPerHour)
         }
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
-        assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40), defaults.memory)
+        assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2), defaults.memory)
         assertEquals(JevConfig(true, "https://api.typesafe.ai", "TYPESAFE_API_KEY", "jev-1.13.0", 1_500), defaults.jev)
     }
 
@@ -100,6 +100,10 @@ class ConfigValidationTest {
             defaults.copy(memory = MemoryConfig(recallCooldownPlayMinutes = 1_441)) to "memory.recallCooldownPlayMinutes must be between 10 and 1440",
             defaults.copy(memory = MemoryConfig(attentionMinutes = 9)) to "memory.attentionMinutes must be between 10 and 600",
             defaults.copy(memory = MemoryConfig(attentionMinutes = 601)) to "memory.attentionMinutes must be between 10 and 600",
+            defaults.copy(memory = MemoryConfig(dreamMinHours = -1)) to "memory.dreamMinHours must be between 0 and 24",
+            defaults.copy(memory = MemoryConfig(dreamMinHours = 25)) to "memory.dreamMinHours must be between 0 and 24",
+            defaults.copy(memory = MemoryConfig(catchUpDays = -1)) to "memory.catchUpDays must be between 0 and 30",
+            defaults.copy(memory = MemoryConfig(catchUpDays = 31)) to "memory.catchUpDays must be between 0 and 30",
             defaults.copy(safety = SafetyConfig(protectedPlayers = listOf("Steve", "not a name"))) to
                 "safety.protectedPlayers[1] must be a player name",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("scoreboard", "tell raw"))) to
@@ -130,8 +134,8 @@ class ConfigValidationTest {
             defaults.copy(director = DirectorConfig(chapterTokenLimit = 900_000, chapterHardLimit = 900_000, emptyServerCloseMinutes = 120, turnsPerHour = 600)),
             defaults.copy(workers = WorkersConfig(1, 3, 30)),
             defaults.copy(workers = WorkersConfig(8, 40, 1_800)),
-            defaults.copy(memory = MemoryConfig(false, 2, 5, 6, 1, 1, 0, 10, 10)),
-            defaults.copy(memory = MemoryConfig(true, 60, 240, 168, 20, 60, 5, 1_440, 600)),
+            defaults.copy(memory = MemoryConfig(false, 2, 5, 6, 1, 1, 0, 10, 10, 0, 0)),
+            defaults.copy(memory = MemoryConfig(true, 60, 240, 168, 20, 60, 5, 1_440, 600, 24, 30)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(jev = JevConfig(baseUrl = "http://localhost:9000", timeoutMs = 300)),
             defaults.copy(jev = JevConfig(timeoutMs = 10_000)),

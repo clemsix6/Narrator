@@ -10,7 +10,8 @@ import java.time.Instant
 /**
  * What the memory jobs read and write in the Journal besides the store (M3 §6.6, §7.1, §8.1, §18): the
  * `memory_runs` rows, the chapters waiting for their nap, the Narrator's activity in a window, the canon
- * come due, the refusals of the day. [DuckJobsData] in production; a fake in tests.
+ * come due, the refusals of the day, the `memory_state` keys done with. [DuckJobsData] in production; a
+ * fake in tests.
  */
 interface JobsData {
     /** Rows left `running` by a crash become `interrupted`; how many. */
@@ -22,17 +23,29 @@ interface JobsData {
     /** Writes how [run] ended; its tokens are summed from the `llm_calls` of its conversations. */
     suspend fun finishRun(run: MemoryRun)
 
-    /** The latest run of [kind] (any status when [statuses] is empty), of the Director's [chapter] when given. */
-    suspend fun lastRun(kind: RunKind, statuses: Set<RunStatus> = emptySet(), chapter: String? = null): MemoryRun?
+    /** The latest run of [kind], whatever its status. */
+    suspend fun lastRun(kind: RunKind): MemoryRun?
+
+    /**
+     * Where the batches of the Director's [chapter] got to: the end of its latest window done, skipped or
+     * passed (a failed run whose `error` starts with [DuckJobsData.PASSED_PREFIX]); null when there is none.
+     */
+    suspend fun batchEnd(chapter: String): Instant?
+
+    /** Whether a batch of [chapter] other than [runId] failed over a window starting at [from] (a 402 does not count). */
+    suspend fun batchFailedFrom(chapter: String, from: Instant, runId: Long): Boolean
 
     /** When the first nap that ended `done` after [after] (ever when null) ended; null when there is none. */
     suspend fun firstNapDone(after: Instant?): Instant?
 
     /**
-     * The Director's chapters closed for good without a `done` or `skipped` nap, and whose nap failed fewer
-     * than [maxFailures] times (a 402 does not count), oldest first, [limit] at most.
+     * The Director's chapters closed for good at [closedSince] or later without a `done` or `skipped` nap,
+     * and whose nap failed fewer than [maxFailures] times (a 402 does not count), oldest first, [limit] at most.
      */
-    suspend fun chaptersToNap(maxFailures: Int, limit: Int): List<ConversationRecord>
+    suspend fun chaptersToNap(maxFailures: Int, limit: Int, closedSince: Instant): List<ConversationRecord>
+
+    /** How many Director chapters closed before [closedBefore] have no `done` or `skipped` nap: the catch-up never naps them. */
+    suspend fun chaptersNeverNapped(closedBefore: Instant): Int
 
     /** The `conversations` row of [conversationId]; null when it is not written (yet). */
     suspend fun chapter(conversationId: String): ConversationRecord?
@@ -48,6 +61,9 @@ interface JobsData {
 
     /** The `memory` decisions `rejected` and `voice_warning` recorded since [since]. */
     suspend fun refusals(since: Instant): Refusals
+
+    /** Removes the `memory_state` row [key], done with (the step of a dream run once the dream is over). */
+    suspend fun deleteState(key: String)
 }
 
 /** Counts of the store's refusals and voice warnings (`/narrator memory status`). */
@@ -104,13 +120,24 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         }
     }
 
-    override suspend fun lastRun(kind: RunKind, statuses: Set<RunStatus>, chapter: String?): MemoryRun? = journal.read(READ_TIMEOUT_MS) { c ->
-        val status = if (statuses.isEmpty()) "" else " AND status IN (${statuses.joinToString { "'${it.id}'" }})"
-        val ofChapter = if (chapter == null) "" else " AND chapter = ?"
-        val parameters = listOfNotNull(kind.id, chapter).toTypedArray()
-        c.query("SELECT $RUN_COLUMNS FROM memory_runs WHERE kind = ?$status$ofChapter ORDER BY started_at DESC, run_id DESC LIMIT 1", *parameters) {
-            run()
-        }.firstOrNull()
+    override suspend fun lastRun(kind: RunKind): MemoryRun? = journal.read(READ_TIMEOUT_MS) { c ->
+        c.query("SELECT $RUN_COLUMNS FROM memory_runs WHERE kind = ? ORDER BY started_at DESC, run_id DESC LIMIT 1", kind.id) { run() }.firstOrNull()
+    }
+
+    override suspend fun batchEnd(chapter: String): Instant? = journal.read(READ_TIMEOUT_MS) { c ->
+        c.query(
+            "SELECT max(window_to) FROM memory_runs WHERE kind = 'batch' AND chapter = ? " +
+                "AND (status IN ('done', 'skipped') OR (status = 'failed' AND coalesce(error, '') LIKE '$PASSED_PREFIX%'))",
+            chapter,
+        ) { instantOrNull(1) }.firstOrNull()
+    }
+
+    override suspend fun batchFailedFrom(chapter: String, from: Instant, runId: Long): Boolean = journal.read(READ_TIMEOUT_MS) { c ->
+        c.query(
+            "SELECT EXISTS (SELECT 1 FROM memory_runs WHERE kind = 'batch' AND chapter = ? AND window_from = ? AND run_id <> ? " +
+                "AND status = 'failed' AND coalesce(error, '') NOT LIKE '$BUDGET_PREFIX%')",
+            chapter, from, runId,
+        ) { getBoolean(1) }.first()
     }
 
     override suspend fun firstNapDone(after: Instant?): Instant? = journal.read(READ_TIMEOUT_MS) { c ->
@@ -120,22 +147,30 @@ class DuckJobsData(private val journal: Journal) : JobsData {
         ) { instantOrNull(1) }.firstOrNull()
     }
 
-    override suspend fun chaptersToNap(maxFailures: Int, limit: Int): List<ConversationRecord> {
+    override suspend fun chaptersToNap(maxFailures: Int, limit: Int, closedSince: Instant): List<ConversationRecord> {
         journal.barrier()
         return journal.read(READ_TIMEOUT_MS) { c ->
             c.query(
                 """
                 SELECT $CONVERSATION_COLUMNS FROM conversations c
-                WHERE c.role = 'director' AND c.ended_at IS NOT NULL
+                WHERE c.role = 'director' AND c.ended_at >= ?
                   AND NOT EXISTS (SELECT 1 FROM memory_runs r WHERE r.kind = 'nap' AND r.chapter = c.conversation_id
                                   AND r.status IN ('done', 'skipped', 'running'))
                   AND (SELECT count(*) FROM memory_runs r WHERE r.kind = 'nap' AND r.chapter = c.conversation_id
                        AND r.status = 'failed' AND coalesce(r.error, '') NOT LIKE '$BUDGET_PREFIX%') < ?
                 ORDER BY c.ended_at, c.conversation_id LIMIT $limit
                 """.trimIndent(),
-                maxFailures,
+                closedSince, maxFailures,
             ) { conversation() }
         }
+    }
+
+    override suspend fun chaptersNeverNapped(closedBefore: Instant): Int = journal.read(READ_TIMEOUT_MS) { c ->
+        c.query(
+            "SELECT count(*)::INTEGER FROM conversations c WHERE c.role = 'director' AND c.ended_at < ? AND NOT EXISTS " +
+                "(SELECT 1 FROM memory_runs r WHERE r.kind = 'nap' AND r.chapter = c.conversation_id AND r.status IN ('done', 'skipped'))",
+            closedBefore,
+        ) { getInt(1) }.first()
     }
 
     override suspend fun chapter(conversationId: String): ConversationRecord? = journal.read(READ_TIMEOUT_MS) { c ->
@@ -170,6 +205,10 @@ class DuckJobsData(private val journal: Journal) : JobsData {
                 "FROM engine_decisions WHERE kind = 'memory' AND ts >= ?",
             since,
         ) { Refusals(getInt(1), getInt(2)) }.first()
+    }
+
+    override suspend fun deleteState(key: String) {
+        journal.write(WRITE_TIMEOUT_MS) { c -> c.update("DELETE FROM memory_state WHERE key = ?", key) }
     }
 
     // ── Rows ────────────────────────────────────────────────────────────────────────────────────────
@@ -209,6 +248,12 @@ class DuckJobsData(private val journal: Journal) : JobsData {
     companion object {
         /** How a run stopped by the gateway's 402 starts its `error` (M3 §7.1): such a failure is not counted against a nap. */
         const val BUDGET_PREFIX = "budget:"
+
+        /**
+         * How a failed batch whose window is passed starts its `error`: it is the second batch of its chapter to
+         * fail from that start, and the next one starts at its end ([batchEnd]).
+         */
+        const val PASSED_PREFIX = "passed:"
 
         private const val RUN_COLUMNS = "run_id, kind, trigger, status, started_at, ended_at, window_from, window_to, chapter, " +
             "conversations, writes, rejected, input_tokens, output_tokens, report, error"

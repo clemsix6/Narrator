@@ -90,7 +90,8 @@ class ChroniclerReplayTest {
         }
         assertEquals(listOf("ok", "ok", "invalid", "ok", "ok", "ok"), results.map { it.second })
         assertTrue(results[1].third.startsWith("ok: already remembered as ${e.threat} "), results[1].third)
-        assertTrue(results[2].third.startsWith("Invalid arguments: quote must be words"), results[2].third)
+        assertTrue(results[2].third.startsWith("Invalid arguments: "), results[2].third) // the store's words for a made-up quote
+        assertEquals(0L, f.count("canon", "kind = 'promise'"), "the made-up promise is not written")
         assertTrue(results[5].third.startsWith("ok: ${e.nickname} nickname → Bartok served again at 20:05: 1 use"), results[5].third)
 
         // The canon: the Director's threat once, the forgotten one written by the Chronicler with its quote, for its run.
