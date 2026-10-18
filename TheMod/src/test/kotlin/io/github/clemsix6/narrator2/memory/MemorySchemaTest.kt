@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.journal.DuckDatabase
 import io.github.clemsix6.narrator2.journal.DuckJournal
+import io.github.clemsix6.narrator2.journal.EventTypesTable
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.SchemaDoc
@@ -59,7 +60,8 @@ class MemorySchemaTest {
                 "schema_version", "players", "player_names", "sessions", "events", "positions", "chat", "private_messages",
                 "chat_signals", "stat_totals", "conversations", "turns", "tasks", "llm_calls", "tool_calls", "engine_decisions",
             )
-            assertEquals(MemorySchema.TABLES.toSet(), comments.keys - v1, "the tables V2 creates")
+            // event_types is no migration's: DuckDatabase recreates it at every opening (M3-08).
+            assertEquals(MemorySchema.TABLES.toSet(), comments.keys - v1 - EventTypesTable.NAME, "the tables V2 creates")
             MemorySchema.TABLES.forEach { table ->
                 val comment = comments[table].orEmpty()
                 assertTrue(comment.isNotBlank() && comment.length <= 120 && comment.none { it == '<' || it == '>' }, "comment on $table: $comment")

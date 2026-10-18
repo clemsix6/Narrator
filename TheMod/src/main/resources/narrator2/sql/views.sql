@@ -260,3 +260,111 @@ WHERE database_name = current_database() AND schema_name = 'main' AND lower(tabl
   AND table_name NOT IN ('private_messages') -- Journal.HIDDEN_FROM_MODEL
 ORDER BY column_index;
 COMMENT ON MACRO TABLE columns_of IS 'the columns of a table or view, with types and comments';
+
+-- ── The memory (M3 §13) ─────────────────────────────────────────────────────────────────────────────
+-- What the Narrator remembers, for the Director and the Analyst: the memory's tables stay readable, but only these
+-- views are described to the model. They give the references the memory tools take (M-812, C-45, I-513, H-88),
+-- players by their current name (a UUID no player row knows stays a UUID), and leave out what is no longer
+-- remembered: archived rows (an operator's forget, a faded memory, one merged into another) and superseded chronicle.
+
+CREATE OR REPLACE VIEW mem_memories AS
+WITH n AS (SELECT map(list(player_uuid), list(name)) AS names FROM players),
+     -- The world play clock, saved every 5 minutes by the memory (DuckPlayClock).
+     clock AS (SELECT max(TRY_CAST(value AS BIGINT)) AS world_s FROM memory_state WHERE key = 'world_play_s')
+SELECT 'M-' || m.id AS ref, m.kind, m.occurred_from AS occurred, m.title, m.content,
+       list_transform(m.players, u -> coalesce(n.names[u], CAST(u AS VARCHAR))) AS players, m.tags, m.importance, m.valence,
+       -- Decay.strength: max(0.02, 2^(-age / half-life)), age in hours of world play since the last reinforcement;
+       -- NULL while the clock is unknown (greatest() would skip the NULL and say 1). Results show two decimals.
+       CASE WHEN clock.world_s IS NOT NULL
+            THEN greatest(0.02, pow(2, -greatest(0, clock.world_s - m.reinforced_play_s) / 3600 / m.stability_h))
+       END AS strength
+FROM memories m, n, clock
+WHERE NOT m.archived;
+COMMENT ON VIEW mem_memories IS 'Episodes, observations, reflections (French); strength: 1 fresh to 0.02 faded';
+COMMENT ON COLUMN mem_memories.ref IS 'its reference for the memory tools, e.g. M-812';
+COMMENT ON COLUMN mem_memories.kind IS 'episode, observation or reflection';
+COMMENT ON COLUMN mem_memories.occurred IS 'when it began';
+COMMENT ON COLUMN mem_memories.players IS 'who it is about, the main player first; empty: the whole server';
+COMMENT ON COLUMN mem_memories.tags IS 'controlled tags: death, lava, insult, promise, nether, gag:slug, arc:C-45…';
+COMMENT ON COLUMN mem_memories.importance IS '1 (trivial) to 10 (major)';
+COMMENT ON COLUMN mem_memories.valence IS '-3 to +3, for the main player';
+COMMENT ON COLUMN mem_memories.strength IS 'how well it is remembered: 1 fresh, down to 0.02 faded; recalling it makes it stronger';
+
+CREATE OR REPLACE VIEW mem_canon AS
+WITH n AS (SELECT map(list(player_uuid), list(name)) AS names FROM players)
+SELECT 'C-' || c.id AS ref, c.kind, c.status, c.statement, c.quote,
+       list_transform(c.players, u -> coalesce(n.names[u], CAST(u AS VARCHAR))) AS players,
+       c.due_at, c.resolved_at, c.resolution, c.created_at
+FROM canon c, n
+WHERE NOT c.archived;
+COMMENT ON VIEW mem_canon IS 'What the Narrator said or decided: promises, challenges, laws, nicknames, places, lore…; open: status active or planned';
+COMMENT ON COLUMN mem_canon.ref IS 'its reference for the memory tools, e.g. C-45';
+COMMENT ON COLUMN mem_canon.kind IS 'promise, threat, challenge, law, prophecy, nickname, title, place, lore, opinion, running_gag, arc or claim';
+COMMENT ON COLUMN mem_canon.status IS 'planned or active (open); fulfilled, broken, expired, won, lost, abandoned, cancelled, resolved or retired';
+COMMENT ON COLUMN mem_canon.statement IS 'what it says, in French';
+COMMENT ON COLUMN mem_canon.quote IS 'the Narrator''s own words, when said to players';
+COMMENT ON COLUMN mem_canon.players IS 'to or about whom; empty: everyone';
+COMMENT ON COLUMN mem_canon.due_at IS 'deadline; NULL: none';
+COMMENT ON COLUMN mem_canon.resolution IS 'how it ended';
+
+CREATE OR REPLACE VIEW mem_interactions AS
+SELECT 'I-' || i.id AS ref, i.ts, coalesce(p.name, i.player) AS player, i.kind, i.valence, i.disrespect, i.summary, i.quote
+FROM interactions i
+LEFT JOIN players p USING (player_uuid)
+WHERE NOT i.archived;
+COMMENT ON VIEW mem_interactions IS 'Noted conduct toward the Narrator (insult, prayer…) and his punishments, blessings, gifts';
+COMMENT ON COLUMN mem_interactions.ref IS 'its reference for the memory tools, e.g. I-513';
+COMMENT ON COLUMN mem_interactions.player IS 'the player''s current name';
+COMMENT ON COLUMN mem_interactions.valence IS 'how it reflects on the player in the Narrator''s eyes, -3 to +3';
+COMMENT ON COLUMN mem_interactions.disrespect IS 'a lack of respect toward the Narrator';
+COMMENT ON COLUMN mem_interactions.summary IS 'what happened, in French';
+COMMENT ON COLUMN mem_interactions.quote IS 'the player''s own words, when they matter';
+
+-- Favor.kt (M3 §6.2): a weighted mean of the valences of the interactions that count, with a neutral prior of three
+-- interactions; weight 0.7 · 2^(-age / 10 h) + 0.3 · 2^(-age / 100 h), age in the player's own hours of play. The trend
+-- is the favor now minus the favor 5 h of the player's play earlier, from the interactions known then. FavorTest and
+-- SqlViewsTest check it against Favor.kt; respect and attention stay in Favor.kt (the player sheet shows them).
+CREATE OR REPLACE VIEW mem_favor AS
+WITH clock AS (
+    SELECT pl.player_uuid, pl.name, pl.playtime_s + coalesce((SELECT sum(epoch(now() - s.joined_at)) FROM sessions s
+        WHERE s.player_uuid = pl.player_uuid AND s.left_at IS NULL), 0) AS played_s
+    FROM players pl),
+w AS (
+    SELECT i.player_uuid, i.valence,
+           0.7 * pow(2, -(c.played_s - i.played_s) / 36000) + 0.3 * pow(2, -(c.played_s - i.played_s) / 360000) AS w,
+           CASE WHEN i.played_s <= c.played_s - 18000
+                THEN 0.7 * pow(2, -(c.played_s - 18000 - i.played_s) / 36000) + 0.3 * pow(2, -(c.played_s - 18000 - i.played_s) / 360000)
+           END AS w_before
+    FROM interactions i
+    JOIN clock c USING (player_uuid)
+    WHERE i.counts AND NOT i.archived AND i.played_s <= c.played_s),
+f AS (
+    SELECT player_uuid, 100 * sum(valence * w) / (3 * (sum(w) + 3)) AS favor,
+           100 * coalesce(sum(valence * w_before), 0) / (3 * (coalesce(sum(w_before), 0) + 3)) AS favor_before
+    FROM w
+    GROUP BY player_uuid)
+SELECT c.name AS player, f.favor, f.favor - f.favor_before AS trend,
+       (SELECT count(*) FROM interactions i WHERE i.player_uuid = c.player_uuid AND i.disrespect AND NOT i.archived) AS disrespect
+FROM clock c
+LEFT JOIN f USING (player_uuid);
+COMMENT ON VIEW mem_favor IS 'Favor with the Narrator, -100 to 100; trend: change over the player''s last 5 h of play';
+COMMENT ON COLUMN mem_favor.favor IS 'NULL: no conduct noted yet';
+COMMENT ON COLUMN mem_favor.trend IS 'favor now minus favor 5 h of the player''s play ago';
+COMMENT ON COLUMN mem_favor.disrespect IS 'lacks of respect toward the Narrator noted';
+
+CREATE OR REPLACE VIEW mem_stats AS
+SELECT p.name AS player, s.stat, s.value, s.detail
+FROM sheet_stats s
+JOIN players p USING (player_uuid);
+COMMENT ON VIEW mem_stats IS 'Stats the code computes: deaths, kills, mining, travel (m), gear (0-5), luck (0-100), style…';
+COMMENT ON COLUMN mem_stats.stat IS 'playtime, deaths, kills, pvp, mining, building, travel, exploration, gear, advancements, economy, places, narrator, luck, style or signals';
+COMMENT ON COLUMN mem_stats.value IS 'the main figure: seconds, count, metres, tier or index';
+COMMENT ON COLUMN mem_stats.detail IS 'the breakdown, e.g. deaths: top causes, last death, absurd ones';
+
+CREATE OR REPLACE VIEW mem_chronicle AS
+SELECT 'H-' || id AS ref, level, period_from, period_to, title, summary
+FROM chronicle
+WHERE superseded_by IS NULL;
+COMMENT ON VIEW mem_chronicle IS 'The chronicle (French) by chapter, session, season and saga';
+COMMENT ON COLUMN mem_chronicle.ref IS 'its reference for the memory tools, e.g. H-88';
+COMMENT ON COLUMN mem_chronicle.level IS 'chapter, session, season or saga';
