@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.shownName
@@ -38,10 +39,12 @@ import java.util.UUID
  * "While away" is written by the code: the chronicle's sessions written since the player left, the
  * chapters not in a session yet, the open commitments about them. Every source is read on its own; one
  * that fails says so in its place. What is shown goes into the chapter ([ChapterMemory.shownRefs],
- * [ChapterMemory.sheetsShownAt]) and gets a `recalls` row (`join`); a dream hint shown is marked `shown`.
- * Built again after a request that was not accepted (the Director then puts the chapter back as it was),
- * the same block comes back, its dream hint included, without being marked twice.
+ * [ChapterMemory.sheetsShownAt]); its `recalls` rows (`join`) and its dream hints to mark `shown` wait in
+ * [ChapterMemory.unrecorded] for the model to accept the request ([Memory.recordShown]). Built again after
+ * a request that was not accepted (the Director then puts the chapter back as it was), the same block
+ * comes back, its dream hint included, and is recorded once.
  *
+ * @param sheets where the sheets are read; they are rendered here ([SheetRenderer]), which knows the rows each form shows.
  * @param zone the Journal's zone, for dates.
  */
 class JoinBrief(
@@ -52,7 +55,7 @@ class JoinBrief(
 ) {
     private val log = Log.memory
     private val dates = MemoryDates(zone)
-    private val showings = Showings()
+    private val renderer = SheetRenderer(zone)
 
     /** The player's last session before this one. */
     private class Session(val joinedAt: Instant, val leftAt: Instant)
@@ -70,15 +73,6 @@ class JoinBrief(
      */
     suspend fun lines(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): List<String> =
         joins(signals).flatMapIndexed { i, join -> brief(join, chapter, now, full = i < MAX_FULL) }
-
-    private fun joins(signals: List<DirectorSignal>): List<Envelope> {
-        val events = signals.filterIsInstance<DirectorSignal.Event>().map { it.envelope }
-        val last = events.filter { it.event is PlayerJoined }.sortedBy { it.id }.associateBy { (it.event as PlayerJoined).player.uuid }
-        return last.values.filter { join ->
-            val uuid = (join.event as PlayerJoined).player.uuid
-            events.none { it.id > join.id && (it.event as? PlayerLeft)?.player?.uuid == uuid }
-        }.sortedBy { it.id }
-    }
 
     private suspend fun brief(envelope: Envelope, chapter: ChapterMemory, now: Long, full: Boolean): List<String> {
         val join = envelope.event as PlayerJoined
@@ -108,18 +102,18 @@ class JoinBrief(
             return listOf("$header: (sheet unavailable: ${ModelText.escape(reason)})")
         }
         chapter.sheetsShownAt[player.uuid] = now
-        if (!full) return listOf("$header: ${sheets.render(sheet, SheetDetail.LINE, now)}")
+        if (!full) return listOf("$header: ${renderer.render(sheet, SheetDetail.LINE, now)}")
         return fullBrief(header, sheet, last, envelope.id, chapter, now)
     }
 
-    /** The full join of [sheet]'s player, within [MAX_CHARS]; what it shows goes into [chapter] and the `recalls`. */
+    /** The full join of [sheet]'s player, within [MAX_CHARS]; what it shows goes into [chapter], and waits there to be recorded. */
     private suspend fun fullBrief(header: String, sheet: PlayerSheet, last: Session?, eventId: Long, chapter: ChapterMemory, now: Long): List<String> {
         val at = Instant.ofEpochMilli(now)
-        val condensed = sheets.render(sheet, SheetDetail.CONDENSED, now)
-        val hints = hints(sheet.player.uuid, chapter)
+        val condensed = renderer.rendered(sheet, SheetDetail.CONDENSED, now)
+        val hints = hints(sheet.player.uuid)
         val fixed = buildList {
             add("$header:")
-            condensed.lines().forEach { add(INDENT + it) }
+            condensed.text.lines().forEach { add(INDENT + it) }
             add(INDENT + lastSessionLine(sheet, last, at))
         }
         val hintLines = hints.map { "${INDENT}Dream hint (once, ${it.ref}): ${ModelText.escape(it.text)}" }
@@ -127,19 +121,9 @@ class JoinBrief(
         val (awayLine, awayRefs) = whileAway(sheet, last, at, room)
         val lines = BriefText.within(fixed + (INDENT + awayLine) + hintLines, MAX_CHARS)
 
-        val shown = (SheetRenderer.refs(condensed) + awayRefs + hints.map { it.ref }).distinct()
+        val shown = (condensed.refs + awayRefs + hints.map { it.ref }).distinct()
         chapter.shownRefs += shown
-        record(shown, chapter, eventId)
-        for (hint in hints) {
-            if (!showings.shown(hint.ref, chapter)) continue
-            try {
-                store.markNote(hint.ref, NoteStatus.SHOWN, MemoryBriefing.ENGINE)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.warn("join: ${hint.ref} was shown but could not be marked: ${e.message}")
-            }
-        }
+        chapter.unrecorded += Shown(shown, RecallChannel.JOIN, RecallContext(chapter.conversationId, null, eventId), hints.map { it.ref })
         return lines
     }
 
@@ -161,11 +145,10 @@ class JoinBrief(
         null
     }
 
-    /** The open dream hints for [player] (the newest [MAX_HINTS]), or those shown in [chapter] by a request that failed. */
-    private suspend fun hints(player: UUID, chapter: ChapterMemory): List<Note> = try {
+    /** The dream hints for [player] not shown yet, the newest [MAX_HINTS]: one shown by a request that was not accepted is not marked, and comes again. */
+    private suspend fun hints(player: UUID): List<Note> = try {
         store.openNotes().filter { note ->
-            note.kind == NoteKind.DREAM_HINT && note.players.any { it.uuid == player } &&
-                (note.status == NoteStatus.OPEN || showings.again(note.ref, chapter))
+            note.kind == NoteKind.DREAM_HINT && note.players.any { it.uuid == player } && note.status == NoteStatus.OPEN
         }.takeLast(MAX_HINTS)
     } catch (e: CancellationException) {
         throw e
@@ -247,19 +230,29 @@ class JoinBrief(
         append(entry.quote?.let { " ${BriefText.quote(it, QUOTE_MAX)}" } ?: ": ${BriefText.cut(entry.statement, QUOTE_MAX)}")
     }
 
-    private suspend fun record(refs: List<Ref>, chapter: ChapterMemory, eventId: Long) {
-        try {
-            store.recorded(refs, RecallChannel.JOIN, RecallContext(chapter.conversationId, null, eventId))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log.warn("join: the refs shown could not be recorded (no recalls row, no reinforcement): ${e.message}")
-        }
-    }
-
     private fun reason(e: Exception): String = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 
     companion object {
+        /** The joins among [signals]: the last join of each player still online at the end of [signals], in order of arrival. */
+        fun joins(signals: List<DirectorSignal>): List<Envelope> {
+            val events = signals.filterIsInstance<DirectorSignal.Event>().map { it.envelope }
+            val last = events.filter { it.event is PlayerJoined }.sortedBy { it.id }.associateBy { (it.event as PlayerJoined).player.uuid }
+            return last.values.filter { join ->
+                val uuid = (join.event as PlayerJoined).player.uuid
+                events.none { it.id > join.id && (it.event as? PlayerLeft)?.player?.uuid == uuid }
+            }.sortedBy { it.id }
+        }
+
+        /**
+         * The players among [signals] whose join would show their sheet in [chapter] at [now]: not their first
+         * time on the server, their sheet not shown since they joined, nor less than [RESHOW_MS] ago.
+         */
+        fun sheetsDue(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): List<PlayerRef> = joins(signals).mapNotNull { envelope ->
+            val join = envelope.event as PlayerJoined
+            val shownAt = chapter.sheetsShownAt[join.player.uuid]
+            join.player.takeIf { !join.firstTime && (shownAt == null || (shownAt < envelope.ts && now - shownAt >= RESHOW_MS)) }
+        }
+
         /** Characters of one player's join, at most (M3 §11.2). */
         const val MAX_CHARS = 3_500
 

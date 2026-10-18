@@ -79,13 +79,17 @@ class FakeMemory(private val clockSource: Clock = TestClock()) : Memory {
     override val clock = FakePlayClock()
     override val jobs = FakeJobs()
 
-    /** What [briefing] returns. */
+    /** What [briefing] returns, once [brief] ran on the chapter. */
     @Volatile
     var briefingSections: List<BriefingSection> = emptyList()
 
-    /** What [attachments] returns for the signals it is given. */
+    /** What [briefing] does to the chapter before it returns (shows refs, waits…); nothing by default. */
     @Volatile
-    var attach: (List<DirectorSignal>) -> String? = { null }
+    var brief: suspend (ChapterMemory) -> Unit = {}
+
+    /** What [attachments] returns for the signals it is given; it may suspend, as a slow memory does. */
+    @Volatile
+    var attach: suspend (List<DirectorSignal>) -> String? = { null }
 
     /** What [situationLines] returns. */
     @Volatile
@@ -94,13 +98,19 @@ class FakeMemory(private val clockSource: Clock = TestClock()) : Memory {
     /** The run contexts [runContext] knows, by conversation id. */
     val runs = ConcurrentHashMap<String, RunContext>()
 
-    /** Calls made: the chapters briefed, the signals given to [attachments], the chapters closed. */
+    /**
+     * Calls made: the chapters briefed (and the form asked for, [briefedReduced]), the signals given to
+     * [attachments], the chapters closed. What [recordShown] records goes to [store] (`recalls`, `markNote`).
+     */
     val briefed = CopyOnWriteArrayList<ChapterMemory>()
+    val briefedReduced = CopyOnWriteArrayList<Boolean>()
     val attached = CopyOnWriteArrayList<List<DirectorSignal>>()
     val closed = CopyOnWriteArrayList<ConversationRecord>()
 
-    override suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection> {
+    override suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean): List<BriefingSection> {
         briefed += chapter
+        briefedReduced += reduced
+        brief(chapter)
         return briefingSections
     }
 

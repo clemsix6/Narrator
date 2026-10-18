@@ -3,15 +3,20 @@ package io.github.clemsix6.narrator2.memory.search
 import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.journal.DuckJournal
+import io.github.clemsix6.narrator2.memory.Audited
+import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.InteractionKind
+import io.github.clemsix6.narrator2.memory.LogOp
+import io.github.clemsix6.narrator2.memory.MemoryLog
 import io.github.clemsix6.narrator2.memory.RecallHit
 import io.github.clemsix6.narrator2.memory.RecallPurpose
 import io.github.clemsix6.narrator2.memory.RecallQuery
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.testing.MemorySamples.bartok
 import io.github.clemsix6.narrator2.testing.MemorySamples.mimosa
 import kotlinx.coroutines.runBlocking
@@ -100,6 +105,41 @@ class HybridRecallTest {
 
         assertEquals(setOf(3L, 6L), search(tool("lave")).map { it.ref.id }.toSet())
         assertEquals(setOf(1L, 2L, 3L, 4L, 5L, 6L), search(tool("lave").copy(includeClosed = true)).map { it.ref.id }.toSet())
+    }
+
+    @Test
+    fun `what an operator forgot stays out, even with includeClosed, unlike what the hygiene or a merge archived`() = fixture {
+        val clement = Author(Source.OPERATOR, operator = "Clement")
+        fun log(table: Audited, id: Long, author: Author, op: LogOp) = MemoryLog.append(connection, clock.instant(), author, table, id.toString(), op, null, null)
+        memory(1, "Lave", "Bartok est tombé dans la lave.", archived = true)
+        log(Audited.MEMORIES, 1, clement, LogOp.ARCHIVE)
+        memory(2, "Lave", "Bartok est tombé dans la lave, encore.", archived = true)
+        log(Audited.MEMORIES, 2, Author(Source.ENGINE), LogOp.ARCHIVE)
+        memory(3, "Lave", "Bartok est tombé dans la lave, une fois de plus.", mergedInto = 4, archived = true)
+        log(Audited.MEMORIES, 3, Author(Source.DREAMER, runId = 7), LogOp.MERGE)
+        memory(4, "Lave", "Bartok tombe souvent dans la lave.")
+        memory(5, "Lave", "Mimosa a vu Bartok tomber dans la lave.", archived = true)
+        log(Audited.MEMORIES, 5, clement, LogOp.ARCHIVE)
+        log(Audited.MEMORIES, 5, clement, LogOp.RESTORE)
+        log(Audited.MEMORIES, 5, Author(Source.ENGINE), LogOp.ARCHIVE) // restored, then faded and archived by the hygiene
+        canon(6, CanonKind.THREAT, "Le Narrateur a menacé Bartok de la lave.", players = listOf(bartok))
+        connection.update("UPDATE canon SET archived = true WHERE id = 6")
+        log(Audited.CANON, 6, clement, LogOp.ARCHIVE)
+        interaction(7, bartok, InteractionKind.JOKE, 1, "a plaisanté sur la lave", archived = true)
+        log(Audited.INTERACTIONS, 7, clement, LogOp.ARCHIVE)
+
+        assertEquals(setOf(4L), search(tool("lave")).map { it.ref.id }.toSet())
+        assertEquals(setOf(2L, 3L, 4L, 5L), search(tool("lave", limit = 20).copy(includeClosed = true)).map { it.ref.id }.toSet())
+    }
+
+    @Test
+    fun `without any criterion a briefing gets the strongest rows, and the tool the latest`() = fixture {
+        memory(1, "Vieux", "Un vieux souvenir.", importance = 10, at = ago(100))
+        memory(2, "Récent", "Un souvenir récent.", importance = 1, at = ago(1))
+        memory(3, "Fané", "Un souvenir fané.", importance = 10, at = ago(50), reinforcedPlaySeconds = -200 * 3_600)
+        val briefing = RecallQuery(null, kinds = setOf(RefKind.MEMORY), limit = 2, purpose = RecallPurpose.BRIEFING)
+        assertEquals(listOf(1L, 2L), search(briefing).map { it.ref.id }, "importance × strength first")
+        assertEquals(listOf(2L, 3L), search(briefing.copy(purpose = RecallPurpose.TOOL)).map { it.ref.id }, "the latest first")
     }
 
     @Test

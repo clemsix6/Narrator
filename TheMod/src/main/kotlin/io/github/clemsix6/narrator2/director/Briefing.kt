@@ -111,7 +111,7 @@ class Briefing(
         val limits = if (reduced) Limits.REDUCED else Limits.FULL
         val places = previousPlaces(reduced)
         val snapshot = async { attempt("world") { world() } }
-        val sections = async { attempt("memory") { memorySections(memory, now) } }
+        val sections = async { attempt("memory") { memorySections(memory, now, reduced) } }
         val chapters = async { attempt("previous chapters") { storedChapters(conversationId) } }
         val recent = async { attempt("recent players") { recentPlayers(now, limits) } }
         val chat = async { attempt("recent chat") { chat(now, chatBefore, limits) } }
@@ -145,11 +145,19 @@ class Briefing(
 
     /**
      * The memory's sections, by tag (M3 §11.1): those it gave, in its own order; a section it left out
-     * is not written (`DisabledMemory` gives the six, each saying why it has nothing).
+     * is not written (`DisabledMemory` gives the six, each saying why it has nothing). The memory is told
+     * which form the briefing renders ([reduced]): it records what that form shows. A memory that fails or
+     * does not answer within [MEMORY_TIMEOUT_MS] showed nothing: [chapter] is put back as it was.
      */
-    private suspend fun memorySections(chapter: ChapterMemory, now: Long): Map<String, BriefingSection> {
-        val given = withTimeoutOrNull(MEMORY_TIMEOUT_MS) { services.memory.briefing(chapter, now) }
-            ?: throw IllegalStateException("the memory did not answer within ${duration(MEMORY_TIMEOUT_MS)}")
+    private suspend fun memorySections(chapter: ChapterMemory, now: Long, reduced: Boolean): Map<String, BriefingSection> {
+        val mark = chapter.mark()
+        var answer: List<BriefingSection>? = null
+        try {
+            answer = withTimeoutOrNull(MEMORY_TIMEOUT_MS) { services.memory.briefing(chapter, now, reduced) }
+        } finally {
+            if (answer == null) mark.restore()
+        }
+        val given = answer ?: throw IllegalStateException("the memory did not answer within ${duration(MEMORY_TIMEOUT_MS)}")
         val unknown = given.map { it.tag }.filter { it !in BriefingSection.TAGS }
         if (unknown.isNotEmpty()) log.warn("briefing: the memory gave sections that have no place: ${unknown.joinToString()}")
         val missing = BriefingSection.TAGS.filter { tag -> given.isNotEmpty() && given.none { it.tag == tag } }

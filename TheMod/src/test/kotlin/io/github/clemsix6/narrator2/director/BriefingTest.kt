@@ -21,6 +21,11 @@ import io.github.clemsix6.narrator2.memory.BriefingSection
 import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.RecallChannel
+import io.github.clemsix6.narrator2.memory.RecallContext
+import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.Shown
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.oracle.Enclosure
@@ -402,6 +407,7 @@ class BriefingTest {
         assertContains(text, "<sheets>\nsheets reduced\n</sheets>\n")
         assertContains(text, "<notes>\nnotes reduced\n</notes>\n")
         assertFalse("<memories>" in text, "the memories go first")
+        assertEquals(listOf(true), memory.briefedReduced, "the memory is told which form is rendered: it records what that form shows")
     }
 
     @Test
@@ -419,14 +425,23 @@ class BriefingTest {
     @Test
     fun `a memory that fails says so in each of its sections, and the briefing is still there`() {
         history()
+        val chapter = ChapterMemory(CURRENT, 13).apply { shownRefs += Ref(RefKind.CANON, 12) }
         val memory = object : Memory by FakeMemory(clock) {
-            override suspend fun briefing(chapter: ChapterMemory, now: Long): List<BriefingSection> = throw IllegalStateException("the canon cannot be read")
+            override suspend fun briefing(chapter: ChapterMemory, now: Long, reduced: Boolean): List<BriefingSection> {
+                // What it marked before failing was never shown.
+                chapter.shownRefs += Ref(RefKind.CANON, 45)
+                chapter.sheetsShownAt[bartok.uuid] = now
+                chapter.unrecorded += Shown(listOf(Ref(RefKind.CANON, 45)), RecallChannel.BRIEFING, RecallContext(CURRENT, null, null))
+                throw IllegalStateException("the canon cannot be read")
+            }
         }
-        val text = render(services = services(memory = memory))
+        val text = render(services = services(memory = memory), chapter = chapter)
 
         BriefingSection.TAGS.forEach { tag -> assertContains(text, "<$tag>\n(unavailable: the canon cannot be read)\n</$tag>\n") }
         assertContains(text, "#12 19:00–20:30 (token_limit):\n$summary\n")
         assertContains(text, "Reminders: R-3 at 21:10")
+        assertEquals(setOf(Ref(RefKind.CANON, 12)), chapter.shownRefs, "the chapter is put back as it was")
+        assertTrue(chapter.sheetsShownAt.isEmpty() && chapter.unrecorded.isEmpty())
     }
 
     @Test
@@ -491,10 +506,11 @@ class BriefingTest {
         players: List<PlayerRef> = emptyList(),
         activity: (UUID) -> String? = { if (it == bartok.uuid) "mined 140 (3 diamond_ore y=-54..-51)" else null },
         reduced: Boolean = false,
+        chapter: ChapterMemory = ChapterMemory(CURRENT, 13),
     ): String {
         players.forEach { online(it) }
         val briefing = Briefing(services, world, activity)
-        return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, ChapterMemory(CURRENT, 13), reduced) }
+        return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, chapter, reduced) }
     }
 
     private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards, memory: Memory = FakeMemory(clock)) =

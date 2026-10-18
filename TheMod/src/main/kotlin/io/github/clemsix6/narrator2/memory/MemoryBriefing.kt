@@ -37,16 +37,19 @@ import java.util.UUID
  *
  * Each section stays within its budget ([Briefing.MEMORY_BUDGETS], counted on its lines joined by `\n`),
  * in both forms. Each source is read on its own: one that fails says `(unavailable: <reason>)` in its
- * section, the others are written; an empty one says so. A row whose content is shown (a canon line, a
- * chronicle entry, a memory, a note, the interactions and names of a sheet) goes into the chapter's
- * [ChapterMemory.shownRefs] and gets a `recalls` row (`briefing`); a ref merely mentioned inside a text
- * (the Grimoire, a summary) does not. The players whose sheet is shown get [ChapterMemory.sheetsShownAt],
- * so that their join in this chapter does not show it again. The notes shown are marked `shown`.
+ * section, the others are written; an empty one says so.
  *
- * The briefing may be built again for the same chapter after a request that was not accepted (the
- * Director then puts the chapter's refs and sheets back as they were): the notes it showed are shown
- * again without being counted twice.
+ * What the form the briefing renders shows (and only that form: the reduced one shows less) goes into the
+ * chapter: a row whose content is shown (a canon line, a chronicle entry, a memory, a note, the rows a
+ * condensed sheet names) into [ChapterMemory.shownRefs]; a ref merely mentioned inside a text (the
+ * Grimoire, a summary) does not. The players whose condensed sheet is shown get
+ * [ChapterMemory.sheetsShownAt], so that their join in this chapter does not show it again; a sheet's
+ * line is not the sheet, and their join will show it. Their `recalls` rows (`briefing`) and the notes to
+ * mark `shown` wait in [ChapterMemory.unrecorded]: they are written once the model accepts the request
+ * ([Memory.recordShown]), so a briefing built again after a request that was not accepted (the Director
+ * then puts the chapter back as it was) is recorded once, in the form that was accepted.
  *
+ * @param sheets where the sheets are read; they are rendered here ([SheetRenderer]), which knows the rows each form shows.
  * @param online the players online, in order of arrival.
  * @param zone the Journal's zone, for dates.
  */
@@ -60,18 +63,19 @@ class MemoryBriefing(
 ) {
     private val log = Log.memory
     private val dates = MemoryDates(zone)
-    private val showings = Showings()
+    private val renderer = SheetRenderer(zone)
 
-    /** One section built, with what it showed. */
-    private class Built(
-        val section: BriefingSection,
-        val shown: List<Ref> = emptyList(),
-        val sheetsShown: List<UUID> = emptyList(),
-        val notesShown: List<Ref> = emptyList(),
-    )
+    /** What a form of a section shows: the rows ([refs]), the players whose condensed sheet it is ([sheets]), the notes. */
+    private class Showing(val refs: List<Ref> = emptyList(), val sheets: List<UUID> = emptyList(), val notes: List<Ref> = emptyList())
 
-    /** The six sections at [now] (epoch milliseconds), for [chapter], which records what they show. */
-    suspend fun sections(chapter: ChapterMemory, now: Long): List<BriefingSection> {
+    /** One section built, with what each of its forms shows. */
+    private class Built(val section: BriefingSection, val shown: Showing = Showing(), val reducedShown: Showing = shown)
+
+    /**
+     * The six sections at [now] (epoch milliseconds), for [chapter], which records what the form the briefing
+     * renders ([reduced] or not) shows.
+     */
+    suspend fun sections(chapter: ChapterMemory, now: Long, reduced: Boolean = false): List<BriefingSection> {
         val started = System.nanoTime()
         val players = online()
         val at = Instant.ofEpochMilli(now)
@@ -82,13 +86,14 @@ class MemoryBriefing(
                 async { build("canon") { canon(at) } },
                 async { build("sheets") { sheets(players, now) } },
                 async { build("memories") { memories(players) } },
-                async { build("notes") { notes(players, chapter, at) } },
+                async { build("notes") { notes(players, at) } },
             ).awaitAll()
         }
-        record(built, chapter, now)
+        val shown = record(built.map { if (reduced) it.reducedShown else it.shown }, chapter, now)
         log.debug {
-            "briefing ${chapter.conversationId}: " + built.joinToString { "${it.section.tag} ${BriefText.length(it.section.lines)}" } +
-                " characters, ${built.sumOf { it.shown.size }} refs shown, in ${(System.nanoTime() - started) / 1_000_000} ms"
+            "briefing ${chapter.conversationId}${if (reduced) " (reduced)" else ""}: " +
+                built.joinToString { "${it.section.tag} ${BriefText.length(it.section.lines)}" } +
+                " characters, $shown refs shown, in ${(System.nanoTime() - started) / 1_000_000} ms"
         }
         return built.map { it.section }
     }
@@ -105,28 +110,13 @@ class MemoryBriefing(
         Built(BriefingSection(tag, "", lines, lines.takeUnless { tag == MEMORIES_TAG }))
     }
 
-    /** What the sections showed goes into [chapter], the `recalls` and the notes; a failure there leaves the sections as they are. */
-    private suspend fun record(built: List<Built>, chapter: ChapterMemory, now: Long) {
-        val shown = built.flatMap { it.shown }.distinct()
-        chapter.shownRefs += shown
-        built.flatMap { it.sheetsShown }.forEach { chapter.sheetsShownAt[it] = now }
-        try {
-            store.recorded(shown, RecallChannel.BRIEFING, RecallContext(chapter.conversationId, null, null))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log.warn("briefing: the refs shown could not be recorded (no recalls row, no reinforcement): ${e.message}")
-        }
-        for (note in built.flatMap { it.notesShown }) {
-            if (!showings.shown(note, chapter)) continue
-            try {
-                store.markNote(note, NoteStatus.SHOWN, ENGINE)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.warn("briefing: $note was shown but could not be marked: ${e.message}")
-            }
-        }
+    /** What [shown] shows goes into [chapter], its `recalls` rows and notes into what waits to be recorded; returns how many refs. */
+    private fun record(shown: List<Showing>, chapter: ChapterMemory, now: Long): Int {
+        val refs = shown.flatMap { it.refs }.distinct()
+        chapter.shownRefs += refs
+        shown.flatMap { it.sheets }.forEach { chapter.sheetsShownAt[it] = now }
+        chapter.unrecorded += Shown(refs, RecallChannel.BRIEFING, RecallContext(chapter.conversationId, null, null), shown.flatMap { it.notes }.distinct())
+        return refs.size
     }
 
     // ── <grimoire> ──────────────────────────────────────────────────────────────────────────────────
@@ -165,7 +155,11 @@ class MemoryBriefing(
         }
         val lines = summaries(stable + recent, listOfNotNull(chapterLine), budget)
         val reduced = summaries(stable, emptyList(), budget)
-        return Built(BriefingSection("chronicle", "", lines, reduced), stable.map { it.first.ref } + recent.map { it.first.ref } + listed.map { it.ref })
+        return Built(
+            BriefingSection("chronicle", "", lines, reduced),
+            Showing(stable.map { it.first.ref } + recent.map { it.first.ref } + listed.map { it.ref }),
+            Showing(stable.map { it.first.ref }),
+        )
     }
 
     /** `« La nuit des slimes »`, the title of a chronicle entry. */
@@ -206,7 +200,7 @@ class MemoryBriefing(
         group("Lore", setOf(CanonKind.LORE, CanonKind.CLAIM)) { "${it.ref} ★${it.importance}: ${BriefText.cut(it.statement, STATEMENT_SHORT)}" }
         group("Opinions", setOf(CanonKind.OPINION)) { "${it.ref} ★${it.importance}: ${BriefText.cut(it.statement, STATEMENT_SHORT)}" }
         val lines = fill.lines + listOfNotNull(fill.omitted.takeIf { it > 0 }?.let { "(+$it more: recall kinds=canon)" })
-        return Built(BriefingSection("canon", "", lines, lines), fill.shown)
+        return Built(BriefingSection("canon", "", lines, lines), Showing(fill.shown))
     }
 
     /**
@@ -244,31 +238,34 @@ class MemoryBriefing(
 
     // ── <sheets> ────────────────────────────────────────────────────────────────────────────────────
 
-    /** A player's sheet as read: its two forms, or one line saying why there is none. */
-    private class Read(val player: PlayerRef, val condensed: String?, val line: String)
+    /** A player's sheet as read: its condensed form and its line, or one line saying why there is none. */
+    private class Read(val player: PlayerRef, val condensed: SheetRenderer.Rendered?, val line: String)
 
+    /**
+     * Shows the condensed sheets that fit and the rows they name; the lines show no row and no sheet. The
+     * reduced form is a line per player: it shows neither.
+     */
     private suspend fun sheets(players: List<PlayerRef>, now: Long): Built {
         if (players.isEmpty()) return Built(BriefingSection("sheets", "", listOf(NOBODY_ONLINE), listOf(NOBODY_ONLINE)))
         val read = coroutineScope { players.map { player -> async { read(player, now) } }.awaitAll() }
         val budget = budget("sheets")
         val forms = read.map { it.line }.toMutableList()
-        var condensed = 0
+        val condensed = mutableListOf<Read>()
         for ((i, sheet) in read.withIndex()) {
             val full = sheet.condensed ?: continue
-            if (condensed >= MAX_CONDENSED) break
-            val total = BriefText.length(forms) - forms[i].length + full.length
+            if (condensed.size >= MAX_CONDENSED) break
+            val total = BriefText.length(forms) - forms[i].length + full.text.length
             if (total <= budget) {
-                forms[i] = full
-                condensed++
+                forms[i] = full.text
+                condensed += sheet
             }
         }
         val lines = BriefText.within(forms.flatMap { it.lines() }, budget)
         val reduced = BriefText.within(read.map { it.line }, budget)
-        val shown = read.filter { it.condensed != null }
         return Built(
             BriefingSection("sheets", "", lines, reduced),
-            shown = forms.flatMap { SheetRenderer.refs(it) }.distinct(),
-            sheetsShown = shown.map { it.player.uuid },
+            Showing(condensed.flatMap { it.condensed!!.refs }.distinct(), condensed.map { it.player.uuid }),
+            Showing(),
         )
     }
 
@@ -277,7 +274,7 @@ class MemoryBriefing(
         if (sheet == null) {
             Read(player, null, "${player.shownName}: (no sheet: this player is not in the Journal yet)")
         } else {
-            Read(player, sheets.render(sheet, SheetDetail.CONDENSED, now), sheets.render(sheet, SheetDetail.LINE, now))
+            Read(player, renderer.rendered(sheet, SheetDetail.CONDENSED, now), renderer.render(sheet, SheetDetail.LINE, now))
         }
     } catch (e: CancellationException) {
         throw e
@@ -300,17 +297,22 @@ class MemoryBriefing(
         val budget = budget(MEMORIES_TAG)
         val caps = BriefText.share(hits.map { it.line.length }, budget - (hits.size - 1))
         val lines = BriefText.within(hits.mapIndexed { i, hit -> BriefText.cutQuoted(hit.line, caps[i]) }, budget)
-        return Built(BriefingSection(MEMORIES_TAG, "", lines, null), hits.take(lines.size).map { it.ref })
+        return Built(BriefingSection(MEMORIES_TAG, "", lines, null), Showing(hits.take(lines.size).map { it.ref }), Showing())
     }
 
     // ── <notes> ─────────────────────────────────────────────────────────────────────────────────────
 
-    private suspend fun notes(players: List<PlayerRef>, chapter: ChapterMemory, now: Instant): Built {
+    /**
+     * The open notes for the Director, until they have been shown in [NOTE_SHOWINGS] accepted briefings; the
+     * dream hints of the players online, until one is shown. A note is marked only once a request that showed
+     * it is accepted: a briefing built again shows the same notes.
+     */
+    private suspend fun notes(players: List<PlayerRef>, now: Instant): Built {
         val online = players.associateBy { it.uuid }
         val notes = store.openNotes().filter { note ->
             when (note.kind) {
-                NoteKind.DREAM_HINT -> note.players.any { it.uuid in online } && (note.status == NoteStatus.OPEN || showings.again(note.ref, chapter))
-                else -> note.shownCount < NOTE_SHOWINGS || showings.again(note.ref, chapter)
+                NoteKind.DREAM_HINT -> note.players.any { it.uuid in online } && note.status == NoteStatus.OPEN
+                else -> note.shownCount < NOTE_SHOWINGS
             }
         }
         val style = style(now)
@@ -329,7 +331,7 @@ class MemoryBriefing(
         val more = fill.omitted.takeIf { it > 0 }?.let { "(+$it more open notes)" }
         val lines = BriefText.within(fill.lines + listOfNotNull(more, style), budget)
         val reduced = BriefText.within(fill.lines + listOfNotNull(more), budget)
-        return Built(BriefingSection("notes", "", lines, reduced), fill.shown, notesShown = fill.shown)
+        return Built(BriefingSection("notes", "", lines, reduced), Showing(fill.shown, notes = fill.shown))
     }
 
     /** `Style: overused lately: « Ministère de la » ×7 (last 2h ago) · …`; null without tics; says so when the chat cannot be read. */
@@ -414,9 +416,6 @@ class MemoryBriefing(
 
         internal const val MEMORIES_TAG = "memories"
 
-        /** Who marks what the briefing and the joins show. */
-        internal val ENGINE = Author(Source.ENGINE)
-
         private const val MAX_ROWS = 500
         private const val READ_TIMEOUT_MS = 5_000L
 
@@ -437,26 +436,6 @@ class MemoryBriefing(
         private const val NO_NOTE = "(no open note)"
 
         private fun budget(tag: String): Int = Briefing.MEMORY_BUDGETS.getValue(tag)
-    }
-}
-
-/**
- * The notes shown in each chapter (dream hints, notes for the Director), so that a briefing or a join built
- * again after a request that was not accepted shows them again without marking them twice. Bounded.
- */
-internal class Showings {
-    private val shownIn = object : LinkedHashMap<Ref, String>() {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Ref, String>?): Boolean = size > MAX
-    }
-
-    /** [ref] was shown in [chapter], whose refs were then put back as they were: it is shown again. */
-    fun again(ref: Ref, chapter: ChapterMemory): Boolean = synchronized(this) { shownIn[ref] == chapter.conversationId } && ref !in chapter.shownRefs
-
-    /** [ref] is shown in [chapter]; true the first time, when it is to be marked. */
-    fun shown(ref: Ref, chapter: ChapterMemory): Boolean = synchronized(this) { shownIn.put(ref, chapter.conversationId) != chapter.conversationId }
-
-    private companion object {
-        const val MAX = 512
     }
 }
 

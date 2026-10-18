@@ -30,7 +30,6 @@ import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
-import java.util.Collections
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.sqrt
@@ -57,10 +56,10 @@ import kotlin.math.sqrt
  *   squared score, seeded by the event's id: the best one wins often, not always, and tests are deterministic.
  *
  * Only memories come back (`M-`): the canon is in every briefing, the interactions are on the sheets.
- * Every memory shown goes into the chapter's [ChapterMemory.shownRefs] and gets a `recalls` row
- * (`reminiscence`), which reinforces it and starts its cooldown. A cue is recorded when it reaches the
- * Director, in [forWake], not when it is posted. Each reminiscence and each cue is a `memory` decision
- * (`recalled`, `cue`).
+ * Every memory shown goes into the chapter's [ChapterMemory.shownRefs]; its `recalls` row
+ * (`reminiscence`), which reinforces it and starts its cooldown, waits in [ChapterMemory.unrecorded] for
+ * the model to accept the request. A cue is recorded when it reaches the Director, in [forWake], not when
+ * it is posted. Each reminiscence and each cue is a `memory` decision (`recalled`, `cue`).
  *
  * Threads: [forWake] runs on the Director's coroutine (it touches the chapter); [placeReturn] and
  * [anniversary] on the memory jobs' coroutine. Each of the three keeps its own state, one call at a time.
@@ -111,9 +110,6 @@ class Reminiscence(
     /** The reminiscence of each recent event, by event id: attached again when the request that held it failed. */
     private val attached: MutableMap<Long, Recalled> = recent()
 
-    /** The cues that reached the Director, recorded once. */
-    private val delivered: MutableSet<DirectorSignal.MemoryCue> = Collections.newSetFromMap(recent())
-
     /** World play seconds of the reminiscences attached, for [PER_PLAY_HOUR]. */
     private val attachedAt = ArrayDeque<Long>()
 
@@ -132,13 +128,14 @@ class Reminiscence(
     /**
      * The reminiscences of [signals] (M3 §10.5): at most `memory.recallPerWake`, one per event, the most
      * telling events first (deaths, kills, griefs, prayers, addressed chat, then places and milestones).
-     * Each one shown goes into [chapter]'s [ChapterMemory.shownRefs] and gets a `recalls` row. The
-     * [DirectorSignal.MemoryCue]s among [signals] are reaching the Director: their memories count as shown
-     * in the chapter, and are recorded once.
+     * Each one shown goes into [chapter]'s [ChapterMemory.shownRefs], and its `recalls` row into
+     * [ChapterMemory.unrecorded]. The [DirectorSignal.MemoryCue]s among [signals] are reaching the Director:
+     * their memories count as shown in the chapter, and wait there to be recorded the same way.
      *
-     * Called again with the same events after a request that was not accepted (M3-15 then removes what it
-     * showed from [chapter]), it gives each event the memory it had, without recording nor counting it a
-     * second time. Never throws for the memory's sake: a failing read leaves reminiscences out (`WARN`).
+     * Called again with the same events after a request that was not accepted (the Director then puts
+     * [chapter] back as it was, what it showed unrecorded), it gives each event the memory it had, without
+     * deciding nor counting it a second time. Never throws for the memory's sake: a failing read leaves
+     * reminiscences out (`WARN`).
      *
      * @param now epoch milliseconds.
      */
@@ -157,7 +154,10 @@ class Reminiscence(
             if (recalled.size >= perWake) break
             val again = attached[cue.eventId]
             if (again != null) {
-                if (chapter.shownRefs.add(again.ref)) recalled += again
+                if (chapter.shownRefs.add(again.ref)) {
+                    recalled += again
+                    shown(again.ref, chapter, cue.eventId)
+                }
                 continue
             }
             if (!hourAllows(world)) continue
@@ -167,7 +167,7 @@ class Reminiscence(
             attached[cue.eventId] = one
             attachedAt.addLast(world)
             recalled += one
-            record(hit.ref, RecallContext(chapter.conversationId, null, cue.eventId))
+            shown(hit.ref, chapter, cue.eventId)
             decisions.record(
                 log, DecisionRecord.Kind.MEMORY, "recalled", subject = cue.player.name,
                 reason = "${hit.ref} for ${cue.kind} (score ${p(hit.score)}, relevance ${p(hit.relevance)})",
@@ -181,12 +181,20 @@ class Reminiscence(
         return recalled
     }
 
-    /** The cues of [signals] are shown: in the chapter, and recorded the first time they arrive. */
-    private suspend fun delivered(signals: List<DirectorSignal>, chapter: ChapterMemory) {
+    /**
+     * The cues of [signals] are shown: in the chapter, and recorded with the request. A cue told by a request
+     * that is not accepted goes back to the inbox, and comes here again.
+     */
+    private fun delivered(signals: List<DirectorSignal>, chapter: ChapterMemory) {
         signals.filterIsInstance<DirectorSignal.MemoryCue>().forEach { cue ->
             chapter.shownRefs += cue.ref
-            if (delivered.add(cue)) record(cue.ref, RecallContext(chapter.conversationId, null, null))
+            shown(cue.ref, chapter, null)
         }
+    }
+
+    /** [ref] is shown in [chapter] (for the event [eventId]): its `recalls` row, which reinforces it and starts its cooldown, waits for the request. */
+    private fun shown(ref: Ref, chapter: ChapterMemory, eventId: Long?) {
+        chapter.unrecorded += Shown(listOf(ref), RecallChannel.REMINISCENCE, RecallContext(chapter.conversationId, null, eventId))
     }
 
     /**
@@ -219,11 +227,6 @@ class Reminiscence(
             purpose = RecallPurpose.REMINISCENCE, exclude = exclude, seed = cue.eventId,
         )
         recall.search(query).firstOrNull()
-    }
-
-    /** A `recalls` row for [ref]: it reinforces the memory and starts its cooldown. */
-    private suspend fun record(ref: Ref, context: RecallContext) {
-        safely("recording $ref (shown, but no cooldown will follow)") { store.recorded(listOf(ref), RecallChannel.REMINISCENCE, context) }
     }
 
     // ── Place returns ───────────────────────────────────────────────────────────────────────────────
