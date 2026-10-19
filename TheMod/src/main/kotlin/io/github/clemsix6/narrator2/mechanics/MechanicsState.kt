@@ -302,7 +302,10 @@ data class Participant(
 @Serializable
 data class Bet(val uuid: String, val name: String, val on: String?, val stake: Long, val what: String)
 
-/** Where a player was, to put them back (a duel in an arena, M4 §5.5). [uuid]: the player, as text. */
+/**
+ * Where a player was, to put them back (a duel in an arena, M4 §5.5). [uuid]: the player, as text. [savedAt]: when,
+ * epoch milliseconds; a return too old is dropped (M4 review, finding 21), one without it is put back.
+ */
 @Serializable
 data class SavedPosition(
     val uuid: String,
@@ -312,6 +315,7 @@ data class SavedPosition(
     val z: Double,
     val yaw: Float,
     val pitch: Float,
+    @SerialName("saved_at") val savedAt: Long? = null,
 )
 
 /**
