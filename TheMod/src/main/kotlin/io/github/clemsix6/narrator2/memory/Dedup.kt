@@ -10,6 +10,10 @@ import java.util.UUID
  * the same thing: the second pass is the safety net, the duplicate is not wanted (an interaction counted
  * twice moves the favor twice). The texts are compared by [Indexer.similarity] (BM25 against the row over
  * BM25 against itself); [THRESHOLD] or more is the same.
+ *
+ * What the mechanics engine writes is precise (M4 §3.3): a row it tracks is never looked up here (the
+ * store skips it), and its interactions without evidence are the same as another only for the same canon
+ * entry ([interaction]).
  */
 internal class Dedup(private val indexer: Indexer) {
     /**
@@ -33,6 +37,11 @@ internal class Dedup(private val indexer: Indexer) {
      * is the same one, the most recent first: it shares an evidence event or a tool call; or one of the two
      * has no evidence at all (the Director, who notes an interaction as it happens, may cite none, and its
      * words never match the Chronicler's); or its text is at least [THRESHOLD] similar. Null when none.
+     *
+     * The engine's interactions without evidence ([engine] for the draft, `source = engine` for a row: a
+     * challenge's result, its stakes, a rule's punishment) cite no Journal fact, yet each is its own: two
+     * challenges won within ten minutes are two. One of them is the same as another only for the same
+     * [canon] entry (M4 §3.3, review finding 12).
      */
     fun interaction(
         connection: Connection,
@@ -42,17 +51,29 @@ internal class Dedup(private val indexer: Indexer) {
         events: List<Long>,
         tools: List<Long>,
         text: String,
+        canon: Ref?,
+        engine: Boolean,
     ): Ref? {
+        val bare = events.isEmpty() && tools.isEmpty()
+        val engineBare = engine && bare
         val candidates = connection.query(
-            "SELECT id, list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) OR (len(evidence_events) = 0 AND len(tool_calls) = 0) " +
+            "SELECT id, canon_id, source = 'engine' AND len(evidence_events) = 0 AND len(tool_calls) = 0, " +
+                "list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) OR (len(evidence_events) = 0 AND len(tool_calls) = 0) " +
                 "FROM interactions WHERE player_uuid = ? AND kind = ? AND NOT archived AND ts BETWEEN ? AND ? ORDER BY id DESC",
             longArray(events), longArray(tools), player, kind.id, at - INTERACTION_WINDOW, at + INTERACTION_WINDOW,
-        ) { Ref(RefKind.INTERACTION, getLong(1)) to getBoolean(2) }
-        if (candidates.isEmpty()) return null
-        if (events.isEmpty() && tools.isEmpty()) return candidates.first().first
-        candidates.firstOrNull { it.second }?.let { return it.first }
-        return mostSimilar(connection, text, candidates.map { it.first })
+        ) { Candidate(Ref(RefKind.INTERACTION, getLong(1)), longOrNull(2), getBoolean(3), getBoolean(4)) }
+        // true: the same; false: another; null: their texts decide.
+        fun Candidate.same(): Boolean? = when {
+            engineBare || this.engineBare -> canon != null && canonId == canon.id
+            bare || shared -> true
+            else -> null
+        }
+        candidates.firstOrNull { it.same() == true }?.let { return it.ref }
+        return mostSimilar(connection, text, candidates.filter { it.same() == null }.map { it.ref })
     }
+
+    /** An interaction an add may duplicate: its [canonId], whether it is the engine's without evidence, whether it shares the draft's evidence or has none. */
+    private class Candidate(val ref: Ref, val canonId: Long?, val engineBare: Boolean, val shared: Boolean)
 
     /** An unarchived memory that shares an evidence (event or tool call), a player and a tag with the draft; null when none. */
     fun memory(connection: Connection, players: List<UUID>, tags: List<String>, events: List<Long>, tools: List<Long>): Ref? {
@@ -84,8 +105,10 @@ internal class Dedup(private val indexer: Indexer) {
         kind.id, player,
     ) { Ref(RefKind.CANON, getLong(1)) }.firstOrNull()
 
-    private fun mostSimilar(connection: Connection, text: String, candidates: List<Ref>): Ref? =
-        indexer.similarity(connection, text, candidates).filterValues { it >= THRESHOLD }.maxByOrNull { it.value }?.key
+    private fun mostSimilar(connection: Connection, text: String, candidates: List<Ref>): Ref? {
+        if (candidates.isEmpty()) return null
+        return indexer.similarity(connection, text, candidates).filterValues { it >= THRESHOLD }.maxByOrNull { it.value }?.key
+    }
 
     companion object {
         /** Similarity from which two texts say the same (M3 §4.3, §8.6). */

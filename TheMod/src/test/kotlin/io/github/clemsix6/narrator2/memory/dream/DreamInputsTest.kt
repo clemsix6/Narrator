@@ -137,7 +137,9 @@ class DreamInputsTest {
 
         // Step 4: the longest Grimoire, sixty open entries, ten arcs, thirty notes.
         store.writeDoc(DocKey.Grimoire, GrimoireFormat.SECTIONS.joinToString("\n") { "## $it\n- ${text(1_400, it.length)}" }, emptyList(), dreamer)
-        others.take(10).forEach { other -> store.addCanon(CanonDraft(CanonKind.ARC, text(300, 3), players = listOf(other.uuid), status = CanonStatus.PLANNED), dreamer) }
+        others.take(10).forEachIndexed { i, other ->
+            store.addCanon(CanonDraft(CanonKind.ARC, text(300, 3), players = listOf(other.uuid), status = CanonStatus.PLANNED, theme = "arc_$i"), dreamer)
+        }
         repeat(30) { store.addNote(NoteDraft(NoteKind.COHERENCE, text(300, it), listOf(bartok)), director) }
 
         val now = at("22:10")
