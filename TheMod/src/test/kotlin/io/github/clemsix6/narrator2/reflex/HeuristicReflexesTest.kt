@@ -134,6 +134,24 @@ class HeuristicReflexesTest {
         }
     }
 
+    /**
+     * M4-24, finding 5: the boredom words, measured on the reflexes' evaluation set (REFLEX-HAIKU): every bored line
+     * of its `boredom` sample, none of the others (annoyance, a death "here", "rien à faire" for "no way"), and none of
+     * its 52 messages.
+     */
+    @Test
+    fun `boredom is told on the evaluation set, without a false alarm`() {
+        val root = Json.parseToJsonElement(javaClass.getResourceAsStream(EVAL)!!.use { it.readBytes().decodeToString() }).jsonObject
+        val sample = root.getValue("boredom").jsonArray.map { it.jsonObject }
+        val cases = root.getValue("cases").jsonArray.map { it.jsonObject }
+        assertEquals(52, cases.size)
+        val wrong = sample.filter { heuristic.bored(it.getValue("text").jsonPrimitive.content) != it.getValue("bored").jsonPrimitive.boolean }
+        assertEquals(emptyList<String>(), wrong.map { it.getValue("id").jsonPrimitive.content }, "the boredom sample")
+        assertTrue(sample.count { it.getValue("bored").jsonPrimitive.boolean } >= 10, "bored lines to tell")
+        val alarms = cases.filter { heuristic.bored(it.getValue("text").jsonPrimitive.content) }
+        assertEquals(emptyList<String>(), alarms.map { it.getValue("id").jsonPrimitive.content }, "none of the 52 messages is bored")
+    }
+
     @Test
     fun `a word file must have every section, known sections only, and entries inside them`() {
         val full = HeuristicReflexes.Category.entries.joinToString("\n") { "[${it.id}]\nmot" }
@@ -141,7 +159,7 @@ class HeuristicReflexesTest {
 
         assertContains(
             assertFailsWith<IllegalArgumentException> { HeuristicWords.parse("$full\n[slang]\nwesh", "test.txt") }.message.orEmpty(),
-            "test.txt:27: unknown section [slang]",
+            "test.txt:${HeuristicReflexes.Category.entries.size * 2 + 1}: unknown section [slang]",
         )
         assertContains(
             assertFailsWith<IllegalArgumentException> { HeuristicWords.parse("mot\n$full", "test.txt") }.message.orEmpty(),
@@ -178,6 +196,9 @@ class HeuristicReflexesTest {
 
     private companion object {
         const val DATASET = "docs/research/jev-eval/chat-triage-dataset.json"
+
+        /** The reflexes' evaluation set (REFLEX-HAIKU), with its boredom sample (M4-POST). */
+        const val EVAL = "/narrator2/reflex/chat-triage-eval.json"
 
         /** The dataset's intents are French names (the archived `docs/research/JEV.md` §2.1). */
         val DATASET_INTENTS = mapOf(
