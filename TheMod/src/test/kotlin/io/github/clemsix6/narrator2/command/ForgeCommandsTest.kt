@@ -34,7 +34,10 @@ import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -411,6 +414,27 @@ class ForgeCommandsTest {
         assertEquals(listOf("[Narrator] refused: the modules are stopping with the server."), refused.text())
         assertTrue(tasks.cancelled.isEmpty(), "the forger's tasks run on")
         assertTrue(operatorDecisions().isEmpty())
+    }
+
+    @Test
+    fun `two switches typed together set it once`() = runBlocking<Unit> {
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : ModuleControl by modules {
+            override suspend fun halt(reason: String, operator: String): List<ModuleView> {
+                gate.await()
+                return modules.halt(reason, operator)
+            }
+        }
+        val both = withModules(slow)
+        val first = async { ForgeCommands.off(both, "Clement", "premier") }
+        yield() // the first one waits in halt
+        val second = ForgeCommands.off(both, "Mimosa", "second")
+        assertEquals(listOf("[Narrator] the Forge's switch is being changed by another command; try again in a moment."), second.text())
+        assertEquals(listOf("[Narrator] the Forge's switch is being changed by another command; try again in a moment."), ForgeCommands.on(both, "Mimosa").text())
+        gate.complete(Unit)
+        assertTrue(first.await().done)
+        assertEquals(listOf(FakeModules.Halt("premier", "Clement")), modules.halts)
+        assertTrue(ForgeCommands.on(both, "Mimosa").done, "free again once the first has answered")
     }
 
     @Test

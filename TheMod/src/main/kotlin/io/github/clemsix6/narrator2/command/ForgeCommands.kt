@@ -83,6 +83,9 @@ object ForgeCommands {
     /** The shortest summary a line of `forge list` keeps, cut further only by the chat's wrapping. */
     private const val MIN_SUMMARY_CHARS = 30
 
+    /** True while `forge off` or `forge on` runs: one change of the switch at a time, whoever asks. */
+    private val switching = AtomicBoolean(false)
+
     /** Adds `forge` and `module` under `/narrator`. */
     fun attach(root: LiteralArgumentBuilder<CommandSourceStack>) {
         root.then(forgeCommand())
@@ -394,7 +397,25 @@ object ForgeCommands {
      * forger's tasks, running or queued, are cancelled. Until `forge on`, nothing is deployed nor restarted. Off the
      * server thread.
      */
-    suspend fun off(services: NarratorServices, operator: String, reason: String?): Reply {
+    suspend fun off(services: NarratorServices, operator: String, reason: String?): Reply = switch { switchOff(services, operator, reason) }
+
+    /**
+     * `forge on`: lifts the switch, as [operator]; modules may be deployed again. The modules it stopped stay stopped.
+     * Off the server thread.
+     */
+    suspend fun on(services: NarratorServices, operator: String): Reply = switch { switchOn(services, operator) }
+
+    /** Runs [change] of the switch unless another one is under way: two `forge off` typed together set it once. */
+    private suspend fun switch(change: suspend () -> Reply): Reply {
+        if (!switching.compareAndSet(false, true)) return Reply.refused("the Forge's switch is being changed by another command; try again in a moment.")
+        return try {
+            change()
+        } finally {
+            switching.set(false)
+        }
+    }
+
+    private suspend fun switchOff(services: NarratorServices, operator: String, reason: String?): Reply {
         val modules = services.mechanics.modules
         modules.halted?.let { halt ->
             return Reply.refused("the Forge is already switched off (by ${halt.by} at ${whenOf(halt, text(services))}: « ${halt.reason} »); /narrator forge on lifts it.")
@@ -435,11 +456,7 @@ object ForgeCommands {
             )
         }
 
-    /**
-     * `forge on`: lifts the switch, as [operator]; modules may be deployed again. The modules it stopped stay stopped.
-     * Off the server thread.
-     */
-    suspend fun on(services: NarratorServices, operator: String): Reply {
+    private suspend fun switchOn(services: NarratorServices, operator: String): Reply {
         val modules = services.mechanics.modules
         val halt = modules.halted
             ?: return Reply.refused(unavailable(services)?.let { "$it: its switch is not set, nothing to lift." } ?: "the Forge is not switched off: nothing to lift.")
