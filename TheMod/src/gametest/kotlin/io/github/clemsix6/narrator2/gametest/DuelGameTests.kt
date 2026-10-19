@@ -14,10 +14,12 @@ import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.homeAt
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.isAt
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.ItemLedger
+import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.ArenaSpec
 import io.github.clemsix6.narrator2.mechanics.Bossbars
 import io.github.clemsix6.narrator2.mechanics.ChallengeControl
+import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
 import io.github.clemsix6.narrator2.mechanics.DuelSpec
@@ -28,17 +30,24 @@ import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.RewardKind
 import io.github.clemsix6.narrator2.mechanics.RewardSpec
+import io.github.clemsix6.narrator2.mechanics.SavedPosition
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.mechanics.challenge.Bets
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
+import io.github.clemsix6.narrator2.mechanics.challenge.DuelReturns
 import io.github.clemsix6.narrator2.mechanics.challenge.Duels
 import io.github.clemsix6.narrator2.mechanics.challenge.Stakes
+import io.github.clemsix6.narrator2.memory.Added
+import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonFilter
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.InteractionKind
+import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -51,10 +60,16 @@ import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.core.BlockPos
+import net.minecraft.core.registries.Registries
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
@@ -74,11 +89,14 @@ import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntityTypes
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.enchantment.Enchantments
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.block.Blocks
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
@@ -416,6 +434,457 @@ class DuelGameTests {
         }
     }
 
+    // ── Nobody dies once the server runs (M4 review, finding 3) ──
+
+    /**
+     * A sword with Fire Aspect II: Ann's real attack is Bob's fatal blow, stopped at 1 health, and the sword sets him
+     * alight right after, for 8 seconds. Hungry (no healing), he lives through the 20 seconds the server then runs,
+     * the duel's protection included: put out at once, never burnt to death, his diamonds with him.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aFireAspectSwordKillsNobodyOnceTheServerRuns(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "L'épée de feu")
+            rig.onServer {
+                homeAt(helper, bob.live)
+                bob.standAt(BlockPos(2, 1, 2))
+                ann.standAt(BlockPos(3, 1, 2))
+                val fireAspect = helper.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.FIRE_ASPECT)
+                ann.hold(ItemStack(Items.IRON_SWORD).also { it.enchant(fireAspect, 2) })
+                repeat(CHARGE_TICKS) { ann.live.doTick() } // the sword in hand, her attack charged
+                val player = bob.live
+                player.foodData.foodLevel = HUNGRY
+                player.health = 1f
+                ann.live.attack(player)
+                check(!player.isDeadOrDying && player.health == 1f) { "stopped at 1 health: ${player.health}" }
+                check(rig.store.get().challenges.isEmpty()) { "Ann won" }
+                check(player.isOnFire) { "the sword's fire caught him after the blow" }
+            }
+            rig.letRun(listOf(bob, ann), RUN_TICKS)
+            rig.onServer {
+                check(!bob.live.isOnFire) { "put out" }
+                rig.livesOn(bob, diamonds = 3)
+            }
+            val end = rig.awaitEnd(view.ref)
+            check(Regex("^${view.ref} won by ${ann.name} in \\d+s: ${ann.name}'s fatal blow on ${bob.name} was stopped at 1 hp$").matches(end)) { "the end: $end" }
+        }
+    }
+
+    /**
+     * Ann's fatal blow while Bob stands in lava: he is not left there at 1 health, but taken out of it at once, to his
+     * respawn point; he lives through the 20 seconds the server then runs.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aLoserSparedInLavaIsTakenOutOfIt(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "Le coup dans la lave")
+            val home = rig.onServer {
+                val home = homeAt(helper, bob.live)
+                basin(helper, Blocks.LAVA)
+                bob.standAt(BlockPos(1, 1, 1))
+                ann.standAt(BlockPos(4, 1, 1))
+                bob.live.foodData.foodLevel = HUNGRY
+                bob.live.hurtServer(helper.level, helper.level.damageSources().playerAttack(ann.live), 1_000f)
+                check(!bob.live.isDeadOrDying && rig.store.get().challenges.isEmpty()) { "Ann won, Bob lives" }
+                home
+            }
+            try {
+                rig.letRun(listOf(bob, ann), RUN_TICKS)
+                rig.onServer {
+                    check(isAt(bob.live, home) && !bob.live.isOnFire) { "out of the lava, at his respawn point, put out: ${bob.live.position()}" }
+                    rig.livesOn(bob, diamonds = 3)
+                }
+            } finally {
+                rig.onServer { basin(helper, Blocks.STONE) }
+            }
+            rig.checkWonByRescue(view.ref, winner = ann, loser = bob, cause = "player_attack by ${ann.name}")
+        }
+    }
+
+    /**
+     * Ann's fatal blow leaves Bob at 1 health on safe ground, and its knockback throws him into lava. The duel's
+     * protection takes him out of it before it ends: he lives through the 20 seconds the server then runs.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aLoserKnockedIntoLavaAfterTheBlowIsTakenOutOfIt(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "Le recul")
+            val home = rig.onServer {
+                val home = homeAt(helper, bob.live)
+                basin(helper, Blocks.LAVA)
+                bob.standAt(BlockPos(4, 1, 1))
+                ann.standAt(BlockPos(5, 1, 1))
+                val player = bob.live
+                player.foodData.foodLevel = HUNGRY
+                player.hurtServer(helper.level, helper.level.damageSources().playerAttack(ann.live), 1_000f)
+                check(!player.isDeadOrDying && player.health == 1f && rig.store.get().challenges.isEmpty()) { "spared where he stands: ${player.health}" }
+                bob.standAt(BlockPos(1, 1, 1)) // the knockback
+                home
+            }
+            try {
+                rig.letRun(listOf(bob, ann), RUN_TICKS)
+                rig.onServer {
+                    check(isAt(bob.live, home) && !bob.live.isOnFire) { "out of the lava, at his respawn point, put out: ${bob.live.position()}" }
+                    rig.livesOn(bob, diamonds = 3)
+                }
+            } finally {
+                rig.onServer { basin(helper, Blocks.STONE) }
+            }
+            val end = rig.awaitEnd(view.ref)
+            check(Regex("^${view.ref} won by ${ann.name} in \\d+s: ${ann.name}'s fatal blow on ${bob.name} was stopped at 1 hp$").matches(end)) { "the end: $end" }
+        }
+    }
+
+    /**
+     * Ann's fatal blow while Bob falls through the void below the world, slowly (as under slow falling): he is not left
+     * to fall at 1 health, but taken out of the void at once, to his respawn point; he lives through the 20 seconds the
+     * server then runs, during which a client still in the void would fall on (half a block a tick).
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aLoserSparedAboveTheVoidIsTakenOutOfIt(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "Au bord du vide")
+            val home = rig.onServer {
+                val home = homeAt(helper, bob.live)
+                ann.standAt(BlockPos(3, 1, 2))
+                bob.standAt(BlockPos(2, 1, 2))
+                val player = bob.live
+                player.foodData.foodLevel = HUNGRY
+                player.teleportTo(player.x, helper.level.minY - 2.0, player.z)
+                player.hurtServer(helper.level, helper.level.damageSources().playerAttack(ann.live), 1_000f)
+                check(!player.isDeadOrDying && rig.store.get().challenges.isEmpty()) { "Ann won, Bob lives" }
+                home
+            }
+            rig.letRun(listOf(bob, ann), RUN_TICKS) {
+                val player = bob.live
+                if (player.y < helper.level.minY) player.teleportTo(player.x, player.y - SLOW_FALL, player.z)
+            }
+            rig.onServer {
+                check(isAt(bob.live, home)) { "out of the void, at his respawn point: ${bob.live.position()}" }
+                rig.livesOn(bob, diamonds = 3)
+            }
+            rig.checkWonByRescue(view.ref, winner = ann, loser = bob, cause = "player_attack by ${ann.name}")
+        }
+    }
+
+    // ── A duel decided from outside it is cancelled (M4 review, finding 19) ──
+
+    /**
+     * Cid bet on Ann, then deals Bob the fatal blow himself, to win his bet: Bob is rescued, and the duel is cancelled,
+     * not won. Nobody gets a reward; every stake goes back, Cid's and Dan's (who bet on Bob).
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aThirdPlayersFatalBlowCancelsTheDuelAndGivesTheBetsBack(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 4) { rig, (bob, ann, cid, dan) ->
+            val view = rig.propose(spec(bob, ann, "Le parieur").copy(bets = true, reward = RewardSpec(RewardKind.ITEM, item = "golden_apple")))
+            rig.onServer {
+                bob.live.inventory.add(ItemStack(Items.DIAMOND, 3))
+                rig.command(bob, "duel accept ${view.ref}")
+                rig.command(ann, "duel accept ${view.ref}")
+                cid.hold(ItemStack(Items.IRON_INGOT, 12))
+                rig.bets.bet(cid.live, view.ref, ann.name)
+                dan.hold(ItemStack(Items.GOLD_INGOT, 5))
+                rig.bets.bet(dan.live, view.ref, bob.name)
+                check(rig.duel(view.ref)!!.bets.size == 2) { "two bets" }
+                val home = homeAt(helper, bob.live)
+                bob.live.hurtServer(helper.level, helper.level.damageSources().playerAttack(cid.live), 1_000f)
+                rig.checkRescued(bob, home)
+                rig.tick()
+                check(count(cid.live, Items.IRON_INGOT) == 12 && count(dan.live, Items.GOLD_INGOT) == 5) { "every stake given back" }
+                check(rig.ledger.held(cid.live).isEmpty() && rig.ledger.held(dan.live).isEmpty()) { "nothing left in escrow" }
+                for (player in listOf(bob, ann)) check(player.read(line(rig.ui, rig.ui["duel.cancelled"]))) { "${player.name} is told: ${player.lines()}" }
+            }
+            val end = rig.awaitEnd(view.ref)
+            val how = "${view.ref} cancelled: ${cid.name} interfered; ${bob.name} would have died (player_attack by ${cid.name}) and was rescued instead"
+            check(end.startsWith(how) && end.contains("bets: every stake given back (cancelled)") && "reward" !in end) { "the end: $end" }
+            rig.checkClosed(view.ref, CanonStatus.CANCELLED, emptyList(), emptyList(), end, interactions = false)
+            rig.onServer {
+                check(count(ann.live, Items.GOLDEN_APPLE) == 0) { "no reward for Ann" }
+                rig.livesOn(bob, diamonds = 3)
+            }
+        }
+    }
+
+    /** One of the Narrator's creatures deals Bob the fatal blow: he is rescued, and the duel is cancelled. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aNarratorsCreaturesFatalBlowCancelsTheDuel(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "La créature du Narrateur")
+            rig.onServer {
+                val home = homeAt(helper, bob.live)
+                bob.standAt(BlockPos(1, 1, 1))
+                val zombie = helper.spawnWithNoFreeWill(EntityTypes.ZOMBIE, BlockPos(2, 1, 1))
+                try {
+                    zombie.addTag(NarratorMobs.TAG)
+                    bob.live.hurtServer(helper.level, helper.level.damageSources().mobAttack(zombie), 1_000f)
+                    rig.checkRescued(bob, home)
+                } finally {
+                    zombie.discard()
+                }
+            }
+            val end = rig.awaitEnd(view.ref)
+            check(end == "${view.ref} cancelled: the Narrator's zombie interfered; ${bob.name} would have died (mob_attack by zombie) and was rescued instead") { "the end: $end" }
+            rig.checkClosed(view.ref, CanonStatus.CANCELLED, emptyList(), emptyList(), end, interactions = false)
+            rig.onServer { rig.livesOn(bob, diamonds = 3) }
+        }
+    }
+
+    /**
+     * The Narrator's act, from before the duel, is what kills Bob (its death guard is armed for him): he is rescued, and
+     * the duel is cancelled. Nothing counts against the Narrator's quota.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aDeathTheNarratorCausedCancelsTheDuel(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "Le doigt du Narrateur")
+            rig.onServer {
+                val home = homeAt(helper, bob.live)
+                val player = bob.live
+                rig.runtime.guards.armDeathGuard(bob.uuid, ARMED_SECONDS)
+                player.igniteForSeconds(10f)
+                player.health = 1f
+                repeat(60) { if (rig.running(view.ref)) player.doTick() }
+                rig.checkRescued(bob, home)
+            }
+            val end = rig.awaitEnd(view.ref)
+            check(end == "${view.ref} cancelled: the Narrator interfered; ${bob.name} would have died (on_fire) and was rescued instead") { "the end: $end" }
+            rig.checkClosed(view.ref, CanonStatus.CANCELLED, emptyList(), emptyList(), end, interactions = false)
+            rig.onServer { rig.livesOn(bob, diamonds = 3) }
+        }
+    }
+
+    // ── Back from the arena (M4 review, finding 21) ──
+
+    /**
+     * Four returns from an arena, each to where its duelist stood before the duel: Ann's, two blocks above the ground,
+     * lands her on it. Bob stood on a bridge since broken, nineteen blocks up; Cid where lava now is, its only ground
+     * nineteen blocks under; Dan below the world. None of the three is set down there, over the void or far under it:
+     * each goes to their respawn point.
+     */
+    @GameTest(structure = FIELD, skyAccess = true, maxTicks = ASYNC_MAX_TICKS)
+    fun aReturnLandsNearWhereTheDuelistStoodOrAtTheirRespawnPoint(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 4) { rig, (ann, bob, cid, dan) ->
+            rig.onServer {
+                for (x in 0..20) for (z in 0..20) helper.setBlock(x, 0, z, Blocks.STONE)
+                val homes = listOf(ann, bob, cid, dan).associateWith { homeAt(helper, it.live, BlockPos(3, 1, 3)) }
+                for (player in homes.keys) player.standAt(BlockPos(3, 1, 3))
+                // Where Cid stood: lava now, in a stone cup nineteen blocks above the ground.
+                helper.setBlock(15, 19, 15, Blocks.STONE)
+                for ((dx, dz) in listOf(-1 to 0, 1 to 0, 0 to -1, 0 to 1)) helper.setBlock(15 + dx, 20, 15 + dz, Blocks.STONE)
+                helper.setBlock(15, 20, 15, Blocks.LAVA)
+                try {
+                    val now = rig.clock.millis()
+                    fun saved(player: TestPlayer, x: Int, y: Double, z: Int): SavedPosition {
+                        val at = helper.absolutePos(BlockPos(x, 0, z))
+                        return SavedPosition(player.uuid.toString(), helper.level.dimension().identifier().toString(), at.x + 0.5, y, at.z + 0.5, 0f, 0f, savedAt = now)
+                    }
+                    val ground = helper.absolutePos(BlockPos(0, 1, 0)).y.toDouble()
+                    rig.store.update {
+                        it.copy(
+                            returns = listOf(
+                                saved(ann, 10, ground + 2, 10),
+                                saved(bob, 5, ground + 19, 15),
+                                saved(cid, 15, ground + 19, 15),
+                                saved(dan, 10, helper.level.minY - 20.0, 5),
+                            ),
+                        )
+                    }
+                    rig.second()
+                    check(isAt(ann.live, helper.absolutePos(BlockPos(10, 1, 10)))) { "Ann on the ground, two blocks under where she stood: ${ann.live.position()}" }
+                    for (player in listOf(bob, cid, dan)) check(isAt(player.live, homes.getValue(player))) { "${player.name} at their respawn point: ${player.live.position()}" }
+                    check(rig.store.get().returns.isEmpty()) { "nobody left to put back" }
+                } finally {
+                    helper.setBlock(15, 20, 15, Blocks.AIR)
+                }
+            }
+        }
+    }
+
+    /** A return saved more than a day ago is dropped, with its decision: Bob is left where he is. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aReturnOlderThanADayIsDropped(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 1) { rig, (bob) ->
+            rig.onServer {
+                homeAt(helper, bob.live)
+                bob.standAt(BlockPos(2, 1, 2))
+                val where = bob.live.position()
+                val then = rig.clock.millis() - Duration.ofHours(25).toMillis()
+                val dimension = helper.level.dimension().identifier().toString()
+                rig.store.update { it.copy(returns = listOf(SavedPosition(bob.uuid.toString(), dimension, where.x + 3, where.y, where.z, 0f, 0f, savedAt = then))) }
+                rig.second()
+                check(bob.live.position() == where) { "left where he is: ${bob.live.position()}" }
+                check(rig.store.get().returns.isEmpty()) { "the return is dropped" }
+            }
+            val dropped = rig.decisions(DuelReturns.RETURN_DROPPED)
+            check(dropped.size == 1 && dropped.single().subject == bob.name) { "one decision: $dropped" }
+            check(dropped.single().reason!!.endsWith(": that was 1d1h ago, more than 1d0h; left where they are")) { "why: ${dropped.single().reason}" }
+        }
+    }
+
+    // ── The duel's details (M4 review, findings 25, 26, 34) ──
+
+    /**
+     * A proposal cut off right after its canon row is written (the tool's time out, the server stopping): the duel
+     * goes in all the same, both invited, and its row is never left open without it.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aProposalCutOffOnceItsCanonIsWrittenStillInvitesBoth(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            rig.cutAfterCanon = true
+            val proposing = coroutineScope { launch { rig.propose(spec(bob, ann, "Coupé net")) } }
+            check(proposing.isCancelled) { "the proposal was cut off" }
+            val rows = rig.runtime.memory.store.canon(CanonFilter(open = true, player = bob.uuid))
+                .filter { row -> row.mechanic == CanonMechanic.DUEL && row.players.any { it.uuid == bob.uuid } }
+            check(rows.size == 1) { "one open row: $rows" }
+            rig.onServer {
+                check(rig.duel(rows.single().ref)?.status == ChallengeStatus.INVITED) { "its duel is in the state: ${rig.store.get()}" }
+                val ui = rig.ui
+                for ((player, opponent) in listOf(bob to ann, ann to bob)) {
+                    val text = ui.format("duel.invite", "opponent" to opponent.name, "title" to "Coupé net", "seconds" to 120, "where" to ui["duel.where.here"])
+                    check(player.lines().any { text in it }) { "${player.name} is invited: ${player.lines()}" }
+                }
+            }
+        }
+    }
+
+    /**
+     * A duelist must be able to get hurt: a proposal with Bob in creative mode is refused; a duel whose duelist turns
+     * spectator before both accepted never starts; a duel whose duelist an operator puts in creative mode is
+     * cancelled within the second.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aDuelistMustBeAbleToGetHurt(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            rig.onServer { bob.live.setGameMode(GameType.CREATIVE) }
+            val refused = runCatching { rig.propose(spec(bob, ann, "L'invulnérable")) }.exceptionOrNull()
+            check(refused is MechanicRejected && refused.rule == null && refused.message!!.startsWith("${bob.name} is in creative mode")) { "refused: $refused" }
+            check(rig.store.snapshot.challenges.isEmpty()) { "nothing proposed" }
+
+            rig.onServer { bob.makeVulnerable() }
+            val spectator = rig.propose(spec(bob, ann, "Le spectateur"))
+            rig.onServer {
+                rig.command(bob, "duel accept ${spectator.ref}")
+                ann.live.setGameMode(GameType.SPECTATOR)
+                rig.command(ann, "duel accept ${spectator.ref}")
+                check(rig.store.get().challenges.isEmpty()) { "it never started" }
+                check(bob.read(line(rig.ui, rig.ui["duel.cancelled"]))) { "Bob is told: ${bob.lines()}" }
+                ann.makeVulnerable()
+            }
+            check(rig.awaitEnd(spectator.ref) == "${spectator.ref} cancelled: ${ann.name} is in spectator mode") { "the end: ${rig.awaitEnd(spectator.ref)}" }
+
+            val view = rig.fight(bob, ann, "Le créatif")
+            rig.onServer {
+                ann.live.setGameMode(GameType.CREATIVE)
+                rig.second()
+                check(rig.store.get().challenges.isEmpty()) { "cancelled within the second" }
+            }
+            check(rig.awaitEnd(view.ref) == "${view.ref} cancelled: ${ann.name} is in creative mode") { "the end: ${rig.awaitEnd(view.ref)}" }
+        }
+    }
+
+    /**
+     * Nobody is pressed to fight: once Bob declined a duel, or Ann let an invitation run out, no duel is proposed to
+     * them for ten minutes (`duel_declined`); then it is again.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aPlayerWhoTurnedADuelDownIsNotAskedAgainForTenMinutes(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 3) { rig, (bob, ann, cid) ->
+            val declined = rig.propose(spec(bob, cid, "Non merci"))
+            rig.onServer { rig.command(bob, "duel decline ${declined.ref}") }
+            val refused = runCatching { rig.propose(spec(bob, cid, "Et maintenant ?")) }.exceptionOrNull()
+            check(refused is MechanicRejected && refused.rule == Duels.DUEL_DECLINED && refused.message!!.startsWith("${bob.name} turned a duel down 0s ago")) {
+                "Bob rests: $refused"
+            }
+
+            val ignored = rig.propose(spec(ann, cid, "Silence"))
+            rig.onServer {
+                rig.command(cid, "duel accept ${ignored.ref}")
+                rig.at(ignored.endsAt)
+                check(rig.store.get().challenges.isEmpty()) { "run out" }
+            }
+            val again = runCatching { rig.propose(spec(ann, cid, "Toujours pas ?")) }.exceptionOrNull()
+            check(again is MechanicRejected && again.rule == Duels.DUEL_DECLINED && again.message!!.startsWith("${ann.name} turned a duel down")) { "Ann rests: $again" }
+
+            rig.clock.advance(Duration.ofMinutes(10))
+            check(rig.propose(spec(bob, ann, "Dix minutes plus tard")).status == ChallengeStatus.INVITED) { "asked again ten minutes later" }
+        }
+    }
+
+    /**
+     * Both accepted, but its arena, far away, does not load: the duel is cancelled half a minute after its invitation's
+     * end, rather than kept an invitation for ever.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aDuelThatCannotStartIsCancelled(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.propose(spec(bob, ann, "Nulle part"))
+            rig.onServer {
+                val far = ArenaSpec(bob.live.blockX + FAR, bob.live.blockY, bob.live.blockZ, helper.level.dimension().identifier().toString())
+                rig.store.update { state -> state.copy(challenges = state.challenges.map { it.copy(duel = it.duel!!.copy(arena = far)) }) }
+                rig.command(bob, "duel accept ${view.ref}")
+                rig.command(ann, "duel accept ${view.ref}")
+                check(rig.duel(view.ref)?.status == ChallengeStatus.INVITED) { "waiting for its arena" }
+                rig.at(view.endsAt + Duration.ofSeconds(30).toMillis())
+                check(rig.store.get().challenges.isEmpty()) { "cancelled" }
+                for (player in listOf(bob, ann)) check(player.read(line(rig.ui, rig.ui["duel.cancelled"]))) { "${player.name} is told: ${player.lines()}" }
+            }
+            val end = rig.awaitEnd(view.ref)
+            check(end == "${view.ref} cancelled: both accepted, but it could not start within 30s of the invitation's end") { "the end: $end" }
+            rig.checkClosed(view.ref, CanonStatus.CANCELLED, emptyList(), emptyList(), end, interactions = false)
+        }
+    }
+
+    /** A duel nobody fought, still an invitation, cannot end won or lost: only cancelled. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun anInvitationCanOnlyBeCancelled(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.propose(spec(bob, ann, "Jamais commencé"))
+            val operator = Author(Source.OPERATOR, operator = "gametest")
+            for ((outcome, winners) in listOf(ChallengeOutcome.WON to listOf(ann.uuid), ChallengeOutcome.LOST to emptyList())) {
+                val refused = runCatching { rig.duels.end(view.ref, outcome, winners, "Terminé.", operator) }.exceptionOrNull()
+                check(refused is MechanicRejected && refused.message!!.startsWith("${view.ref} is only an invitation")) { "${outcome.id} refused: $refused" }
+            }
+            check(rig.store.snapshot.challenge(view.ref.id)?.status == ChallengeStatus.INVITED) { "still an invitation" }
+            rig.duels.end(view.ref, ChallengeOutcome.CANCELLED, emptyList(), "Annulé par un opérateur.", operator)
+            awaitCondition("the end of ${view.ref}") { canon(rig, view.ref).status == CanonStatus.CANCELLED }
+            val results = rig.runtime.memory.store.interactions(ann.uuid, 10).filter { it.canon == view.ref }
+            check(results.isEmpty()) { "nothing in Ann's history: $results" }
+        }
+    }
+
+    /**
+     * A restart in the middle of a duel, and Bob never comes back: a minute after the engine started again he has left
+     * the server, and Ann wins; half a minute after, it still ran.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aDuelistNotBackAfterARestartHasLeft(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.fight(bob, ann, "Le déserteur")
+            val saved = rig.onServer {
+                rig.engine.stop()
+                bob.close() // gone while the server was down
+                MechanicsState.decode(MechanicsState.encode(rig.store.get()))
+            }
+            val again = Rig(helper, rig.director, rig.sink, StateStore.inMemory(saved), rig.clock)
+            try {
+                rig.onServer {
+                    again.engine.start(helper.level.server)
+                    rig.clock.advance(Duration.ofSeconds(30))
+                    again.tick()
+                    check(again.running(view.ref)) { "still running half a minute after the start" }
+                    rig.clock.advance(Duration.ofSeconds(31))
+                    again.tick()
+                    check(again.store.get().challenges.isEmpty()) { "Bob has left" }
+                    check(ann.read(line(again.ui, again.ui["duel.won"]))) { "Ann is told: ${ann.lines()}" }
+                }
+                val end = again.awaitEnd(view.ref)
+                check(end == "${view.ref} won by ${ann.name} in 1m01s: ${bob.name} left the server") { "the end: $end" }
+            } finally {
+                rig.onServer { again.engine.stop() }
+            }
+        }
+    }
+
     // ── Bets ──
 
     /**
@@ -428,7 +897,6 @@ class DuelGameTests {
         withRig(helper, 4) { rig, (bob, ann, cid, dan) ->
             val view = rig.propose(spec(bob, ann, "Les paris sont ouverts").copy(bets = true))
             rig.onServer {
-                bob.makeVulnerable()
                 cid.hold(ItemStack(Items.IRON_INGOT, 12))
                 check(rig.bets.bet(cid.live, view.ref, ann.name).string == rig.ui["bet.closed"]) { "no bet on an invitation" }
                 check(count(cid.live, Items.IRON_INGOT) == 12) { "a refusal takes nothing" }
@@ -502,7 +970,6 @@ class DuelGameTests {
             val (point, places) = rig.onServer { field(helper, bob, ann) }
             val view = rig.propose(spec(bob, ann, "Avant et après", arena = ArenaSpec(point.x, point.y, point.z)))
             val saved = rig.onServer {
-                bob.makeVulnerable()
                 bob.live.inventory.add(ItemStack(Items.DIAMOND, 3))
                 rig.command(bob, "duel accept ${view.ref}")
                 rig.command(ann, "duel accept ${view.ref}")
@@ -556,9 +1023,29 @@ class DuelGameTests {
         val clock: TestClock,
     ) {
         val runtime: NarratorRuntime = helper.narrator()
+
+        /** Set by a test: the next canon row written cancels, right after, the coroutine that wrote it (a tool's time out). */
+        @Volatile
+        var cutAfterCanon = false
+
+        /** The running Narrator's memory, but for [cutAfterCanon]. */
+        private val memory: Memory = object : Memory by runtime.memory {
+            override val store: MemoryStore = object : MemoryStore by runtime.memory.store {
+                override suspend fun addCanon(draft: CanonDraft, author: Author): Added<CanonEntry> {
+                    val added = runtime.memory.store.addCanon(draft, author)
+                    if (cutAfterCanon) {
+                        cutAfterCanon = false
+                        currentCoroutineContext().cancel()
+                    }
+                    return added
+                }
+            }
+        }
+
         val services: NarratorServices = object : NarratorServices by runtime {
             override val trace: TraceSink get() = sink
             override val director: DirectorControl get() = this@Rig.director
+            override val memory: Memory get() = this@Rig.memory
         }
         val ui: UiTexts get() = runtime.settings.get().ui
         val bars = Bossbars()
@@ -583,12 +1070,10 @@ class DuelGameTests {
 
         suspend fun propose(spec: DuelSpec): ChallengeView = duels.propose(spec, DIRECTOR)
 
-        /** A duel of [bob] and [ann], both accepted, both able to take damage, Bob with 3 diamonds: running. */
+        /** A duel of [bob] and [ann], both accepted, Bob with 3 diamonds: running. */
         suspend fun fight(bob: TestPlayer, ann: TestPlayer, title: String, minutes: Int = 5, reward: RewardSpec? = null): ChallengeView {
             val view = propose(spec(bob, ann, title, minutes = minutes).copy(reward = reward))
             onServer {
-                bob.makeVulnerable()
-                ann.makeVulnerable()
                 bob.live.inventory.add(ItemStack(Items.DIAMOND, 3))
                 command(bob, "duel accept ${view.ref}")
                 command(ann, "duel accept ${view.ref}")
@@ -628,6 +1113,13 @@ class DuelGameTests {
             clock.now = Instant.ofEpochMilli(epochMs)
             tick()
         }
+
+        /**
+         * Lets the server run [ticks] ticks of its own ([ServerTicks]): in each, the engine's clock moves on by a tick,
+         * [eachTick] runs (what a client would do, say), [players] tick as their client's connection makes them tick,
+         * then the engine. Off the server thread.
+         */
+        suspend fun letRun(players: List<TestPlayer>, ticks: Int, eachTick: () -> Unit = {}) = ServerTicks.run(this, players, ticks, eachTick)
 
         suspend fun <T> onServer(block: () -> T): T = helper.level.server.onServerThread(10_000, block)
 
@@ -716,6 +1208,53 @@ class DuelGameTests {
         }
     }
 
+    /**
+     * The server's own ticks, for the tests that let it run (M4 review, finding 3): the bench's players are not ticked
+     * by a client's connection, and a loop of `doTick` within one server tick never lets their damage cooldown run
+     * down (the level does that), so a fire hurts them once. Here each server tick, after the level ticked them, moves
+     * the run's clock on by [TICK_MS], runs its own step, ticks its players (`doTick`, as their connection would:
+     * fire, lava, the void) and then its engine. Registered once, at its first use; a failure ends the run, never the
+     * server's tick.
+     */
+    private object ServerTicks {
+        private val runs = CopyOnWriteArrayList<Run>()
+
+        private class Run(val rig: Rig, val players: List<TestPlayer>, val eachTick: () -> Unit) {
+            val ticks = AtomicInteger()
+
+            @Volatile
+            var failure: Throwable? = null
+
+            fun tick() {
+                if (failure != null) return
+                try {
+                    rig.clock.advance(Duration.ofMillis(TICK_MS))
+                    eachTick()
+                    players.map { it.live }.filterNot { it.isRemoved }.forEach { it.doTick() }
+                    rig.tick()
+                    ticks.incrementAndGet()
+                } catch (e: Throwable) {
+                    failure = e
+                }
+            }
+        }
+
+        init {
+            ServerTickEvents.END_SERVER_TICK.register { _ -> runs.forEach { it.tick() } }
+        }
+
+        suspend fun run(rig: Rig, players: List<TestPlayer>, ticks: Int, eachTick: () -> Unit) {
+            val run = Run(rig, players, eachTick)
+            runs += run
+            try {
+                awaitCondition("$ticks ticks of the server", timeoutMs = 60_000) { run.failure != null || run.ticks.get() >= ticks }
+            } finally {
+                runs -= run
+            }
+            run.failure?.let { throw IllegalStateException("a tick of the server failed after ${run.ticks.get()} ticks", it) }
+        }
+    }
+
     /** The bars of the rig, drawn from its state when it starts and each second, as the engine's own part does (M4-09). */
     private class DrawnBars(private val bars: Bossbars, private val store: StateStore, private val ui: UiTexts) : MechanicPart {
         override fun started(server: MinecraftServer, now: Long) = bars.render(server, store.get(), ui, now)
@@ -747,6 +1286,31 @@ class DuelGameTests {
         /** How far below the bottom of the world the void test puts Bob: where the void hurts. */
         const val VOID_DEPTH = 70
 
+        /**
+         * A server tick on the engine's clock, in the tests that let the server run: a busy server's, a little slower
+         * than the 50 ms of an idle one. What lasts a number of ticks (an effect, a fire) then lasts longer on the
+         * clock than its seconds, as it does on a real server under load.
+         */
+        const val TICK_MS = 60L
+
+        /** Ticks the server runs after a duel, in those tests: 24 seconds, longer than any fire and than the duel's protection. */
+        const val RUN_TICKS = 400
+
+        /** The food level of a hungry player: too low to heal by itself. */
+        const val HUNGRY = 6
+
+        /** Ticks of her own that Ann needs to hold a sword and charge her attack. */
+        const val CHARGE_TICKS = 20
+
+        /** How far a slow fall takes a client each tick, in blocks. */
+        const val SLOW_FALL = 0.5
+
+        /** How long the Narrator's death guard stays armed for Bob, in seconds of his play time. */
+        const val ARMED_SECONDS = 60
+
+        /** How far east an arena that does not load is, in blocks: no test loads it. */
+        const val FAR = 100_000
+
         const val FACING_EAST = -90f
         const val FACING_WEST = 90f
 
@@ -755,10 +1319,13 @@ class DuelGameTests {
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4343, taskId = null)
 
-        /** Runs [test] with a [Rig] started on the server thread, hooked to `ALLOW_DEATH`, and [count] players; all closed however it ends. */
+        /**
+         * Runs [test] with a [Rig] started on the server thread, hooked to `ALLOW_DEATH`, and [count] players able to get
+         * hurt (a duelist must be); all closed however it ends.
+         */
         suspend fun CoroutineScope.withRig(helper: GameTestHelper, count: Int, test: suspend (Rig, List<TestPlayer>) -> Unit) {
             val server = helper.level.server
-            val players = server.onServerThread { List(count) { TestPlayer(helper, "du_", keep = ::isOfInterest) } }
+            val players = server.onServerThread { List(count) { TestPlayer(helper, "du_", keep = ::isOfInterest).also { it.makeVulnerable() } } }
             val rig = Rig(helper)
             try {
                 rig.onServer { rig.engine.start(server) }
