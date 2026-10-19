@@ -255,6 +255,7 @@ private class LiveRun(val helper: GameTestHelper, private val title: String, pri
     /** Whether the run may still spend: below its budget. */
     suspend fun affordable(): Boolean = spent() < budget
 
+    /** One step of the story: [action], then the Director's answer. */
     suspend fun step(title: String, settleMs: Long = 150_000, action: suspend () -> Unit) {
         note("**$title** (cost so far ${dollars(spent())})")
         action()
@@ -262,10 +263,19 @@ private class LiveRun(val helper: GameTestHelper, private val title: String, pri
     }
 
     /**
-     * Waits until the Director has answered: no turn running or due, no task running, twice a moment apart (a task's
-     * report reaches the Director a little after the task ends). Events that wake nobody may stay in its inbox.
+     * Waits until the Director has answered (see [awaitQuiet]); then a player who died meanwhile respawns, as a real one
+     * would (a mock player has no client to click "respawn").
      */
     suspend fun settle(maxMs: Long = 150_000) {
+        awaitQuiet(maxMs)
+        for (player in players) if (player.respawnIfDead()) note("${player.name} died; respawned")
+    }
+
+    /**
+     * Waits until the Director has nothing to do: no turn running or due, no task running, twice a moment apart (a
+     * task's report reaches the Director a little after the task ends). Events that wake nobody may stay in its inbox.
+     */
+    private suspend fun awaitQuiet(maxMs: Long) {
         delay(3_500)
         if (!live) return
         fun quiet(): Boolean {
@@ -697,7 +707,8 @@ private val RULE_CASES = listOf(
     ) { "silverfish" in conditions(it, "entity") },
     RuleCase(
         "flying cows", "Fais une loi d'une heure, pour rire : les vaches qu'on frappe s'envolent, puis explosent en feu d'artifice.",
-        "law", "damage_dealt", setOf("mob_effect"),
+        // Levitation on a creature is refused since M4-FIX-D (« it ends in a fall that kills »): the cows may only glow, burst or fire.
+        "law", "damage_dealt", setOf("mob_effect", "explosion", "fireworks"),
     ) { "cow" in conditions(it, "entity") },
     RuleCase(
         "caffeinated creepers", "Mets les creepers sous caféine pendant une heure : qu'ils courent trois fois plus vite que d'habitude.",
@@ -743,10 +754,10 @@ private class Evals(private val run: LiveRun) {
     suspend fun play() {
         try {
             run.start(EVALS_CONFIG)
-            bartok = run.join("Bartok", BlockPos(12, 1, 12))
-            mimosa = run.join("Mimosa", BlockPos(19, 1, 12))
-            pistache = run.join("Pistache", BlockPos(12, 1, 19))
-            opaline = run.join("Opaline", BlockPos(19, 1, 19), operator = true)
+            bartok = run.join("Bartok", BlockPos(8, 1, 8))
+            mimosa = run.join("Mimosa", BlockPos(14, 1, 8))
+            pistache = run.join("Pistache", BlockPos(24, 1, 24))
+            opaline = run.join("Opaline", BlockPos(8, 1, 24), operator = true)
             // Each finds a diamond (the ore mined, the gem in hand): the advancement comes with a reason, not with the offerings of L5.
             for (player in listOf(bartok, mimosa, pistache)) player.findADiamond()
             run.step("four players joined; Mimosa greets the Narrator") { mimosa.say("Bonsoir Narrateur ! On est quatre ce soir, prêts à jouer.") }
@@ -1036,6 +1047,7 @@ private suspend fun playDuel(run: LiveRun, winner: LivePlayer, loser: LivePlayer
     details += "$blow → $status; ${loser.name} alive: $alive; a line after DUEL: $spoke; the lines: $lines"
     details += "lines with a word of death (read them): ${lines.filter { DEATH_SAID.containsMatchIn(it) }}"
     run.onServer { listOf(winner, loser).forEach { it.goHome() } }
+    if (status != CanonStatus.WON) run.endIfOpen(ref)
     return status == CanonStatus.WON && alive && spoke
 }
 
@@ -1043,6 +1055,7 @@ private suspend fun playDuel(run: LiveRun, winner: LivePlayer, loser: LivePlayer
 
 /** One evening with the production settings: a challenge, the law of the diamonds, a plan, an offering, a duel, a cage. */
 private class MechanicsEvening(private val run: LiveRun) {
+    private val parts = System.getProperty("narrator2.live.parts").orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
     private val checks = mutableListOf<Pair<String, Boolean>>()
     private val details = mutableListOf<String>()
     private lateinit var gaspard: LivePlayer
@@ -1065,6 +1078,7 @@ private class MechanicsEvening(private val run: LiveRun) {
                 "challenge" to ::challenge, "teasing" to ::teasing, "law" to ::law, "plan" to ::plan,
                 "offering" to ::offering, "duel" to ::duel, "cage" to ::cage,
             )) {
+                if (parts.isNotEmpty() && title !in parts) continue
                 if (!run.affordable()) {
                     run.note("skipped the $title: the budget is spent (${dollars(run.spent())})")
                     continue
@@ -1276,6 +1290,7 @@ private class LivePlayer(private val helper: GameTestHelper, val name: String, p
         player.setGameMode(GameType.SURVIVAL)
         player.teleportTo(home.x + 0.5, home.y.toDouble(), home.z + 0.5)
         player.connection.handleAcceptPlayerLoad(ServerboundPlayerLoadedPacket())
+        player.setOnGround(true) // a mock player has no physics to land: a trap wants them on the ground
     }
 
     val player: ServerPlayer get() = checkNotNull(server.playerList.getPlayer(profile.id)) { "$name is not online" }
@@ -1309,26 +1324,36 @@ private class LivePlayer(private val helper: GameTestHelper, val name: String, p
     }
 
     /** Back at home, in the overworld. Server thread. */
-    fun goHome() {
-        player.teleport(TeleportTransition(helper.level, Vec3(home.x + 0.5, home.y.toDouble(), home.z + 0.5), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING))
-    }
+    fun goHome() = travel(TeleportTransition(helper.level, Vec3(home.x + 0.5, home.y.toDouble(), home.z + 0.5), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING))
 
     /** Into the Nether, on the floor of [room]. */
     suspend fun toNether(room: BlockPos) = server.onServerThread {
         val nether: ServerLevel = server.getLevel(Level.NETHER)!!
-        player.teleport(TeleportTransition(nether, Vec3.atBottomCenterOf(room), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING))
+        travel(TeleportTransition(nether, Vec3.atBottomCenterOf(room), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING))
     }
 
-    /** Respawns them if they died (a mock player has no client to click "respawn"). */
-    suspend fun respawnIfDead() {
+    /**
+     * Goes through [transition] to a floor, then loads the new level as a client does: a player who changed dimension
+     * takes no damage until their client says it has loaded it (`handoff/T05.md`). Server thread.
+     */
+    private fun travel(transition: TeleportTransition) {
+        val changes = transition.newLevel() !== player.level()
+        player.teleport(transition)
+        if (changes) player.connection.handleAcceptPlayerLoad(ServerboundPlayerLoadedPacket())
+        player.setOnGround(true)
+    }
+
+    /** Respawns them if they died (a mock player has no client to click "respawn"); whether they had. */
+    suspend fun respawnIfDead(): Boolean {
         val dead = server.onServerThread { player.isDeadOrDying }
-        if (!dead) return
+        if (!dead) return false
         delay(3_000)
         server.onServerThread {
             val back = server.playerList.respawn(player, false, Entity.RemovalReason.KILLED)
             back.connection.handleAcceptPlayerLoad(ServerboundPlayerLoadedPacket())
             goHome()
         }
+        return true
     }
 
     override fun close() {
