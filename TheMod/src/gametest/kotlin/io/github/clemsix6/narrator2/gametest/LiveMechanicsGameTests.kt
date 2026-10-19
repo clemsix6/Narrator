@@ -87,7 +87,12 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   hour. `-Pnarrator2.live.parts=L1,L5` plays some of them.
  * - [evening]: the acceptance evening with the production settings (heartbeats every 2 to 4 minutes only): a challenge
  *   won and its stakes paid, the law of the exploding diamonds (no block touched), a welcome committee in the Nether, an
- *   offering, a duel, a glass cage.
+ *   offering, a duel, a glass cage. `-Pnarrator2.live.parts=duel,cage` plays some of them (`challenge`, `teasing`, `law`,
+ *   `plan`, `offering`, `duel`, `cage`).
+ *
+ * The mock players act as clients would where the game expects one: they stand on the ground, load the level they travel
+ * to, and respawn when they die (after the Director's answer), or the guards and the traps would treat them as no real
+ * player is ever treated.
  *
  * Each writes its report in the run directory (`build/run/liveGameTest/live-report/`, `mechanics-evals.md` and
  * `mechanics.md`): the chat as the players read it, every tool call of the Director and of the engine, the engine's
@@ -187,7 +192,7 @@ private val REF_SHOWN = Regex("""\b[CMIHNO]-\d+\b""")
  * Words a Narrator who asks for an offering would use, even by a hint (« le guichet ferme à 18h18 »); the lines that
  * match are listed for a human to read.
  */
-private val OFFERING_ASKED = Regex("""(?i)(/offer|offrande|tribut|dîme|offre[- ]moi|apporte[- ]moi|donne[- ]moi|sacrifice|guichet|pot-de-vin|pots-de-vin|à déclarer)""")
+private val OFFERING_ASKED = Regex("""(?i)(/offer|\boffrandes?\b|\btributs?\b|\bdîmes?\b|offre[- ]moi|apporte[- ]moi|donne[- ]moi|\bsacrifices?\b|\bguichet|pots?-de-vin|à déclarer)""")
 
 /** Words that would say a duelist died; the lines that match are listed for a human to read. */
 private val DEATH_SAID = Regex("""(?i)\b(mort|morte|morts|tué|tuée|décédé|décédée|trépass\w*|cadavre|rip|enterr\w*|feu \w+ )\b""")
