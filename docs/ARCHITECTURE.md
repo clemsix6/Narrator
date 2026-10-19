@@ -312,10 +312,10 @@ préviens-moi pour que je la félicite ». C'est une règle de sorte **`plan`** 
 unique, gardée au canon pour qu'il s'en souvienne d'un chapitre à l'autre. Les **pièges de blocs** (cage de verre,
 toiles) sont deux punitions du catalogue : posés **seulement dans l'air** autour du joueur, pour quelques secondes,
 puis retirés tout seuls par le `BlockRestorer`, seul chemin d'écriture de blocs. Ils ne remplacent jamais un bloc,
-naturel ou construit : rien de ce que les joueurs ont construit n'est touché, même s'il date d'avant le mod. Fosses et
-sols piégés ne viennent qu'avec la Forge, par des modules, sur du terrain naturel reconnu par une heuristique (aucun
-bloc construit ni entité de bloc à 6 blocs, ciel visible, terrain plat, hors des structures), si le propriétaire rouvre
-la décision G de M4 ([design M5](design/M5.md) §19.2, Q4).
+naturel ou construit : rien de ce que les joueurs ont construit n'est touché, même s'il date d'avant le mod. **Il n'y a
+pas de fosse ni de sol piégé** : la décision G de M4 (remplacer temporairement du terrain naturel) est restée fermée
+(décision du 19/10/2026, [design M5](design/M5.md) §19.2, Q4) — aucun bloc ne remplace jamais un bloc existant. La porte
+pourra être rouverte plus tard.
 
 ### 9.5 Récits
 Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée
@@ -541,8 +541,8 @@ Le design exécutable de M4 est dans [docs/design/M4.md](design/M4.md). Il tranc
 - **L'Éclaireur** entre avec `survey` ; les rappels deviennent persistants ; `/narrator restart` est rangé en M6, et les nouvelles tentatives d'ouverture du Journal au démarrage sont faites hors de M4.
 - **Relecture du 18/10/2026** ([relecture](design/reviews/M4_DESIGN_REVIEW.md)) : décisions A à F du superviseur intégrées, pièges limités à l'air, offrandes compensées par le code, duels sans aucune mort, découpage corrigé (44 outils pour le Directeur, tous dépendants du moteur).
 
-Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md). Il propose, le 19/10/2026 (sous réserve des
-questions Q1 à Q8 de son §19.2, à trancher par le propriétaire) :
+Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md), relu et corrigé le 19/10/2026
+([relecture](design/reviews/M5_DESIGN_REVIEW.md), décisions Q1 à Q8 du superviseur tranchées). Il tranche :
 - **Un module ne voit que le SDK du Narrateur** et une liste blanche du JDK, jamais les classes du jeu ; tout ce qu'il
   fait au monde passe par les vrais outils et les garde-fous, chaque invocation étant un acte du moteur.
 - **Cinq barrières** : compilateur aveugle, garde par liste blanche, réécriture (temps, allocation, profondeur, tailles),
@@ -550,9 +550,11 @@ questions Q1 à Q8 de son §19.2, à trancher par le propriétaire) :
 - **ECJ seul**, embarqué ; mesuré dans le vrai serveur Fabric (7 ms à chaud).
 - **Un déploiement est une ligne du canon** (loi ou plan, `mechanic = module`) et une entrée de l'état du monde ; il
   survit au redémarrage. L'arsenal est fait de sources versionnées dans le dossier du monde.
-- **Pas de module sans tests** au banc d'essai (un monde simulé) ; revue par un opérateur en option.
+- **Pas de module sans tests** au banc d'essai (un monde simulé) ; revue par un opérateur en option (`approval`,
+  `auto` par défaut).
 - **Le Forgeron** a cinq outils et le SDK dans son prompt ; **le Directeur** commande (`forge_module`), déploie
   (`deploy_module`) et arrête (`stop_module`) : 47 outils.
+- **Pas de piège de sol** (fosse, patinoire) : la décision C reste absolue, aucun bloc ne remplace un bloc existant.
 
 ## 17. Décisions prises
 
