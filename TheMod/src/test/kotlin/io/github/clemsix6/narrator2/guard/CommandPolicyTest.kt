@@ -35,6 +35,12 @@ class CommandPolicyTest {
                 .then(literal("roll").then(argument("range", word()).executes(ok))),
         )
         register(literal("stop").requires { false }.executes(ok))
+        // A player's own command (M4 §18.2), as M4-19 registers it; `bet` and `offer` are left unregistered.
+        register(
+            literal("duel")
+                .then(literal("accept").then(argument("id", word()).executes(ok)))
+                .then(literal("decline").then(argument("id", word()).executes(ok))),
+        )
         // Another mod's command, and its alias.
         val sethome = register(literal("sethome").then(argument("name", word()).executes(ok)))
         register(literal("home").redirect(sethome))
@@ -177,6 +183,41 @@ class CommandPolicyTest {
         extra = listOf("sethome")
         refused("sethome base", "sethome")
         refused("fill 3", "fill")
+    }
+
+    /**
+     * M4 review, finding 15: the players' own commands. Behind `execute as <player> run`, the Narrator would accept a
+     * duel for a player (a forced fight), bet or offer their items; even an operator's `safety.extraAllowedCommands`
+     * cannot open them.
+     */
+    @Test
+    fun `the players' own commands are refused, behind execute as too, whatever the operators allow`() {
+        val message = refused("duel accept C-52", "duel")
+        assertEquals(
+            "`duel` is forbidden: a player's own command, typed by the player alone: nobody is made to pray, fight, bet or give.",
+            message,
+        )
+        refused("execute as Bartok run duel accept C-52", "duel")
+        refused("execute as all run execute as Bartok run duel decline C-52", "duel")
+        refused("execute if block here run duel accept C-52", "duel")
+        refused("/duel accept C-52", "duel")
+        refused("duel", "duel")
+        // Not registered yet here: refused by their first word all the same.
+        refused("bet C-50 Mimosa", "bet")
+        refused("execute as Bartok run bet C-50 nobody", "bet")
+        refused("offer", "offer")
+        refused("execute as Mimosa run offer", "offer")
+        refused("pray please", "pray")
+
+        extraAllowed = listOf("duel", "bet", "offer", "pray")
+        refused("duel accept C-52", "duel")
+        refused("execute as Bartok run duel accept C-52", "duel")
+        refused("bet C-50 Mimosa", "bet")
+        refused("execute as Mimosa run offer", "offer")
+        refused("pray please", "pray")
+        listOf("duel", "bet", "offer", "pray").forEach {
+            assertEquals(CommandPolicy.Reason.PLAYER, CommandPolicy.FORBIDDEN[it]?.reason, "$it is a player's own command")
+        }
     }
 
     @Test

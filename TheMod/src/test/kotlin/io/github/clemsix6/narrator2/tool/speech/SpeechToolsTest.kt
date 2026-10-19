@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.tool.speech
 
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -88,6 +89,29 @@ class SpeechToolsTest {
             "Invalid arguments: pages $nothing",
             GiveBookTool(limiter).call("""{"to":"Alice","title":"Titre","pages":["  ","§k"]}"""),
         )
+    }
+
+    /**
+     * The dry checks (`check`, M4 §4.3) of the speech tools a rule may use need nobody online, and count nothing
+     * against the limits: the engine runs them when a rule is created. The sound's id is checked in game
+     * (`SpeechGameTests`): unit tests do not load the game's registries.
+     */
+    @Test
+    fun `the dry checks need nobody online and count nothing`() = runTest {
+        suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? {
+            val decoded = ToolArgs.decode(args, json)
+            assertIs<ToolArgs.Decoded.Ok<A>>(decoded, "arguments: $decoded")
+            return check(context, decoded.args)
+        }
+        val nothing = "has nothing to show once formatting codes and invisible characters are removed; write plain text"
+
+        assertEquals("Invalid arguments: text $nothing", SayTool(limiter).dry("""{"text":"§c "}""")?.text)
+        assertEquals("Invalid arguments: title $nothing", ShowTitleTool(limiter).dry("""{"title":"§r"}""")?.text)
+        assertEquals("Invalid arguments: text $nothing", ActionbarTool(limiter).dry("""{"text":"\n"}""")?.text)
+        repeat(SpeechLimiter.LINES_PER_TURN + 2) { assertEquals(null, SayTool(limiter).dry("""{"text":"La loi est la loi, {actor}.","to":["Bob"]}""")) }
+        assertEquals(null, ShowTitleTool(limiter).dry("""{"title":"Châtiment","to":["Bob"]}"""))
+        assertEquals(null, ActionbarTool(limiter).dry("""{"text":"Psst."}"""))
+        assertEquals(Verdict.Allowed, limiter.line(caller), "no line was counted")
     }
 
     @Test
