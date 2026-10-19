@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
+import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.Mechanics
@@ -19,7 +20,6 @@ import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
-import io.github.clemsix6.narrator2.runtime.NarratorRuntime
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.tool.Caller
