@@ -38,7 +38,7 @@ import kotlin.math.round
  * | `narrator` | messages to the Narrator (prayers, and chat with `to_narrator ≥ 0.6`) | `{prayers, punishments, blessings, gifts, challenges_won, challenges_lost}` |
  * | `luck` | index 0-100 ([Luck]) | `{rare_per_1k_mined, treasure_fish, challenges_ratio, absurd_deaths_per_h}` |
  * | `style` | null | `{explorer, fighter, builder, miner, farmer, social}` in %; value and detail null under an hour of play ([Style]) |
- * | `signals` | Jev verdicts measured | [Signals] |
+ * | `signals` | messages the reflex model measured | [Signals] |
  */
 object SheetStats {
     /** Every stat, in the order the sheet shows them. */

@@ -29,7 +29,7 @@ import java.util.UUID
  *   second request says a line to everyone; its third ends the turn. Outcome `acted`.
  * - Task 7 of the Analyst, asked by turn 42, runs one `sql` and answers.
  * - Steve chats between players: nothing wakes up. A heartbeat turn 43 finds nothing to do (`idle`).
- * - An operator makes the Narrator say a line; Jev triages twice, once in error.
+ * - An operator makes the Narrator say a line; the reflex model triages twice, once in error.
  */
 internal class TraceDataset : AutoCloseable {
     val fixture = JournalFixture()
@@ -117,8 +117,8 @@ internal class TraceDataset : AutoCloseable {
         // An operator's line and the reflexes.
         at(310)
         fixture.publish(NarratorSpoke(NarratorChannel.OPERATOR, "Silence.", null, turnId = null, operator = "Clement"))
-        jev(null)
-        jev("timeout after 1500 ms")
+        reflex(null)
+        reflex("timeout after 3000 ms")
     }
 
     /** One Anthropic call; returns its id. Its start is [latencyMs] before the clock. */
@@ -163,14 +163,14 @@ internal class TraceDataset : AutoCloseable {
         journal.toolCall(ToolCallRecord(id, clock.instant(), conversation, turnId, llmCallId, "toolu_$id", role, tool, args, status, result, 40, targets, effect))
     }
 
-    private fun jev(error: String?) {
+    private fun reflex(error: String?) {
         journal.llmCall(
             LlmCallRecord(
-                id = journal.nextId(IdKind.LLM_CALL), provider = LlmCallRecord.Provider.JEV, purpose = LlmCallRecord.Purpose.CHAT_TRIAGE,
-                conversationId = null, turnId = null, role = "reflex", model = "jev-1.13.0", effort = null,
+                id = journal.nextId(IdKind.LLM_CALL), provider = LlmCallRecord.Provider.ANTHROPIC, purpose = LlmCallRecord.Purpose.CHAT_TRIAGE,
+                conversationId = null, turnId = null, role = "reflex", model = "claude-haiku-5-5", effort = "low",
                 startedAt = clock.instant(), endedAt = clock.instant().plusMillis(800), latencyMs = 800, ttftMs = null, attempts = 1,
                 requestId = null, messageId = null, inputTokens = if (error == null) 90 else null, cacheReadTokens = null, cacheWriteTokens = null,
-                outputTokens = if (error == null) 30 else null, stopReason = null, refusalCategory = null, error = error, httpStatus = null, thinking = null,
+                outputTokens = if (error == null) 30 else null, stopReason = if (error == null) "end_turn" else null, refusalCategory = null, error = error, httpStatus = null, thinking = null,
             ),
         )
     }

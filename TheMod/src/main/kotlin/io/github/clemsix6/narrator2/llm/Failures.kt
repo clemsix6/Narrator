@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.llm
 
+import com.anthropic.core.http.Headers
 import com.anthropic.core.jsonMapper
 import com.anthropic.errors.AnthropicIoException
 import com.anthropic.errors.AnthropicServiceException
@@ -13,6 +14,7 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.time.Instant
+import java.time.OffsetDateTime
 
 /**
  * LLMGW refused the call because the project's budget is spent (HTTP 402 `budget_exceeded`). Retrying
@@ -52,6 +54,26 @@ fun describeFailure(error: Throwable): String = when (error) {
         }
     }
 }
+
+/** LLMGW's 402 `budget_exceeded`, with its reset time; null for any other failure. */
+internal fun budgetExceeded(error: Throwable): BudgetExceededException? {
+    if (error !is AnthropicServiceException || error.statusCode() != 402) return null
+    val detail = runCatching { jsonMapper().valueToTree<JsonNode>(error.body()) }.getOrNull()?.path("error") ?: return null
+    if (detail.path("type").asText() != "budget_exceeded") return null
+    val resetAt = detail.path("reset_at").takeIf { it.isTextual }
+        ?.let { runCatching { OffsetDateTime.parse(it.asText()).toInstant() }.getOrNull() }
+    return BudgetExceededException(resetAt, detail.path("dimension").textOrNull(), detail.path("window").textOrNull())
+        .apply { initCause(error) }
+}
+
+/**
+ * The id to quote to the gateway's operator: Anthropic's `request-id`, else CLIProxyAPI's
+ * `X-Cpa-Trace-Id` (LLMGW does not relay `request-id`, verified 25/09/2026).
+ */
+internal fun requestIdOf(headers: Headers): String? =
+    (headers.values("request-id") + headers.values("x-cpa-trace-id")).firstOrNull()
+
+private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
 
 /** A network failure (refused, reset or timed-out connection), as opposed to a malformed answer. */
 internal fun isConnectionError(error: Throwable): Boolean =

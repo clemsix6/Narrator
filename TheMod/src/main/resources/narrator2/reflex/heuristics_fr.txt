@@ -1,5 +1,5 @@
 # Word lists of the chat heuristic for French (reflex/HeuristicReflexes.kt): what judges the chat when
-# Jev is off, fails, or hesitates on whether a message addresses the Narrator.
+# the reflex model is off, fails, or hesitates on whether a message addresses the Narrator.
 #
 # One entry per line, under a [category] header; every category must be present. Entries and messages
 # are compared once normalized: lowercase, accents removed, and every character other than a letter, a

@@ -212,14 +212,13 @@ object AdminCommands {
             "last flush ${health.lastFlushMs} ms (${health.lastFlushRows} rows) · ${health.queued} queued · ${health.droppedEvents} lost"
     }
 
-    /** `Reflexes: Jev jev-1.13.0, active`, or the heuristic and why. */
+    /** `Reflexes: claude-haiku-5-5, active`, or the heuristic and why. */
     private fun reflexesLine(settings: Settings): String {
-        val jev = settings.jev
-        val config = settings.config.jev
+        val reflex = settings.reflex
         return when {
-            jev != null -> "Reflexes: Jev ${jev.model}, ${jev.status()}"
-            !config.enabled -> "Reflexes: heuristic (Jev is disabled in the configuration)"
-            else -> "Reflexes: heuristic (no Jev key in the environment variable ${config.apiKeyEnv})"
+            reflex != null -> "Reflexes: ${reflex.model}, ${reflex.status()}"
+            !settings.config.reflex.enabled -> "Reflexes: heuristic (reflex.enabled is false)"
+            else -> "Reflexes: heuristic (no LLMGW key in the ${SettingsLoader.keySource(settings.config)})"
         }
     }
 

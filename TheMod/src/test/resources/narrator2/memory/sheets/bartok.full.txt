@@ -7,7 +7,7 @@ Traits (1 more faded below 0.2 confidence):
   free: obsédé par le butin 3/5 (likely 0.70, since 09-20; proofs M-77 M-140)
   defiant 3/5 (likely 0.59, since 09-20; proofs I-512 I-402 I-470): insulte le Narrateur après chaque mort
   vindictive 2/5 (unsure 0.45, since 10-02; proofs M-130)
-Signals (Jev hints): none (no message of this player measured by Jev)
+Signals (chat hints): none (no message of this player measured by the reflexes)
 Playstyle (10-02): Joue en éclaireur : file droit vers les structures, pille, repart. Construit peu, toujours en pierre brute. Mine en profondeur par à-coups, surtout pour s'équiper.
 Attitude (10-02): provocateur quand il perd, quémandeur quand il a besoin ; respecte les menaces tenues
 Likes (10-02): le butin rare, les combats de boss ; déteste les téléportations et attendre la nuit

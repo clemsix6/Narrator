@@ -25,7 +25,7 @@ import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.event.Teleported
 import io.github.clemsix6.narrator2.reflex.ChatLine
 import io.github.clemsix6.narrator2.reflex.ChatTriage
-import io.github.clemsix6.narrator2.reflex.JevQuestions
+import io.github.clemsix6.narrator2.reflex.ReflexLabels
 import io.github.clemsix6.narrator2.reflex.triageChatMessage
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.ShutdownSequence
@@ -137,7 +137,7 @@ class Salience(
         val narratorLast = narratorLastFor(message.player.uuid, envelope.ts)
         if (message.channel == ChatChannel.PUBLIC) {
             recentChat.addLast(ChatLine(message.player.name, message.text))
-            while (recentChat.size > JevQuestions.RECENT_LINES) recentChat.removeFirst()
+            while (recentChat.size > ReflexLabels.RECENT_LINES) recentChat.removeFirst()
         }
         scope.launch {
             val triage = try {
@@ -200,7 +200,7 @@ class Salience(
     private fun narratorLastFor(player: UUID, at: Long): String? =
         listOfNotNull(narratorToAll, narratorTo[player])
             .maxByOrNull { it.at }
-            ?.takeIf { at - it.at <= JevQuestions.NARRATOR_LAST_MAX_AGE_SECONDS * 1_000L }
+            ?.takeIf { at - it.at <= ReflexLabels.NARRATOR_LAST_MAX_AGE_SECONDS * 1_000L }
             ?.text
 
     /**

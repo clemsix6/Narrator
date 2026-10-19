@@ -58,7 +58,7 @@ Tout vit dans le processus du serveur : un seul `.jar` à déposer dans `mods/`,
 **Trois durées de vie** (détail : [design M1/M2](design/M1_M2.md) §2) :
 - **le mod** : les hooks Fabric, les commandes et les types de pièces jointes sont enregistrés une seule fois ;
 - **le serveur** (`NarratorRuntime`) : bus, Journal, Observateur, garde-fous, Directeur et assistants vivent de `SERVER_STARTED` à `SERVER_STOPPED` et ne sont jamais reconstruits ;
-- **les réglages** (config, prompts, textes affichés, clients Claude et Jev) : remplacés d'un bloc par `/narrator reload`.
+- **les réglages** (config, prompts, textes affichés, clients Claude du Directeur et des réflexes) : remplacés d'un bloc par `/narrator reload`.
 
 L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouveau et les appels à Claude sont annulés sans rien ajouter aux conversations ; à `SERVER_STOPPED`, une fois les joueurs déconnectés et leurs départs journalisés, le Journal est vidé (avec un délai maximal) puis la base fermée.
 
@@ -201,7 +201,7 @@ Tasks: T-13 analyst running 12s · Your last actions: -12m say→all · -8m appl
 ### 7.2 Saillance : qui réveille le Directeur
 | Événement | Traitement |
 |---|---|
-| Message qui s'adresse au Narrateur (détecté par Jev, §7.6 ; repli : nom, question, réponse à une conversation en cours) | Réveil immédiat |
+| Message qui s'adresse au Narrateur (détecté par les réflexes, §7.6 ; repli : nom, question, réponse à une conversation en cours) | Réveil immédiat |
 | Chat entre joueurs | Accumulé ; réveil après quelques messages ou ~45 s, pour qu'il puisse s'en mêler |
 | Mort, PvP, vie critique, première fois (diamant, Nether, End, élytres…), boss, fin de défi | Réveil rapide |
 | Entrée dans une structure ou un biome rare, trouvaille notable | Regroupé, réveil en quelques secondes |
@@ -233,23 +233,24 @@ Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'éta
 ### 7.5 Latence
 Une réponse de chat coûte un appel au modèle, soit quelques secondes. Pour que l'attente fasse partie du jeu, le joueur qui a interpellé le Narrateur voit « ✎ le Narrateur réfléchit… » dans sa barre d'action. Leviers si c'est trop lent : baisser l'effort du Directeur (§14), utiliser le mode rapide d'Opus 5.5 si la passerelle le permet.
 
-### 7.6 Les réflexes : Jev
-Claude est la **réflexion** du Narrateur ; **Jev** (TypeSafe AI) en est le **réflexe**. Jev est un modèle de classification hébergé : on lui envoie un état et des questions typées (oui/non, choix parmi une liste, score sur une échelle), il répond par des probabilités en 0,25 à 0,7 s depuis l'Europe, pour un coût quasi nul. Il ne sait pas écrire de texte, et c'est très bien ainsi : il trie, Claude décide.
+### 7.6 Les réflexes : Claude Haiku
+Claude Opus est la **réflexion** du Narrateur ; un petit modèle, **Claude Haiku 5.5**, en est le **réflexe**. Il passe par le même LLMGW, avec la même clé (inclus dans l'abonnement), et répond en 1,5 s environ (p95 ≈ 1,8 s) par un objet JSON imposé par un schéma (sortie structurée), sans réflexion, pour 0,0001 à 0,0005 $ par message. Il trie, Claude décide. Le rôle s'appelle `reflex` (section `reflex` de la configuration, prompt `reflex.md`). Jev (TypeSafe AI), prévu à l'origine, n'a jamais eu de clé : il est abandonné (`docs/research/JEV.md`, archive).
 
-| Où | Questions posées à Jev | Ce que ça change |
+| Où | Ce qu'on demande au réflexe | Ce que ça change |
 |---|---|---|
-| **Tri du chat** (chaque message) | S'adresse-t-il au Narrateur ? Intention (question, provocation, insulte, demande, compliment, excuse, blague, conversation entre joueurs, tentative de manipulation) ? Ton envers le Narrateur (hostile → amical) ? | Réveil immédiat seulement quand c'est utile ; l'événement arrive annoté au Directeur ; les tentatives de manipulation sont signalées |
-| **Filtre des battements** | Le résumé des 5 dernières minutes contient-il quelque chose qui mérite une intervention ? | Pas d'appel à Opus pour un battement sans matière : moins de coût, moins d'interventions forcées |
+| **Tri du chat** (chaque message public et chaque prière) | Une courte raison d'abord, puis : s'adresse-t-il au Narrateur (probabilité) ? Ton envers lui ? Intention (question, demande, offrande, défi, provocation, conversation entre joueurs, autre) ? Tentative de manipulation ? | Réveil immédiat seulement quand c'est utile ; l'événement arrive annoté au Directeur ; une tentative de manipulation compte comme adressée et est signalée |
+| **Filtre des battements** | Le résumé des dernières minutes mérite-t-il une intervention, et quelle accroche ? | Pas d'appel à Opus pour un battement sans matière : moins de coût, moins d'interventions forcées |
 | **Signaux de personnalité** | Pour chaque message d'un joueur : politesse, vantardise, entraide, agressivité, humour (scores) | Agrégés dans le temps, ils deviennent des **preuves chiffrées** pour les traits de la fiche joueur |
-| **Réaction aux interventions** | Après une intervention : le joueur a-t-il ri, joué le jeu, ignoré, été agacé ? | Nourrit l'historique des interactions (valence) et le bilan de ce qui marche |
-| **Surveillance du ton** | Chaque réplique du Narrateur, après envoi : sombre ? cruelle ? répétitive ? plate ? | Si le ton dérive, une consigne système recadre le Directeur. C'est le garde-fou qui manquait à la v1 |
-| **Réminiscences** | Ce souvenir est-il un bon rappel pour cet événement ? | Filtre les candidats de la recherche locale avant de les attacher |
+| **Réaction aux interventions** (à venir) | Après une intervention : le joueur a-t-il ri, joué le jeu, ignoré, été agacé ? | Nourrit l'historique des interactions (valence) et le bilan de ce qui marche |
+| **Surveillance du ton** (à venir) | Chaque réplique du Narrateur, après envoi : sombre ? cruelle ? répétitive ? plate ? | Si le ton dérive, une consigne système recadre le Directeur. C'est le garde-fou qui manquait à la v1 |
+| **Réminiscences** (à venir) | Ce souvenir est-il un bon rappel pour cet événement ? | Filtre les candidats de la recherche locale avant de les attacher |
 
 Précautions :
-- **Jev ne décide jamais seul d'une conséquence importante.** Ses réponses sont non déterministes et peuvent être influencées par un texte écrit pour le tromper (un joueur qui se fait passer pour gentil). Les jugements sur les joueurs sont **agrégés dans le temps** par le code, et Claude reste le décideur.
-- **Le français n'est pas encore évalué** (Jev est entraîné surtout en anglais). Avant de s'y fier, on mesure sa précision sur un jeu de messages français constitué pour l'occasion.
-- **Le chat part vers des serveurs aux États-Unis** : à mentionner dans les règles du serveur.
-- Client HTTP maison (il n'y a pas de SDK Java officiel), tracé comme les appels à Claude, avec **repli** sur des heuristiques si Jev est indisponible ou non configuré. Version épinglée (`jev-1.13.0`) une fois les seuils réglés.
+- **Le réflexe ne décide jamais seul d'une conséquence importante.** Ses réponses sont non déterministes et peuvent être influencées par un texte écrit pour le tromper. Les jugements sur les joueurs sont **agrégés dans le temps** par le code, et Claude reste le décideur.
+- **Ses probabilités ne sont pas calibrées** (Haiku répond 0,05 ou 0,95, presque jamais entre 0,35 et 0,6) : les seuils sont réglés sur un jeu d'éval français de 52 messages (argot, verlan, ironie, prières, injections, contexte), où il trie juste 50 messages sur 52 contre 41 pour l'heuristique (passation `REFLEX-HAIKU`).
+- **Le texte des joueurs est échappé** (`ModelText`) : il ne peut ni fermer une balise ni dicter les étiquettes. **Les messages privés ne partent jamais.**
+- **Repli** sur l'heuristique française (listes de mots) si le modèle échoue, dépasse 3 s, ou si LLMGW refuse (429, 402) ; jamais de relance ; disjoncteur après 5 échecs de suite. Sans clé LLMGW ou avec `reflex.enabled = false`, l'heuristique fait tout.
+- Le chat part vers Anthropic, comme les conversations du Directeur : aucun nouveau tiers.
 
 ## 8. La mémoire
 
@@ -401,7 +402,7 @@ Mécanismes concrets contre la répétition et la dérive :
 Tout doit pouvoir s'expliquer après coup : pourquoi le Narrateur a dit ça, pourquoi il n'a rien fait, pourquoi ce module a planté. Trois niveaux de traces.
 
 ### 12.1 Les conversations avec Claude
-- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, tour, rôle, but (tour, résumé de chapitre, tâche), modèle, effort, identifiants de requête et de message, durée et temps jusqu'au premier token, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt et catégorie de refus, erreurs et tentatives. Les appels à Jev y figurent aussi (`provider = 'jev'`). L'identifiant de requête vient de l'en-tête `request-id`, sinon de `X-Cpa-Trace-Id` posé par CLIProxyAPI : LLMGW ne relaie pas `request-id` (vérifié par `liveTest`, `docs/research/LLMGW.md` §3). Le temps jusqu'au premier token représente typiquement 70 à 100 % de la durée totale d'un appel (vérifié par `liveTest`) : le flux SSE arrive presque en bloc à la fin plutôt qu'étalé.
+- **Chaque appel** au modèle est enregistré (table `llm_calls`) : conversation, tour, rôle, but (tour, résumé de chapitre, tâche), modèle, effort, identifiants de requête et de message, durée et temps jusqu'au premier token, tokens (entrée, cache lu, cache écrit, sortie), raison d'arrêt et catégorie de refus, erreurs et tentatives. Les appels des réflexes y figurent aussi (rôle `reflex`, sans conversation). L'identifiant de requête vient de l'en-tête `request-id`, sinon de `X-Cpa-Trace-Id` posé par CLIProxyAPI : LLMGW ne relaie pas `request-id` (vérifié par `liveTest`, `docs/research/LLMGW.md` §3). Le temps jusqu'au premier token représente typiquement 70 à 100 % de la durée totale d'un appel (vérifié par `liveTest`) : le flux SSE arrive presque en bloc à la fin plutôt qu'étalé.
 - **Le raisonnement** : les requêtes demandent `thinking.display: "summarized"`, qui renvoie un résumé lisible de la réflexion du modèle (Opus 5.5 ne renvoie jamais son raisonnement brut). Ces résumés sont stockés dans `llm_calls.thinking` et dans les transcriptions.
 - **Chaque conversation** (chapitre du Directeur, tâche d'un assistant, rêve) a sa transcription complète, append-only, dans `world/narrator2/logs/conversations/<date>/` : un `.jsonl` exact (pour rejouer ou analyser) et un `.md` lisible où l'on suit, dans l'ordre, les événements reçus, le résumé de réflexion, chaque appel d'outil avec ses arguments et son résultat, et ce qui a été dit aux joueurs. Les envois non validés (refus, réponse tronquée, erreur) y apparaissent comme tels. Les tables `conversations`, `turns` et `tasks` relient chapitres, tours, tâches et transcriptions.
 
@@ -415,7 +416,7 @@ Journalisées en base et dans le log du serveur, avec leur raison :
 - chapitres (ouverture, clôture, résumé), refus, blocages de budget et reprises, bascule du canal opérateur, commandes des opérateurs.
 
 ### 12.3 Le log du serveur
-Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[Tool]`, `[Guard]`, `[Journal]`, `[Observer]`, `[Sql]`, `[Jev]`, `[LLM]`, `[Worker]`, puis `[Forge]`, `[Memory]`…), avec un niveau réglable par sous-système dans la configuration.
+Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[Tool]`, `[Guard]`, `[Journal]`, `[Observer]`, `[Sql]`, `[Reflex]`, `[LLM]`, `[Worker]`, puis `[Forge]`, `[Memory]`…), avec un niveau réglable par sous-système dans la configuration.
 
 ### 12.4 Consulter
 ```
@@ -474,7 +475,7 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
 
 `config/narrator2/narrator2.json` : écrit une seule fois, de façon atomique, avec toutes les valeurs par défaut au premier lancement (jamais de clé LLMGW dans le fichier — elle vient uniquement de la variable d'environnement nommée par `gateway.apiKeyEnv`, `NARRATOR_LLMGW_KEY` par défaut). Les chargements suivants relisent le fichier de l'opérateur et le fusionnent avec les défauts **clé par clé** : une section ou un réglage absent du fichier prend sa valeur par défaut sans que le fichier soit réécrit. `config/narrator2/prompts/` surcharge les prompts du jar et est relu par `/narrator reload`.
 
-**M0 ne livre que `gateway`, `roles` et `logging` ci-dessous** (contenu exact du fichier créé par `ConfigStore`, `NarratorConfig.kt`) : `jev`, `language`, `chaos`, `journal`, `observer`, `director`, `workers` et `safety` **arrivent avec M1 et M2** — une section non encore utilisée est retirée du fichier plutôt que d'y traîner sans effet, et revient avec son jalon. Valeurs et règles de validation de ces sections futures : [design M1/M2](design/M1_M2.md) §15.
+**M0 ne livre que `gateway`, `roles` et `logging` ci-dessous** (contenu exact du fichier créé par `ConfigStore`, `NarratorConfig.kt`) : `reflex` (ex-`jev`), `language`, `chaos`, `journal`, `observer`, `director`, `workers` et `safety` **arrivent avec M1 et M2** — une section non encore utilisée est retirée du fichier plutôt que d'y traîner sans effet, et revient avec son jalon. Valeurs et règles de validation de ces sections futures : [design M1/M2](design/M1_M2.md) §15.
 
 ```json
 {
@@ -520,7 +521,7 @@ Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats,
 - **L'état qui doit rester cohérent avec le monde vit dans le monde** (pièces jointes Fabric), DuckDB ne garde que l'historique (§2).
 - **Outils** : 32 en M2, schémas générés depuis les arguments Kotlin, validés côté serveur, sans `strict: true` ; les outils sont figés par conversation et le modèle ne voit que ceux qui sont réellement branchés ; « ne rien faire » n'est pas un outil, `remind_me` programme un réveil.
 - **Garde-fous** : chaque règle du §17 a un composant qui l'applique ; les plafonds découlent du niveau de chaos ; le quota de morts se mesure en temps joué (stat vanilla `PLAY_TIME`) ; tant qu'aucun outil n'écrit de blocs (M2), la règle sur les constructions est garantie par l'absence d'API, la liste des commandes interdites et le blocage des explosions du Narrateur.
-- **Jev** : une requête de 9 questions par message de chat (tri et signaux de personnalité, stockés dès M2 pour M3), questions en anglais, repli heuristique alimenté par un fichier de mots français.
+- **Réflexes** : une requête par message de chat (tri et signaux de personnalité, stockés dès M2 pour M3), repli heuristique alimenté par un fichier de mots français. Prévus sur Jev, ils passent sur Claude Haiku 5.5 le 19/10/2026 (§7.6, §17.5).
 - **Canal privé** : `/pray` ; **Analyste seul** en M2, Éclaireur en M4.
 
 Le design exécutable de M4 est dans [docs/design/M4.md](design/M4.md). Il tranche, le 18/10/2026 :
@@ -548,7 +549,7 @@ Tranché le 25/09/2026 :
    - Le PvP n'est jamais forcé : un duel exige l'acceptation des deux joueurs. Les courses et les défis non violents n'en ont pas besoin.
    - Pas d'acharnement : un joueur mort dans les 5 dernières minutes, ou déjà en plein châtiment, n'est pas ciblé par un nouveau châtiment.
    - Les commandes d'administration sont interdites (§6.3).
-5. **Jev** est intégré aux réflexes et s'active automatiquement dès que `TYPESAFE_API_KEY` est présente. Sans clé, des heuristiques locales le remplacent. Le chat part déjà vers les États-Unis (Anthropic) : Jev n'ajoute pas de nouvelle catégorie de risque.
+5. **Réflexes** (révisé le 19/10/2026) : **Claude Haiku 5.5**, par LLMGW, remplace Jev, qui n'a jamais eu de clé. Il s'active dès que la clé LLMGW est présente (`reflex.enabled`, vrai par défaut), sans réflexion (`reflex.thinking = false` : sur notre jeu d'éval, la réflexion à l'effort `low` gagne 2 à 3 tons et 1 intention sur 52, pas un message adressé, pour un p95 plus lent d'environ 0,9 s), avec un délai de 3 s et l'heuristique locale en repli. Le chat ne part vers aucun nouveau tiers. Mesures et choix : passation `REFLEX-HAIKU`.
 
 6. **EULA de Minecraft** : le propriétaire autorise son acceptation pour tous les serveurs de dev et de test.
 7. **Vie privée** : les messages privés entre joueurs sont journalisés, mais **jamais exposés au modèle, y compris par l'outil `sql` en lecture seule** — pas seulement écartés du flux d'événements qui réveille le Directeur (§7.2). Le schéma et les vues exposées au modèle (M1, [design M1/M2](design/M1_M2.md) §5 et §6.4) doivent en tenir compte.

@@ -5,8 +5,8 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 ## À lire avant de coder
 - `docs/ARCHITECTURE.md` : l'architecture, la feuille de route (§16) et les décisions prises (§17).
 - `docs/MEMOIRE.md` : la mémoire du Narrateur, dont la fiche joueur (§3).
-- `docs/research/` : les notes de recherche vérifiées (signatures d'API 26.3, LLMGW, Jev, Forge…).
-- `.research/` (non versionné) : des références brutes. `porting/` contient les guides de migration 26.1 à 26.3 et `jev/` la doc de Jev.
+- `docs/research/` : les notes de recherche vérifiées (signatures d'API 26.3, LLMGW, Forge…). `JEV.md` n'est plus qu'une archive : les réflexes passent par Claude Haiku (`docs/ARCHITECTURE.md` §7.6).
+- `.research/` (non versionné) : des références brutes. `porting/` contient les guides de migration 26.1 à 26.3, et `jev/` la doc de Jev, abandonné depuis.
 
 ## LLMGW (accès à Claude)
 - On utilise **le serveur LLMGW existant du propriétaire** : **on ne clone ni n'installe jamais LLMGW en local**.
@@ -69,7 +69,7 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - `.\gradlew.bat test` lance les tests unitaires (JUnit 5).
 - `.\gradlew.bat runGameTest` lance les tests en jeu (Fabric GameTest, sur un serveur de test sans EULA).
 - `.\gradlew.bat liveTest` lance les tests de fumée réels (tag JUnit `live`, hors de `test`, `build` et `check`) contre LLMGW via le tunnel ouvert sur `localhost:8088` ; clé lue dans `NARRATOR_LLMGW_KEY` ou `.secrets/llmgw.key`, tests ignorés sans clé ni tunnel.
-- **Aucun appel réel à Claude ni à Jev dans les tests automatisés** : ils utilisent le faux serveur Anthropic des tests.
+- **Aucun appel réel à Claude dans les tests automatisés**, ni pour le Directeur ni pour les réflexes : ils utilisent le faux serveur Anthropic des tests.
 - **Piège `runBlocking`** : `@Test fun x() = runBlocking { … }` prend pour type de retour celui de la dernière expression, et JUnit ignore sans bruit toute méthode de test qui ne renvoie pas `void` ; écris `runBlocking<Unit> { … }` (ou un corps en bloc). Le test `testing/TestMethodsReturnUnitTest` échoue en listant les méthodes fautives.
 - Une tâche n'est finie que si le build et les tests passent. Le rapport indique ce qui a été vérifié et comment.
 

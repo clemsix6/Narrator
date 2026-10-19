@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 
 /**
  * What a wake-up costs (M2 review, findings 14 and 26), in virtual time against the strict fake server:
- * chat between players waits for a heartbeat, a heartbeat without Jev is worth what salient events wait,
+ * chat between players waits for a heartbeat, a heartbeat without the reflex model is worth what salient events wait,
  * the turns per hour have a ceiling, and a single player cannot spend the turns of everyone.
  */
 class WakeBudgetScenariosTest {
@@ -30,8 +30,8 @@ class WakeBudgetScenariosTest {
     private fun DirectorHarness.decisions(kind: DecisionRecord.Kind, decision: String) =
         traces.decisions.filter { it.kind == kind && it.decision == decision }
 
-    /** Without Jev, the reflexes' heartbeat verdict is the heuristic's: always 1.0. */
-    private fun DirectorHarness.withoutJev() {
+    /** Without the reflex model, the reflexes' heartbeat verdict is the heuristic's: always 1.0. */
+    private fun DirectorHarness.withoutReflexModel() {
         reflexes.heartbeat = { HeartbeatVerdict(worth = 1.0, hook = null, source = HeuristicReflexes.SOURCE, latencyMs = 0) }
     }
 
@@ -52,7 +52,7 @@ class WakeBudgetScenariosTest {
     @Test
     fun `chat between players never wakes the Director, it goes with the next heartbeat`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")
-        h.withoutJev()
+        h.withoutReflexModel()
         h.fake.enqueue(reply { text("…") })
 
         repeat(6) { i ->
@@ -73,9 +73,9 @@ class WakeBudgetScenariosTest {
     }
 
     @Test
-    fun `without Jev, a heartbeat is worth the salient events waiting, not the activity`() = DirectorHarness(dir).use { h ->
+    fun `without the reflex model, a heartbeat is worth the salient events waiting, not the activity`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")
-        h.withoutJev()
+        h.withoutReflexModel()
 
         repeat(10) { h.mined("Bartok", "minecraft:stone") }
         h.advance(180_000)

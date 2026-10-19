@@ -422,7 +422,7 @@ data class MessageFate(
 /** A player's death as the death guard explained it: its decision's time, subject, reason and `detail` (JSON text). */
 data class DeathLine(val ts: Instant, val player: String, val reason: String?, val detail: String?)
 
-/** Model calls of one provider (`anthropic`, `jev`) and role over a period; [failed] ended with an error. */
+/** Model calls of one provider (`anthropic`) and role over a period; [failed] ended with an error. */
 data class Usage(
     val provider: String,
     val role: String,

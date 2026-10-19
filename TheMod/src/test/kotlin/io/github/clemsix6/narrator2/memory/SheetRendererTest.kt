@@ -33,7 +33,7 @@ class SheetRendererTest {
         assertTrue(line.length <= SheetDetail.LINE.maxChars, "line: ${line.length}")
         // Shared out, not cut at the end: every section is still there.
         for (label in listOf(
-            "Identity:", "Recap (", "Last session (", "Traits:", "Signals (Jev hints):", "Playstyle (", "Attitude (", "Likes (", "Fears (",
+            "Identity:", "Recap (", "Last session (", "Traits:", "Signals (chat hints):", "Playstyle (", "Attitude (", "Likes (", "Fears (",
             "Hooks (", "Skills:", "Relations:", "Stats (computed", "With you:", "Disrespect ×20", "History (latest first):", "Open canon:",
             "Strongest memories:",
         )) assertContains(full, label)
@@ -80,7 +80,7 @@ class SheetRendererTest {
             "Recap: (not written yet: the Dreamer writes it in a deep dream)",
             "Last session: (not written yet: written when a chapter closes after this player left)",
             "Traits: (none yet: the Dreamer sets them, with evidence, in a deep dream)",
-            "Signals (Jev hints): (not computed yet)",
+            "Signals (chat hints): (not computed yet)",
             "Attitude: (not written yet", "Likes: (not written yet", "Fears: (not written yet", "Hooks: (not written yet",
             "Skills: (not rated yet: the Dreamer rates them in a deep dream)",
             "Relations: (none named yet)",
@@ -101,12 +101,12 @@ class SheetRendererTest {
     }
 
     @Test
-    fun `Jev's signals - none measured, too few, and measured`() {
-        assertContains(render(SheetSamples.reference, SheetDetail.FULL), "Signals (Jev hints): none (no message of this player measured by Jev)")
+    fun `the reflex model's signals - none measured, too few, and measured`() {
+        assertContains(render(SheetSamples.reference, SheetDetail.FULL), "Signals (chat hints): none (no message of this player measured by the reflexes)")
         fun with(value: Double, detail: String?) = SheetSamples.reference.copy(
             stats = SheetSamples.reference.stats + ("signals" to SheetStat("signals", value, detail?.let { Json.parseToJsonElement(it) as JsonObject }, SheetSamples.NOW)),
         )
-        assertContains(render(with(12.0, null), SheetDetail.FULL), "Signals (Jev hints): none yet (12 messages measured by Jev, 30 needed)")
+        assertContains(render(with(12.0, null), SheetDetail.FULL), "Signals (chat hints): none yet (12 messages measured by the reflexes, 30 needed)")
         val measured = render(
             with(
                 143.0,
@@ -117,7 +117,7 @@ class SheetRendererTest {
         )
         assertContains(
             measured,
-            "Signals (Jev hints): 143 messages, recent (mean) · politeness 0.21 (0.30) · boastfulness 0.64 (0.55) · helpfulness 0.30 (0.30) · " +
+            "Signals (chat hints): 143 messages, recent (mean) · politeness 0.21 (0.30) · boastfulness 0.64 (0.55) · helpfulness 0.30 (0.30) · " +
                 "aggressiveness 0.50 (0.41) · humor 0.55 (0.60)",
         )
     }

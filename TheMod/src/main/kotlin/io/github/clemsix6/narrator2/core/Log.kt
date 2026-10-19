@@ -52,7 +52,7 @@ class Log private constructor(val tag: String) {
         val director = of("Director")
         val tool = of("Tool")
         val guard = of("Guard")
-        val jev = of("Jev")
+        val reflex = of("Reflex")
         val worker = of("Worker")
         val memory = of("Memory")
 

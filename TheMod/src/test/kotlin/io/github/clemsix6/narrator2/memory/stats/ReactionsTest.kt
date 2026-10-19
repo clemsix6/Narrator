@@ -27,7 +27,7 @@ class ReactionsTest {
                     Triple("Ta prière est refusée.", "Bartok", Kind.ANNOYED),
                     // « Mimosa, reviens. »: Mimosa is offline, no reaction. One line, two players named (any case).
                     Triple("Bartok et kelvin, au travail.", "Bartok", Kind.REPLIED),
-                    // Jev's humor of 0.7.
+                    // The reflex model's humor of 0.7.
                     Triple("Bartok et kelvin, au travail.", "Kelvin", Kind.LAUGHED),
                 ),
                 reactions.map { Triple(it.line, it.player.name, it.kind) },

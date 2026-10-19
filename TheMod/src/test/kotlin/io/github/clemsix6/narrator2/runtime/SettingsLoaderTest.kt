@@ -24,6 +24,7 @@ class SettingsLoaderTest {
         try {
             assertNotNull(settings.claude, "a client is built when the key is set")
             assertTrue(settings.claude!!.isConfigured)
+            assertEquals("claude-haiku-5-5", settings.reflex?.model, "the reflexes use the same key")
             assertNull(settings.loadError)
             Prompts.NAMES.forEach { assertTrue(settings.prompts.get(it).isNotBlank(), "prompt $it") }
             assertEquals("Narrateur", settings.ui["narrator.name"])
@@ -36,7 +37,20 @@ class SettingsLoaderTest {
     fun `without a key there is no client, so the Director sleeps`() {
         val settings = SettingsLoader.load(dir) { null }
         assertNull(settings.claude)
-        assertNull(settings.jev)
+        assertNull(settings.reflex)
+    }
+
+    @Test
+    fun `reflexes disabled in the configuration, the Director has its client and the reflexes their heuristic`() {
+        Files.createDirectories(dir)
+        dir.resolve("narrator2.json").writeText("""{ "reflex": { "enabled": false } }""")
+        val settings = SettingsLoader.load(dir) { "key" }
+        try {
+            assertNotNull(settings.claude)
+            assertNull(settings.reflex)
+        } finally {
+            settings.close()
+        }
     }
 
     @Test
@@ -58,7 +72,7 @@ class SettingsLoaderTest {
         assertEquals(NarratorConfig(), settings.config)
         assertEquals(Prompts.bundled().get("director"), settings.prompts.get("director"))
         assertNull(settings.claude)
-        assertNull(settings.jev)
+        assertNull(settings.reflex)
         assertEquals("invalid configuration: chaos", settings.loadError)
     }
 }

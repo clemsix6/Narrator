@@ -399,3 +399,26 @@ Ce qui doit être fait ou évité, en s'appuyant sur ce qui précède (mis à jo
     - la forme réelle du corps d'un 402 `budget_exceeded` (toujours lue dans le code, jamais observée en
       HTTP faute de budget dépassé pendant un test) ;
     - le type de credential amont réellement configuré (point 10 ci-dessus) — à demander au propriétaire.
+
+## Vérifié en réel (19/10/2026) : Claude Haiku 5.5 pour les réflexes (REFLEX-HAIKU)
+
+Appels réels via le tunnel, environ 520 en tout (environ 0,16 $ au tarif de l'API), par `LiveReflexEvalTest` et
+quelques sondes :
+
+- **`claude-haiku-5-5` est exposé** et répond en **non-streaming** (`POST /v1/messages` sans `stream`).
+- **`thinking: {type: "disabled"}` avec `output_config.effort: "low"` est accepté.** Sans cela, Haiku 5.5 réfléchit par
+  défaut. `thinking: {type: "adaptive"}` à l'effort `low` marche aussi : il réfléchit peu (environ 17 tokens de plus
+  par appel en moyenne).
+- **La sortie structurée (`output_config.format`, `type: json_schema`) est relayée** et respectée : le texte est
+  toujours un objet JSON conforme. Elle règle aussi le piège de l'identité « Claude Code » : avec un prompt de rôle et
+  une sortie libre, Haiku refusait (« I'm Claude Code… ») ; contraint par le schéma, il étiquette. Le prompt système
+  est bien reçu (le modèle sait en citer la première phrase) ; le cadre « tâche d'étiquetage de données » reste utile.
+- **Sans réflexion, le modèle doit écrire une raison avant ses chiffres.** Sans le champ `reason` en tête du schéma,
+  `addressed` est erratique (39/52 justes) ; avec, 48 à 50/52 (passation REFLEX-HAIKU).
+- **Latence** (chat, sans réflexion, avec la raison) : p50 1,5 à 1,7 s, p95 1,8 s, quelques pointes de 2,4 à 3,5 s ; le
+  premier appel après un démarrage peut dépasser 3 s.
+- **Cache** : LLMGW pose ses marqueurs `1h`. Selon les passes, le préfixe d'environ 2 860 tokens est **entièrement relu**
+  (0 écrit, environ 0,0001 $ par appel) ou **réécrit à chaque appel** (environ 600 relus et 2 280 écrits, environ
+  0,0005 $ par appel), sans changement de notre côté : sans doute selon le compte amont choisi. Rien à régler dans le
+  mod.
+- **Identifiant de requête** : présent à chaque réponse (`X-Cpa-Trace-Id`, lu par `requestIdOf`).
