@@ -44,14 +44,18 @@ class AnswersTest {
     @Test
     fun `a message that lists guesses answers nothing, three words besides the answer at most`() {
         val answers = MechanicsSamples.riddle.answers!!
-        assertFalse(Answers.matches("diamant fer or émeraude enclume pioche épée arc", answers), "a list of guesses")
-        assertFalse(Answers.matches("marteau, enclume, scie, établi, pioche", answers))
-        assertTrue(Answers.matches("c'est une enclume", listOf("enclume")), "« c est une enclume »: the answer and three words")
-        assertTrue(Answers.matches("C'est une ENCLUME, évidemment !", answers), "« une enclume » and three words")
-        assertFalse(Answers.matches("C'est une ENCLUME, évidemment !", listOf("enclume")), "« enclume » and four words")
-        assertFalse(Answers.matches("je crois bien que c'est une enclume", answers))
-        assertTrue(Answers.matches("c'est le nether, évidemment", listOf("le nether")))
-        assertFalse(Answers.matches("je pense que c'est le nether", listOf("le nether")))
+        assertFalse(Answers.answers("diamant fer or émeraude enclume pioche épée arc", answers), "a list of guesses")
+        assertFalse(Answers.answers("marteau, enclume, scie, établi, pioche", answers))
+        assertTrue(Answers.answers("c'est une enclume", listOf("enclume")), "« c est une enclume »: the answer and three words")
+        assertTrue(Answers.answers("C'est une ENCLUME, évidemment !", answers), "« une enclume » and three words")
+        assertFalse(Answers.answers("C'est une ENCLUME, évidemment !", listOf("enclume")), "« enclume » and four words")
+        assertFalse(Answers.answers("je crois bien que c'est une enclume", answers))
+        assertTrue(Answers.answers("c'est le nether, évidemment", listOf("le nether")))
+        assertFalse(Answers.answers("je pense que c'est le nether", listOf("le nether")))
+        assertFalse(Answers.answers("une enclumette", answers), "never part of a word")
+        assertFalse(Answers.answers("…", listOf("…")), "nor an answer of no word")
+
+        assertTrue(Answers.matches("diamant fer or émeraude enclume pioche épée arc", answers), "a rule's words are found anywhere")
     }
 
     @Test

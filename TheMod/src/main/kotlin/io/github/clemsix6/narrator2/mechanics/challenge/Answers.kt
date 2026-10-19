@@ -6,10 +6,10 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The answers of an `answer` challenge (a quiz, M4 §5.2): an accepted answer is found in a message when,
- * both normalized ([normalize]), its words appear as whole words of the message, in a row, and the message
- * has at most [EXTRA_WORDS] words more than the answer. « C'est une Enclume ! » answers `enclume` and `une
- * enclume`, never `clume`; a list of guesses (« diamant fer or émeraude enclume pioche ») answers nothing
- * (M4 review, finding 14). Pure, any thread.
+ * both normalized ([normalize]), its words appear as whole words of the message, in a row ([matches], which a
+ * rule's `words` use too), and the message has at most [EXTRA_WORDS] words more than the answer ([answers]).
+ * « C'est une Enclume ! » answers `enclume` and `une enclume`, never `clume`; a list of guesses (« diamant fer
+ * or émeraude enclume pioche ») answers nothing (M4 review, finding 14). Pure, any thread.
  */
 object Answers {
     /** Words a message may have besides those of the answer: « c'est une enclume » answers `enclume`. */
@@ -45,18 +45,23 @@ object Answers {
         return words.toString().trimEnd()
     }
 
-    /**
-     * Whether [message] holds one of [answers], each normalized, as whole words, with [EXTRA_WORDS] words more at
-     * most. Answers that normalize to nothing never match.
-     */
+    /** Whether [message] holds one of [answers], each normalized, as whole words. Answers that normalize to nothing never match. */
     fun matches(message: String, answers: List<String>): Boolean {
         val said = normalize(message)
-        val count = wordCount(said)
-        return answers.any { answer ->
-            val wanted = normalize(answer)
-            wanted.isNotEmpty() && count <= wordCount(wanted) + EXTRA_WORDS && " $wanted " in " $said "
-        }
+        return answers.any { holds(said, normalize(it), Int.MAX_VALUE) }
     }
+
+    /**
+     * Whether [message] answers a quiz whose accepted answers are [answers]: it [matches] one of them and has at most
+     * [EXTRA_WORDS] words besides it, so that a list of guesses wins nothing.
+     */
+    fun answers(message: String, answers: List<String>): Boolean {
+        val said = normalize(message)
+        return answers.any { answer -> normalize(answer).let { holds(said, it, wordCount(it) + EXTRA_WORDS) } }
+    }
+
+    /** Whether the normalized [said] holds the normalized [wanted] as whole words, in [most] words at most. */
+    private fun holds(said: String, wanted: String, most: Int): Boolean = wanted.isNotEmpty() && wordCount(said) <= most && " $wanted " in " $said "
 
     private fun wordCount(normalized: String): Int = if (normalized.isEmpty()) 0 else normalized.count { it == ' ' } + 1
 

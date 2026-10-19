@@ -118,6 +118,8 @@ class MechanicsAssemblyGameTests {
             check(canon(runtime, view.ref).winners.map { it.uuid } == listOf(bob.uuid)) { "won by Bob: ${canon(runtime, view.ref).winners}" }
             check(runtime.mechanics.challenges.list().none { it.ref == view.ref }) { "out of the engine" }
             awaitCondition("the diamond, paid by give_item") { server.onServerThread { count(bob.live, Items.DIAMOND) } == 1 }
+            // The canon is resolved before the stakes are paid (M4 review, finding 24): the engine's decision comes last.
+            awaitCondition("the end of ${view.ref}, its stakes paid") { decisions(runtime, view.ref).any { it.first == "won" } }
             check(bars(bob).isEmpty()) { "the bar is taken down: ${bars(bob)}" }
 
             val history = runtime.memory.store.interactions(bob.uuid, 20).filter { it.canon == view.ref }

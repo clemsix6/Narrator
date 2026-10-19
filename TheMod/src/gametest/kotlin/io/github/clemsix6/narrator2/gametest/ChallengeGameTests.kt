@@ -212,7 +212,7 @@ class ChallengeGameTests {
                 kill(helper, EntityTypes.WOLF, bob) { it.tame(ann.live) }
                 kill(helper, EntityTypes.WOLF, bob) { it.setCustomName(Component.literal("Croc-Blanc")) }
                 rig.tick()
-                check(rig.challenge(view.ref)!!.participants.single().progress == 0) { "neither Ann's dog nor a named wolf: ${rig.challenge(view.ref)}" }
+                check(rig.challenge(view.ref)?.participants?.single()?.progress == 0) { "neither Ann's dog nor a named wolf: ${rig.challenge(view.ref) ?: "won already"}" }
                 kill(helper, EntityTypes.WOLF, bob)
                 rig.tick()
                 check(rig.store.get().challenges.isEmpty()) { "a wild wolf wins" }
@@ -265,7 +265,9 @@ class ChallengeGameTests {
                 }
                 say(helper.level.server, bob, "Une enclume !")
                 rig.tick()
-                check(rig.challenge(view.ref)!!.participants.first().doneAt == null) { "a second guess within five seconds of the hammer is not read" }
+                check(rig.challenge(view.ref)?.participants?.first()?.let { it.doneAt == null } == true) {
+                    "a second guess within five seconds of the hammer is not read: ${rig.challenge(view.ref) ?: "won already"}"
+                }
                 rig.clock.advance(Duration.ofMillis(Answers.ATTEMPT_GAP_MS))
                 command(helper.level.server, bob, "pray Je dirais... l'enclume")
                 rig.tick()
@@ -510,7 +512,9 @@ class ChallengeGameTests {
                 bob.live.setGameMode(GameType.SPECTATOR)
                 bob.live.inventory.add(ItemStack(Items.APPLE))
                 rig.second()
-                check(rig.challenge(view.ref)!!.participants.single().doneAt == null) { "a spectator makes no progress" }
+                check(rig.challenge(view.ref)?.participants?.single()?.let { it.doneAt == null } == true) {
+                    "a spectator makes no progress: ${rig.challenge(view.ref) ?: "won already"}"
+                }
                 bob.live.setGameMode(GameType.SURVIVAL)
                 rig.second()
                 check(rig.store.get().challenges.isEmpty()) { "back in survival, he holds it: won" }

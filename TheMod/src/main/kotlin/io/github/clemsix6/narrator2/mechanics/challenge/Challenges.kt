@@ -149,8 +149,8 @@ interface BetBook {
  * - **End** ([finish]): on the server thread, the challenge leaves the state with its bets settled
  *   ([BetBook.settle]) and its duelists to put back ([MechanicsState.returns]), and its bars are taken down in
  *   the same tick; then a coroutine resolves the canon (`Source.ENGINE`, before anything else and whatever
- *   cancels it: M4 review, finding 24), pays the stakes ([StakePayer.pay]), writes a `challenge_result`
- *   interaction per participant (never "lost" for a latecomer), records the decision `mechanic won|lost|expired|
+ *   cancels it: M4 review, finding 24), writes a `challenge_result` interaction per participant (never "lost"
+ *   for a latecomer), pays the stakes ([StakePayer.pay]), records the decision `mechanic won|lost|expired|
  *   cancelled` and tells the Director (`CHALLENGE` or `DUEL`), unless the Director asked for it himself.
  * - **Restart** (M4 review, finding 13): at the engine's first tick, the Director being there by then, a judged
  *   challenge waiting for its verdict, or whose end passed while the server was down, is judged again (a whole
@@ -482,15 +482,18 @@ class Challenges(
     }
 
     /**
-     * The coroutine's share of [finish]: canon, stakes, interactions, decision, event. The canon is resolved first,
-     * whatever cancels the rest: an end cut short is never taken for a world rolled back (M4 review, finding 24).
-     * Each step's failure is logged and the next ones go on.
+     * The coroutine's share of [finish]: canon, results, stakes, decision, event. The canon is resolved first,
+     * whatever cancels the rest: an end cut short is never taken for a world rolled back (M4 review, finding 24);
+     * the results depend on the stakes no more than it does. Each step's failure is logged and the next ones go on.
      */
     private suspend fun conclude(ended: Ended): String {
         val challenge = ended.challenge
         val summary = ended.how ?: (ChallengeLines.summary(challenge, ended.ending, ended.winners, ended.at, ended.author) + if (ended.downtime) DOWNTIME else "")
         withContext(NonCancellable) { step(ended.ref, "resolve the canon", Unit) { resolve(ended, ended.note ?: summary) } }
         val winnerIds = ended.winners.mapTo(HashSet()) { it.uuid }
+        if (ended.ending == Ending.WON || ended.ending == Ending.LOST) {
+            step(ended.ref, "write the interactions", Unit) { interactions(ended, winnerIds) }
+        }
         val losers = when {
             ended.downtime -> emptyList()
             ended.ending == Ending.WON -> challenge.participants.filter { it.uuid !in winnerIds && !it.late }
@@ -506,9 +509,6 @@ class Challenges(
         }
         val noted = ended.note?.let { "$summary; note: « ${ModelText.escape(it)} »" } ?: summary
         val line = ModelText.cut((listOf("${ended.ref} $noted") + paid + listOfNotNull(ended.betLine)).joinToString(" · "), MechanicsLimits.EVENT_LINE)
-        if (ended.ending == Ending.WON || ended.ending == Ending.LOST) {
-            step(ended.ref, "write the interactions", Unit) { interactions(ended, winnerIds) }
-        }
         step(ended.ref, "record the decision", Unit) {
             decisions.record(
                 log, DecisionRecord.Kind.MECHANIC, ended.ending.id, "${ended.ref}", reason = line,
@@ -611,7 +611,7 @@ class Challenges(
                 running.forEach { c ->
                     val spec = c.spec!!
                     if (spec.goal == GoalKind.ANSWER && c.participant(uuid) != null && attempts.take(c.id, uuid, clock.millis()) &&
-                        Answers.matches(event.text, spec.answers.orEmpty())
+                        Answers.answers(event.text, spec.answers.orEmpty())
                     ) {
                         facts += Fact.Answer(c.id, uuid)
                     }

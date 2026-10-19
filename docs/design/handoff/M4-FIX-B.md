@@ -9,14 +9,15 @@ et ce fichier explique pourquoi.
 
 | Fichier | Changement |
 |---|---|
-| `mechanics/challenge/Answers.kt` | `Answers.EXTRA_WORDS` (3) dans `matches` ; `Answers.ATTEMPT_GAP_MS` (5 s) ; classe `Attempts` |
+| `mechanics/challenge/Answers.kt` | `Answers.answers` (la réponse d'un quiz, `EXTRA_WORDS` = 3 mots de plus au plus) ; `matches` inchangé ; `Answers.ATTEMPT_GAP_MS` (5 s) ; classe `Attempts` |
 | `mechanics/challenge/Goals.kt` | `Goals.afterDowntime(challenge)` (C13) ; `Goals.atStart(spec, prepared, everyone, online)` (C27) |
 | `mechanics/challenge/Challenges.kt` | départ non annulable après le canon (`track`), participants recalculés à l'insertion, inscription sans spectateur ni créatif, filtre des morts apprivoisés ou nommés, tentatives de quiz, spectateurs sans progrès, canon résolu d'abord (`NonCancellable`), pas de « lost » pour un retardataire, cache des cibles nulles, reprise au premier tick (`resume`), récompenses dues (`owed`, `payOwed`) |
 | `mechanics/challenge/Stakes.kt` | récompense d'objet par le registre (`giveItem`, `intoLedger`) |
 | `mechanics/Reconcile.kt` | ce qui survit à l'arrêt reste dans l'état ; `Startup.told`, postés par `run` |
-| tests | `AnswersTest` (+2), `GoalsTest` (+2), `ReconcileTest` (+1, 1 modifié), `StakesTest` (+1, 3 modifiés) ; GameTests `ChallengeGameTests` (+7, 1 modifié), `ChallengeStakesGameTests` (+2, 1 complété) |
+| tests | `AnswersTest` (+2), `GoalsTest` (+2), `ReconcileTest` (+1, 1 modifié), `StakesTest` (+1, 3 modifiés) ; GameTests `ChallengeGameTests` (+8, 1 modifié), `ChallengeStakesGameTests` (+2, 1 complété) |
+| hors lot | `MechanicsAssemblyGameTests` (lot H, qui passe après) : une attente ajoutée, voir le constat 24 |
 
-`ChallengeTools.kt` n'a pas eu à changer. Aucun fichier d'un autre lot n'est touché.
+`ChallengeTools.kt` n'a pas eu à changer.
 
 ## Constat 13 : le redémarrage
 
@@ -59,10 +60,13 @@ vague. Je propose de l'ajouter dans le lot H ou I, une fois A fusionné : `close
 
 ## Constat 14 : les quiz
 
-- `Answers.matches` : un message ne compte que s'il a au plus **trois mots de plus** que la réponse
-  (`EXTRA_WORDS`), mots comptés après normalisation. « c'est une enclume » répond `enclume` ; « C'est une ENCLUME,
-  évidemment ! » répond `une enclume` mais pas `enclume` seul ; une liste de propositions ne répond rien. Une phrase
-  longue (« je crois bien que c'est une enclume ») ne compte plus : c'est le prix du correctif.
+- `Answers.answers` (nouveau, pour les quiz) : un message ne compte que s'il a au plus **trois mots de plus** que la
+  réponse (`EXTRA_WORDS`), mots comptés après normalisation. « c'est une enclume » répond `enclume` ; « C'est une
+  ENCLUME, évidemment ! » répond `une enclume` mais pas `enclume` seul ; une liste de propositions ne répond rien. Une
+  phrase longue (« je crois bien que c'est une enclume ») ne compte plus : c'est le prix du correctif.
+- **`Answers.matches` garde son sens** (les mots n'importe où dans le message) : les `words` du déclencheur `chat`
+  d'une règle s'en servent (`RuleContext`, lot D). Une première version qui bornait `matches` lui-même cassait
+  `RuleEngineTest` (« Il est nul, ce Narrateur » ne déclenchait plus la loi du mot « nul ») ; d'où deux fonctions.
 - `Attempts` : un message public ou de prière d'un participant est une **tentative** si sa dernière tentative dans
   ce quiz date de 5 s ou plus (`ATTEMPT_GAP_MS`, horloge du moteur) ; les messages entre deux tentatives ne sont pas
   lus. Toute parole compte comme tentative, réponse ou non. Les tentatives d'un quiz sont oubliées à sa fin.
@@ -75,9 +79,15 @@ avec `name`) ne compte pas non plus ; un défi « tuer les gardiens » doit vise
 
 ## Constat 24 : la fin
 
-`conclude` résout le canon **d'abord**, sous `NonCancellable`, puis paie les enjeux. La résolution (note ou résumé)
-ne dépend pas des enjeux. La moitié `MechanicsService.start` du constat (état élagué avant un échec du démarrage)
-est au lot H.
+`conclude` suit maintenant cet ordre : **canon** (sous `NonCancellable`), **résultats** (`challenge_result`),
+**enjeux**, décision `mechanic <fin>`, événement. Ni la résolution (note ou résumé) ni les résultats ne dépendent des
+enjeux. La moitié `MechanicsService.start` du constat (état élagué avant un échec du démarrage) est au lot H.
+
+Conséquence pour les tests : le canon fermé ne veut plus dire « enjeux payés ». Un test qui attend le canon puis lit
+aussitôt une récompense dans l'historique doit attendre la décision de fin (ou l'événement), écrite en dernier.
+`MechanicsAssemblyGameTests.aChallengeStartedByTheRealToolIsWonPaidAndItsBarTakenDown` (lot H) le faisait : j'y ai
+ajouté **une seule ligne**, l'attente de la décision `won`, sans quoi il échouait une fois sur deux. Le lot H passe
+après les autres et part de `main` : pas de conflit attendu.
 
 ## Constat 25 : le départ (défis)
 
@@ -146,4 +156,32 @@ Les autres récompenses `give_item` du Directeur (hors défis) tombent toujours 
 
 ## Vérifications
 
-Voir le rapport de fin de tâche (ci-dessous, complété à la fin).
+- Signatures vérifiées avec `.research/jp.ps1`, une classe par appel : `ServerPlayer.setGameMode`/`gameMode`,
+  `Player.isSpectator`/`isCreative`, `TamableAnimal.tame`, `Entity.setCustomName`, `EntityGetter.getEntitiesOfClass`,
+  `AABB.inflate`, `Inventory.setItem`/`getItem`, `ItemEntity.getItem` ; bytecode de `GameTestServer` : le monde de
+  test est en **créatif** (d'où l'écart du constat 26).
+- **Un test par constat, rouge avant le correctif.** Les nouveaux tests ont été lancés sur le code d'avant
+  (`271a5e4`, dans un worktree jetable, avec seulement les nouveaux tests et les aides `Answers`/`Goals`) : les
+  **11** GameTests nouveaux ou modifiés y échouent, et `StakesTest` › *an item reward passes give_item's checks…*
+  aussi :
+
+  | Constat | Test | Échec avant |
+  |---|---|---|
+  | 13 (jugé) | `ChallengeGameTests.judgedChallengesOverWhileTheServerWasDownAreJudgedAgainAtTheFirstTick` | `both kept by the startup: challenges=[]` |
+  | 13 (gagné) | `ChallengeStakesGameTests.aChallengeMadeBeforeAStopIsWonAfterItAndTheRewardPaidOnceBack` | `kept by the startup` |
+  | 13 (annulé) | `ReconcileTest` › *what ended while the server was down…* (`told`, événements non prioritaires) | ne compilait pas : pas d'événement |
+  | 14 | `ChallengeGameTests.answerTakesThePublicChatAndPrayersButNeverAWhisper` ; `AnswersTest` (+2) | la seconde réponse de Bob comptait |
+  | 15 | `ChallengeGameTests.killNeverCountsAnothersPetNorANamedCreature` | le chien d'Ann comptait |
+  | 24 | `ChallengeGameTests.theCanonIsResolvedBeforeTheStakesArePaid` | `[ACTIVE]` au paiement |
+  | 25 | `ChallengeGameTests.aStartCutShortOnceItsCanonIsWrittenStillStarts` | ligne ouverte sans état (délai dépassé) |
+  | 26 | `ChallengeGameTests.aSpectatorMakesNoProgressAndNobodyInSpectatorOrCreativeJoinsLate` | le spectateur gagnait |
+  | 27 | `ChallengeGameTests.aParticipantGoneAsTheChallengeStartsIsOutOfASurvive`, `aGoalThatCannotBeResolvedIsSaidOnce`, `ChallengeStakesGameTests.aLostChallengesForfeitSparesTheLatecomerAndTheOffline` | Ann « en lice » ; trois `ERROR` ; « lost » pour Dan |
+  | 36 | `ChallengeStakesGameTests.anItemRewardForAFullInventoryWaitsInTheLedgerNeverOnTheGround`, `StakesTest` (+1) | la pomme au sol, rien dans le registre |
+
+- `git merge main` (lot E et le design de M5) : sans conflit.
+- `.\gradlew.bat build` sur l'état fusionné : **vert**, **1 496 tests unitaires** (0 échec, 0 ignoré) et **« All 315
+  required tests passed »**. Les lancements précédents ont révélé deux défauts corrigés depuis : `Answers.matches`
+  borné cassait `RuleEngineTest`, et l'ordre canon puis enjeux rendait le test d'assemblage instable (voir plus haut).
+  Un lancement a aussi échoué sur `rule_engine_game_tests_a_cow_hit_flies_then_bursts_where_it_is` (« timed out
+  waiting for: the blast where the cow is »), l'instabilité connue du constat 22 (lot H), sans lien avec ce lot.
+- Aucun appel réel à Claude ; pas de `runServer`.
