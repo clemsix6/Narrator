@@ -221,7 +221,7 @@ class DeathGuard(
 
         val at = clock.millis()
         val state = states.update(player) { it.copy(protectedDeath = false, rescues = recentRescues(it.rescues, at) + at) }
-        shields.shield(player.uuid, at + Guards.RESCUE_SHIELD_MS, why)
+        shields.shield(player, at + Guards.RESCUE_SHIELD_MS, why)
         return Saved(safety, effectsLifted + attributesLifted, player.health, state.rescues.size)
     }
 

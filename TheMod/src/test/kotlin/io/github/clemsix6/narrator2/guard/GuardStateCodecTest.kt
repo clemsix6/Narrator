@@ -104,6 +104,19 @@ class GuardStateCodecTest {
     }
 
     @Test
+    fun `a shield goes to the player's file and back, so that it holds across a restart`() {
+        val state = GuardState(lastDeathAt = 9, shield = Shield(at = 10, until = 300_010, reason = "duel C-52: fatal blow stopped at 1 hp"))
+        assertEquals(state, roundTrip(state))
+        val tag = CompoundTag().apply { put("guard_state", GuardState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow()) }
+        val bytes = ByteArrayOutputStream().also { NbtIo.write(tag, DataOutputStream(it)) }.toByteArray()
+        val back = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))).get("guard_state")!!
+        assertEquals(state, GuardState.CODEC.parse(NbtOps.INSTANCE, back).getOrThrow(), "through the game's NBT writer")
+        val written = GuardState.CODEC.encodeStart(JsonOps.INSTANCE, state).getOrThrow().asJsonObject
+        assertEquals(setOf("at", "until", "reason"), written.getAsJsonObject("shield").keySet())
+        assertEquals(null, read("{}").shield, "a state saved before it has none")
+    }
+
+    @Test
     fun `a purpose a later version wrote reads as a confiscation, so its items still go back to their owner`() {
         val state = read("""{"confiscations":[{"id":1,"items":[],"what":"","taken_at":1,"return_at":2,"purpose":"tithe"}]}""")
         assertEquals(LedgerPurpose.CONFISCATION, state.confiscations.single().purpose)

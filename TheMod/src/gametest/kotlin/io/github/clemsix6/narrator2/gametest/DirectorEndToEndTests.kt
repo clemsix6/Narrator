@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.DirectorState
+import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeResponse
 import io.github.clemsix6.narrator2.testing.RecordedRequest
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.network.chat.ChatType
@@ -50,7 +52,7 @@ class DirectorEndToEndTests {
         val server = helper.level.server
         val fake = FakeAnthropic()
         val speaker = server.onServerThread { TestPlayer(helper, "de_") }
-        val model = ScriptedModel(speaker.name)
+        val model = ScriptedModel(speaker.name, runtime.journal)
         repeat(40) { fake.enqueue(model::answer) }
         try {
             // The Director gets a key: the fake gateway's, with no heartbeat in the way.
@@ -183,8 +185,12 @@ class DirectorEndToEndTests {
     /**
      * Plays the model for the scenario above, whatever the order in which the Director's and the
      * Analyst's requests arrive: each answer is chosen from the request itself.
+     *
+     * Its `sql` on the greeting is sent once the greeting is in the [journal] (M4 review, finding 22): the
+     * tool waits half a second for the facts still queued, and the Journal's writer can be held longer by
+     * what an earlier batch left it, whatever the order of the batches. A slower model would wait as much.
      */
-    private class ScriptedModel(private val player: String) {
+    private class ScriptedModel(private val player: String, private val journal: Journal) {
         private val id = UUID.randomUUID().toString().take(6)
         val greet = "salut-$id"
         val where = "ou-$id"
@@ -203,6 +209,7 @@ class DirectorEndToEndTests {
                 "<chapter_end chapter=" in text -> reply { text("Joueurs vus : $player. $SUMMARY") }
                 last.hasToolResult() -> reply { text("Fin du tour.") }
                 greet in text -> reply {
+                    runBlocking { journal.barrier() } // the greeting, written before the sql reads it
                     thinking(THOUGHT)
                     toolUse("sql", """{"query": "SELECT channel, text FROM chat_log WHERE player = '$player' ORDER BY ts DESC, id DESC LIMIT 1"}""")
                     toolUse("say", """{"text": "$GREETING_LINE"}""")

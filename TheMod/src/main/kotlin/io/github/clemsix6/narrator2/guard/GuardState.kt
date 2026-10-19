@@ -234,6 +234,8 @@ data class OpenEpisode(val act: Long?, val until: Long) {
  * @property lastOfferAt when they last made an offering (`/offer`), epoch milliseconds: one per
  *   `mechanics.offeringMinutes` (M4 §7.2).
  * @property receivedStakes the stakes lately handed over to them, won from another player ([ReceivedStake]).
+ * @property shield the Narrator leaves them alone until it ends: they were saved from a death ([Shields], M4 review,
+ *   finding 18). Saved with them, so that it holds across a restart, like [lastDeathAt].
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -251,11 +253,15 @@ data class GuardState(
     val jokersGivenAt: List<Long> = emptyList(),
     val lastOfferAt: Long? = null,
     val receivedStakes: List<ReceivedStake> = emptyList(),
+    val shield: Shield? = null,
 ) {
     companion object {
         val EMPTY = GuardState()
 
-        /** Every field is optional, so a state saved before a field existed still reads back. 15 fields of the 16 a record codec takes. */
+        /**
+         * Every field is optional, so a state saved before a field existed still reads back. 16 fields, all that a
+         * record codec takes: a new one goes into a nested record.
+         */
         val CODEC: Codec<GuardState> = RecordCodecBuilder.create { instance ->
             instance.group(
                 LedgerModifier.CODEC.listOf().optionalFieldOf("modifiers", emptyList()).forGetter(GuardState::modifiers),
@@ -273,11 +279,13 @@ data class GuardState(
                 Codec.LONG.listOf().optionalFieldOf("jokers_given_at", emptyList()).forGetter(GuardState::jokersGivenAt),
                 Codec.LONG.optionalFieldOf("last_offer_at").forGetter { Optional.ofNullable(it.lastOfferAt) },
                 ReceivedStake.CODEC.listOf().optionalFieldOf("received_stakes", emptyList()).forGetter(GuardState::receivedStakes),
+                Shield.CODEC.optionalFieldOf("shield").forGetter { Optional.ofNullable(it.shield) },
             ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, rescues,
-                                graceUntil, lastGraceEnd, jokersGivenAt, lastOfferAt, receivedStakes ->
+                                graceUntil, lastGraceEnd, jokersGivenAt, lastOfferAt, receivedStakes, shield ->
                 GuardState(
                     modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null),
                     perils, rescues, graceUntil.orElse(null), lastGraceEnd.orElse(null), jokersGivenAt, lastOfferAt.orElse(null), receivedStakes,
+                    shield.orElse(null),
                 )
             }
         }

@@ -25,6 +25,7 @@ import io.github.clemsix6.narrator2.mechanics.MechanicPart
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
+import io.github.clemsix6.narrator2.mechanics.OwedReward
 import io.github.clemsix6.narrator2.mechanics.OutReason
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.RewardKind
@@ -156,7 +157,7 @@ interface BetBook {
  *   challenge waiting for its verdict, or whose end passed while the server was down, is judged again (a whole
  *   window, a new `JUDGE`); a challenge whose end passed while the server was down and that some participants
  *   made (`Reconcile` kept it) is won by them, without penalty for the others, each winner's reward paid once
- *   they are back online.
+ *   they are back online (owed in the state: it survives every restart until then).
  *
  * Duels (M4-19) live in the same state: this part leaves them alone but for their situation line and their end,
  * which goes through [finish] like a challenge's.
@@ -192,9 +193,6 @@ class Challenges(
 
     /** When the engine started, until its first tick takes up what the stop left ([resume]). Server thread. */
     private var restartedAt: Long? = null
-
-    /** The rewards of the winners of a challenge that ended while the server was down, until they are back. Server thread. */
-    private val owed = ArrayList<Owed>()
 
     override val listensTo: Set<KClass<out GameEvent>> = setOf(EntityKilled::class, PlayerDied::class, ChatMessage::class)
 
@@ -427,7 +425,7 @@ class Challenges(
     /**
      * The server thread's share of [finish]: out of the state, bets settled, bars down; then the coroutine's.
      * [downtime]: it ended while the server was down ([resume]): no penalty, and the rewards of the winners offline
-     * now are paid once they are back ([owed]).
+     * now are owed ([MechanicsState.rewards], in the same update), paid once they are back ([payOwed]).
      */
     private fun close(
         challenge: ChallengeState,
@@ -450,13 +448,13 @@ class Challenges(
             log.error("the bets of ${challenge.ref} could not be settled: every stake goes back", e)
             BetBook.giveBack(rest, challenge)
         }
-        store.update { settled }
+        // A winner of a challenge that ended while the server was down is paid once back (M4 review, finding 13), whatever restarts meanwhile.
+        val later = if (downtime && challenge.spec?.reward != null) winners.filter { services.server.playerList.getPlayer(it.playerId) == null } else emptyList()
+        val owed = later.map { OwedReward(challenge.copy(bets = emptyList()), it, now) }
+        store.update { if (owed.isEmpty()) settled else settled.copy(rewards = settled.rewards + owed) }
         bars.hideAll(Bossbars.key(challenge.id))
         targets.remove(challenge.id)
         attempts.forget(challenge.id)
-        // A winner of a challenge that ended while the server was down is paid once back (M4 review, finding 13).
-        val later = if (downtime && challenge.spec?.reward != null) winners.filter { services.server.playerList.getPlayer(it.playerId) == null } else emptyList()
-        later.forEach { owed += Owed(challenge, it) }
         log.info("${challenge.ref} ${ending.id}${if (winners.isEmpty()) "" else " by ${winners.joinToString { it.name }}"}; its stakes and canon follow")
         val ended = Ended(challenge, ending, winners, now, how, note, author, betLine, downtime, later)
         return services.scope.async { conclude(ended) }
@@ -627,7 +625,7 @@ class Challenges(
     }
 
     override fun everySecond(server: MinecraftServer, now: Long) {
-        payOwed()
+        payOwed(now)
         applyFacts(server, now)
         for (challenge in store.get().challenges) {
             if (challenge.spec == null || challenge.status != ChallengeStatus.RUNNING) continue
@@ -700,7 +698,7 @@ class Challenges(
      * challenge waiting for its verdict, or whose end passed while the server was down, is judged again ([judge]: a
      * whole window, a new `JUDGE`, the one before was lost with the stop). A challenge whose end passed while the
      * server was down, kept by the startup for some participants made it ([Goals.afterDowntime]), is won by them:
-     * no penalty for the others, each winner's reward once they are back ([owed]). Server thread.
+     * no penalty for the others, each winner's reward once they are back ([payOwed]). Server thread.
      */
     private fun resume(now: Long) {
         val since = restartedAt ?: return
@@ -716,12 +714,19 @@ class Challenges(
         }
     }
 
-    /** Pays the rewards [owed] to the winners back online, each in a coroutine of its own. Server thread. */
-    private fun payOwed() {
+    /**
+     * Pays the rewards owed ([MechanicsState.rewards]) to the winners back online, each in a coroutine of its own; a
+     * reward leaves the state as its payment starts. One owed more than [MechanicsLimits.CEDED_RESCUE_DAYS] days is
+     * dropped, its winner never back. Server thread.
+     */
+    private fun payOwed(now: Long) {
+        val owed = store.get().rewards
         if (owed.isEmpty()) return
-        val back = owed.filter { services.players.get(it.winner.playerId) != null }
-        if (back.isEmpty()) return
-        owed.removeAll(back.toSet())
+        val stale = owed.filter { now - it.at > MechanicsLimits.CEDED_RESCUE_DAYS * DAY_MS }
+        val back = (owed - stale.toSet()).filter { services.players.get(it.winner.playerId) != null }
+        if (back.isEmpty() && stale.isEmpty()) return
+        store.update { it.copy(rewards = it.rewards - (back + stale).toSet()) }
+        stale.forEach { log.warn("${it.challenge.ref}: ${it.winner.name}'s reward is dropped, they were not back within ${MechanicsLimits.CEDED_RESCUE_DAYS} days") }
         for (due in back) {
             log.info("${due.challenge.ref}: ${due.winner.name} is back, their reward is paid")
             services.scope.launch {
@@ -730,9 +735,6 @@ class Challenges(
             }
         }
     }
-
-    /** The reward of [winner] of [challenge], which ended while the server was down: paid once they are back online. */
-    private class Owed(val challenge: ChallengeState, val winner: Participant)
 
     /** A judged challenge reached its end (M4 §5.2): `JUDGING` for `mechanics.judgeMinutes`, a `JUDGE` event (priority). */
     private fun judge(challenge: ChallengeState, now: Long) {
@@ -801,9 +803,8 @@ class Challenges(
 
     override fun stopping() {
         facts.clear()
-        // In memory only: a reward still owed is lost with the stop, and said so.
-        owed.forEach { log.warn("${it.challenge.ref}: ${it.winner.name}'s reward was never paid, they did not come back before the stop") }
-        owed.clear()
+        val owed = store.snapshot.rewards
+        if (owed.isNotEmpty()) log.info("${owed.size} rewards still owed stay in the world until their winners are back: ${owed.joinToString { "${it.challenge.ref} ${it.winner.name}" }}")
     }
 
     private fun hourMinute(epochMs: Long): String = ChallengeLines.hourMinute(epochMs, clock)
@@ -826,6 +827,7 @@ class Challenges(
         private const val DOWNTIME = "; the server was down when it ended: no penalty"
 
         private const val MINUTE = 60_000L
+        private const val DAY_MS = 24 * 60 * MINUTE
 
         private fun invalid(message: String) = MechanicRejected(null, message)
     }

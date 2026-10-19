@@ -38,13 +38,17 @@ import java.time.Instant
  * its result, the players it affected in `subject`, the act), so that the Director's "last actions" stay
  * his own; the guards' death report reads these decisions too (M4-04).
  *
- * [tools]: what the engine may call, by name (M4-23: `ToolCatalog.allTools` and the rules' own three).
- * Which of them a rule or a stake may use is checked when it is created (M4 §8.5), not here.
+ * [tools]: what the engine may call, by name (`MechanicsService.TOOLS`: the tools of the rules and of the stakes,
+ * M4 review, finding 23); any other is `INVALID`. Which of them a rule or a stake may use is checked when it is
+ * created (M4 §8.5), not here.
  */
 class EngineActions(private val services: NarratorServices, tools: List<NarratorTool<*>>) {
     private val log = Log.mechanics
     private val byName: Map<String, NarratorTool<*>> = tools.associateBy { it.name }
     private val runner = ToolRunner(services)
+
+    /** The names of the tools the engine may call; internal for the tests. */
+    internal val names: Set<String> get() = byName.keys
 
     init {
         require(byName.size == tools.size) { "duplicate tool names: ${tools.groupBy { it.name }.filterValues { it.size > 1 }.keys}" }
