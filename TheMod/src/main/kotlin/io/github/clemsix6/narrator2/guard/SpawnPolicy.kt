@@ -43,10 +43,14 @@ object SpawnPolicy {
     /** Whether summoning [type] is no punishment: one of [HARMLESS]. */
     fun isHarmless(type: EntityType<*>): Boolean = EntityType.getKey(type).toString() in HARMLESS
 
-    /** Creatures the Narrator never summons, by type id, with the reason. */
+    /**
+     * Creatures the Narrator never summons, by type id, with the reason: the bosses and the creatures out of scale
+     * among them (M5 design review, finding 4: neither `spawn` nor a module's claim ever has one).
+     */
     val FORBIDDEN: Map<String, String> = mapOf(
         "minecraft:wither" to "it breaks blocks and withers everything around",
         "minecraft:ender_dragon" to "it breaks blocks",
+        "minecraft:giant" to "it is out of scale: twelve blocks tall, it fits nowhere a player stands",
         "minecraft:enderman" to "it picks up and moves blocks",
         "minecraft:ravager" to "it breaks leaves and crops",
         "minecraft:silverfish" to "it hides in stone blocks and breaks them",
