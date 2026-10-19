@@ -156,6 +156,35 @@ class MemoryToolsTest {
     }
 
     @Test
+    fun `the Director's canon cites the lines of its turn that hold its words, its own or an operator's in its name`() = fixture { f ->
+        val woke = Instant.parse("2026-10-01T19:39:00Z")
+        // M3-19: C-5, said by the operator Clement in the Narrator's name, was written without evidence.
+        f.base.chat(910, woke, "operator", "Mimosa, je te rends tes bottes dans une heure, promis.")
+        f.base.chat(911, woke, "public", "il a dit je te rends tes bottes dans une heure, promis", f.bartok.uuid)
+        f.base.sql(
+            "INSERT INTO turns (turn_id, conversation_id, started_at, trigger, trigger_events, injected_events) VALUES (42, 'director-c13', ?, 'salient', [910, 911], [])",
+            f.clock.instant(),
+        )
+        val line = "INSERT INTO chat (id, ts, channel, text, turn_id) VALUES (?, ?, 'narrator', ?, ?)"
+        f.base.sql(line, 912, woke.plusSeconds(30), "Bartok, la prochaine insulte te coûtera une minute de lenteur. Pense à ta dignité.", 42)
+        f.base.sql(line, 913, woke.minusSeconds(600), "Bartok, la prochaine insulte te coûtera une minute de lenteur.", 41)
+
+        val promise = """{"kind":"promise","what":"Le Narrateur a promis à Mimosa de lui rendre ses bottes dans une heure.","players":["Mimosa"],"""
+        assertEquals(ToolStatus.OK, f.call(remember, promise + """"quote":"je te rends tes bottes dans une heure, promis"}""").status)
+        val threat = """{"kind":"threat","what":"Le Narrateur a menacé Bartok d'une minute de lenteur à la prochaine insulte.","players":["Bartok"]"""
+        assertEquals(ToolStatus.OK, f.call(remember, threat + ""","quote":"La prochaine insulte te coûtera une minute de lenteur."}""").status)
+        assertEquals(ToolStatus.OK, f.call(remember, """{"kind":"law","what":"Le Narrateur interdit de creuser sous le spawn."}""").status)
+        assertEquals(ToolStatus.OK, f.call(remember, """{"kind":"lore","what":"Le Narrateur considère la lave comme sa piscine.","quote":"ma piscine de lave"}""").status)
+
+        // The operator's line of the wake, not the player who repeats it; the Narrator's line of this turn, not of the one before;
+        // nothing without a quote, nor for a quote no line of the turn holds.
+        assertEquals(
+            listOf("promise" to "[910]", "threat" to "[912]", "law" to "[]", "lore" to "[]"),
+            f.rows("SELECT kind, evidence_events::VARCHAR FROM canon ORDER BY id") { getString(1) to getString(2) },
+        )
+    }
+
+    @Test
     fun `remember refuses the Narrator's voice in what, and points to quote`() = fixture { f ->
         val result = f.call(remember, """{"kind":"promise","what":"Je promets à Mimosa de lui rendre ses bottes.","players":["Mimosa"]}""")
 
