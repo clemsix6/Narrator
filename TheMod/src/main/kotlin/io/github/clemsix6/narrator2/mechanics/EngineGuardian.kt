@@ -62,13 +62,10 @@ class EngineGuardian(
 
     /** As the engine would start, at the guardian's first tick: the duels released, the creatures loaded unmarked. Server thread. */
     private fun start(server: MinecraftServer) {
-        val now = clock.millis()
-        val duels = store.get().challenges.filter { it.isDuel }
-        duels.forEach { duel -> duel.participants.forEach { toTell += it.playerId } }
-        releaseNow(now)
+        val duels = releaseNow(clock.millis())
         val unmarked = server.allLevels.sumOf { level -> level.allEntities.count { unmark(it) } }
         log.info(
-            "the engine's guardian runs while the mechanics are off: ${duels.size} duels released" +
+            "the engine's guardian runs while the mechanics are off: $duels duels released" +
                 (if (unmarked == 0) "" else ", $unmarked creatures freed of the rules' marks") +
                 "; ${store.get().settlements.size} bet settlements and ${store.get().returns.size} returns to apply",
         )
@@ -111,14 +108,22 @@ class EngineGuardian(
         safely("creature load", clock.millis()) { unmark(entity) }
     }
 
-    /** Releases what [release] finds in the state at [now], with a decision for each. */
-    private fun releaseNow(now: Long) {
+    /**
+     * Releases what [release] finds in the state at [now], with a decision for each; the duelists of a duel released
+     * are told at their next join. Returns how many duels it released.
+     */
+    private fun releaseNow(now: Long): Int {
         val before = store.get()
         val after = store.update { release(it, now) }
-        if (after === before) return
+        if (after === before) return 0
+        var duels = 0
         for (challenge in before.challenges) {
             val released = after.challenge(challenge.id) ?: continue
             if (released == challenge) continue
+            if (challenge.isDuel) {
+                duels++
+                challenge.participants.forEach { toTell += it.playerId }
+            }
             val what = if (challenge.isDuel) "duel" else "challenge"
             val freed = listOfNotNull(
                 challenge.arena.size.takeIf { it > 0 }?.let { "$it duelists to put back where they stood, once online" },
@@ -131,6 +136,7 @@ class EngineGuardian(
                 conversationId = EngineActions.conversationOf(challenge.ref),
             )
         }
+        return duels
     }
 
     /** Takes the rules' marks off [entity], if it is a creature with some; whether it had any. */
