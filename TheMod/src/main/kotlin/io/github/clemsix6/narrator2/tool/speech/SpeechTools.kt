@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.notOnline
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import net.minecraft.core.Holder
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
@@ -29,6 +30,7 @@ import net.minecraft.network.protocol.game.ClientboundSoundPacket
 import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.sounds.SoundEvent
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.world.item.ItemStack
@@ -43,6 +45,10 @@ import net.minecraft.world.item.ItemStack
  * [NarratorSpoke] of channel `narrator`, published on the server thread just before the players get
  * it: the `chat` table is the Narrator's memory of what it said. Titles, lines above the hotbar and
  * books are recorded with their kind first: `[title] …`, `[actionbar] …`, `[book "…"] …`.
+ *
+ * The tools a rule of the mechanics engine may use (`say`, `show_title`, `actionbar`, `play_sound`, M4 §8.4)
+ * keep the checks that need neither the players online nor the world in `check` (an empty text, an unknown
+ * sound), which `run` starts with: the engine refuses a rule's effect at its creation with the same answer.
  */
 fun speechTools(services: NarratorServices): List<NarratorTool<*>> {
     val limiter = services.toolLimits.speech
@@ -71,9 +77,12 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
     args = SayArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
+    override suspend fun check(ctx: ToolContext, args: SayArgs): ToolResult? =
+        if (Speech.clean(args.text, Speech.CHAT_LINES).isEmpty()) ToolResult.invalid(nothingLeft("text")) else null
+
     override suspend fun run(ctx: ToolContext, args: SayArgs): ToolResult {
+        check(ctx, args)?.let { return it }
         val text = Speech.clean(args.text, Speech.CHAT_LINES)
-        if (text.isEmpty()) return ToolResult.invalid(nothingLeft("text"))
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
         limiter.line(ctx.caller).let { if (it is Verdict.Denied) return ToolResult.denied(it) }
@@ -118,9 +127,12 @@ class ShowTitleTool(private val limiter: SpeechLimiter) : NarratorTool<ShowTitle
     args = ShowTitleArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
+    override suspend fun check(ctx: ToolContext, args: ShowTitleArgs): ToolResult? =
+        if (Speech.clean(args.title).isEmpty()) ToolResult.invalid(nothingLeft("title")) else null
+
     override suspend fun run(ctx: ToolContext, args: ShowTitleArgs): ToolResult {
+        check(ctx, args)?.let { return it }
         val title = Speech.clean(args.title)
-        if (title.isEmpty()) return ToolResult.invalid(nothingLeft("title"))
         val subtitle = args.subtitle?.let { Speech.clean(it) }?.ifEmpty { null }
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
@@ -166,9 +178,12 @@ class ActionbarTool(private val limiter: SpeechLimiter) : NarratorTool<Actionbar
     args = ActionbarArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
+    override suspend fun check(ctx: ToolContext, args: ActionbarArgs): ToolResult? =
+        if (Speech.clean(args.text).isEmpty()) ToolResult.invalid(nothingLeft("text")) else null
+
     override suspend fun run(ctx: ToolContext, args: ActionbarArgs): ToolResult {
+        check(ctx, args)?.let { return it }
         val text = Speech.clean(args.text)
-        if (text.isEmpty()) return ToolResult.invalid(nothingLeft("text"))
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
         val split = limiter.actionbars(audience.named ?: ctx.players.online.map { it.ref })
@@ -218,10 +233,13 @@ class PlaySoundTool(private val limiter: SpeechLimiter) : NarratorTool<PlaySound
     args = PlaySoundArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
+    override suspend fun check(ctx: ToolContext, args: PlaySoundArgs): ToolResult? =
+        if (sound(args.sound) == null) ToolResult.invalid(unknownSound(args.sound)) else null
+
     override suspend fun run(ctx: ToolContext, args: PlaySoundArgs): ToolResult {
-        val id = Identifier.tryParse(args.sound.trim().lowercase())
-        val sound = id?.let { BuiltInRegistries.SOUND_EVENT.get(it).orElse(null) }
-            ?: return ToolResult.invalid(unknownSound(args.sound))
+        check(ctx, args)?.let { return it }
+        val sound = sound(args.sound)!!
+        val id = sound.key().identifier()
         val shortId = if (id.namespace == Identifier.DEFAULT_NAMESPACE) id.path else id.toString()
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
@@ -246,6 +264,10 @@ class PlaySoundTool(private val limiter: SpeechLimiter) : NarratorTool<PlaySound
         val whom = if (audience.named == null) "everyone (${heard.size} online)" else names(heard)
         return ToolResult.ok("ok: $shortId played for $whom, $how", heard)
     }
+
+    /** The sound event called [raw] (`block.bell.use`, `minecraft:block.bell.use`); null when there is none. Any thread. */
+    private fun sound(raw: String): Holder.Reference<SoundEvent>? =
+        Identifier.tryParse(raw.trim().lowercase())?.let { BuiltInRegistries.SOUND_EVENT.get(it).orElse(null) }
 
     private fun unknownSound(raw: String): String {
         val ids = BuiltInRegistries.SOUND_EVENT.keySet().map { if (it.namespace == Identifier.DEFAULT_NAMESPACE) it.path else it.toString() }
