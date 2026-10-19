@@ -36,6 +36,7 @@
       "io.github.clemsix6.narrator2.gametest.FavorGameTests",
       "io.github.clemsix6.narrator2.gametest.PunishGameTests",
       "io.github.clemsix6.narrator2.gametest.ChallengeGameTests",
+      "io.github.clemsix6.narrator2.gametest.ChallengeStakesGameTests",
       "io.github.clemsix6.narrator2.gametest.BetGameTests",
       "io.github.clemsix6.narrator2.gametest.RuleGameTests"
     ]
