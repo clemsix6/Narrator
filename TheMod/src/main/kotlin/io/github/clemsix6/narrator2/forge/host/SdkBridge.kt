@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.forge.host
 
 import io.github.clemsix6.narrator2.forge.api.ForgeModule
+import io.github.clemsix6.narrator2.forge.api.ModuleContext
 import io.github.clemsix6.narrator2.forge.api.test.Bench
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
@@ -76,12 +77,27 @@ class SdkBridge {
         return (type.actualTypeArguments.singleOrNull() as? Class<*>)?.takeIf(::isSdkInterface)
     }
 
-    private companion object {
-        val NONE = arrayOf<Any?>()
-        val SDK_PACKAGES = setOf(ForgeModule::class.java.packageName, Bench::class.java.packageName)
+    companion object {
+        private val NONE = arrayOf<Any?>()
+        private val SDK_PACKAGES = setOf(ForgeModule::class.java.packageName, Bench::class.java.packageName)
 
         /** An interface the SDK implements and hands to modules: not `ForgeModule` (the module's), not a sealed family of records (`GameFact`). */
-        fun isSdkInterface(type: Class<*>): Boolean =
+        private fun isSdkInterface(type: Class<*>): Boolean =
             type.isInterface && !type.isAnnotation && !type.isSealed && type.packageName in SDK_PACKAGES && type != ForgeModule::class.java
+
+        /** The SDK's interfaces a module may be handed: those `ModuleContext` and `Bench` reach through what their methods return. */
+        fun interfaces(): Set<Class<*>> {
+            val found = LinkedHashSet<Class<*>>()
+            val pending = ArrayDeque<Class<*>>(listOf(ModuleContext::class.java, Bench::class.java))
+            while (pending.isNotEmpty()) {
+                val type = pending.removeFirst()
+                if (!found.add(type)) continue
+                for (method in type.methods) {
+                    val listed = (method.genericReturnType as? ParameterizedType)?.actualTypeArguments?.singleOrNull() as? Class<*>
+                    listOfNotNull(method.returnType, listed).filter(::isSdkInterface).forEach(pending::addLast)
+                }
+            }
+            return found
+        }
     }
 }

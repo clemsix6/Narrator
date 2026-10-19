@@ -50,6 +50,80 @@ class ModuleHostTest {
     }
 
     @Test
+    fun `a call made from the module thread nests in the running one, metered on its own within what that call has left`() {
+        val fake = FakeContext()
+        val faults = mutableListOf<Fault>()
+        val source = Hosts.source("Nester", body = "m.timers().every(1, () -> { while (true) { } }); m.timers().every(1, () -> m.log(\"quick\"));")
+        val host = Hosts.host("Nester", source, threads, faults = faults)
+        assertTrue(host.started(fake.context))
+        val outer = mutableListOf<Thread>()
+        val inner = mutableListOf<Thread>()
+        val nested = mutableListOf<ModuleHost.Called?>()
+        // The bench's shape: a scenario's call (a long budget) whose code runs the module's handlers, 20 ms each.
+        val scenario = host.call("scenario", 2_000_000_000L) {
+            outer += Thread.currentThread()
+            nested += host.call("timer", ForgeLimits.CALL_NANOS) { inner += Thread.currentThread(); fake.timers[1].run() }
+            nested += host.call("timer", ForgeLimits.CALL_NANOS) { fake.timers[0].run() }
+            nested += host.call("timer", ForgeLimits.CALL_NANOS) { fake.timers[1].run() }
+        }!!
+        assertNull(scenario.fault, "the scenario's own call goes on after a nested fault: $faults")
+        assertEquals(outer, inner, "no new hand-over: the same module thread")
+        assertNull(nested[0]!!.fault)
+        val looped = nested[1]!!
+        assertEquals(Fault.Kind.LIMIT, looped.fault?.kind)
+        assertTrue(looped.nanos / 1e6 in 20.0..40.0, "the nested loop stopped at its own 20 ms: ${looped.nanos / 1e6} ms")
+        assertNull(nested[2]!!.fault, "the running call resumed, its meter as it was")
+        assertEquals(listOf("quick", "quick"), fake.logs.toList())
+
+        // A nested call never outlives the call it nests in: here 30 ms in all, 25 of them spent before it.
+        val bounded = host.call("scenario", 30_000_000L) {
+            val end = System.nanoTime() + 25_000_000L
+            while (System.nanoTime() < end) Thread.onSpinWait()
+            nested += host.call("timer", ForgeLimits.CALL_NANOS) { fake.timers[0].run() }
+        }!!
+        val last = nested.last()!!
+        assertEquals(Fault.Kind.LIMIT, last.fault?.kind)
+        assertTrue(last.nanos / 1e6 < 15, "it had only what was left: ${last.nanos / 1e6} ms")
+        assertTrue(bounded.nanos / 1e6 < 30 + ModuleHost.ABANDON_MARGIN_NANOS / 1e6 + 5, "${bounded.nanos / 1e6} ms")
+    }
+
+    @Test
+    fun `a call nested in an abandoned one is refused, so its thread unwinds`() {
+        val fake = FakeContext()
+        val host = Hosts.host("Quick", Hosts.source("Quick", body = "m.timers().every(1, () -> m.log(\"ran\"));"), threads)
+        assertTrue(host.started(fake.context))
+        val refused = java.util.concurrent.atomic.AtomicReference<Any>()
+        val done = java.util.concurrent.CountDownLatch(1)
+        val outer = host.call("scenario") {
+            Thread.sleep(60)
+            try {
+                refused.set(host.call("timer") { fake.timers[0].run() } ?: "nothing ran")
+            } catch (thrown: Throwable) {
+                refused.set(thrown)
+            }
+            done.countDown()
+        }!!
+        assertEquals(Fault.Kind.LIMIT, outer.fault?.kind, "abandoned")
+        assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // Refused: the meter's error (the thread must unwind), or nothing ran at all (the module is disabled).
+        assertTrue(refused.get() is io.github.clemsix6.narrator2.forge.rt.ForgeLimit || refused.get() == "nothing ran", "${refused.get()}")
+        assertEquals(emptyList(), fake.logs.toList(), "the module's code never ran on the lost thread")
+    }
+
+    @Test
+    fun `the bench's members - its class not initialized, a line, a measure of what it retains`() {
+        val fake = FakeContext()
+        val source = Hosts.source("Benched", "static final List<String> kept = new ArrayList<>(); static { kept.add(\"x\".repeat(1_000)); }", "throw new IllegalStateException(\"no\");")
+        val host = Hosts.host("Benched", source, threads)
+        assertEquals("Benched", host.main.name)
+        val measured = assertNotNull(host.measure(emptyList()), "a measure, even before the module was made")
+        assertTrue(measured.bytes >= 2_000, "its static field, initialized in the measure's call: $measured")
+        host.start(fake.context)
+        assertTrue(host.disabled!!.line > 0)
+        assertEquals(0, host.line(IllegalStateException("not the module's")))
+    }
+
+    @Test
     fun `two limits in ten minutes disable it, one ten minutes old does not count`() {
         val clock = TestClock()
         val faults = mutableListOf<Fault>()

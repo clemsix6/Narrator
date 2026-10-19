@@ -101,6 +101,39 @@ public final class Meter {
     }
 
     /**
+     * Starts a call nested in the one running now, on the same thread (at the bench, a scenario's code calls the
+     * module's handlers, M5-05): armed for {@code budgetNanos}, but never past what the running call has left, with
+     * {@code allocationBytes} of its own. Returns the running call's state, for {@link #unnest}.
+     */
+    public Nested nest(long budgetNanos, long allocationBytes) {
+        Nested running = new Nested(armed, deadline, allocationStart, allocationAllowance, allocatedAtDisarm, ticks, depth, tripped);
+        long left = armed ? Math.max(0, deadline - System.nanoTime()) : budgetNanos;
+        arm(Math.min(budgetNanos, left), allocationBytes);
+        return running;
+    }
+
+    /**
+     * Resumes the call that was running ({@code running}, from {@link #nest}) once the nested one is disarmed: its
+     * deadline unchanged, what the nested call allocated not counted twice.
+     */
+    public void unnest(Nested running) {
+        long nested = Math.max(0, allocatedAtDisarm);
+        armed = running.armed;
+        deadline = running.deadline;
+        allocationStart = running.allocationStart + nested;
+        allocationAllowance = running.allocationAllowance;
+        allocatedAtDisarm = running.allocatedAtDisarm;
+        ticks = running.ticks;
+        depth = running.depth;
+        tripped = running.tripped;
+    }
+
+    /** The state of a call while another one runs nested in it. */
+    public record Nested(boolean armed, long deadline, long allocationStart, long allocationAllowance, long allocatedAtDisarm,
+                         int ticks, int depth, String tripped) {
+    }
+
+    /**
      * The host abandoned the call running now (M5-05): it ran past its budget inside one call of the JDK, and the
      * server went on without it. Any thread; final. From now on, every {@code enter} and {@code tick} throws, so the
      * abandoned thread ends at the module's next code instead of running it.

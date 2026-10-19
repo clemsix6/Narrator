@@ -28,7 +28,8 @@ import java.util.concurrent.locks.LockSupport
  * - **Ceiling** ([LostThreads]): at most [LostThreads.limit] abandoned threads still alive; past it, every call is
  *   refused ([Ran.STUCK]) until the server restarts, and the Forge is told once.
  *
- * One caller at a time (the server thread, or one bench worker): calls never overlap nor nest.
+ * One caller at a time (the server thread, or one bench worker): calls never overlap; a call made from a module thread
+ * nests in the one that thread runs ([run]).
  */
 class ModuleThreads(
     private val name: String = "narrator2-module",
@@ -58,9 +59,15 @@ class ModuleThreads(
      * Runs [body] (a call of a module: arm its meter, call it, disarm it) on the module thread, the calling thread
      * waiting at most [budgetNanos] and serving the module's SDK requests meanwhile. Past the budget, [onAbandon] gets
      * the abandoned thread (its stack is still readable) before the caller goes on. Never on two threads at once.
+     *
+     * **Nested**: called from a module thread itself (at the bench, a scenario's code runs the module's handlers), [body]
+     * runs right there, with no new hand-over: the call it nests in keeps its deadline, so the caller waits no longer.
+     * On a thread whose call was abandoned, it throws [ForgeLimit] instead, before and after [body].
      */
     fun run(budgetNanos: Long, onAbandon: (Thread) -> Unit = {}, body: () -> Unit): Ran {
-        check(!running) { "a module's call runs already: calls never overlap nor nest" }
+        val current = Thread.currentThread()
+        if (current is Worker) return current.nested(body)
+        check(!running) { "a module's call runs already: calls never overlap" }
         if (lost.stuck) return Ran.STUCK
         running = true
         try {
@@ -202,6 +209,19 @@ class ModuleThreads(
                 if (closing) return null
                 if (System.nanoTime() - spinUntil < 0) Thread.onSpinWait() else LockSupport.park(this)
             }
+        }
+
+        /** [body], a call nested in the one this thread serves, run here; refused once that call was abandoned. */
+        fun nested(body: () -> Unit): Ran {
+            val call = serving ?: throw IllegalStateException("module code ran outside a call")
+            if (call.state.get() != Phase.RUNNING) throw ForgeLimit(ABANDONED_MESSAGE)
+            try {
+                body()
+            } catch (thrown: Throwable) {
+                log.error("a module's nested call let something through on $name", thrown)
+            }
+            if (call.state.get() != Phase.RUNNING) throw ForgeLimit(ABANDONED_MESSAGE)
+            return Ran.DONE
         }
 
         /** [body], run by the caller of the call this thread serves; refused once that call was abandoned. */

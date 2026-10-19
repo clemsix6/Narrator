@@ -109,6 +109,7 @@ class ModuleHost(
         private set
 
     init {
+        preload()
         val loader = ModuleLoader(mainClass, classes)
         val meter = Meter(loader)
         Class.forName(mainClass + Built.METER_SUFFIX, true, loader).getField(Built.METER_FIELD).set(null, meter)
@@ -131,7 +132,7 @@ class ModuleHost(
         val seen = bridge.wrap(ModuleContext::class.java, context)
         this.context = seen
         var made: ForgeModule? = null
-        val constructed = call(CONSTRUCTOR, startup = true) {
+        val constructed = call(CONSTRUCTOR, STARTUP_CALL_NANOS, startup = true) {
             made = try {
                 type.getConstructor().newInstance() as ForgeModule
             } catch (wrapped: InvocationTargetException) {
@@ -140,7 +141,7 @@ class ModuleHost(
         }
         val module = made?.takeIf { disabled == null } ?: return constructed
         instance = module
-        return call(START, startup = true) { module.start(seen) }
+        return call(START, STARTUP_CALL_NANOS, startup = true) { module.start(seen) }
     }
 
     /** The module's `stop` (an end that is not a disabling), in a call of its own. */
@@ -155,18 +156,35 @@ class ModuleHost(
      * `callback`…), on the module thread, metered, abandoned past its budget. Never throws: a fault is counted here,
      * told to [onFault], and may disable the module. Nothing runs once it is disabled or unloaded (null then).
      */
-    fun call(what: String, body: () -> Unit): Called? = call(what, startup = false, body)
+    fun call(what: String, body: () -> Unit): Called? = call(what, ForgeLimits.CALL_NANOS, startup = false, body)
 
-    private fun call(what: String, startup: Boolean, body: () -> Unit): Called? {
+    /**
+     * [call] with a budget of its own (the bench: a scenario has what is left of the bench's 30 s), and an allocation
+     * allowance in proportion ([ForgeLimits.CALL_ALLOCATION_BYTES] a call's budget, [ForgeLimits.ALLOCATION_PER_MINUTE_BYTES]
+     * at most).
+     *
+     * **Nested**: made from the module thread itself, inside one of this module's calls (the bench: a scenario's
+     * `b.run(…)` runs the module's handlers), it runs right there, without a new hand-over, metered on its own for at
+     * most what the running call has left; the running call then resumes, its deadline unchanged. On a thread whose
+     * call was abandoned, it throws the meter's [ForgeLimit][io.github.clemsix6.narrator2.forge.rt.ForgeLimit] (the
+     * thread is lost: it must unwind).
+     */
+    fun call(what: String, budgetNanos: Long, body: () -> Unit): Called? = call(what, budgetNanos, startup = false, body)
+
+    private fun call(what: String, budgetNanos: Long, startup: Boolean, body: () -> Unit): Called? {
         if (disabled != null || unloaded) return null
         val meter = meter ?: return null
         val names = loader?.names ?: return null
-        val budget = if (startup) STARTUP_CALL_NANOS else ForgeLimits.CALL_NANOS
+        val budget = if (startup) STARTUP_CALL_NANOS else budgetNanos
+        val calls = if (startup) 1 else maxOf(1, budget / ForgeLimits.CALL_NANOS)
+        val allowance = (ForgeLimits.CALL_ALLOCATION_BYTES * calls).coerceAtMost(ForgeLimits.ALLOCATION_PER_MINUTE_BYTES)
+        val nested = ModuleThreads.onModuleThread()
         val outcome = Outcome()
         var lost: Thread? = null
         val started = System.nanoTime()
         val ran = threads.run(budget + ABANDON_MARGIN_NANOS, onAbandon = { thread -> meter.revoke().also { lost = thread } }) {
-            meter.arm(budget, ForgeLimits.CALL_ALLOCATION_BYTES)
+            val running = if (nested) meter.nest(budget, allowance) else null
+            if (running == null) meter.arm(budget, allowance)
             try {
                 body()
             } catch (thrown: Throwable) {
@@ -175,9 +193,10 @@ class ModuleHost(
             meter.disarm()
             outcome.tripped = meter.tripped()
             outcome.allocated = meter.allocatedSinceArm()
+            running?.let(meter::unnest)
         }
         val nanos = System.nanoTime() - started
-        spentThisSecond += nanos
+        if (!nested) spentThisSecond += nanos
         val fault = when (ran) {
             ModuleThreads.Ran.DONE -> done(what, startup, outcome)
             ModuleThreads.Ran.ABANDONED -> abandoned(what, lost, names, budget)
@@ -213,12 +232,7 @@ class ModuleHost(
      * 40 to 80 ns).
      */
     fun gauge(handed: Collection<Any?> = emptyList()): Fault? {
-        val gauge = gauge ?: return null
-        val loader = loader ?: return null
-        var measure: RetainedGauge.Measure? = null
-        val called = call(GAUGE) { measure = gauge.measure(listOf(instance) + handed, loader.defined) } ?: return null
-        if (called.fault != null) return called.fault
-        val found = measure ?: return null
+        val found = measure(listOf(instance) + handed) ?: return null
         retained = found
         slowMeasures = if (found.complete || found.objects > ForgeLimits.GAUGE_MAX_OBJECTS) 0 else slowMeasures + 1
         val cause = when {
@@ -233,6 +247,28 @@ class ModuleHost(
             else -> return null
         }
         return Fault(Fault.Kind.MEMORY, GAUGE, cause, 0, disables = true).also(::fault)
+    }
+
+    /**
+     * What [roots] and the static fields of the module's classes retain ([RetainedGauge]), measured in a call of its
+     * own (a nested one from the module thread); null when it could not run (disabled, unloaded, or the call faulted:
+     * the fault is counted as any other). The bench's own memory checks use it; [gauge] applies the game's limits.
+     */
+    fun measure(roots: Collection<Any?>): RetainedGauge.Measure? {
+        val gauge = gauge ?: return null
+        val loader = loader ?: return null
+        var measure: RetainedGauge.Measure? = null
+        val called = call(GAUGE) { measure = gauge.measure(roots, loader.defined) } ?: return null
+        return measure.takeIf { called.fault == null }
+    }
+
+    /** The module's class, loaded and not initialized (its static initializer runs in its constructor's call). */
+    val main: Class<*> get() = type ?: throw IllegalStateException("$label was unloaded")
+
+    /** The line of the module's first frame in [error]'s stack trace (`TagGame.java:42` → 42); 0 when none is the module's. */
+    fun line(error: Throwable): Int {
+        val names = loader?.names ?: return 0
+        return error.stackTrace.firstOrNull { it.className in names && it.lineNumber > 0 }?.lineNumber ?: 0
     }
 
     /**
@@ -391,6 +427,41 @@ class ModuleHost(
 
         /** Measures of the gauge stopped by its clock, in a row, that disable a module. */
         const val SLOW_MEASURES = 3
+
+        /**
+         * Loads and initializes, once, what the first call of the first module would otherwise load inside its
+         * metered time (M5-08's measure: 31 ms, a false fault): the runtime the rewritten code calls (`forge.rt`), the
+         * SDK's types and the proxy class of each of its interfaces ([SdkBridge]), and the game's side of the SDK
+         * (`Facts` and the bus's classes, the acts, the creatures, `SpawnPolicy`). Any thread; the first [ModuleHost]
+         * does it, and the Forge may do it at startup, off the server thread. Best effort: what cannot load here
+         * (a unit test without the game) is left to its first use.
+         */
+        fun preload() {
+            preloaded
+        }
+
+        private val preloaded: Unit by lazy {
+            val started = System.nanoTime()
+            val mod = ModuleHost::class.java.classLoader
+            val failed = PRELOADED.filter { name -> runCatching { Class.forName(name, true, mod) }.isFailure }
+            SdkBridge.interfaces().forEach { type -> java.lang.reflect.Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } }
+            Log.forge.debug { "the modules' runtime and SDK loaded in ${(System.nanoTime() - started) / 1_000_000} ms" + if (failed.isEmpty()) "" else " (not here: $failed)" }
+        }
+
+        /** Classes (binary names) that the module's first calls would load: the runtime, the SDK's values, its game side. */
+        private val PRELOADED = listOf(
+            "io.github.clemsix6.narrator2.forge.rt.Meter", "io.github.clemsix6.narrator2.forge.rt.Guarded",
+            "io.github.clemsix6.narrator2.forge.rt.Texts", "io.github.clemsix6.narrator2.forge.rt.Views",
+            "io.github.clemsix6.narrator2.forge.rt.ForgeLimit", "io.github.clemsix6.narrator2.forge.api.Place",
+            "io.github.clemsix6.narrator2.forge.api.Cell", "io.github.clemsix6.narrator2.forge.api.Outcome",
+            "io.github.clemsix6.narrator2.forge.api.Text", "io.github.clemsix6.narrator2.forge.api.ForgeRefusal",
+            "io.github.clemsix6.narrator2.forge.sdk.Facts", "io.github.clemsix6.narrator2.forge.sdk.ActQueue",
+            "io.github.clemsix6.narrator2.forge.sdk.ModuleActs", "io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures",
+            "io.github.clemsix6.narrator2.forge.sdk.CreatureControl", "io.github.clemsix6.narrator2.forge.sdk.WorldView",
+            "io.github.clemsix6.narrator2.forge.sdk.GroundView", "io.github.clemsix6.narrator2.forge.sdk.FactQueue",
+            "io.github.clemsix6.narrator2.forge.sdk.Scheduler", "io.github.clemsix6.narrator2.forge.sdk.StorageMap",
+            "io.github.clemsix6.narrator2.forge.sdk.ArgsView", "io.github.clemsix6.narrator2.guard.SpawnPolicy",
+        )
 
         private const val MESSAGE_CHARS = 200
         private const val MINUTE_MS = 60_000L

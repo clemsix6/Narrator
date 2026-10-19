@@ -7,7 +7,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -176,19 +175,60 @@ class ModuleThreadsTest {
     }
 
     @Test
-    fun `calls never overlap nor nest`() {
+    fun `calls never overlap, and one made from the module thread nests right there`() {
         val threads = ModuleThreads()
-        val nested = AtomicReference<Throwable>()
+        val overlapping = AtomicReference<Throwable>()
+        val outer = AtomicReference<Thread>()
+        val inner = AtomicReference<Thread>()
+        val served = AtomicReference<Thread>()
         try {
             threads.run(budget) {
                 try {
                     ModuleThreads.toCaller { threads.run(budget) { } }
                 } catch (thrown: Throwable) {
-                    nested.set(thrown)
+                    overlapping.set(thrown)
                 }
+                outer.set(Thread.currentThread())
+                val ran = threads.run(budget) {
+                    inner.set(Thread.currentThread())
+                    served.set(ModuleThreads.toCaller { Thread.currentThread() })
+                }
+                check(ran == ModuleThreads.Ran.DONE)
             }
-            assertTrue(nested.get() is IllegalStateException, "a call made while another runs is refused: ${nested.get()}")
+            assertTrue(overlapping.get() is IllegalStateException, "a call made by the caller while another runs is refused: ${overlapping.get()}")
+            assertEquals(outer.get(), inner.get(), "the nested call ran on the module thread, no new hand-over")
+            assertEquals(Thread.currentThread(), served.get(), "and its SDK requests still reach the caller")
         } finally {
+            threads.close()
+        }
+    }
+
+    @Test
+    fun `a call nested in an abandoned one throws, before and after its body`() {
+        val threads = ModuleThreads()
+        val release = CountDownLatch(1)
+        val refused = AtomicReference<Throwable>()
+        val ended = CountDownLatch(1)
+        val ran = AtomicInteger()
+        try {
+            assertEquals(
+                ModuleThreads.Ran.ABANDONED,
+                threads.run(budget) {
+                    release.await(10, TimeUnit.SECONDS)
+                    try {
+                        threads.run(budget) { ran.incrementAndGet() }
+                    } catch (thrown: Throwable) {
+                        refused.set(thrown)
+                    }
+                    ended.countDown()
+                },
+            )
+            release.countDown()
+            assertTrue(ended.await(5, TimeUnit.SECONDS))
+            assertTrue(refused.get() is ForgeLimit, "${refused.get()}")
+            assertEquals(0, ran.get())
+        } finally {
+            release.countDown()
             threads.close()
         }
     }

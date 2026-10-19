@@ -107,6 +107,27 @@ class ActQueueTest {
     private fun json(text: String): JsonObject = Json.parseToJsonElement(text) as JsonObject
 
     @Test
+    fun `the callbacks it may still call are the memory gauge's roots, until called or the end`() = runTest {
+        val (queue, acts) = setup().let { it.queue to it.acts }
+        val first = Callback()
+        val second = Callback()
+        queue.invocation("start") {
+            acts.say("Un.").then(first)
+            acts.say("Deux.").then(second)
+            acts.say("Trois.")
+        }
+        assertEquals(2, queue.callbacks().size)
+        assertTrue(queue.callbacks().all { it === first || it === second })
+        runCurrent()
+        queue.deliver()
+        assertEquals(emptyList(), queue.callbacks(), "called: no longer held")
+        queue.invocation("timer") { acts.say("Quatre.").then(first) }
+        assertEquals(1, queue.callbacks().size)
+        queue.close()
+        assertEquals(emptyList(), queue.callbacks(), "the end lets them go")
+    }
+
+    @Test
     fun `the acts of one call leave together, in order, as one act of the engine aimed at its first player`() = runTest {
         val (queue, acts) = setup().let { it.queue to it.acts }
         queue.invocation("start") {
