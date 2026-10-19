@@ -70,7 +70,7 @@ import kotlin.math.roundToLong
  *
  * - **Step 1, one conversation per player** ([candidates], [player]): the full sheet, the traits it hides,
  *   what is new about the player since their last reflection (memories, interactions, stats before and
- *   after), Jev's signals, the pairs they are in, their latest public messages.
+ *   after), Jev's signals, the pairs they are in, their latest public messages with whom each addressed.
  * - **Step 2** ([review]): the Narrator's tics, its latest lines with the players' reactions, the running
  *   gags and nicknames with their uses, the previous review.
  * - **Step 3** ([chronicle]): the chapter entries no session covers yet, grouped by server session; the
@@ -177,10 +177,9 @@ internal class DreamInputs(private val services: NarratorServices) {
                 stats = SheetStats.read(connection, uuid),
                 pairs = PairStats.read(connection, uuid),
                 relations = connection.relations("player_uuid = ? OR other_uuid = ?", uuid, uuid),
-                chat = connection.query(
-                    "SELECT id, ts, channel, text FROM chat WHERE player_uuid = ? AND channel IN ('public', 'pray') ORDER BY ts DESC, id DESC LIMIT ?",
-                    uuid, CHAT_COUNT,
-                ) { Said(getLong(1), instant(2), getString(3), getString(4)) },
+                chat = connection.query(CHAT_SQL, uuid, uuid, CHAT_COUNT) {
+                    Said(getLong(1), instant(2), getString(3), getString(4), ExchangeLog.signal(this, 5))
+                },
                 names = names,
             )
         }
@@ -285,10 +284,17 @@ internal class DreamInputs(private val services: NarratorServices) {
         return block("pairs", "", lines, PAIRS_MAX, "(none: this player has met nobody yet)")
     }
 
+    /**
+     * The player's latest public messages and prayers, each with whom it addressed as the triage read it,
+     * like the Chronicler's exchange log (`addressed 0.94, hostile`, `between players`): a message to
+     * another player is no answer to the Narrator (M3-19: « non je mine » answered Mimosa, and became a
+     * defiant trait).
+     */
     private fun chat(said: List<Said>): String {
         val lines = said.map { line ->
-            val prayer = if (line.channel == "pray") " (prayer)" else ""
-            "- [${dayTime(line.ts)}] e${line.id}$prayer ${ModelText.quote(line.text, CHAT_TEXT_MAX)}"
+            val pray = line.channel == "pray"
+            "- [${dayTime(line.ts)}] e${line.id} ${if (pray) "PRAY" else "CHAT"} ${ExchangeLog.annotation(pray, line.signal)}: " +
+                ModelText.quote(line.text, CHAT_TEXT_MAX)
         }
         return block("chat", "count=\"${said.size}\" order=\"latest first\"", lines, CHAT_MAX, "(no public message nor prayer yet)")
     }
@@ -582,7 +588,8 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     private class Group(val from: Instant, val to: Instant, val chapters: List<ChronicleEntry>)
 
-    private class Said(val id: Long, val ts: Instant, val channel: String, val text: String)
+    /** A line of the chat; [signal]: its triage, for a player's message. */
+    private class Said(val id: Long, val ts: Instant, val channel: String, val text: String, val signal: ExchangeLog.Signal? = null)
 
     private class PlayerRead(
         val memories: List<MemoryEntry>,
@@ -620,7 +627,7 @@ internal class DreamInputs(private val services: NarratorServices) {
         const val STATS_MAX = 2_000
         const val SIGNALS_MAX = 500
         const val PAIRS_MAX = 1_000
-        const val CHAT_MAX = 3_000
+        const val CHAT_MAX = 4_000
         const val CHAT_COUNT = 30
         const val TICS_MAX = 1_500
         const val LINES_MAX = 24_000
@@ -653,6 +660,15 @@ internal class DreamInputs(private val services: NarratorServices) {
             4 to 300 + GRIMOIRE_MAX + PLAYERS_MAX + REVIEW_MAX + SESSION_MAX + CANON_MAX + ARCS_MAX + NOTES_MAX,
             5 to 300 + CANDIDATES_MAX,
         )
+
+        /** A player's latest public messages and prayers, with the latest triage of each (`chat_signals`, as the exchange log reads it). */
+        private const val CHAT_SQL = """
+            SELECT c.id, c.ts, c.channel, c.text, s.source, s.to_narrator, s.tone, s.tone_confidence, s.intent, s.manipulation
+            FROM chat c
+            LEFT JOIN (SELECT * FROM chat_signals WHERE player_uuid = ?
+                       QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY ts DESC) = 1) s ON s.event_id = c.id
+            WHERE c.player_uuid = ? AND c.channel IN ('public', 'pray')
+            ORDER BY c.ts DESC, c.id DESC LIMIT ?"""
 
         private const val SIGNALS = "signals"
         private const val PLAYTIME = "playtime"
