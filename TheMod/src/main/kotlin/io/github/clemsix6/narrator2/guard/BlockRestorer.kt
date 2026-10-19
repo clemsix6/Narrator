@@ -29,7 +29,9 @@ import net.minecraft.resources.Identifier
 import net.minecraft.resources.ResourceKey
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
+import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
@@ -67,19 +69,19 @@ data class ChunkRestorations(val entries: List<BlockSnapshot> = emptyList()) {
  * @property placed the block state set there (there was air before), in SNBT: it is taken away only while it
  *   is still this one.
  * @property until when it is taken away, epoch milliseconds (wall clock).
- * @property player whom the trap holds.
+ * @property player whom the trap holds; null for a module's block set away from every player (M5 §4.4), a trap of nobody.
  * @property act the act that set it (`Caller.act`: a Director turn, or the negative id of an engine act).
  */
-data class BlockSnapshot(val packed: Int, val placed: String, val until: Long, val player: UUID, val act: Long?) {
+data class BlockSnapshot(val packed: Int, val placed: String, val until: Long, val player: UUID?, val act: Long?) {
     companion object {
         val CODEC: Codec<BlockSnapshot> = RecordCodecBuilder.create { instance ->
             instance.group(
                 Codec.INT.fieldOf("packed").forGetter(BlockSnapshot::packed),
                 Codec.STRING.fieldOf("placed").forGetter(BlockSnapshot::placed),
                 Codec.LONG.fieldOf("until").forGetter(BlockSnapshot::until),
-                UUIDUtil.CODEC.fieldOf("player").forGetter(BlockSnapshot::player),
+                UUIDUtil.CODEC.optionalFieldOf("player").forGetter { Optional.ofNullable(it.player) },
                 Codec.LONG.optionalFieldOf("act").forGetter { Optional.ofNullable(it.act) },
-            ).apply(instance) { packed, placed, until, player, act -> BlockSnapshot(packed, placed, until, player, act.orElse(null)) }
+            ).apply(instance) { packed, placed, until, player, act -> BlockSnapshot(packed, placed, until, player.orElse(null), act.orElse(null)) }
         }
     }
 }
@@ -95,6 +97,10 @@ data class BlockSnapshot(val packed: Int, val placed: String, val until: Long, v
  * the very chunk being loaded, and the server would hang: M4 design review, finding 5), `CHUNK_UNLOAD` forgets
  * them, and once a second (wall clock) the blocks due in the loaded chunks are taken away. So a trap whose
  * chunk was unloaded, or whose server stopped, is taken away the second after its chunk loads again.
+ *
+ * A module sets blocks through it too (`place_blocks`, M5 §4.4): stained glass, slime and honey blocks besides glass and
+ * cobwebs, still only in thin air, near a player or away from every player. Whoever stands on or in a block when it is
+ * taken away falls without fall damage, under the death guard ([cushion]): a floor that vanishes never kills.
  *
  * A cell stays the restorer's only while it holds the very block set there, untouched (M4 review, finding 2):
  * the same state does not prove it, since a player's own glass or cobweb looks the same. So a cell is
@@ -142,21 +148,30 @@ object BlockRestorer {
     /** The block states of [BlockSnapshot.placed], read back once each (glass and cobwebs: a handful); empty when unreadable. */
     private val states = ConcurrentHashMap<String, Optional<BlockState>>()
 
-    /** What may be set, and nothing else (M4 §9.1). Read on first use: the registries are ready by then. */
-    private val allowed: Set<Block> by lazy { setOf(Blocks.GLASS, Blocks.COBWEB) }
+    /**
+     * What may be set, and nothing else (M4 §9.1): glass and cobwebs for the traps, and for a module's `place_blocks`
+     * (M5 §4.4) the stained glasses, slime and honey blocks too. Read on first use: the registries are ready by then.
+     */
+    private val allowed: Set<Block> by lazy { setOf(Blocks.GLASS, Blocks.COBWEB, Blocks.SLIME_BLOCK, Blocks.HONEY_BLOCK) + Blocks.STAINED_GLASS.asList() }
+
+    /** Whether [block] may be set at all. Any thread, once the game booted. */
+    fun allows(block: Block): Boolean = block in allowed
+
+    /** How long a player who stood on or in a block taken away falls without fall damage, under the death guard, in seconds. */
+    const val CUSHION_SECONDS = 30
 
     @Volatile
     private var lastPass = 0L
 
     /**
-     * Puts [block] at [positions] until [until] (epoch milliseconds, wall clock), against [player], for [act]:
-     * all or nothing. Only glass and cobwebs; each position must be inside the world, loaded, air, free of any
-     * entity (but [player] for a block without collision, a cobweb), and not pending already ([cellRefusal]);
-     * [MAX_PER_CALL] and [MAX_PENDING] hold. The snapshot is written to the chunk before the block changes, in
-     * the same tick. The number of blocks set, or why none was (the message `punish` gives as `FAILED`).
-     * Server thread.
+     * Puts [block] at [positions] until [until] (epoch milliseconds, wall clock), against [player] (null: a module's
+     * blocks away from every player), for [act]: all or nothing. Only what [allows]; each position must be inside
+     * the world, loaded, air, free of any entity (but [player] for a block without collision, a cobweb), and not
+     * pending already ([cellRefusal]); [MAX_PER_CALL] and [MAX_PENDING] hold. The snapshot is written to the chunk
+     * before the block changes, in the same tick. The number of blocks set, or why none was (the message `punish`
+     * and `place_blocks` give as `FAILED`). Server thread.
      */
-    fun place(level: ServerLevel, positions: List<BlockPos>, block: BlockState, until: Long, player: UUID, act: Long?): Result<Int> {
+    fun place(level: ServerLevel, positions: List<BlockPos>, block: BlockState, until: Long, player: UUID?, act: Long?): Result<Int> {
         val placed = snbt(block)
         // A block whose snapshot does not read back as itself would never be taken away.
         val refusal = refusal(level, positions, block, player) ?: "${block.block.id} does not read back from its snapshot".takeIf { stateOf(placed) != block }
@@ -182,7 +197,7 @@ object BlockRestorer {
      * item on the ground, a frame, a painting, an armor stand, a minecart…), but [player] for a block without
      * collision. Null when it may. Never loads a chunk. Server thread.
      */
-    fun cellRefusal(level: ServerLevel, pos: BlockPos, block: BlockState, player: UUID): String? {
+    fun cellRefusal(level: ServerLevel, pos: BlockPos, block: BlockState, player: UUID?): String? {
         if (level.isOutsideBuildHeight(pos)) return "${at(pos)} is outside the world"
         val chunk = level.chunkSource.getChunkNow(SectionPos.blockToSectionCoord(pos.x), SectionPos.blockToSectionCoord(pos.z))
             ?: return "${at(pos)} is not loaded"
@@ -206,8 +221,9 @@ object BlockRestorer {
     /** The traps holding [player], for `activeOn`: kind `trap`, harmful, by block (`22 minecraft:glass`). Any thread. */
     fun activeOn(player: UUID): List<ActiveEffect> = traps(index.values.flatMap { it.entries }.filter { it.player == player })
 
-    /** The traps of every player, in the chunks loaded, as [activeOn] gives them (`/narrator traps`). Any thread. */
-    fun byPlayer(): Map<UUID, List<ActiveEffect>> = index.values.flatMap { it.entries }.groupBy { it.player }.mapValues { (_, entries) -> traps(entries) }
+    /** The traps of every player, in the chunks loaded, as [activeOn] gives them (`/narrator traps`); a module's blocks away from everyone are nobody's trap. Any thread. */
+    fun byPlayer(): Map<UUID, List<ActiveEffect>> =
+        index.values.flatMap { it.entries }.mapNotNull { entry -> entry.player?.let { it to entry } }.groupBy({ it.first }, { it.second }).mapValues { (_, entries) -> traps(entries) }
 
     /** Blocks waiting to be taken away, in the chunks loaded. Any thread. */
     fun pending(): Int = index.values.sumOf { it.entries.size }
@@ -323,15 +339,13 @@ object BlockRestorer {
         val air = Blocks.AIR.defaultBlockState()
         val restored = mutableListOf<BlockSnapshot>()
         val left = mutableListOf<Pair<BlockSnapshot, String?>>()
-        for (entry in due) {
-            val pos = posOf(key, chunk, entry)
-            if (stillSet(chunk, pos, entry)) {
-                level.setBlock(pos, air, FLAGS)
-                restored += entry
-            } else {
-                left += entry to replacement(level, chunk, pos)
-            }
+        val (going, changed) = due.partition { stillSet(chunk, posOf(key, chunk, it), it) }
+        cushion(level, going.map { posOf(key, chunk, it) })
+        for (entry in going) {
+            level.setBlock(posOf(key, chunk, entry), air, FLAGS)
+            restored += entry
         }
+        for (entry in changed) left += entry to replacement(level, chunk, posOf(key, chunk, entry))
         save(level, chunk, kept)
         for ((player, entries) in restored.groupBy { it.player }) {
             val blocks = entries.groupBy { blockId(it.placed) }.entries.joinToString { (block, same) -> "${same.size} $block" }
@@ -339,6 +353,30 @@ object BlockRestorer {
         }
         skipped(level, left, why)
         return restored.size
+    }
+
+    /**
+     * The blocks at [positions] go: whoever stands on one or in one (a platform of a module's glass under a player, the
+     * roof of a cage, a cobweb holding them) may fall, and through no doing of their own. They take no fall damage for
+     * [CUSHION_SECONDS] and the death guard covers a fall as long (the running Narrator's guards; a longer cushion of
+     * the Narrator's is kept, as when a mount is taken from under a player). Server thread.
+     */
+    private fun cushion(level: ServerLevel, positions: List<BlockPos>) {
+        if (positions.isEmpty()) return
+        val guards = NarratorRuntime.current?.takeIf { it.server === level.server }?.guards ?: return
+        val players = positions.flatMap { pos -> level.getEntitiesOfClass(ServerPlayer::class.java, AABB(pos).expandTowards(0.0, 1.0, 0.0)) { !it.isSpectator } }.distinct()
+        for (player in players) {
+            guards.armDeathGuard(player.uuid, CUSHION_SECONDS, Peril.FALL)
+            val until = System.currentTimeMillis() + CUSHION_SECONDS * 1_000L
+            val kept = guards.attributes.on(player).any {
+                it.attribute == AttributeKey.FALL_DAMAGE_MULTIPLIER.id && it.amount <= -1.0 &&
+                    it.operation == AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL.serializedName && it.expiresAt >= until
+            }
+            if (!kept) {
+                guards.attributes.apply(player, AttributeKey.FALL_DAMAGE_MULTIPLIER, -1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL, until, harmful = false, turnId = null)
+            }
+            log.info("${player.plainTextName} stood on or in a block taken away: no fall damage for ${CUSHION_SECONDS}s, the death guard covers a fall")
+        }
     }
 
     /**
@@ -381,8 +419,8 @@ object BlockRestorer {
     private fun blocks(count: Int) = if (count == 1) "1 block" else "$count blocks"
 
     /** Why [positions] may not take [block] now, all or nothing; null when they may. */
-    private fun refusal(level: ServerLevel, positions: List<BlockPos>, block: BlockState, player: UUID): String? {
-        if (block.block !in allowed) return "only glass and cobwebs may be set (not ${block.block.id})"
+    private fun refusal(level: ServerLevel, positions: List<BlockPos>, block: BlockState, player: UUID?): String? {
+        if (block.block !in allowed) return "only glass and cobwebs, stained glass, slime and honey blocks may be set (not ${block.block.id})"
         if (positions.isEmpty()) return "no block to set"
         if (positions.size > MAX_PER_CALL) return "${positions.size} blocks: a trap sets $MAX_PER_CALL at most"
         if (positions.toSet().size < positions.size) return "the same cell is given twice"
@@ -439,11 +477,12 @@ object BlockRestorer {
     /** The id of the block [snbt] stands for, from what [stateOf] already read. Any thread. */
     private fun blockId(snbt: String): String = states[snbt]?.orElse(null)?.block?.id ?: "unknown block"
 
-    /** [player]'s name when online, else their UUID. */
-    private fun nameOf(level: ServerLevel, player: UUID): String = level.server.playerList.getPlayer(player)?.plainTextName ?: player.toString()
+    /** [player]'s name when online, else their UUID; `nobody` for a module's blocks away from every player. */
+    private fun nameOf(level: ServerLevel, player: UUID?): String =
+        player?.let { level.server.playerList.getPlayer(it)?.plainTextName ?: it.toString() } ?: "nobody"
 
     /** Records a `guard` decision with the running Narrator of [level]'s server; else only the log says it. */
-    private fun record(level: ServerLevel, decision: String, player: UUID, reason: String, act: Long?, detail: JsonObject?) {
+    private fun record(level: ServerLevel, decision: String, player: UUID?, reason: String, act: Long?, detail: JsonObject?) {
         val subject = nameOf(level, player)
         val runtime = NarratorRuntime.current?.takeIf { it.server === level.server }
         if (runtime == null) {

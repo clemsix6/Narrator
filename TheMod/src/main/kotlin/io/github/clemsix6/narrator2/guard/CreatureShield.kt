@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.effect.MobEffectCategory
 import net.minecraft.world.effect.MobEffectInstance
@@ -29,6 +30,8 @@ import net.minecraft.world.entity.player.Player
  *   the creatures it summoned ([isSummoned]): the guests set on a player in his village leave the villagers
  *   alone. A creature a rule only marked keeps its own targets (a golem still fights zombies).
  * - **Explosions**: [ExplosionGuard.spares] spares the same players.
+ * - **A module's creatures** (M5 §4.5, `forge.sdk.ModuleCreatures`) aim at nobody but the player an act sent them to,
+ *   and their blows, projectiles and effects reach nobody else: a module's creatures never hurt a bystander.
  *
  * "The Narrator's doing": a creature carrying the `narrator2` tag, or what one of them owns (an arrow, a
  * potion, an effect cloud, evoker fangs, a vex). Without a running Narrator nobody is spared. Server
@@ -57,7 +60,7 @@ object CreatureShield {
     /** `ALLOW_DAMAGE`: whether [victim] may take damage from [source]. */
     fun allowsDamage(victim: Player, source: DamageSource): Boolean {
         if (!isNarratorsDoing(source.entity) && !isNarratorsDoing(source.directEntity)) return true
-        if (!spares(victim)) return true
+        if (!spares(victim) && !ModuleCreatures.spares(victim, source)) return true
         log.debug { "spared ${victim.plainTextName} from ${source.typeHolder().registeredName} by ${(source.entity ?: source.directEntity)?.type}" }
         return false
     }
@@ -67,19 +70,20 @@ object CreatureShield {
     fun blocksEffect(target: LivingEntity, effect: MobEffectInstance, source: Entity?): Boolean {
         if (target !is Player || target.level().isClientSide) return false
         if (effect.effect.value().category == MobEffectCategory.BENEFICIAL || !isNarratorsDoing(source)) return false
-        if (!spares(target)) return false
+        if (!spares(target) && !ModuleCreatures.sparesFrom(target, source)) return false
         log.debug { "spared ${target.plainTextName} from ${effect.effect.registeredName} by ${source?.type}" }
         return true
     }
 
     /**
      * Whether [attacker] must leave [target] alone: one of the Narrator's creatures and a spared player, or a
-     * creature it summoned and anything but a player (M4 review, finding 17: never a villager nor an animal).
+     * creature it summoned and anything but a player (M4 review, finding 17: never a villager nor an animal), or a
+     * module's creature and anyone but the player it aims at (M5 §4.5).
      */
     @JvmStatic
     fun keepsAway(attacker: LivingEntity?, target: LivingEntity?): Boolean = when (target) {
         null -> false
-        is Player -> isNarratorsDoing(attacker) && spares(target)
-        else -> isSummoned(attacker)
+        is Player -> isNarratorsDoing(attacker) && spares(target) || ModuleCreatures.keepsAway(attacker, target)
+        else -> isSummoned(attacker) || ModuleCreatures.keepsAway(attacker, target)
     }
 }
