@@ -13,11 +13,10 @@ import io.github.clemsix6.narrator2.director.createDirector
 import io.github.clemsix6.narrator2.event.EventBus
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.createGuards
-import io.github.clemsix6.narrator2.journal.DisabledJournal
 import io.github.clemsix6.narrator2.journal.DuckJournal
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
-import io.github.clemsix6.narrator2.journal.openJournal
+import io.github.clemsix6.narrator2.journal.openJournalOrDisable
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.createMemory
 import io.github.clemsix6.narrator2.observer.ObserverState
@@ -128,7 +127,7 @@ class NarratorRuntime private constructor(
     /** Creates the server's components, in the order of the class documentation, then runs. Server thread. */
     private fun wire() {
         ticks.update(server)
-        journal = openJournalOrDisable()
+        journal = openJournalOrDisable(dataDir, settings.get().config.journal, clock)
         bus = EventBus(clock, ticks::gameTime, journal.nextIdSeed(IdKind.EVENT))
         journal.attach(bus)
         (journal as? DuckJournal)?.tellOperators = ::tellOperatorsOnline
@@ -141,17 +140,6 @@ class NarratorRuntime private constructor(
         director = createDirector(this)
         shutdown = ShutdownSequence(scope, bus, journal, settings, observer::flushAll, { phase = it }, stopMemory = memory::stop)
         phase = Phase.RUNNING
-    }
-
-    private fun openJournalOrDisable(): Journal {
-        val journal = try {
-            openJournal(dataDir, settings.get().config.journal, clock)
-        } catch (e: Exception) {
-            log.error("the Journal cannot open, facts will not be recorded: ${e.message}", e)
-            DisabledJournal(e.message ?: e.javaClass.simpleName, clock)
-        }
-        if (!journal.available) log.warn("the Journal is unavailable: ${journal.health().lastError}")
-        return journal
     }
 
     /**
