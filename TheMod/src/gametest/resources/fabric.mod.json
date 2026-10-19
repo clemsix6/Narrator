@@ -46,7 +46,10 @@
       "io.github.clemsix6.narrator2.gametest.MechanicsAssemblyGameTests",
       "io.github.clemsix6.narrator2.gametest.LiveMechanicsGameTests",
       "io.github.clemsix6.narrator2.gametest.MechanicsEndToEndTests",
-      "io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests"
+      "io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests",
+      "io.github.clemsix6.narrator2.gametest.WorldViewGameTests",
+      "io.github.clemsix6.narrator2.gametest.ForgeCompilerGameTests",
+      "io.github.clemsix6.narrator2.gametest.ModuleActsGameTests"
     ]
   },
   "depends": {

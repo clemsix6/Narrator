@@ -328,7 +328,9 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             added += mob
         }
         if (added.isEmpty()) refuse(ToolResult.failed("the world refused the creatures"))
-        return ToolResult.ok(describe(ctx, args, id, player, added, expiresAt, name, hostile), listOf(player.ref()))
+        // Every creature born, the mounts and riders the game gave them included: what a module's act makes its own (M5 §4.4).
+        val born = added.flatMap(::group).map { it.uuid }
+        return ToolResult.ok(describe(ctx, args, id, player, added, expiresAt, name, hostile), listOf(player.ref()), born)
     }
 
     /**
