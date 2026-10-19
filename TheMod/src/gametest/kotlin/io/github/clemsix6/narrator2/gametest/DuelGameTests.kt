@@ -703,7 +703,7 @@ class DuelGameTests {
 
     /**
      * The server's `ALLOW_DEATH`, for the tests' engines: in the engine's own phase, before the guards', like
-     * `MechanicsHooks` for the server's engine (whose `DisabledMechanics` lets every death through until M4-23).
+     * `MechanicsHooks` for the server's engine (which knows nothing of the tests' duels).
      * Registered once, at its first use; a test adds its engine while it runs.
      */
     private object DeathHook {

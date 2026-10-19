@@ -17,12 +17,14 @@ import io.github.clemsix6.narrator2.mechanics.ChallengeControl
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeSpec
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
+import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
 import io.github.clemsix6.narrator2.mechanics.DuelSpec
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.GoalKind
 import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.mechanics.RuleControl
 import io.github.clemsix6.narrator2.mechanics.StateStore
+import io.github.clemsix6.narrator2.mechanics.createMechanics
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
 import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.mechanics.rule.RuleValidator
@@ -32,6 +34,8 @@ import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.runtime.Settings
+import io.github.clemsix6.narrator2.runtime.SettingsHolder
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.tool.Caller
@@ -53,9 +57,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * - Through the server's real dispatcher, typed by a game master: `/narrator traps` and `traps restore` on a trap
  *   set just before, `/narrator guards <player>` with what M4 added (pace, grace, jokers, the ledger's stakes and
- *   offerings, the trap), the `Mechanics:` line of `/narrator status`, and `challenge` and `rule` as the server's
- *   engine allows them (refused with the reason while it is `DisabledMechanics`). `traps restore` takes away every
- *   trap of the server: that test runs in a batch of its own ([COMMANDS_ENVIRONMENT]).
+ *   offerings, the trap), the `Mechanics:` line of `/narrator status`, and `challenge` and `rule` on the server's
+ *   engine; then an engine off by the configuration (`createMechanics`, `mechanics.enabled` false), which the commands
+ *   refuse with its reason. `traps restore` takes away every trap of the server: that test runs in a batch of its own
+ *   ([COMMANDS_ENVIRONMENT]).
  * - The commands' own functions on a real engine of the test's own (the challenges' part and a rule book on states
  *   in memory, the server's canon): list, cancel, remove, and the canon closed by the engine.
  *
@@ -130,19 +135,29 @@ class MechanicsCommandGameTests {
             check(perform("narrator traps").none { it.startsWith(operator.name) }) { "the trap is gone from the list" }
             check(perform("narrator traps restore") == listOf("[Narrator] no trap block pending in the loaded chunks: nothing to take away.")) { "a second restore" }
 
-            val mechanics = runtime.mechanics
+            // The server's engine runs (M4-23).
+            check(runtime.mechanics.available) { "the server's engine: ${runtime.mechanics.unavailableReason}" }
             val status = perform("narrator status").singleOrNull { it.startsWith("Mechanics: ") }
-            if (mechanics.available) {
-                check(status?.startsWith("Mechanics: on · ") == true) { "the Mechanics line: $status" }
-                check(perform("narrator challenge list").first().startsWith("[Narrator] challenges and duels · ")) { "challenge list" }
-                check(perform("narrator rule").first().startsWith("[Narrator] rules · ")) { "rule list" }
-            } else {
-                check(status == "Mechanics: off (${mechanics.unavailableReason}) · 0 trap blocks pending") { "the Mechanics line: $status" }
-                val refusal = "[Narrator] the mechanics are unavailable (${mechanics.unavailableReason}): no challenge nor rule to show or change."
-                for (command in listOf("narrator challenge", "narrator challenge list 2", "narrator challenge cancel C-1", "narrator rule list", "narrator rule remove C-1 La loi est levée.")) {
-                    check(perform(command) == listOf(refusal)) { "$command without the engine: ${output.lines}" }
-                }
+            check(status?.startsWith("Mechanics: on · ") == true) { "the Mechanics line: $status" }
+            check(perform("narrator challenge list").first().startsWith("[Narrator] challenges and duels · ")) { "challenge list" }
+            check(perform("narrator rule").first().startsWith("[Narrator] rules · ")) { "rule list" }
+
+            // The engine off by the configuration: built by createMechanics on the server's services, the commands refuse with its reason.
+            val settings = runtime.settings.get()
+            val offConfig = settings.config.copy(mechanics = settings.config.mechanics.copy(enabled = false))
+            val configuredOff = object : NarratorServices by runtime {
+                override val settings = SettingsHolder(Settings(offConfig, settings.prompts, settings.ui, settings.claude, settings.reflex))
             }
+            val off = server.onServerThread { createMechanics(configuredOff) }
+            check(off is DisabledMechanics && off.unavailableReason == "mechanics.enabled is false") { "off by the configuration: $off" }
+            check(MechanicsCommands.statusLine(off, 0) == "Mechanics: off (mechanics.enabled is false) · 0 trap blocks pending") { MechanicsCommands.statusLine(off, 0) }
+            val withoutEngine = object : NarratorServices by runtime {
+                override val mechanics: Mechanics = off
+            }
+            val refusal = "[Narrator] the mechanics are unavailable (mechanics.enabled is false): no challenge nor rule to show or change."
+            check(MechanicsCommands.challengeList(withoutEngine, 1).text() == listOf(refusal)) { "challenge list without the engine" }
+            check(MechanicsCommands.ruleList(withoutEngine, 1).text() == listOf(refusal)) { "rule list without the engine" }
+            check(MechanicsCommands.cancel(withoutEngine, "gametest", "C-1", null).text() == listOf(refusal)) { "cancel without the engine" }
 
             // The operator's decision, in the Journal.
             runtime.journal.barrier()

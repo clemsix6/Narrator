@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicReference
  * an act of its own; and the server's ticks drive the parts.
  *
  * Each test that writes the world's attachment puts it back within the same tick: the tests running side
- * by side (and, from M4-23, the real engine) never see it change. The other tests build their engine on a
+ * by side and the server's engine never see it change. The other tests build their engine on a
  * store in memory, which never reconciles with the server's canon. The tests that set off explosions run in
  * their own batch ([MECHANICS_ENVIRONMENT]): the Observer tells an explosion with every player 32 blocks around, and other
  * batches count the explosions near their own player.

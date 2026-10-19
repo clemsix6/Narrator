@@ -72,8 +72,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * Each test builds its own engine (the challenges' part, its bars and the stakes) on a store in memory, with a clock
  * it moves; the guards, the tools' limits, the memory and the Journal are the running Narrator's (the players are
- * the test's own, with unique names). The engine of the server is still `DisabledMechanics` (M4-23 assembles): the
- * tools reach the test's engine through the services it gives them.
+ * the test's own, with unique names). The tools reach the test's engine, not the server's, through the services it
+ * gives them.
  */
 class ChallengeStakesGameTests {
 
