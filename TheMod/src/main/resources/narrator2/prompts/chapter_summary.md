@@ -21,7 +21,7 @@ Faits marquants :
 Interventions du Narrateur :
 - HH:MM joueur visé (ou « tous ») — ce qui a été dit ou fait, et pourquoi → résultat, et réaction du joueur s'il y en a eu une.
 Engagements en cours (ni tenus ni échus ; ceux qui l'ont été vont dans les interventions) :
-- son identifiant (C-45) s'il est dans ta mémoire, nature (promesse, menace, défi, décret, surnom, prophétie) — envers qui — « citation » — échéance ou condition, et rappel programmé s'il y en a un.
+- son identifiant (C-45) s'il est dans ta mémoire (toujours pour un défi, un duel, une loi ou un plan en cours), nature (promesse, menace, défi, duel, décret, loi, plan, surnom, prophétie) — envers qui — « citation » — échéance ou condition, et rappel programmé s'il y en a un.
 Fils ouverts :
 - gag récurrent, intrigue amorcée ou question restée sans réponse, avec les joueurs concernés.
 Répertoire utilisé : registres comiques, châtiments, faveurs et blagues déjà servis dans ce chapitre, en quelques mots chacun, pour ne pas les resservir aussitôt.

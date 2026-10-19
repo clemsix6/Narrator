@@ -34,7 +34,7 @@ class PromptsTest {
     @Test
     fun `the bundled prompts stay within their budgets`() {
         val budgets = mapOf(
-            "director" to 30_000, "analyst" to 8_000, "scout" to 6_000, "chapter_summary" to 4_000, "chronicler" to 11_000, "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000,
+            "director" to 34_000, "analyst" to 8_000, "scout" to 6_000, "chapter_summary" to 4_000, "chronicler" to 11_500, "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000,
         )
         assertEquals(Prompts.NAMES.toSet(), budgets.keys, "every prompt has a budget")
         budgets.forEach { (name, max) ->

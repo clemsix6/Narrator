@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.tool
 
+import com.anthropic.core.jsonMapper
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -188,5 +189,26 @@ class ToolCatalogTest {
         listOf("start_challenge", "end_challenge", "propose_duel", "create_rule", "remove_rule", "punish", "favor", "survey").forEach {
             assertTrue(it !in names, "$it needs the engine, or is the scout's")
         }
+    }
+
+    /**
+     * With the engine the Director has 44 tools, its seven new ones included (M4 §12.1). Their definitions, as the SDK
+     * sends them (name, description, input schema), enter the cached prefix of every chapter: 14 000 characters at most.
+     */
+    @Test
+    fun `with the mechanics engine the Director gets its seven new tools, whose definitions fit their budget`() {
+        val set = ToolCatalog.toolSetFor(Role.DIRECTOR, everythingWired.copy(mechanicsAvailable = true), services)
+        val without = ToolCatalog.toolSetFor(Role.DIRECTOR, everythingWired, services).names
+        assertEquals(44, set.names.size, "${set.names}")
+        assertEquals(MECHANICS_TOOLS, set.names - without.toSet())
+
+        val mapper = jsonMapper()
+        val sizes = MECHANICS_TOOLS.associateWith { name -> mapper.writeValueAsString(ToolSchema.definition(set[name]!!)).length }
+        assertTrue(sizes.values.sum() <= MECHANICS_DEFINITIONS_BUDGET, "the seven definitions take ${sizes.values.sum()} characters: $sizes")
+    }
+
+    private companion object {
+        val MECHANICS_TOOLS = listOf("create_rule", "end_challenge", "favor", "propose_duel", "punish", "remove_rule", "start_challenge")
+        const val MECHANICS_DEFINITIONS_BUDGET = 14_000
     }
 }
