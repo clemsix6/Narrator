@@ -3,15 +3,19 @@ package io.github.clemsix6.narrator2.guard
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.core.runOnServerThread
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.server.MinecraftServer
@@ -28,8 +32,9 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
- * The engine's rules of a running server (M1_M2 §10): protection, chaos 0 and no piling on before any
- * hostile action, the death guard, and the ledgers that undo what the Narrator does to players. Built
+ * The engine's rules of a running server (M1_M2 §10, M4 §13): protection, chaos 0, the player's grace, no
+ * piling on, fairness and the categories' rest before any hostile action, the death guard and its rescue,
+ * the ledgers that undo what the Narrator does to players, and the favors it keeps (pardon, grace). Built
  * once per server by `createGuards`; the hooks of `registerGuardHooks` drive it: joins, respawns,
  * deaths, entity loads, and a check once a second of what is due.
  *
@@ -43,7 +48,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     val states = GuardStates()
 
     private val episodes = Episodes(clock)
-    private val targeting = TargetingPolicy(services.players, clock)
+    private val targeting = TargetingPolicy(services.players, clock, ::caps)
     private val protection = ProtectedPlayers(
         services.dataDir.resolve(PROTECTED_FILE),
         { services.settings.get().config.safety.protectedPlayers },
@@ -68,33 +73,53 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     override fun caps(): Caps = Caps.of(services.settings.get().config.chaos)
 
-    // M4-01: the category is not used yet; M4-04 adds same_punishment and the grace.
+    /**
+     * In order: protection, chaos 0, the player's grace, then [TargetingPolicy] (no piling on, one punishment
+     * at a time, fairness, the categories' rest). Allowed: the act's episode opens or grows, and the strike of
+     * [category] is recorded. Every refusal is a `guard denied` decision.
+     */
     override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?): Verdict {
         val name = target.plainTextName
+        val now = clock.millis()
+        val graceUntil = states.of(target).graceUntil?.takeIf { it > now }
         val verdict = when {
             protection.isProtected(target.uuid, name) ->
                 Verdict.Denied(Rules.PROTECTED, "${ModelText.name(name)} is protected by the operators; the Narrator does nothing hostile to them.")
             !caps().hostileAllowed ->
                 Verdict.Denied(Rules.CHAOS_0, "the chaos level is 0: no hostile action against any player.")
-            else -> targeting.check(target.ref(), caller, episodes, diedAt = states.of(target).lastDeathAt)
+            graceUntil != null ->
+                Verdict.Denied(
+                    Rules.GRACE,
+                    "${ModelText.name(name)} is under your grace until ${clockTime(clock, graceUntil)} (in ${ToolText.wait(graceUntil - now)}); " +
+                        "nothing hostile against them until then.",
+                )
+            else -> targeting.check(target.ref(), caller, episodes, diedAt = states.of(target).lastDeathAt, category = category)
         }
         if (verdict is Verdict.Denied) {
             decisions.record(
                 log, DecisionRecord.Kind.GUARD, "denied", name, reason = "${verdict.rule}: ${verdict.message}",
                 conversationId = caller.conversationId, turnId = caller.turnId,
-                detail = buildJsonObject { put("rule", verdict.rule) },
+                detail = buildJsonObject {
+                    put("rule", verdict.rule)
+                    put("act", caller.act)
+                    put("category", category?.id)
+                },
             )
             return verdict
         }
-        episodes.open(target.uuid, caller.act, until)
+        episodes.open(target.uuid, caller.act, until, category)
         // Saved with the player, so that the episode can be rebuilt when they join after a restart.
-        val now = clock.millis()
-        val same = states.of(target).episode?.takeIf { it.until > now && it.act == caller.act }
+        val same = states.of(target).episode?.takeIf { it.until > now && caller.act != null && it.act == caller.act }
         val episode = OpenEpisode(caller.act, maxOf(until, same?.until ?: until))
         states.update(target) { it.copy(episode = episode) }
         decisions.record(
-            log, DecisionRecord.Kind.GUARD, "allowed", name, reason = "hostile action; the punishment runs until ${clockTime(clock, episode.until)}",
+            log, DecisionRecord.Kind.GUARD, "allowed", name,
+            reason = "hostile action${category?.let { " (${it.id})" }.orEmpty()}; the punishment runs until ${clockTime(clock, episode.until)}",
             conversationId = caller.conversationId, turnId = caller.turnId,
+            detail = buildJsonObject {
+                put("act", caller.act)
+                put("category", category?.id)
+            },
         )
         return verdict
     }
@@ -124,13 +149,18 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         keptInventory = DeathGuard.keepsInventory(victim) || victim.level().gameRules.get(GameRules.KEEP_INVENTORY),
     )
 
+    /**
+     * Effects, modifiers, what the ledger holds (a confiscation is harmful; a stake, an offering or what is owed
+     * is shown apart, under its purpose, never harmful), creatures and traps.
+     */
     override fun activeOn(uuid: UUID): List<ActiveEffect> {
         val state = states.snapshot(uuid)
         return buildList {
             state.effects.forEach { add(ActiveEffect("effect", EffectLedger.describe(it), it.expiresAt, it.harmful)) }
             state.modifiers.forEach { add(ActiveEffect("attribute", AttributeLedger.describe(it), it.expiresAt, it.harmful)) }
-            state.confiscations.forEach { add(ActiveEffect("confiscation", it.what, it.returnAt, harmful = true)) }
+            state.confiscations.forEach { add(ActiveEffect(it.purpose.id, it.what, it.returnAt, harmful = it.purpose == LedgerPurpose.CONFISCATION)) }
             addAll(mobs.activeOn(uuid))
+            addAll(BlockRestorer.activeOn(uuid))
         }.sortedBy { it.until }
     }
 
@@ -140,34 +170,132 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         return (caps().narratorKillsPerHour - states.snapshot(player).narratorKills.size).coerceAtLeast(0)
     }
 
-    // The favors and the pace of M4, safe until M4-04 writes them (M4 §13.2): nothing to pardon, no grace,
-    // a punishment is its episode, the pace is fairness alone, and a rescue only leaves the player alive.
-
-    override fun pardon(player: ServerPlayer, caller: Caller): List<String> = emptyList()
-
-    override fun grace(player: ServerPlayer, until: Long, caller: Caller): Verdict =
-        Verdict.Denied(NOT_READY, "the grace is not wired yet.")
-
-    override fun isPunished(player: ServerPlayer): Boolean = episodes.active(player.uuid) != null
-
-    override fun rescue(player: ServerPlayer, why: String) {
-        if (player.health < 1f) player.health = 1f
-        log.warn("${player.plainTextName} kept alive at ${player.health} health ($why); the full rescue is not wired yet")
+    /**
+     * In order: the Narrator's harmful effects lifted (a levitation lifted this way cushions the fall it
+     * leaves), its harmful modifiers reset, its confiscations still held made due now and given back (what
+     * does not fit waits for room as usual; stakes, offerings and what is owed are not the Narrator's doing
+     * and stay), its harmful creatures summoned for the player sent away, the traps holding them taken away,
+     * and the episode closed. The categories' rest and the hour's punishments are history, and stay.
+     */
+    override fun pardon(player: ServerPlayer, caller: Caller): List<String> {
+        val now = clock.millis()
+        val lifted = mutableListOf<String>()
+        val effectsLifted = effects.removeHarmful(player)
+        effectsLifted.forEach { lifted += "${EffectLedger.describe(it)} lifted" }
+        if (effectsLifted.any { it.effect == MobEffects.LEVITATION.registeredName }) death.cushionFall(player, caller.turnId)
+        attributes.resetHarmful(player).forEach { lifted += "${it.id} reset" }
+        val confiscations = states.of(player).confiscations.filter { it.purpose == LedgerPurpose.CONFISCATION && it.returnAt > now }
+        if (confiscations.isNotEmpty()) {
+            val ids = confiscations.map { it.id }.toSet()
+            states.update(player) { state -> state.copy(confiscations = state.confiscations.map { if (it.id in ids) it.copy(returnAt = now) else it }) }
+            items.giveBack(player, now)
+            confiscations.forEach { lifted += "${it.what} returned" }
+        }
+        mobs.retireFor(player.uuid, now).forEach { lifted += "$it sent away" }
+        BlockRestorer.restoreFor(player.uuid).takeIf { it > 0 }?.let { lifted += "$it trap blocks taken away" }
+        val episode = episodes.close(player.uuid)
+        val saved = states.of(player).episode
+        if (saved != null) states.update(player) { it.copy(episode = null) }
+        if (lifted.isEmpty() && (episode != null || (saved?.until ?: 0L) > now)) lifted += "punishment ended"
+        if (lifted.isNotEmpty()) {
+            decisions.record(
+                log, DecisionRecord.Kind.GUARD, "pardoned", player.plainTextName, reason = lifted.joinToString(),
+                conversationId = caller.conversationId, turnId = caller.turnId,
+                detail = buildJsonObject {
+                    put("act", caller.act)
+                    put("lifted", JsonArray(lifted.map(::JsonPrimitive)))
+                },
+            )
+        }
+        return lifted
     }
 
-    override fun pacing(players: List<UUID>, now: Long): List<PlayerPacing> = players.map { uuid ->
-        PlayerPacing(uuid, episodes.recentPunishments(uuid).size, TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR, emptyMap(), null, emptyList())
+    /**
+     * Refused ([Rules.FAVOR_LIMIT]) while a grace runs and until [MechanicsLimits.GRACE_GAP_MINUTES] after its
+     * end; at most [MechanicsLimits.GRACE_MAX_MINUTES] long. Saved with the player.
+     */
+    override fun grace(player: ServerPlayer, until: Long, caller: Caller): Verdict {
+        val now = clock.millis()
+        val name = ModelText.name(player.plainTextName)
+        val state = states.of(player)
+        val last = state.lastGraceEnd ?: state.graceUntil
+        val next = last?.let { it + GRACE_GAP_MS }
+        val end = minOf(until, now + GRACE_MAX_MS)
+        val verdict = when {
+            last != null && next != null && next > now && last > now -> Verdict.Denied(
+                Rules.FAVOR_LIMIT,
+                "$name is under your grace until ${clockTime(clock, last)} (in ${ToolText.wait(last - now)}); " +
+                    "the next grace is allowed at ${clockTime(clock, next)} (in ${ToolText.wait(next - now)}).",
+            )
+            last != null && next != null && next > now -> Verdict.Denied(
+                Rules.FAVOR_LIMIT,
+                "$name's last grace ended ${ToolText.duration(now - last)} ago; the next one is allowed at ${clockTime(clock, next)} (in ${ToolText.wait(next - now)}).",
+            )
+            end <= now -> Verdict.Denied(Rules.FAVOR_LIMIT, "a grace must end in the future (asked until ${clockTime(clock, until)}).")
+            else -> Verdict.Allowed
+        }
+        if (verdict is Verdict.Denied) {
+            decisions.record(
+                log, DecisionRecord.Kind.GUARD, "denied", player.plainTextName, reason = "${verdict.rule}: ${verdict.message}",
+                conversationId = caller.conversationId, turnId = caller.turnId,
+                detail = buildJsonObject { put("rule", verdict.rule) },
+            )
+            return verdict
+        }
+        states.update(player) { it.copy(graceUntil = end, lastGraceEnd = end) }
+        decisions.record(
+            log, DecisionRecord.Kind.GUARD, "graced", player.plainTextName,
+            reason = "under the Narrator's grace until ${clockTime(clock, end)} (${ToolText.duration(end - now)}): nothing hostile, its creatures and explosions spare them",
+            conversationId = caller.conversationId, turnId = caller.turnId,
+            detail = buildJsonObject {
+                put("act", caller.act)
+                put("until", end)
+            },
+        )
+        return verdict
+    }
+
+    /** A running episode, or anything harmful of the Narrator's on [player]: an effect, a modifier, a confiscation still held, a creature, a trap. */
+    override fun isPunished(player: ServerPlayer): Boolean {
+        val now = clock.millis()
+        if (episodes.active(player.uuid) != null) return true
+        val state = states.of(player)
+        return effects.on(player).any { it.harmful } ||
+            state.modifiers.any { it.harmful && it.expiresAt > now } ||
+            state.confiscations.any { it.purpose == LedgerPurpose.CONFISCATION && it.returnAt > now } ||
+            mobs.activeOn(player.uuid).any { it.harmful } ||
+            BlockRestorer.activeOn(player.uuid).isNotEmpty()
+    }
+
+    override fun rescue(player: ServerPlayer, why: String) = death.rescue(player, why)
+
+    override fun pacing(players: List<UUID>, now: Long): List<PlayerPacing> {
+        val rest = caps().categoryCooldownMinutes * 60_000L
+        return players.map { uuid ->
+            val state = states.snapshot(uuid)
+            PlayerPacing(
+                player = uuid,
+                punishedThisHour = episodes.recentPunishments(uuid, now).size,
+                perHour = TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR,
+                resting = episodes.resting(uuid, rest, now),
+                graceUntil = state.graceUntil?.takeIf { it > now },
+                offerings = state.confiscations.filter { it.purpose == LedgerPurpose.OFFERING },
+            )
+        }
     }
 
     /**
      * Whether the Narrator's creatures and explosions leave [player] alone now ([CreatureShield]):
-     * protected, dead, or died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago (the death is
-     * saved with the player: it holds across a reconnection). Server thread.
+     * protected, dead, died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago, or under the
+     * Narrator's grace (both saved with the player: they hold across a reconnection). Server thread.
      */
     fun spares(player: Player): Boolean {
         if (player.isDeadOrDying || protection.isProtected(player.uuid, player.plainTextName)) return true
-        val died = GuardStates.read(player).lastDeathAt ?: return false
-        return clock.millis() - died < TargetingPolicy.NO_PILE_ON_MS
+        val state = GuardStates.read(player)
+        val now = clock.millis()
+        if ((state.graceUntil ?: 0L) > now) return true
+        val died = state.lastDeathAt ?: return false
+        return now - died < TargetingPolicy.NO_PILE_ON_MS
     }
 
     override fun setProtected(uuid: UUID, name: String, on: Boolean) {
@@ -290,6 +418,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 if ((states.of(player).episode?.until ?: Long.MAX_VALUE) <= now) states.update(player) { it.copy(episode = null) }
                 val died = states.of(player).lastDeathAt
                 if (died != null && now - died >= TargetingPolicy.NO_PILE_ON_MS) states.update(player) { it.copy(lastDeathAt = null) }
+                tidyFavors(player, now)
             } catch (e: Exception) {
                 log.error("the guards' check failed for ${player.plainTextName}", e)
             }
@@ -297,12 +426,31 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         mobs.expire(now)
     }
 
+    /**
+     * Forgets the favors' traces that no longer limit anything: a grace that ended (its end stays in
+     * `lastGraceEnd` until a new one is allowed), and the jokers given more than a day ago. The saved state
+     * stays small.
+     */
+    private fun tidyFavors(player: ServerPlayer, now: Long) {
+        val state = states.of(player)
+        val tidied = state.copy(
+            graceUntil = state.graceUntil?.takeIf { it > now },
+            lastGraceEnd = state.lastGraceEnd?.takeIf { now - it < GRACE_GAP_MS },
+            jokersGivenAt = state.jokersGivenAt.filter { now - it < DAY_MS },
+        )
+        if (tidied != state) states.update(player) { tidied }
+    }
+
     companion object {
         /** `/narrator protect`'s list, in `world/narrator2/`. */
         const val PROTECTED_FILE = "protected.json"
 
-        /** The rule of a favor that is not wired yet (until M4-04). */
-        const val NOT_READY = "not_ready"
+        /** A grace lasts this long at most; a new one comes this long after the last one ended (M4 §7.1). */
+        const val GRACE_MAX_MS = MechanicsLimits.GRACE_MAX_MINUTES * 60_000L
+        const val GRACE_GAP_MS = MechanicsLimits.GRACE_GAP_MINUTES * 60_000L
+
+        /** How long a joker given counts against `MechanicsLimits.JOKERS_PER_DAY`. */
+        const val DAY_MS = 24 * 3_600_000L
 
         private const val CHECK_INTERVAL_MS = 1_000L
 

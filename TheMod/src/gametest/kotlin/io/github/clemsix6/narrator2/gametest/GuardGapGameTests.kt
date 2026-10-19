@@ -566,7 +566,8 @@ class GuardGapGameTests {
         helper.succeed()
     }
 
-    private companion object {
+    /** Shared with `GuardFavorGameTests`. */
+    internal companion object {
         val CALLER = Caller(Role.DIRECTOR, "guard-gap-test", turnId = 909, taskId = null)
 
         /** Steps or falls on a turtle egg: a step cracks it once in 100, so an ordinary walker leaves it whole after 2 000 steps once in 500 million. */

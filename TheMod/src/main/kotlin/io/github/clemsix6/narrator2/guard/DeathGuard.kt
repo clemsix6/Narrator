@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.tool.action.Teleports
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -108,7 +109,7 @@ class DeathGuard(
         val cap = caps().narratorKillsPerHour
         val recent = recentKills(states.of(player).narratorKills, now)
         if (recent.size >= cap) {
-            rescue(player, source, recent, cap, now)
+            rescueBeyondQuota(player, source, recent, cap, now)
             return false
         }
         states.update(player) { it.copy(protectedDeath = true, narratorKills = recent) }
@@ -117,18 +118,87 @@ class DeathGuard(
 
     /**
      * Beyond the quota, [player] does not die of [source]: they are taken out of the danger that was
-     * killing them. In order: alive again, before anything moves them; the Narrator's harmful effects and
-     * modifiers lifted (a levitation would lift them again, a smaller scale changes where they fit);
-     * taken to safety ([moveToSafety]); their fall stopped, their fire put out (again at the end of the
-     * tick, [afterTick]), air in their lungs, food if they were starving; no fall damage for
-     * [CUSHION_SECONDS] (a favor in the attribute ledger); [RESCUE_HEALTH] health. Nothing is armed.
-     *
-     * Decision `death_guard rescued`, at the `WARN` level for the operators when the player has been
-     * rescued more than [RESCUES_BEFORE_WARNING] times in [RESCUE_WINDOW_MS]: the Narrator keeps putting
-     * them in mortal danger beyond its quota, or they use the rescue as a way home.
+     * killing them ([save]). Decision `death_guard rescued` with the quota.
      */
-    private fun rescue(player: ServerPlayer, source: DamageSource, recent: List<Long>, cap: Int, now: Long) {
+    private fun rescueBeyondQuota(player: ServerPlayer, source: DamageSource, recent: List<Long>, cap: Int, now: Long) {
         val cause = source.typeHolder().registeredName
+        val saved = save(player)
+        val nextFree = recent.minOrNull()?.let { (it + HOUR_TICKS - now) / TICKS_PER_SECOND }
+        decisions.record(
+            log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
+            reason = "$cause: the Narrator's quota of deaths ($cap per played hour) is spent; ${saved.what(player)}; nothing armed" +
+                (nextFree?.let { " (the quota comes back in ${ToolText.wait(it * 1_000)} of play)" } ?: "") + saved.warning(),
+            detail = buildJsonObject {
+                put("cause", cause)
+                put("cap", cap)
+                put("recent_kills", recent.size)
+                saved.into(this, player)
+            },
+            level = saved.level,
+        )
+    }
+
+    /**
+     * Saves [player] from a death the engine refuses (a duel, M4 §5.5): the same rescue as beyond the quota
+     * ([save]), whatever is killing them, without counting anything against the quota nor arming anything.
+     * Decision `death_guard rescued` with [why]. Called from `ALLOW_DEATH` (the caller then refuses the death)
+     * or at any time. Server thread.
+     */
+    fun rescue(player: ServerPlayer, why: String) {
+        val saved = save(player)
+        decisions.record(
+            log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
+            reason = "$why: ${saved.what(player)}; not counted against the Narrator's quota, nothing armed${saved.warning()}",
+            detail = buildJsonObject {
+                put("why", why)
+                saved.into(this, player)
+            },
+            level = saved.level,
+        )
+    }
+
+    /**
+     * What a rescue did: where the player was taken ([safety]: how and where, null when they could not be
+     * moved), what of the Narrator's was [lifted], and how many times they were rescued lately ([rescues]).
+     */
+    private class Saved(val safety: Pair<String, Vec3>?, val lifted: List<String>, val health: Float, val rescues: Int) {
+        val often: Boolean get() = rescues > RESCUES_BEFORE_WARNING
+
+        /** At the `WARN` level for the operators when the player is rescued too often. */
+        val level: Log.Level get() = if (often) Log.Level.WARN else Log.Level.INFO
+
+        /** `taken to respawn point (x …), fire put out, air given, lifted slowness II, 6.0 health, no fall damage for 30s`. */
+        fun what(player: ServerPlayer): String =
+            (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
+                ", fire put out, air given" +
+                (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
+                ", ${"%.1f".format(Locale.ROOT, health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}"
+
+        fun warning(): String =
+            if (often) "; rescued $rescues times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""
+
+        fun into(detail: JsonObjectBuilder, player: ServerPlayer) {
+            safety?.let { (how, spot) ->
+                detail.put("rescued_by", how)
+                detail.put("rescued_to", where(player, spot))
+            }
+            detail.put("lifted", JsonArray(lifted.map(::JsonPrimitive)))
+            detail.put("health", health)
+            detail.put("recent_rescues", rescues)
+        }
+    }
+
+    /**
+     * Takes [player] out of the danger that was killing them. In order: alive again, before anything moves
+     * them; the Narrator's harmful effects and modifiers lifted (a levitation would lift them again, a
+     * smaller scale changes where they fit); taken to safety ([moveToSafety]); their fall stopped, their fire
+     * put out (again at the end of the tick, [afterTick]), air in their lungs, food if they were starving; no
+     * fall damage for [CUSHION_SECONDS] (a favor in the attribute ledger); [RESCUE_HEALTH] health; the mark
+     * of a protected death cleared. Nothing is armed and nothing counted. Each rescue is remembered for
+     * [RESCUE_WINDOW_MS]: more than [RESCUES_BEFORE_WARNING] warn the operators that something keeps putting
+     * the player in mortal danger, or that they use the rescue as a way home.
+     */
+    private fun save(player: ServerPlayer): Saved {
         player.health = 1f
         val effectsLifted = effects.removeHarmful(player).map(EffectLedger::describe)
         val attributesLifted = attributes.resetHarmful(player).map { it.id }
@@ -145,32 +215,7 @@ class DeathGuard(
 
         val at = clock.millis()
         val state = states.update(player) { it.copy(protectedDeath = false, rescues = recentRescues(it.rescues, at) + at) }
-        val often = state.rescues.size > RESCUES_BEFORE_WARNING
-        val lifted = effectsLifted + attributesLifted
-        val nextFree = recent.minOrNull()?.let { (it + HOUR_TICKS - now) / TICKS_PER_SECOND }
-        decisions.record(
-            log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
-            reason = "$cause: the Narrator's quota of deaths ($cap per played hour) is spent; " +
-                (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
-                ", fire put out, air given" +
-                (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
-                ", ${"%.1f".format(Locale.ROOT, player.health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}; nothing armed" +
-                (nextFree?.let { " (the quota comes back in ${ToolText.wait(it * 1_000)} of play)" } ?: "") +
-                (if (often) "; rescued ${state.rescues.size} times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""),
-            detail = buildJsonObject {
-                put("cause", cause)
-                put("cap", cap)
-                put("recent_kills", recent.size)
-                safety?.let { (how, spot) ->
-                    put("rescued_by", how)
-                    put("rescued_to", where(player, spot))
-                }
-                put("lifted", JsonArray(lifted.map(::JsonPrimitive)))
-                put("health", player.health)
-                put("recent_rescues", state.rescues.size)
-            },
-            level = if (often) Log.Level.WARN else Log.Level.INFO,
-        )
+        return Saved(safety, effectsLifted + attributesLifted, player.health, state.rescues.size)
     }
 
     /**
@@ -273,11 +318,11 @@ class DeathGuard(
         if (keepsInventory(player)) states.update(player) { it.copy(protectedDeath = false) }
     }
 
-    /** `x 12.5, y 64, z -7.5 in overworld`, for decisions. */
-    private fun where(player: ServerPlayer, at: Vec3): String =
-        "x %.1f, y %.1f, z %.1f in %s".format(Locale.ROOT, at.x, at.y, at.z, ToolText.dimension(player.level().dimension().identifier().toString()))
-
     companion object {
+        /** `x 12.5, y 64, z -7.5 in overworld`, for decisions. */
+        private fun where(player: ServerPlayer, at: Vec3): String =
+            "x %.1f, y %.1f, z %.1f in %s".format(Locale.ROOT, at.x, at.y, at.z, ToolText.dimension(player.level().dimension().identifier().toString()))
+
         const val TICKS_PER_SECOND = 20
 
         /** One played hour, in ticks of the `PLAY_TIME` stat. */

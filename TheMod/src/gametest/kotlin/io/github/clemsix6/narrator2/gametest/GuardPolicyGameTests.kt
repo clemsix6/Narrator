@@ -101,6 +101,12 @@ class GuardPolicyGameTests {
             // The Narrator's own commands.
             "narrator chaos 5" to "narrator",
             "pray please" to "pray",
+            // The players' own commands (M4 review, finding 15): never a duel forced behind `execute as`.
+            "duel accept C-52" to "duel",
+            "execute as @a run duel accept C-52" to "duel",
+            "execute as @a at @s run bet C-50 nobody" to "bet",
+            "offer" to "offer",
+            "execute as @r run offer" to "offer",
             // Recipes are progress: `recipe give @a *` would unlock them all for good.
             "recipe give @a *" to "recipe",
             "execute as @a run recipe give @s *" to "recipe",
@@ -131,9 +137,11 @@ class GuardPolicyGameTests {
         val strict = CommandPolicy { listOf("stopsound") }
         val extra = check(strict, "execute as @a at @s run stopsound @s master")
         helper.assertTrue(extra is Verdict.Denied && "safety.extraForbiddenCommands" in extra.message, "the configuration adds roots: $extra")
-        val lax = CommandPolicy({ listOf("give", "recipe", "particle", "playsound") }) { emptyList() }
-        val stillForbidden = listOf("give @a minecraft:diamond 64", "recipe give @a *", "particle minecraft:heart ~ ~1 ~", "playsound minecraft:entity.pig.ambient master @a")
-            .map { check(lax, it) }
+        val lax = CommandPolicy({ listOf("give", "recipe", "particle", "playsound", "duel", "bet", "offer") }) { emptyList() }
+        val stillForbidden = listOf(
+            "give @a minecraft:diamond 64", "recipe give @a *", "particle minecraft:heart ~ ~1 ~", "playsound minecraft:entity.pig.ambient master @a",
+            "execute as @a run duel accept C-52", "bet C-50 nobody", "execute as @r run offer",
+        ).map { check(lax, it) }
         helper.assertTrue(stillForbidden.all { it is Verdict.Denied }, "safety.extraAllowedCommands never allows a built-in root: $stillForbidden")
         helper.succeed()
     }
@@ -150,8 +158,10 @@ class GuardPolicyGameTests {
         val unreviewed = names.filterNot { it in CommandPolicy.FORBIDDEN || it in CommandPolicy.ALLOWED }.sorted()
         helper.assertTrue(unreviewed.isEmpty(), "commands neither forbidden nor reviewed (refused by default, but decide): $unreviewed")
         // Development commands, LAN publishing (integrated servers), the JFR profiler (when available), and
-        // `/pray`, which T21 registers.
-        val sometimes = CommandPolicy.FORBIDDEN.filterValues { it.reason == CommandPolicy.Reason.DEV }.keys + setOf("publish", "unpublish", "jfr", "pray")
+        // the players' own commands of this mod (`/pray` of T21; `/offer`, `/duel` and `/bet`, which M4-15, M4-19
+        // and M4-20 register).
+        val sometimes = CommandPolicy.FORBIDDEN.filterValues { it.reason == CommandPolicy.Reason.DEV || it.reason == CommandPolicy.Reason.PLAYER }.keys +
+            setOf("publish", "unpublish", "jfr")
         val unknown = CommandPolicy.FORBIDDEN.keys.filterNot { it in names || it in sometimes }
         helper.assertTrue(unknown.isEmpty(), "forbidden roots that no command has: $unknown")
         val unused = CommandPolicy.ALLOWED.filterNot { it in names }
