@@ -358,10 +358,10 @@ object MechanicsLimits {
     /** The `stakes` of a canon row, written by the code: `reward 1x golden_apple · penalty tiny (2) · bets`. */
     const val STAKES = MemoryLimits.CANON_STAKES
 
-    /** Each line of the situation (`Challenges`, `Rules`, `Pacing`, `Offerings`), cut with `(+N more)`. */
+    /** Each line of the situation (`Challenges`, `Rules`, `Modules`, `Pacing`, `Offerings`), cut with `(+N more)`. */
     const val SITUATION_LINE = 400
 
-    /** The four lines of the situation together. */
+    /** The mechanics' lines of the situation together (four in M4, five with the `Modules` line of M5). */
     const val SITUATION_TOTAL = 1_200
 
     /** A `RULE` line of `<events>` (a `notify` note and its fact). */
@@ -370,8 +370,8 @@ object MechanicsLimits {
     /** A mechanic's line of `<events>` after its kind (`CHALLENGE`, `DUEL`…), stakes and bets included. */
     const val EVENT_LINE = 1_000
 
-    /** The briefing's `<engine_state>` section (1 500 before M4). */
-    const val ENGINE_STATE = 2_700
+    /** The briefing's `<engine_state>` section (1 500 before M4, 2 700 before M5 and its arsenal). */
+    const val ENGINE_STATE = 3_900
 
     // The engine's fixed limits (M4 §11).
     /** A challenge's penalty is a forfeit: its severity, at most. */
