@@ -200,7 +200,7 @@ class MechanicsLines(private val services: NarratorServices, zone: ZoneId) {
             val pacing = if (online.isEmpty()) emptyList() else services.guards.pacing(online.map { it.uuid }, now)
             val names = online.associate { it.uuid to who(it) }
             builders += { max -> pacing(pacing, names, now, max) }
-            builders += { max -> offerings(pacing, names, max) }
+            builders += { max -> offerings(pacing, names, now, max) }
         } catch (e: Exception) {
             log.error("situation: the guards' pacing is unavailable", e)
             builders += { "Pacing: unavailable (${reason(e)})" }
@@ -240,8 +240,9 @@ class MechanicsLines(private val services: NarratorServices, zone: ZoneId) {
         return LineBudget.fit("Pacing: ", chunks, max)
     }
 
-    private fun offerings(pacing: List<PlayerPacing>, names: Map<UUID, String>, max: Int): String? {
-        val waiting = pacing.flatMap { player -> player.offerings.map { player.player to it } }.sortedBy { it.second.returnAt }
+    /** The offerings still waiting for an answer: one past its time only waits for room to go back (M4-15). */
+    private fun offerings(pacing: List<PlayerPacing>, names: Map<UUID, String>, now: Long, max: Int): String? {
+        val waiting = pacing.flatMap { player -> player.offerings.filter { it.returnAt > now }.map { player.player to it } }.sortedBy { it.second.returnAt }
         val chunks = waiting.mapIndexed { index, (player, offering) ->
             val what = ModelText.escape(offering.what.replace("minecraft:", ""))
             (if (index == 0) "" else ", ") + "O-${offering.id} ${names[player] ?: player} $what (answer by ${time(offering.returnAt)})"

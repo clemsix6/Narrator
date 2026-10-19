@@ -167,12 +167,16 @@ class SituationReportTest {
     /** Mimosa's offering O-812 of 10 diamonds, to answer by 21:42. */
     private val offering = Confiscation(812, listOf("minecraft:diamond"), "10x minecraft:diamond", now - 60_000, now + 559_000, null, null, LedgerPurpose.OFFERING)
 
-    /** Bartok punished twice this hour, size and air resting; Mimosa under grace until 21:45, with an offering. */
+    /**
+     * Bartok punished twice this hour, size and air resting, his offering O-790 past its time (it only waits for
+     * room to go back); Mimosa under grace until 21:45, with an offering.
+     */
     private fun evening() {
         players.put(live("Bartok", onlineFor = 72 * 60_000L))
         players.put(live("Mimosa", onlineFor = 25 * 60_000L))
         guards.pacingOf[ref("Bartok").uuid] = PlayerPacing(
-            ref("Bartok").uuid, 2, 4, mapOf(PunishmentCategory.AIR to now + 1_099_000, PunishmentCategory.SIZE to now + 379_000), null, emptyList(),
+            ref("Bartok").uuid, 2, 4, mapOf(PunishmentCategory.AIR to now + 1_099_000, PunishmentCategory.SIZE to now + 379_000), null,
+            listOf(offering.copy(id = 790, returnAt = now - 1_000)),
         )
         guards.pacingOf[ref("Mimosa").uuid] = PlayerPacing(ref("Mimosa").uuid, 0, 4, emptyMap(), now + 739_000, listOf(offering))
     }
