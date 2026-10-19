@@ -22,7 +22,10 @@ class ToolCatalogTest {
     private val everythingWired = ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST), memoryAvailable = true)
     private val memoryOff = ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST), memoryAvailable = false)
 
-    /** A few tools shaped like the real ones: `sql` needs the Journal, `delegate` a worker role, the memory tools the memory. */
+    /**
+     * A few tools shaped like the real ones: `sql` needs the Journal, `delegate` a worker role, the memory tools the
+     * memory; `survey` is the scout's own, `mob_effect` and `notify` the rules' own (M4 §8.4, §14).
+     */
     private val tools = listOf(
         noArgsTool("say", ToolEffect.SPEECH),
         noArgsTool("list_players"),
@@ -38,6 +41,9 @@ class ToolCatalogTest {
         noArgsTool("note_to_director", ToolEffect.ENGINE, available = { it.memoryAvailable }),
         noArgsTool("set_trait", ToolEffect.ENGINE, available = { it.memoryAvailable }),
         noArgsTool("write_grimoire", ToolEffect.ENGINE, available = { it.memoryAvailable }),
+        noArgsTool("survey"),
+        noArgsTool("mob_effect", ToolEffect.WORLD),
+        noArgsTool("notify", ToolEffect.ENGINE),
     )
 
     /** The memory jobs' own families among [tools]. */
@@ -59,7 +65,7 @@ class ToolCatalogTest {
     }
 
     @Test
-    fun `the Director gets every wired tool but the memory jobs' own, sorted by name`() {
+    fun `the Director gets every wired tool but the memory jobs', the scout's and the rules' own, sorted by name`() {
         val set = ToolCatalog.toolSetFor(Role.DIRECTOR, everythingWired, tools, decisions, jobs)
 
         assertEquals(
@@ -70,9 +76,20 @@ class ToolCatalogTest {
     }
 
     @Test
-    fun `the Analyst gets its reads, the memory ones included, the roles without tools nothing`() {
+    fun `the Analyst and the scout get their reads, the memory ones included, the roles without tools nothing`() {
         assertEquals(listOf("list_players", "player_profile", "recall", "sql"), names(Role.ANALYST))
-        assertEquals(emptyList(), names(Role.SCOUT))
+        assertEquals(listOf("list_players", "recall", "sql", "survey"), names(Role.SCOUT))
+        assertEquals(emptyList(), names(Role.FORGER))
+        assertEquals(emptyList(), names(Role.STORYTELLER))
+    }
+
+    @Test
+    fun `survey is the scout's alone, and the rules' own tools are nobody's`() {
+        for (role in Role.entries) {
+            val names = names(role, everythingWired.copy(mechanicsAvailable = true))
+            assertEquals(role == Role.SCOUT, "survey" in names, "survey for the ${role.id}: $names")
+            assertTrue("mob_effect" !in names && "notify" !in names, "the rules' own tools reach the ${role.id}: $names")
+        }
     }
 
     @Test
@@ -85,6 +102,7 @@ class ToolCatalogTest {
     fun `the memory tools disappear from every role when the memory does not run`() {
         assertEquals(listOf("delegate", "list_players", "remind_me", "say", "sql"), names(Role.DIRECTOR, memoryOff))
         assertEquals(listOf("list_players", "sql"), names(Role.ANALYST, memoryOff))
+        assertEquals(listOf("list_players", "sql", "survey"), names(Role.SCOUT, memoryOff))
         assertEquals(emptyList(), names(Role.CHRONICLER, memoryOff))
         assertEquals(emptyList(), names(Role.DREAMER, memoryOff))
     }
@@ -100,6 +118,11 @@ class ToolCatalogTest {
             listOf("area_info", "inspect_player", "list_players", "locate", "player_profile", "player_stats", "recall", "scan_area", "sql"),
             ToolCatalog.toolSetFor(Role.ANALYST, everythingWired, services).names,
         )
+        assertEquals(
+            listOf("area_info", "inspect_player", "list_players", "locate", "recall", "scan_area", "sql", "survey"),
+            ToolCatalog.toolSetFor(Role.SCOUT, everythingWired, services).names,
+        )
+        assertEquals(listOf("area_info", "inspect_player", "list_players", "locate", "scan_area", "sql", "survey"), ToolCatalog.toolSetFor(Role.SCOUT, memoryOff, services).names)
         assertEquals(emptyList(), ToolCatalog.toolSetFor(Role.DIRECTOR, memoryOff, services).names.filter { it in shared })
         assertTrue(ToolCatalog.toolSetFor(Role.CHRONICLER, everythingWired, services).names.containsAll(listOf("remember", "resolve", "note_interaction", "recall")))
         val dreamer = ToolCatalog.toolSetFor(Role.DREAMER, everythingWired, services).names

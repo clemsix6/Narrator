@@ -32,7 +32,7 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * The workers the Director delegates long work to (M1_M2 §13): the Analyst in M2.
+ * The workers the Director delegates long work to (M1_M2 §13): the Analyst (M2) and the scout (M4 §14).
  *
  * - **Never waits.** [submit] queues the task and returns its id at once; the Director's turn goes on.
  * - **Its own conversation.** Each task is one conversation with Claude, `Task T-12 (analyst)`, with the
@@ -70,7 +70,10 @@ class Workers(
     private val queue = ArrayDeque<Task>() // guarded by lock
     private var running = 0 // guarded by lock: tasks whose coroutine has not completed
 
-    /** The Analyst works on the Journal first: it is offered only when the Journal opened, and never while the server stops. */
+    /**
+     * The workers are offered only when the Journal opened (the Analyst works on it first, the scout reads the
+     * places players haunt in it), and never while the server stops.
+     */
     override val roles: Set<Role>
         get() = if (services.phase == Phase.RUNNING && services.journal.available) WIRED else emptySet()
 
@@ -349,8 +352,8 @@ class Workers(
         /** How long an ended task stays in [list] (and the situation's durations). */
         const val KEEP_ENDED_MS = 30 * 60_000L
 
-        /** The worker roles wired in M2. */
-        private val WIRED = setOf(Role.ANALYST)
+        /** The worker roles wired: the Analyst (M2) and the scout (M4 §14). */
+        private val WIRED = setOf(Role.ANALYST, Role.SCOUT)
 
         private const val LOG_BRIEF_CHARS = 120
         private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
