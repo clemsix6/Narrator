@@ -15,13 +15,8 @@ import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.testing.TestServices
-import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolArgs
-import io.github.clemsix6.narrator2.tool.ToolContext
-import io.github.clemsix6.narrator2.tool.ToolEffect
-import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolText
-import io.github.clemsix6.narrator2.tool.action.PunishArgs
 import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
@@ -50,7 +45,7 @@ internal class RuleFixture : AutoCloseable {
     val services = TestServices(clock = clock, journal = base.journal, memory = memory, guards = guards, director = director, mechanics = mechanics)
     val actions = EngineActions(
         services,
-        speechTools(services) + playerActionTools(services) + worldActionTools(services) + punishTools(services).ifEmpty { listOf(PunishStandIn()) } + ruleOnlyTools(),
+        speechTools(services) + playerActionTools(services) + worldActionTools(services) + punishTools(services) + ruleOnlyTools(),
     )
     val ids = FakeRuleIds()
     val store = StateStore.inMemory()
@@ -84,14 +79,6 @@ internal class RuleFixture : AutoCloseable {
 internal class BookMechanics(private val inner: Mechanics) : Mechanics by inner {
     lateinit var book: RuleBook
     override val rules: RuleControl get() = book
-}
-
-/**
- * `punish` while M4-13's own tool is not there: its arguments, no dry check. The fixture takes the real one as
- * soon as `punishTools` has it.
- */
-class PunishStandIn : NarratorTool<PunishArgs>("punish", "A stand-in of punish for the tests.", PunishArgs.serializer(), ToolEffect.WORLD) {
-    override suspend fun run(ctx: ToolContext, args: PunishArgs): ToolResult = ToolResult.failed("a stand-in of punish")
 }
 
 /** A few ids of each kind, and their tags, as a server would know them. */

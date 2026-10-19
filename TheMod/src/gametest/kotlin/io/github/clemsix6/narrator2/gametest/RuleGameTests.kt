@@ -9,7 +9,6 @@ import io.github.clemsix6.narrator2.mechanics.RuleKind
 import io.github.clemsix6.narrator2.mechanics.RuleSpec
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.mechanics.rule.MobAttributeTool
-import io.github.clemsix6.narrator2.mechanics.rule.PunishStandIn
 import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.mechanics.rule.RuleMarks
 import io.github.clemsix6.narrator2.mechanics.rule.RuleValidator
@@ -23,7 +22,6 @@ import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.tool.Caller
-import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolArgs
 import io.github.clemsix6.narrator2.tool.ToolCatalog
 import io.github.clemsix6.narrator2.tool.ToolRunner
@@ -192,13 +190,10 @@ class RuleGameTests {
         helper.succeed()
     }
 
-    /** A rule book of the tests: the server's tools (`punish` stood in until M4-13), ids and canon, a state in memory. */
+    /** A rule book of the tests: the server's tools, ids and canon, a state in memory. */
     private class Rules(runtime: NarratorRuntime) {
         val store = StateStore.inMemory()
-        private val tools: List<NarratorTool<*>> = ToolCatalog.allTools(runtime).let { tools ->
-            if (tools.none { it.name == "punish" }) tools + PunishStandIn() else tools
-        } + ruleOnlyTools()
-        val validator = RuleValidator(runtime, EngineActions(runtime, tools), ServerRuleIds(runtime.server))
+        val validator = RuleValidator(runtime, EngineActions(runtime, ToolCatalog.allTools(runtime) + ruleOnlyTools()), ServerRuleIds(runtime.server))
         val book = RuleBook(runtime, store, validator)
 
         /** The server's services, with an engine whose rules are [book], for the tools. */
