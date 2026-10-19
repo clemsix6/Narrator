@@ -225,8 +225,13 @@ class BetInstructions(services: NarratorServices, store: StateStore, ledger: Ite
     `LevelBasedPermissionSet.GAMEMASTER`.
 - **Lancements ciblés** (`-Dfabric-api.gametest.filter=narrator2-gametest:escrow_game_tests_*`, puis `bet_*`) :
   16 et 11 GameTests verts.
-- **`git merge main`** (lot E et conception de M5) : sans conflit.
-- **Après la fusion, `.\gradlew.bat build` : vert.**
-  - **1 498 tests unitaires**, 0 échec ;
-  - **« All 314 required tests passed »**.
+- **`git merge main`**, deux fois (lot E et conception de M5, puis lot F) : sans conflit.
+- **Après la seconde fusion, `.\gradlew.bat build` : vert.**
+  - **1 502 tests unitaires**, 0 échec ;
+  - **« All 321 required tests passed »** ;
+  - un lancement précédent, sur le même état, avait échoué sur
+    `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued, alive, put out: 3.33 »).
+    C'est l'instabilité connue du constat 22, confiée au lot H ; ce lot n'y touche pas.
+- **Secondes lentes du moteur** dans le dernier lancement complet : au plus 15 ms (partie `Bets`, lors d'une
+  remise).
 - Aucun appel réel à Claude ; pas de `runServer`.
