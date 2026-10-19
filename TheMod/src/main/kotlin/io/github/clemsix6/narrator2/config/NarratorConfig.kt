@@ -34,6 +34,7 @@ data class NarratorConfig(
     val workers: WorkersConfig = WorkersConfig(),
     val memory: MemoryConfig = MemoryConfig(),
     val mechanics: MechanicsConfig = MechanicsConfig(),
+    val forge: ForgeConfig = ForgeConfig(),
     val safety: SafetyConfig = SafetyConfig(),
     val reflex: ReflexConfig = ReflexConfig(),
     val logging: LoggingConfig = LoggingConfig(),
@@ -259,6 +260,42 @@ data class MechanicsConfig(
     /** Minutes before an offering not taken goes back; also the shortest time between two `/offer` of a player. */
     val offeringMinutes: Int = 10,
 )
+
+/** Who makes a version the forger saved deployable (`forge.approval`, M5 §6.3). */
+enum class ForgeApproval(val id: String) {
+    /** It is `ready` at once; the log and `/narrator forge list` show it to the operators. */
+    AUTO("auto"),
+
+    /** It is `pending` until an operator approves it (`/narrator forge approve`). */
+    OPERATOR("operator"),
+    ;
+
+    companion object {
+        fun of(id: String): ForgeApproval? = entries.firstOrNull { it.id == id }
+    }
+}
+
+/**
+ * The Forge (design M5 §13): the modules the forger writes and the Director deploys. The sandbox's budgets are
+ * constants of the code (`ForgeLimits`), not settings. Safety does not depend on these settings: it is in the
+ * sandbox's barriers and the operator's switch (`/narrator forge off`).
+ */
+@Serializable
+data class ForgeConfig(
+    /** False keeps the Forge off: no tool of M5, no forger, no module runs. Read at startup only. */
+    val enabled: Boolean = true,
+    /** `auto` or `operator`, see [ForgeApproval]. */
+    val approval: String = ForgeApproval.AUTO.id,
+    /** Modules deployed at once. */
+    val maxActive: Int = 4,
+    /** Model requests of one task of the forger. */
+    val taskSteps: Int = 40,
+    /** Longest a task of the forger may run, in minutes. */
+    val taskMinutes: Int = 20,
+) {
+    /** [approval] as a mode; valid once the configuration is validated. */
+    val approvalMode: ForgeApproval get() = ForgeApproval.of(approval) ?: error("invalid forge.approval")
+}
 
 /** Limits the engine enforces whatever the model asks. */
 @Serializable
@@ -487,6 +524,12 @@ object ConfigStore {
         range("mechanics.duelInviteSeconds", mechanics.duelInviteSeconds.toLong(), 30, 600)
         range("mechanics.betWindowMinutes", mechanics.betWindowMinutes.toLong(), 1, 15)
         range("mechanics.offeringMinutes", mechanics.offeringMinutes.toLong(), 2, 60)
+
+        val forge = config.forge
+        if (ForgeApproval.of(forge.approval) == null) add("forge.approval must be one of ${ForgeApproval.entries.joinToString { it.id }}")
+        range("forge.maxActive", forge.maxActive.toLong(), 1, 8)
+        range("forge.taskSteps", forge.taskSteps.toLong(), 10, 60)
+        range("forge.taskMinutes", forge.taskMinutes.toLong(), 5, 60)
 
         config.safety.protectedPlayers.forEachIndexed { index, name ->
             if (!PLAYER_NAME.matches(name)) {

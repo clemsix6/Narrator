@@ -493,12 +493,14 @@ internal object BriefText {
     /**
      * What the mechanics engine does with [entry] (M4 §3.3), for whoever reads the canon: `tracked` for a
      * challenge it detects, pays and ends itself, `tracked duel` for a duel, `enforced` for a law whose rule it
-     * applies; null for any other row. A plan is always one of its rules: its kind says so already.
+     * applies, `run by a module` for a law or a plan a module of the Forge runs (M5 §6.4); null for any other row. A
+     * plan without a module is always one of its rules: its kind says so already.
      */
     fun engineMark(entry: CanonEntry): String? = when (entry.mechanic) {
         CanonMechanic.CHALLENGE -> "tracked"
         CanonMechanic.DUEL -> "tracked duel"
         CanonMechanic.RULE -> "enforced".takeIf { entry.kind == CanonKind.LAW }
+        CanonMechanic.MODULE -> "run by a module"
         null -> null
     }
 

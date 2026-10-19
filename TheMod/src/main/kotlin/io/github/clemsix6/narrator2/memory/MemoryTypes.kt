@@ -232,6 +232,9 @@ enum class CanonMechanic(val kinds: Set<CanonKind>, val endedBy: String) {
     CHALLENGE(setOf(CanonKind.CHALLENGE), "end_challenge"),
     DUEL(setOf(CanonKind.CHALLENGE), "end_challenge"),
     RULE(setOf(CanonKind.LAW, CanonKind.PLAN), "remove_rule"),
+
+    /** A module of the Forge deployed as a law or a plan (M5 §6.4). */
+    MODULE(setOf(CanonKind.LAW, CanonKind.PLAN), "stop_module"),
     ;
 
     /** `challenge`: the value of `canon.mechanic`. */

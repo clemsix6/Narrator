@@ -12,6 +12,7 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -22,18 +23,19 @@ import java.util.UUID
 
 /*
  * The engine's live state (M4 §3.2): the challenges and duels in progress, the active rules, the pace, the
- * duelists to put back and the bets to settle. It lives in the world's persistent global attachment
- * `narrator2:mechanics`, saved with the world at each save: a crash brings the state and the world back to
- * the same instant. It is read and written on the server thread only (`StateStore`, M4-02), never through
- * the database.
+ * duelists to put back and the bets to settle; and the modules deployed and the Forge's switch (M5 §6.7). It
+ * lives in the world's persistent global attachment `narrator2:mechanics`, saved with the world at each save: a
+ * crash brings the state and the world back to the same instant. It is read and written on the server thread
+ * only (`StateStore`, M4-02), never through the database.
  *
  * It is saved as one JSON text (kotlinx) rather than a DFU codec field by field: the specifications are
  * nested, and they are the very classes of the tools' arguments. The text has no length limit in the world's
- * file (`LongString`: past 20,000 characters it is saved in chunks). Each challenge, rule, return, settlement
- * and owed reward is decoded on its own: an unreadable entry (a goal removed from the code, a field of the
- * wrong type) is dropped with an error in the log and kept in [MechanicsState.unreadable], never the whole
- * state; the stakes of an unreadable challenge or settlement are given back. Immutable: always replaced by a
- * new instance, never changed in place (like `GuardState`).
+ * file (`LongString`: past 20,000 characters it is saved in chunks). Each challenge, rule, return, settlement,
+ * owed reward and module, and the Forge's switch, is decoded on its own: an unreadable entry (a goal removed
+ * from the code, a field of the wrong type) is dropped with an error in the log and kept in
+ * [MechanicsState.unreadable], never the whole state; the stakes of an unreadable challenge or settlement are
+ * given back, and an unreadable switch keeps the Forge off. Immutable: always replaced by a new instance, never
+ * changed in place (like `GuardState`).
  */
 
 /** The engine's live state (M4 §3.2): saved with the world in the global attachment `narrator2:mechanics`. */
@@ -51,6 +53,10 @@ data class MechanicsState(
     val settlements: List<Settlement> = emptyList(),
     /** The rewards of winners away when their challenge was won (it ended while the server was down), paid once they are back (M4 review, finding 13). */
     val rewards: List<OwedReward> = emptyList(),
+    /** The modules deployed (M5 §6.4, §6.7), in the order they were deployed. */
+    val modules: List<ModuleRun> = emptyList(),
+    /** The operator's switch of the Forge (M5 §3.7): while set, no module runs nor is deployed, across restarts. */
+    @SerialName("forge_halt") val forgeHalt: ForgeHalt? = null,
     /**
      * What could not be read back when the state was loaded: never saved again. The engine reports each one
      * (a decision `mechanic unreadable`) and resolves its canon row `cancelled` at the reconciliation
@@ -63,6 +69,9 @@ data class MechanicsState(
 
     /** The rule of canon row [id], if it is active. */
     fun rule(id: Long): RuleState? = rules.firstOrNull { it.id == id }
+
+    /** The module deployed as canon row [id], if it runs. */
+    fun module(id: Long): ModuleRun? = modules.firstOrNull { it.id == id }
 
     /** With the settlements [new], but for a stake that has one already: never two for the same stake. */
     fun settling(new: List<Settlement>): MechanicsState {
@@ -120,7 +129,12 @@ data class MechanicsState(
             val returns = each(raw.returns, SavedPosition.serializer(), "return", unreadable)
             val settlements = each(raw.settlements, Settlement.serializer(), "settlement", unreadable) { rescued += givenBack(JsonArray(listOf(it))) }
             val rewards = each(raw.rewards, OwedReward.serializer(), "reward", unreadable)
-            val state = MechanicsState(challenges, rules, raw.lastChallengeAt, returns, settlements, rewards, unreadable).settling(rescued)
+            val modules = each(raw.modules, ModuleRun.serializer(), "module", unreadable)
+            val halt = raw.forgeHalt?.takeIf { it !is JsonNull }?.let { halt(it, unreadable) }
+            val state = MechanicsState(
+                challenges = challenges, rules = rules, lastChallengeAt = raw.lastChallengeAt, returns = returns, settlements = settlements,
+                rewards = rewards, modules = modules, forgeHalt = halt, unreadable = unreadable,
+            ).settling(rescued)
             val added = state.settlements.drop(settlements.size)
             if (added.isNotEmpty()) log.warn("${added.size} stakes of unreadable entries of the mechanics' state go back to their owners: ${added.joinToString { "stake ${it.stake}" }}")
             return state
@@ -147,6 +161,19 @@ data class MechanicsState(
                 dropped(element)
                 null
             }
+        }
+
+        /**
+         * The Forge's switch as saved ([element]); when it cannot be read, kept in [unreadable] and the Forge stays
+         * switched off all the same (M5 §3.7): only an operator turns it back on, never a garbled file.
+         */
+        private fun halt(element: JsonElement, unreadable: MutableList<Unreadable>): ForgeHalt = try {
+            JSON.decodeFromJsonElement(ForgeHalt.serializer(), element)
+        } catch (e: IllegalArgumentException) { // SerializationException too
+            val problem = Unreadable("forge_halt", null, firstLine(e))
+            log.error("the Forge's switch cannot be read, the Forge stays off: ${problem.error}; saved: ${element.toString().take(RAW_LOG_MAX)}")
+            unreadable += problem
+            ForgeHalt(reason = "the Forge's switch could not be read when the server started: ${problem.error}", by = "unknown", at = 0)
         }
 
         /**
@@ -191,14 +218,17 @@ data class MechanicsState(
         val returns: List<JsonElement> = emptyList(),
         val settlements: List<JsonElement> = emptyList(),
         val rewards: List<JsonElement> = emptyList(),
+        val modules: List<JsonElement> = emptyList(),
+        @SerialName("forge_halt") val forgeHalt: JsonElement? = null,
     )
 }
 
 /**
  * An entry of the saved state that could not be read back (M4 §3.2).
  *
- * @property what `challenge`, `rule`, `return`, `settlement`, or `state` when nothing could be read.
- * @property id the canon row of a challenge or a rule, when it could be read: its canon is cancelled.
+ * @property what `challenge`, `rule`, `return`, `settlement`, `reward`, `module`, `forge_halt`, or `state` when nothing
+ *   could be read.
+ * @property id the canon row of a challenge, a rule or a module, when it could be read: its canon is cancelled.
  * @property error why, the first line of the decoder's message.
  */
 data class Unreadable(val what: String, val id: Long?, val error: String)
@@ -388,3 +418,46 @@ data class RuleState(
     /** Its canon reference, `C-60`. */
     val ref: Ref get() = Ref(RefKind.CANON, id)
 }
+
+/**
+ * A module deployed (M5 §6.4, §6.7): what survives a restart. Its code is the arsenal's (built again from the source
+ * at [version], checked against [hash]); its timers, subscriptions, queued facts and acts, and fault counts do not
+ * survive: `start` makes them again with `restarted()`. Its creatures stay in the world with their marks.
+ *
+ * @property id its canon row (`law` or `plan`, mechanic `module`): `C-<id>`.
+ * @property hash the source's (`sha256:…`), as the arsenal's manifest says it when it was deployed.
+ * @property params its parameters, as checked against its manifest when it was deployed (`Args` reads them).
+ * @property challenge the judged challenge it referees, its canon row.
+ * @property playerIds the UUIDs (as text) of its players' parameters, resolved when it was deployed.
+ * @property storage its `Storage`, copied from the running module each second when it changed.
+ * @property turnId the Director's turn that deployed it; [conversationId] its chapter.
+ * @property acts the acts it asked since it was deployed, refused ones included; [faults] its faults (M5 §3.7).
+ */
+@Serializable
+data class ModuleRun(
+    val id: Long,
+    val module: String,
+    val version: Int,
+    val hash: String,
+    val params: JsonObject,
+    val kind: RuleKind,
+    @SerialName("created_at") val createdAt: Long,
+    @SerialName("ends_at") val endsAt: Long,
+    val challenge: Long? = null,
+    @SerialName("player_ids") val playerIds: List<String> = emptyList(),
+    val storage: Map<String, String> = emptyMap(),
+    @SerialName("turn_id") val turnId: Long?,
+    @SerialName("conversation_id") val conversationId: String?,
+    val acts: Int = 0,
+    val faults: Int = 0,
+) {
+    /** Its canon reference, `C-70`. */
+    val ref: Ref get() = Ref(RefKind.CANON, id)
+}
+
+/**
+ * The Forge switched off by an operator (`/narrator forge off`, M5 §3.7): [reason] their words (or a default), [by]
+ * the operator, [at] when, epoch milliseconds (0 when it could not be read back).
+ */
+@Serializable
+data class ForgeHalt(val reason: String, val by: String, val at: Long)

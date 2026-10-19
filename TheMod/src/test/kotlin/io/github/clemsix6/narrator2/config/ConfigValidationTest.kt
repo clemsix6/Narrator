@@ -46,6 +46,8 @@ class ConfigValidationTest {
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
         assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2), defaults.memory)
         assertEquals(MechanicsConfig(true, 2, 10, 8, 15, 120, 5, 10), defaults.mechanics, "M4 §17")
+        assertEquals(ForgeConfig(true, "auto", 4, 40, 20), defaults.forge, "M5 §13")
+        assertEquals(ForgeApproval.AUTO, defaults.forge.approvalMode)
         assertEquals(ReflexConfig(true, "claude-haiku-5-5", "low", false, 3_000), defaults.reflex)
     }
 
@@ -119,6 +121,13 @@ class ConfigValidationTest {
             defaults.copy(mechanics = MechanicsConfig(betWindowMinutes = 16)) to "mechanics.betWindowMinutes must be between 1 and 15",
             defaults.copy(mechanics = MechanicsConfig(offeringMinutes = 1)) to "mechanics.offeringMinutes must be between 2 and 60",
             defaults.copy(mechanics = MechanicsConfig(offeringMinutes = 61)) to "mechanics.offeringMinutes must be between 2 and 60",
+            defaults.copy(forge = ForgeConfig(approval = "manual")) to "forge.approval must be one of auto, operator",
+            defaults.copy(forge = ForgeConfig(maxActive = 0)) to "forge.maxActive must be between 1 and 8",
+            defaults.copy(forge = ForgeConfig(maxActive = 9)) to "forge.maxActive must be between 1 and 8",
+            defaults.copy(forge = ForgeConfig(taskSteps = 9)) to "forge.taskSteps must be between 10 and 60",
+            defaults.copy(forge = ForgeConfig(taskSteps = 61)) to "forge.taskSteps must be between 10 and 60",
+            defaults.copy(forge = ForgeConfig(taskMinutes = 4)) to "forge.taskMinutes must be between 5 and 60",
+            defaults.copy(forge = ForgeConfig(taskMinutes = 61)) to "forge.taskMinutes must be between 5 and 60",
             defaults.copy(safety = SafetyConfig(protectedPlayers = listOf("Steve", "not a name"))) to
                 "safety.protectedPlayers[1] must be a player name",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("scoreboard", "tell raw"))) to
@@ -153,6 +162,8 @@ class ConfigValidationTest {
             defaults.copy(memory = MemoryConfig(true, 60, 240, 168, 20, 60, 5, 1_440, 600, 24, 30)),
             defaults.copy(mechanics = MechanicsConfig(false, 1, 0, 1, 2, 30, 1, 2)),
             defaults.copy(mechanics = MechanicsConfig(true, 5, 120, 20, 60, 600, 15, 60)),
+            defaults.copy(forge = ForgeConfig(false, "operator", 1, 10, 5)),
+            defaults.copy(forge = ForgeConfig(true, "auto", 8, 60, 60)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(reflex = ReflexConfig(effort = "high", timeoutMs = 500)),
             defaults.copy(reflex = ReflexConfig(effort = "medium", timeoutMs = 10_000)),
@@ -222,6 +233,20 @@ class ConfigValidationTest {
         val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
         assertContains(message, "mechanics.maxChallenges must be between 1 and 5")
         assertContains(message, "mechanics.offeringMinutes must be between 2 and 60")
+    }
+
+    @Test
+    fun `the forge section merges key by key and is validated`() {
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "forge": { "approval": "operator", "enabled": false } }""")
+        val forge = ConfigStore.load(dir).forge
+        assertEquals(ForgeConfig(enabled = false, approval = "operator"), forge)
+        assertEquals(ForgeApproval.OPERATOR, forge.approvalMode)
+
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "forge": { "approval": "never", "maxActive": 12 } }""")
+        val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
+        assertContains(message, "forge.approval must be one of auto, operator")
+        assertContains(message, "forge.maxActive must be between 1 and 8")
+        assertFalse("never" in message, "a value is never quoted")
     }
 
     @Test

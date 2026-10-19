@@ -3,10 +3,12 @@ package io.github.clemsix6.narrator2.mechanics
 import com.mojang.serialization.JsonOps
 import io.github.clemsix6.narrator2.director.ReminderState
 import io.github.clemsix6.narrator2.director.SavedReminder
+import io.github.clemsix6.narrator2.testing.ForgeSamples
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -25,7 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/** The engine's live state saved with the world (M4 §3.2), and the Director's reminders (M4 §15.1). */
+/** The engine's live state saved with the world (M4 §3.2, M5 §6.7), and the Director's reminders (M4 §15.1). */
 class MechanicsStateTest {
     private val sample = MechanicsSamples.state
 
@@ -45,7 +47,7 @@ class MechanicsStateTest {
         assertEquals(MechanicsState.EMPTY, MechanicsState.decode(MechanicsState.encode(MechanicsState.EMPTY)))
         assertEquals(MechanicsState.EMPTY, MechanicsState.decode("{}"))
         val written = json(sample)
-        assertEquals(setOf("challenges", "rules", "last_challenge_at", "returns", "settlements", "rewards"), written.keys)
+        assertEquals(setOf("challenges", "rules", "last_challenge_at", "returns", "settlements", "rewards", "modules"), written.keys, "no switch: none is written")
         val challenge = written.getValue("challenges").jsonArray[0].jsonObject
         assertEquals(JsonPrimitive(1), challenge.getValue("spec").jsonObject["count"], "a default value is saved: a later default never changes it")
         assertEquals(JsonPrimitive("obtain"), challenge.getValue("spec").jsonObject["goal"], "snake_case on the wire")
@@ -116,6 +118,53 @@ class MechanicsStateTest {
         val partly = LogCapture().use { MechanicsState.decode(JsonObject(written).toString()) }
         assertEquals(listOf(owed), partly.rewards)
         assertEquals(listOf("reward" to null), partly.unreadable.map { it.what to it.id }, "no canon id: the reconciliation never cancels a challenge won")
+    }
+
+    @Test
+    fun `a module deployed and the Forge's switch go to the world's file and back (M5 §6-7)`() {
+        val halt = ForgeHalt("maintenance du serveur", "Clement", MechanicsSamples.evening)
+        val state = sample.copy(modules = listOf(ForgeSamples.run), forgeHalt = halt)
+        assertEquals(state, MechanicsState.decode(MechanicsState.encode(state)))
+        val tag = CompoundTag()
+        tag.put("mechanics", MechanicsState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow())
+        val bytes = ByteArrayOutputStream().also { NbtIo.write(tag, DataOutputStream(it)) }.toByteArray()
+        val read = MechanicsState.CODEC.parse(NbtOps.INSTANCE, NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))).get("mechanics")!!).getOrThrow()
+        assertEquals(ForgeSamples.run, read.module(70), "through the world's file")
+        assertEquals(halt, read.forgeHalt)
+        assertEquals("C-70", read.module(70)?.ref.toString())
+        assertEquals(null, read.module(71))
+
+        val written = json(state)
+        assertEquals(setOf("reason", "by", "at"), written.getValue("forge_halt").jsonObject.keys)
+        assertEquals(
+            setOf(
+                "id", "module", "version", "hash", "params", "kind", "created_at", "ends_at", "challenge", "player_ids", "storage", "turn_id",
+                "conversation_id", "acts", "faults",
+            ),
+            written.getValue("modules").jsonArray[0].jsonObject.keys,
+        )
+    }
+
+    @Test
+    fun `an unreadable module is dropped alone and kept for the reconciliation, an unreadable switch keeps the Forge off`() {
+        val second = ForgeSamples.run.copy(id = 71, storage = emptyMap())
+        val written = json(sample.copy(modules = listOf(ForgeSamples.run, second))).toMutableMap()
+        val modules = written.getValue("modules").jsonArray
+        written["modules"] = JsonArray(listOf(JsonObject(modules[0].jsonObject + ("version" to JsonPrimitive("two"))), modules[1]))
+        written["forge_halt"] = JsonPrimitive(3)
+
+        val logs = LogCapture()
+        val read = logs.use { MechanicsState.decode(JsonObject(written).toString()) }
+
+        assertEquals(listOf(second), read.modules)
+        assertEquals(listOf("module" to 70L, "forge_halt" to null), read.unreadable.map { it.what to it.id })
+        assertEquals("unknown", read.forgeHalt?.by, "an operator's switch is never lifted by a garbled file")
+        assertContains(read.forgeHalt!!.reason, "the Forge's switch could not be read when the server started")
+        assertContains(logs.text, "a module of the mechanics' state cannot be read and is dropped (C-70)")
+        assertContains(logs.text, "the Forge's switch cannot be read, the Forge stays off")
+
+        written["forge_halt"] = JsonNull
+        assertEquals(null, LogCapture().use { MechanicsState.decode(JsonObject(written).toString()) }.forgeHalt, "no switch")
     }
 
     @Test

@@ -5,7 +5,7 @@ import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
 
 /**
- * The Narrator's commands (M1_M2 §14.5, M4 §18): `/narrator …` for game masters (permission level 2), built
+ * The Narrator's commands (M1_M2 §14.5, M4 §18, M5 §14):`/narrator …` for game masters (permission level 2), built
  * from one module per group of subcommands, each in its own file and owned by its own task, and the
  * players' own commands, each with its own root: `/pray`, `/duel`, `/bet`, `/offer`. [register] runs at
  * each command registration (the server builds its dispatcher at startup and on `/reload`); commands reach
@@ -21,6 +21,7 @@ object NarratorCommand {
         TraceCommands.attach(root)
         MemoryCommands.attach(root)
         MechanicsCommands.attach(root)
+        ForgeCommands.attach(root)
         dispatcher.register(root)
         PrayCommand.register(dispatcher)
         DuelCommand.register(dispatcher)

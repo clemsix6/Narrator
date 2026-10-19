@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.forge.DisabledForge
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.mechanics.challenge.Bets
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
@@ -95,6 +96,9 @@ class MechanicsService(
     }
 
     override val rules: RuleControl = book
+
+    /** The modules: refused until the assembly of M5 (task M5-21) wires the modules' part of the engine. */
+    override val modules: ModuleControl = DisabledModules(DisabledForge.FORGE_OFF, "the Forge is unavailable: not wired yet")
 
     /** What the guards ask about the duels while this engine runs ([Guards.isDueling]): a lookup of the duels' part. */
     private val dueling: (UUID) -> Boolean = { duels.isDueling(it) }

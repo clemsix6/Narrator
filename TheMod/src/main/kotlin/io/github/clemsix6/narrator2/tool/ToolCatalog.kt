@@ -8,8 +8,10 @@ import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
 import io.github.clemsix6.narrator2.tool.command.commandTools
+import io.github.clemsix6.narrator2.tool.forge.forgerTools
 import io.github.clemsix6.narrator2.tool.mechanics.challengeTools
 import io.github.clemsix6.narrator2.tool.mechanics.duelTools
+import io.github.clemsix6.narrator2.tool.mechanics.moduleTools
 import io.github.clemsix6.narrator2.tool.mechanics.ruleTools
 import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
 import io.github.clemsix6.narrator2.tool.memory.dreamerTools
@@ -32,13 +34,15 @@ import kotlinx.serialization.json.putJsonArray
  * Each family lives in its own file and belongs to its own task; this catalog only lists them and says
  * which role has which tool:
  *
- * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's) and the
- *   scout's own ([SCOUT_OWN]);
- * - the Analyst has its reads ([ANALYST_TOOLS]), the scout its own ([SCOUT_TOOLS]);
+ * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's), the
+ *   scout's own ([SCOUT_OWN]) and the forger's ([FORGER_TOOLS]);
+ * - the Analyst has its reads ([ANALYST_TOOLS]), the scout its own ([SCOUT_TOOLS]), the forger its own
+ *   ([FORGER_TOOLS]);
  * - the Chronicler and the Dreamer have their own family, plus the tools they share with others
  *   ([CHRONICLER_SHARED], [DREAMER_SHARED]);
  * - the other roles have none yet;
- * - the rules' own tools ([RULE_ONLY]) are nobody's: only the mechanics engine runs them.
+ * - the rules' own tools ([RULE_ONLY]) and the modules' ([MODULE_ONLY]) are nobody's: only the mechanics engine
+ *   runs them.
  */
 object ToolCatalog {
     /** The Analyst's tools (M1_M2 §9.7, M3 §5): reads only. */
@@ -61,6 +65,15 @@ object ToolCatalog {
      */
     private val RULE_ONLY = setOf("mob_effect", "mob_attribute", "notify")
 
+    /**
+     * The tools of the modules alone (M5 §4.4): `hud`, `place_blocks`, `creature_attack` exist only as the acts of a
+     * module, run by the engine (`mechanics/module/ModuleOnlyTools.kt`); no conversation ever sees them.
+     */
+    private val MODULE_ONLY = setOf("hud", "place_blocks", "creature_attack")
+
+    /** The forger's tools (M5 §8.1, §8.3), its alone: the arsenal, the game's ids, the bench and the save. */
+    private val FORGER_TOOLS = setOf("module_list", "module_read", "game_ids", "forge_test", "forge_save")
+
     /** What the Chronicler has besides its own family (M3 §7.5). */
     private val CHRONICLER_SHARED = setOf("remember", "resolve", "note_interaction", "recall")
 
@@ -72,9 +85,10 @@ object ToolCatalog {
     private val DREAMER_SHARED = setOf("remember", "resolve", "recall", "note_to_director")
 
     /**
-     * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1)
-     * are listed once and for all here; each is filled by its own task, and each of its Director's tools is
-     * shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]).
+     * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1) and of
+     * M5 (M5 §8.3, §9.1) are listed once and for all here; each is filled by its own task. Each Director's tool of M4
+     * is shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]), each tool of M5 only while the
+     * Forge runs too ([ToolEnv.forgeAvailable]).
      */
     fun allTools(services: NarratorServices): List<NarratorTool<*>> = listOf(
         speechTools(services),
@@ -94,6 +108,8 @@ object ToolCatalog {
         duelTools(services),
         ruleTools(services),
         surveyTools(services),
+        moduleTools(services),
+        forgerTools(services),
     ).flatten()
 
     /**
@@ -133,19 +149,21 @@ object ToolCatalog {
                 put("journal_available", env.journalAvailable)
                 put("memory_available", env.memoryAvailable)
                 put("mechanics_available", env.mechanicsAvailable)
+                put("forge_available", env.forgeAvailable)
                 putJsonArray("worker_roles") { env.workerRoles.map { it.id }.sorted().forEach { add(JsonPrimitive(it)) } }
             },
         )
         return set
     }
 
-    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14). */
-    private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = name !in RULE_ONLY && when (role) {
-        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN
+    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14; M5 §8.1, §9.1). */
+    private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = name !in RULE_ONLY && name !in MODULE_ONLY && when (role) {
+        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN && name !in FORGER_TOOLS
         Role.ANALYST -> name in ANALYST_TOOLS
         Role.SCOUT -> name in SCOUT_TOOLS
         Role.CHRONICLER -> name in jobs.chronicler || name in CHRONICLER_SHARED
         Role.DREAMER -> name in jobs.dreamer || name in DREAMER_SHARED
+        Role.FORGER -> name in FORGER_TOOLS
         else -> false
     }
 }

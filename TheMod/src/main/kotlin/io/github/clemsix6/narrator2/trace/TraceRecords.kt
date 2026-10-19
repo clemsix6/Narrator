@@ -247,9 +247,19 @@ data class DecisionRecord(
          * `throttled`, `skipped`, `failed`, `disabled`, `removed`, and `notified` when its `notify` reaches the
          * Director), each tool call of an act (`action`), an entry of the state that could not be read
          * (`unreadable`), the startup's `reconciled`, a `joker`. The Chronicler reads some as news
-         * (`ExchangeLog.ENGINE_NEWS`): their reason must stand alone, like the Director's event line.
+         * (`ExchangeLog.ENGINE_NEWS`): their reason must stand alone, like the Director's event line. From M5 also a
+         * module's deployment (`started`, `act`, `fault`, `module_ended` with `detail.ending`, `restarted`,
+         * `facts_dropped`).
          */
         MECHANIC,
+
+        /**
+         * The Forge (M5 §15): its pipeline (`compiled`, `refused`, `tested`), its arsenal (`saved`, `approved`,
+         * `rejected`, `broken`), a loader that outlived its module (`leak`), the operator's switch (`halted`,
+         * `resumed`), a compilation that ignored its cancellation (`stuck`). A deployment's own decisions are
+         * `mechanic` ones.
+         */
+        FORGE,
         ;
 
         val id: String get() = name.lowercase()

@@ -149,7 +149,8 @@ class ToolCatalogTest {
         assertEquals(
             Json.parseToJsonElement(
                 """{"tools":["list_players","remind_me","say"],"left_out":["delegate","note_interaction","player_profile","recall",""" +
-                    """"remember","resolve","sql"],"journal_available":false,"memory_available":false,"mechanics_available":false,"worker_roles":[]}""",
+                    """"remember","resolve","sql"],"journal_available":false,"memory_available":false,"mechanics_available":false,""" +
+                    """"forge_available":false,"worker_roles":[]}""",
             ) as JsonObject,
             decision.detail,
         )
@@ -180,6 +181,44 @@ class ToolCatalogTest {
         assertTrue("punish" !in without.names)
         assertEquals("""["punish"]""", services.traces.decisions.last().detail?.get("left_out").toString())
         assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).mechanicsAvailable, "off unless said otherwise")
+    }
+
+    /** The tools of M5 (M5 §8.1, §9.1): the forger's are its alone, the modules' own nobody's, the Director's need the engine and the Forge. */
+    @Test
+    fun `a tool of M5 is shown only with the engine and the Forge, the forger's to the forger alone, the modules' own to nobody`() {
+        fun forgeTool(name: String, effect: ToolEffect = ToolEffect.READ) = object : ForgeTool<NoArgs>(name, "A tool of M5.", NoArgs.serializer(), effect) {
+            override suspend fun run(ctx: ToolContext, args: NoArgs) = ToolResult.ok("ok")
+        }
+        val forger = listOf("module_list", "module_read", "game_ids", "forge_test", "forge_save").map { forgeTool(it) }
+        val director = listOf("forge_module", "deploy_module", "stop_module").map { forgeTool(it, ToolEffect.ENGINE) }
+        val moduleOnly = listOf("hud", "place_blocks", "creature_attack").map { noArgsTool(it, ToolEffect.WORLD) }
+        val catalog = tools + forger + director + moduleOnly
+        val wired = everythingWired.copy(mechanicsAvailable = true, forgeAvailable = true)
+        fun names(role: Role, env: ToolEnv) = ToolCatalog.toolSetFor(role, env, catalog, decisions, jobs).names
+
+        assertEquals(listOf("forge_save", "forge_test", "game_ids", "module_list", "module_read"), names(Role.FORGER, wired))
+        assertTrue(names(Role.DIRECTOR, wired).containsAll(listOf("deploy_module", "forge_module", "stop_module")))
+        for (role in Role.entries) {
+            val seen = names(role, wired)
+            assertEquals(role == Role.FORGER, seen.any { it in forger.map { tool -> tool.name } }, "the forger's tools for the ${role.id}: $seen")
+            assertTrue(seen.none { it in moduleOnly.map { tool -> tool.name } }, "the modules' own tools reach the ${role.id}: $seen")
+        }
+        assertEquals("true", services.traces.decisions.last().detail?.get("forge_available").toString())
+
+        for (env in listOf(wired.copy(forgeAvailable = false), wired.copy(mechanicsAvailable = false), everythingWired)) {
+            assertEquals(emptyList(), names(Role.FORGER, env), "$env")
+            assertTrue(names(Role.DIRECTOR, env).none { it in director.map { tool -> tool.name } }, "$env")
+        }
+        assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).forgeAvailable, "off unless said otherwise")
+    }
+
+    /** The server runs without the Forge until its assembly (M5-21): the tools of M5, each a `ForgeTool`, stay hidden. */
+    @Test
+    fun `without the Forge the Director keeps exactly its 44 tools of M4, and the forger has none`() {
+        val engineOnly = everythingWired.copy(mechanicsAvailable = true)
+        val names = ToolCatalog.toolSetFor(Role.DIRECTOR, engineOnly, services).names
+        assertEquals(44, names.size, "$names")
+        assertEquals(emptyList(), ToolCatalog.toolSetFor(Role.FORGER, engineOnly, services).names)
     }
 
     @Test

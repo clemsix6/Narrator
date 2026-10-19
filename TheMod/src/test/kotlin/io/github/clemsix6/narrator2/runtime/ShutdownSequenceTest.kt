@@ -69,9 +69,10 @@ class ShutdownSequenceTest {
         stopMemory: suspend () -> Unit = {},
         memoryTimeout: Duration = Duration.ofSeconds(5),
         stopMechanics: () -> Unit = {},
+        stopForge: () -> Unit = {},
     ) = ShutdownSequence(
         scope, bus, journal, settings, flushObserver, { steps += "phase $it" }, workTimeout, journalTimeout, journalGrace, stopMemory, memoryTimeout,
-        stopMechanics,
+        stopMechanics, stopForge,
     )
 
     /** Starts a job that runs until it is cancelled, and waits until it runs. */
@@ -146,6 +147,25 @@ class ShutdownSequenceTest {
         startWork("director")
         sequence(stopMechanics = { steps += "mechanics stopped" }, stopMemory = { steps += "memory stopped" }).begin()
         assertEquals(listOf("phase STOPPING", "mechanics stopped", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `the Forge stops after the mechanics (their modules first) and before the memory (M5 §11)`() {
+        startWork("director")
+        sequence(
+            stopMechanics = { steps += "mechanics stopped" },
+            stopForge = { steps += "forge stopped" },
+            stopMemory = { steps += "memory stopped" },
+        ).begin()
+        assertEquals(listOf("phase STOPPING", "mechanics stopped", "forge stopped", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `a Forge that fails to stop does not keep the memory from stopping`() {
+        val logs = LogCapture()
+        logs.use { sequence(stopForge = { error("the compiler thread is stuck") }, stopMemory = { steps += "memory stopped" }).begin() }
+        assertTrue("memory stopped" in steps)
+        assertContains(logs.text, "stopping: could not stop the Forge")
     }
 
     @Test
