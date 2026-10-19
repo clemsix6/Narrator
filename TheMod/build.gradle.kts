@@ -142,10 +142,13 @@ val cleanGameTestRun = tasks.register<Delete>("cleanGameTestRun") {
 }
 tasks.matching { it.name == "runGameTest" }.configureEach { dependsOn(cleanGameTestRun) }
 
-// The M2 acceptance against the owner's real LLMGW server (T22): a GameTest server that runs only the
-// in-game live tests (`LiveDirectorGameTests`, filtered by id), with the real key and the SSH tunnel on
-// localhost:8088. Never part of `build` or `check`; costs real tokens. `-Pnarrator2.live.dry` runs the
-// same scenario without a key (the Director stays asleep), to check the scenario itself for free.
+// The live acceptances against the owner's real LLMGW server (T22 for M2, M4-24 for the mechanics): a GameTest
+// server that runs only the in-game live tests (`LiveDirectorGameTests`, `LiveMechanicsGameTests`, filtered by
+// id), with the real key and the SSH tunnel on localhost:8088. Never part of `build` or `check`; costs real
+// tokens. `-Pnarrator2.live.dry` runs the same scenarios without a key (the Director stays asleep), to check
+// them for free. `-Pnarrator2.live.filter=narrator2-gametest:live_mechanics_*` picks the tests (`live_*` by
+// default), `-Pnarrator2.live.parts=L5,L6` the parts of the mechanics' evals, `-Pnarrator2.live.budget=6` the
+// dollars a run may spend (see `LiveMechanicsGameTests`).
 loom.runs.register("liveGameTest") {
     inherit(loom.runs.getByName("gameTest"))
     // No IDE run configuration: it would write the run's environment, hence the key, into a file.
@@ -155,7 +158,9 @@ loom.runs.register("liveGameTest") {
     // so the key goes in as a provider: read only when the run's variables are needed, never logged.
     val dry = providers.gradleProperty("narrator2.live.dry").isPresent
     environmentVars.put("NARRATOR_LLMGW_KEY", providers.provider { if (dry) "" else llmgwKey().orEmpty() })
-    systemProperties.put("fabric-api.gametest.filter", "narrator2-gametest:live_*")
+    systemProperties.put("fabric-api.gametest.filter", providers.gradleProperty("narrator2.live.filter").orElse("narrator2-gametest:live_*"))
+    systemProperties.put("narrator2.live.parts", providers.gradleProperty("narrator2.live.parts").orElse(""))
+    systemProperties.put("narrator2.live.budget", providers.gradleProperty("narrator2.live.budget").orElse(""))
     systemProperties.put("fabric-api.gametest.report-file", layout.buildDirectory.file("reports/liveGameTest/TEST-live.xml").get().asFile.absolutePath)
     systemProperties.put("narrator2.live", "true")
 }
@@ -164,7 +169,7 @@ val cleanLiveGameTestRun = tasks.register<Delete>("cleanLiveGameTestRun") {
 }
 tasks.matching { it.name == "runLiveGameTest" }.configureEach { dependsOn(cleanLiveGameTestRun) }
 tasks.register("liveGameTest") {
-    description = "Runs the M2 acceptance scenario on a GameTest server against the real LLMGW server (SSH tunnel on localhost:8088)."
+    description = "Runs the live acceptances (M2 evening, M4 mechanics) on a GameTest server against the real LLMGW server (SSH tunnel on localhost:8088)."
     group = "verification"
     dependsOn("runLiveGameTest")
 }
