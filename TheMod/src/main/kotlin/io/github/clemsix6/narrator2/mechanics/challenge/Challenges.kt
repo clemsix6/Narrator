@@ -30,7 +30,6 @@ import io.github.clemsix6.narrator2.mechanics.OutReason
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.RewardKind
 import io.github.clemsix6.narrator2.mechanics.RewardSpec
-import io.github.clemsix6.narrator2.mechanics.Settlement
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
@@ -119,13 +118,11 @@ interface BetBook {
         /** Gives every stake back: the engine until M4-20, and the fallback of a settlement that fails. */
         val RETURN_ALL: BetBook = object : BetBook {}
 
-        /** [state] with an instruction to give each stake of [challenge] back (never twice the same stake), and its segment. */
+        /** [state] with an instruction to give each stake of [challenge] back ([MechanicsState.givingBack]), and its segment. */
         fun giveBack(state: MechanicsState, challenge: ChallengeState): Pair<MechanicsState, String?> {
-            if (challenge.bets.isEmpty()) return state to null
-            val back = challenge.bets.map { Settlement(owner = it.uuid, stake = it.stake) }
-                .filter { new -> state.settlements.none { it.owner == new.owner && it.stake == new.stake } }
             val n = challenge.bets.size
-            return state.copy(settlements = state.settlements + back) to "bets: ${if (n == 1) "1 stake" else "$n stakes"} given back"
+            if (n == 0) return state to null
+            return state.givingBack(challenge.bets) to "bets: ${if (n == 1) "1 stake" else "$n stakes"} given back"
         }
     }
 }
@@ -144,9 +141,9 @@ interface BetBook {
  *   follows, or the row is cancelled (M4 review, finding 25).
  * - **Detection** (M4 §5.2): `obtain` and `reach` each second, for each participant online; `kill`, `survive`
  *   (death) and `answer` at the facts, matched on the bus and applied at the next tick; `survive` with
- *   `no_armor` each second, departures at `LEAVE`. A spectator makes no progress; a tamed or named creature is no
- *   kill; a message is one attempt at a quiz every [Answers.ATTEMPT_GAP_MS] at most (M4 review, findings 14, 15,
- *   26). The bars draw themselves from the state (M4-09).
+ *   `no_armor` each second, departures at `LEAVE`. A spectator or a player in creative makes no progress; a tamed
+ *   or named creature is no kill; a message is one attempt at a quiz every [Answers.ATTEMPT_GAP_MS] at most (M4
+ *   review, findings 14, 15, 26). The bars draw themselves from the state (M4-09).
  * - **End** ([finish]): on the server thread, the challenge leaves the state with its bets settled
  *   ([BetBook.settle]) and its duelists to put back ([MechanicsState.returns]), and its bars are taken down in
  *   the same tick; then a coroutine resolves the canon (`Source.ENGINE`, before anything else and whatever
@@ -201,18 +198,18 @@ class Challenges(
     /**
      * Starts [spec] for [caller] (M4 §5.1): validates it, writes its canon row, then starts tracking it. Throws
      * [MechanicRejected] with the fix: a field the goal needs, an unknown id, a player not online, the pace
-     * (`challenge_limit`, `challenge_pace`), a stake its tool refuses, a text the memory refuses. Never on the
-     * server thread.
+     * (`challenge_limit`, `challenge_pace`), a stake its tool refuses, a text the memory refuses. Its view, whose
+     * [ChallengeView.line] is the line of its start ([ChallengeLines.started]). Never on the server thread.
      */
     suspend fun start(spec: ChallengeSpec, caller: Caller): ChallengeView {
         Goals.shape(spec)?.let { throw invalid(it) }
-        if (Speech.clean(spec.title).isEmpty()) throw invalid("title has nothing to show once formatting codes and invisible characters are removed")
+        if (Speech.clean(spec.title).isEmpty()) throw invalid(EMPTY_TITLE)
         return starting.withLock {
             val server = services.server
             val participants = server.onServerThread { prepare(spec, server) }
             stakes.check(spec.reward, spec.penalty, caller)
             services.journal.barrier() // the players' join rows, which the canon checks
-            val ref = writeCanon(spec, participants, caller)
+            val ref = writeCanon(draft(spec, participants), caller)
             // The canon row is written: from here on, the state follows or the row is cancelled, whatever cancels the caller.
             withContext(NonCancellable) { track(ref, spec, participants, caller) }
         }
@@ -221,7 +218,7 @@ class Challenges(
     /**
      * Puts challenge [ref], whose canon row is written, in the state ([insert]); when it cannot (the pace refuses it
      * now, the server thread does not answer, an error), its canon row is cancelled and the refusal thrown, so that
-     * no open row is left without a state (M4 review, finding 25). Its view once in the state.
+     * no open row is left without a state (M4 review, finding 25). Its view once in the state, with its start's line.
      */
     private suspend fun track(ref: Ref, spec: ChallengeSpec, participants: List<Participant>, caller: Caller): ChallengeView {
         val refusal = try {
@@ -235,55 +232,50 @@ class Challenges(
                 null
             }
         }
-        refusal?.let { cancelRefused(ref, it) }
+        refusal?.let { cancelRefused(ref, it, "as it started") }
         val challenge = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it started")
-        return view(challenge, clock.millis())
+        return view(challenge, clock.millis()).copy(line = ChallengeLines.started(challenge, clock))
     }
 
     /** The participants of [spec], its target checked and the pace too. Throws [MechanicRejected]. Server thread. */
     private fun prepare(spec: ChallengeSpec, server: MinecraftServer): List<Participant> {
         Goals.target(spec, server).onFailure { throw invalid(it.message.orEmpty()) }
-        val online = server.playerList.players.filter { it !is FakePlayer }
-        val players = when (val names = spec.players) {
-            null -> online.filter(::enrolls).ifEmpty { throw invalid(NOBODY) }
-            else -> {
-                val found = names.map { name -> name to online.firstOrNull { it.plainTextName.equals(name.trim(), ignoreCase = true) } }
-                val missing = found.filter { it.second == null }.map { ModelText.name(it.first) }.distinct()
-                if (missing.isNotEmpty()) {
-                    val who = if (missing.size == 1) "${missing.single()} is not online" else "${missing.joinToString()} are not online"
-                    throw invalid("$who; online: ${online.joinToString { ModelText.name(it.plainTextName) }.ifEmpty { "nobody" }}")
-                }
-                found.mapNotNull { it.second }.distinctBy { it.uuid }
-            }
-        }
+        val players = spec.players?.let { online(server, it) }
+            ?: server.playerList.players.filter(::enrolls).ifEmpty { throw invalid(NOBODY) }
         room(store.get(), clock.millis(), duel = false)?.let { throw it }
         return players.map(::participantOf)
     }
 
+    /** Whether [player] takes part in a challenge open to everyone, at its start or joining late: a real player who [plays]. */
+    private fun enrolls(player: ServerPlayer): Boolean = player !is FakePlayer && plays(player)
+
     /**
-     * Whether [player] takes part in a challenge open to everyone, at its start or joining late: neither a spectator
-     * nor a player in creative, who would win without playing (M4 review, finding 26).
+     * Whether [player] can play now: neither a spectator, who goes through walls, nor a player in creative, who takes
+     * whatever they like (M4 review, finding 26). A named participant who cannot makes no progress until they can.
      */
-    private fun enrolls(player: ServerPlayer): Boolean = player !is FakePlayer && !player.isSpectator && !player.isCreative
+    private fun plays(player: ServerPlayer): Boolean = !player.isSpectator && !player.isCreative
 
     private fun participantOf(player: ServerPlayer) = Participant(player.uuid.toString(), player.plainTextName)
 
-    /** Writes [spec]'s canon row as the Director (M4 §3.3): its ref. A text the memory refuses is [MechanicRejected]. */
-    private suspend fun writeCanon(spec: ChallengeSpec, participants: List<Participant>, caller: Caller): Ref {
-        val draft = CanonDraft(
-            kind = CanonKind.CHALLENGE,
-            statement = spec.statement,
-            quote = spec.quote,
-            players = if (spec.players == null) emptyList() else participants.map { it.playerId },
-            stakes = ChallengeLines.stakes(spec.reward, spec.penalty, spec.bets),
-            importance = spec.importance,
-            mechanic = CanonMechanic.CHALLENGE,
-        )
-        return try {
-            services.memory.store.addCanon(draft, Author(Source.DIRECTOR, turnId = caller.turnId, conversationId = caller.conversationId)).row.ref
-        } catch (e: MemoryRejected) {
-            throw MechanicRejected(e.rule, e.message.orEmpty())
-        }
+    /** [spec]'s canon row: a challenge open to everyone names nobody. */
+    private fun draft(spec: ChallengeSpec, participants: List<Participant>) = CanonDraft(
+        kind = CanonKind.CHALLENGE,
+        statement = spec.statement,
+        quote = spec.quote,
+        players = if (spec.players == null) emptyList() else participants.map { it.playerId },
+        stakes = ChallengeLines.stakes(spec.reward, spec.penalty, spec.bets),
+        importance = spec.importance,
+        mechanic = CanonMechanic.CHALLENGE,
+    )
+
+    /**
+     * Writes the canon row [draft] of a challenge or a duel as the Director, for [caller] (M4 §3.3): its ref. A text
+     * the memory refuses is [MechanicRejected].
+     */
+    internal suspend fun writeCanon(draft: CanonDraft, caller: Caller): Ref = try {
+        services.memory.store.addCanon(draft, Author(Source.DIRECTOR, turnId = caller.turnId, conversationId = caller.conversationId)).row.ref
+    } catch (e: MemoryRejected) {
+        throw MechanicRejected(e.rule, e.message.orEmpty())
     }
 
     /**
@@ -305,7 +297,7 @@ class Challenges(
             startedAt = now,
             endsAt = now + spec.minutes * MINUTE,
             participants = participants,
-            betsCloseAt = if (spec.bets) now + betWindow(spec.minutes) else null,
+            betsCloseAt = if (spec.bets) now + betWindow(config, spec.minutes) else null,
             turnId = caller.turnId,
             conversationId = caller.conversationId,
         )
@@ -318,21 +310,21 @@ class Challenges(
         return null
     }
 
-    /** The canon row of a challenge the pace refused once written: cancelled by the engine, and the refusal thrown. */
-    private suspend fun cancelRefused(ref: Ref, refusal: MechanicRejected): Nothing {
+    /**
+     * The canon row [ref] of a challenge or a duel refused [moment] (`as it started`), once written: cancelled by the
+     * engine, and [refusal] thrown.
+     */
+    internal suspend fun cancelRefused(ref: Ref, refusal: MechanicRejected, moment: String): Nothing {
         try {
-            services.memory.store.resolveCanon(ref, CanonStatus.CANCELLED, "refused as it started: ${refusal.message}".take(MemoryLimits.RESOLUTION), emptyList(), engine(ref))
+            val note = ModelText.cut("refused $moment: ${refusal.message}", MemoryLimits.RESOLUTION)
+            services.memory.store.resolveCanon(ref, CanonStatus.CANCELLED, note, emptyList(), engine(ref))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log.warn("$ref was refused as it started, and its canon row could not be cancelled", e)
+            log.warn("$ref was refused $moment, and its canon row could not be cancelled", e)
         }
         throw refusal
     }
-
-    /** How long the bets stay open: `mechanics.betWindowMinutes`, a third of the challenge at most, a minute at least. */
-    private fun betWindow(minutes: Int): Long =
-        maxOf(MechanicsLimits.MIN_BET_WINDOW_MINUTES * MINUTE, minOf(config.betWindowMinutes * MINUTE, minutes * MINUTE / 3))
 
     /**
      * The pace (M4 §11) of a new challenge, or a new duel when [duel], in [state] at [now]: `challenge_limit`
@@ -438,10 +430,7 @@ class Challenges(
     ): Deferred<String> {
         val now = clock.millis()
         val state = store.get()
-        val rest = state.copy(
-            challenges = state.challenges.filterNot { it.id == challenge.id },
-            returns = state.returns + challenge.arena.filter { new -> state.returns.none { it.uuid == new.uuid } },
-        )
+        val rest = state.copy(challenges = state.challenges.filterNot { it.id == challenge.id }).puttingBack(challenge.arena)
         val (settled, betLine) = try {
             bets.settle(rest, challenge, ending, winners.map { it.uuid })
         } catch (e: Exception) {
@@ -528,7 +517,10 @@ class Challenges(
         return line
     }
 
-    /** The canon row resolved by the engine (M4 §3.3); a resolution the memory refuses is replaced by the engine's own words. */
+    /**
+     * The canon row resolved by the engine (M4 §3.3); a resolution the memory refuses is replaced by the engine's own
+     * words, unless the row is closed already (an operator, the reconciliation): then it is left as it is.
+     */
     private suspend fun resolve(ended: Ended, resolution: String) {
         if (!services.memory.available) {
             log.warn("${ended.ref} ${ended.ending.id}, but the memory is unavailable: its canon stays open until the next reconciliation")
@@ -538,6 +530,10 @@ class Challenges(
         try {
             services.memory.store.resolveCanon(ended.ref, ended.ending.status, ModelText.cut(resolution, MemoryLimits.RESOLUTION), winners, engine(ended.ref))
         } catch (e: MemoryRejected) {
+            services.memory.store.canon(ended.ref)?.status?.takeIf { !it.open }?.let { status ->
+                log.info("${ended.ref} ${ended.ending.id}, but its canon is already ${status.id}: left as it is")
+                return
+            }
             val plain = "${ended.ending.id} (${if (ended.challenge.isDuel) "duel" else "challenge"} ${ended.ref})"
             log.warn("${ended.ref}: the memory refused the resolution (${e.message}); resolved with « $plain »")
             services.memory.store.resolveCanon(ended.ref, ended.ending.status, plain, winners, engine(ended.ref))
@@ -594,7 +590,7 @@ class Challenges(
      * Matches a fact of the bus against the challenges running (the snapshot) and queues what it means; never a
      * change. A kill counts only a wild creature without a name: never another player's pet nor anyone's named
      * creature (M4 review, finding 15). A message is an attempt at a quiz once every [Answers.ATTEMPT_GAP_MS] at
-     * most ([Attempts]). Any thread.
+     * most ([Attempts]). Inline on the thread that published the fact: it reads the snapshot only.
      */
     override fun onEvent(envelope: Envelope) {
         val running = store.snapshot.challenges.filter { it.spec != null && it.status == ChallengeStatus.RUNNING }
@@ -637,14 +633,14 @@ class Challenges(
 
     /**
      * Applies the facts queued since the last tick; true when one changed a challenge. A kill or an answer of a
-     * participant who is a spectator now counts for nothing (M4 review, finding 26). Server thread.
+     * participant who cannot play now counts for nothing ([plays]). Server thread.
      */
     private fun applyFacts(server: MinecraftServer, now: Long): Boolean {
         var changed = false
         while (true) {
             val fact = facts.poll() ?: break
             val challenge = store.get().challenge(fact.id) ?: continue
-            if (fact !is Fact.Death && server.playerList.getPlayer(fact.uuid)?.isSpectator == true) continue
+            if (fact !is Fact.Death && server.playerList.getPlayer(fact.uuid)?.let(::plays) == false) continue
             val next = when (fact) {
                 is Fact.Kill -> if ((target(challenge) as? Target.Creatures)?.matches?.invoke(fact.type) == true) Goals.killed(challenge, fact.uuid, now) else challenge
                 is Fact.Death -> Goals.out(challenge, fact.uuid, OutReason.DIED)
@@ -659,8 +655,8 @@ class Challenges(
     }
 
     /**
-     * What the second sees of [challenge]'s participants online: items held, places reached, armor worn; nothing of
-     * a spectator, who goes through walls (M4 review, finding 26). Server thread.
+     * What the second sees of [challenge]'s participants online who can play ([plays]): items held, places reached,
+     * armor worn. Server thread.
      */
     private fun detect(server: MinecraftServer, challenge: ChallengeState, now: Long): ChallengeState {
         val spec = challenge.spec!!
@@ -669,7 +665,7 @@ class Challenges(
         var seen = challenge
         for (participant in challenge.participants) {
             if (participant.out != null || participant.doneAt != null) continue
-            val player = server.playerList.getPlayer(participant.playerId)?.takeUnless { it.isSpectator } ?: continue
+            val player = server.playerList.getPlayer(participant.playerId)?.takeIf(::plays) ?: continue
             seen = when (spec.goal) {
                 GoalKind.OBTAIN -> (target as? Target.Items)?.let { Goals.held(seen, player.uuid, Goals.count(player, it), now) } ?: seen
                 GoalKind.REACH -> {
@@ -757,8 +753,8 @@ class Challenges(
         return target
     }
 
-    /** Puts [challenge] in the state in place of its former self. Server thread. */
-    private fun replace(challenge: ChallengeState) {
+    /** Puts [challenge] (or a duel) in the state in place of its former self. Server thread. */
+    internal fun replace(challenge: ChallengeState) {
         store.update { state -> state.copy(challenges = state.challenges.map { if (it.id == challenge.id) challenge else it }) }
     }
 
@@ -823,6 +819,9 @@ class Challenges(
 
         private const val NOBODY = "nobody is online to take up a challenge"
 
+        /** The refusal of a title made of formatting codes alone, for a challenge or a duel. */
+        internal const val EMPTY_TITLE = "title has nothing to show once formatting codes and invisible characters are removed"
+
         /** After the summary of a challenge that ended while the server was down (M4 review, finding 13). */
         private const val DOWNTIME = "; the server was down when it ended: no penalty"
 
@@ -830,6 +829,28 @@ class Challenges(
         private const val DAY_MS = 24 * 60 * MINUTE
 
         private fun invalid(message: String) = MechanicRejected(null, message)
+
+        /**
+         * How long the bets of a challenge or a duel of [minutes] stay open (M4 §5.6): `mechanics.betWindowMinutes`, a
+         * third of it at most, a minute at least.
+         */
+        fun betWindow(config: MechanicsConfig, minutes: Int): Long =
+            maxOf(MechanicsLimits.MIN_BET_WINDOW_MINUTES * MINUTE, minOf(config.betWindowMinutes * MINUTE, minutes * MINUTE / 3))
+
+        /**
+         * The players online on [server] named [names] (whatever the case), in order, each once: the participants of a
+         * challenge or a duel. Throws [MechanicRejected] naming those not online, and who is. Server thread.
+         */
+        internal fun online(server: MinecraftServer, names: List<String>): List<ServerPlayer> {
+            val online = server.playerList.players.filter { it !is FakePlayer }
+            val found = names.map { name -> name to online.firstOrNull { it.plainTextName.equals(name.trim(), ignoreCase = true) } }
+            val missing = found.filter { it.second == null }.map { ModelText.name(it.first) }.distinct()
+            if (missing.isNotEmpty()) {
+                val who = if (missing.size == 1) "${missing.single()} is not online" else "${missing.joinToString()} are not online"
+                throw invalid("$who; online: ${online.joinToString { ModelText.name(it.plainTextName) }.ifEmpty { "nobody" }}")
+            }
+            return found.mapNotNull { it.second }.distinctBy { it.uuid }
+        }
     }
 }
 

@@ -132,7 +132,10 @@ interface RuleControl {
  *
  * @property spec a challenge's specification; [duel] a duel's (one of the two is set).
  * @property bets how many bets were placed.
- * @property line its line of the situation (M4 §4.5), e.g. `C-50 obtain « Œuf de tortue » → all · Mimosa 0/1 · ends in 12m`.
+ * @property line its line as the call that gives the view tells it: the line of its start from [ChallengeControl.start]
+ *   (`C-50 started: obtain 1 turtle_egg « Œuf de tortue » · Mimosa · ends 20:15 (in 15m)`), the line of its end, stakes
+ *   and bets included, from [ChallengeControl.end]; otherwise its line of the situation (M4 §4.5), e.g. `C-50 obtain
+ *   « Œuf de tortue » → all · Mimosa 0/1 · ends in 12m`.
  */
 data class ChallengeView(
     val ref: Ref,
@@ -197,7 +200,10 @@ interface MechanicPart {
     /** The facts of the bus this part wants; the engine's subscriber lets only these through ([onEvent]). */
     val listensTo: Set<KClass<out GameEvent>> get() = emptySet()
 
-    /** A fact of [listensTo], inline on the server thread: match and queue, in less than 0.05 ms, never a world change. */
+    /**
+     * A fact of [listensTo], inline on the thread that published it (the server thread, for the facts of the game):
+     * read the snapshot, match and queue, in less than 0.05 ms, never a change of the state nor of the world.
+     */
     fun onEvent(envelope: Envelope) {}
 
     /** Every server tick: the effects and acts due now (a rule's delayed effect). */

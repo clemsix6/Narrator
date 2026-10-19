@@ -28,6 +28,13 @@ class RefTest {
     }
 
     @Test
+    fun `a challenge, a duel or a rule is named by its canon reference, or its number`() {
+        val c50 = Ref(RefKind.CANON, 50)
+        for (typed in listOf("C-50", "c50", "50", " 50 ")) assertEquals(c50, Ref.canonOf(typed), typed)
+        for (typed in listOf("0", "-3", "M-50", "O-812", "fifty", "")) assertNull(Ref.canonOf(typed), typed)
+    }
+
+    @Test
     fun `a ref shows as prefix and id`() {
         assertEquals("C-45", Ref(RefKind.CANON, 45).toString())
         assertEquals(listOf("M", "C", "I", "H", "N"), RefKind.entries.map { it.prefix })

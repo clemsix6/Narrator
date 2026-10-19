@@ -194,10 +194,9 @@ data class DirectorStatus(
 interface DirectorControl {
     /**
      * Puts [signal] in the inbox. Any thread; never blocks. The inbox is bounded in every state (M2 review,
-     * finding 22): when it is full, the least pressing and oldest item goes, counted by kind and told to the
-     * model at the next wake-up: an [Urgency.NEXT] event first, then a [Urgency.SOON] event that is not
-     * chat, then chat (addressed chat and prayers too, as a last resort), then a task result, a reminder
-     * or a whisper. Control signals are never dropped.
+     * finding 22): when it is full, the least pressing and oldest item goes, in the order [Inbox] gives, counted
+     * by kind and told to the model at the next wake-up; whoever posted it is not told. Control signals are
+     * never dropped.
      */
     fun post(signal: DirectorSignal)
 

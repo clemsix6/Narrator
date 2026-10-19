@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.gametest
 
 import com.mojang.authlib.GameProfile
+import io.github.clemsix6.narrator2.command.GuardCommands
 import io.github.clemsix6.narrator2.command.TraceCommands
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorState
@@ -37,6 +38,8 @@ import net.minecraft.server.level.ClientInformation
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.network.CommonListenerCookie
 import net.minecraft.server.permissions.LevelBasedPermissionSet
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
 import java.sql.Connection as SqlConnection
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -192,6 +195,46 @@ class CommandGameTests {
         }
         helper.awaitAsync {
             helper.assertEquals(listOf(listOf("protected", target.name), listOf("unprotected", target.name)), rows.get(), "operator decisions")
+        }
+    }
+
+    /**
+     * `/narrator guards <player> release <id>`: an entry of a player's ledger goes back to them now, before its time,
+     * with an `operator` decision; an id that names nothing of theirs is refused.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun anOperatorGivesAnEntryOfTheLedgerBackNow(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val ledger = runtime.guards.items
+        val operator = CommandPlayer(helper)
+        val target = CommandPlayer(helper)
+        try {
+            target.player.inventory.add(ItemStack(Items.EMERALD, 3))
+            val taken = ledger.confiscate(target.player, { it.`is`(Items.EMERALD) }, 3, runtime.clock.millis() + 3_600_000L, "a test", null)
+            helper.assertTrue(taken != null && target.player.inventory.countItem(Items.EMERALD) == 0, "confiscated for an hour")
+
+            operator.run("narrator guards ${target.name} release 999999", op = true)
+            helper.assertTrue(operator.output.lines.singleOrNull()?.startsWith("[Narrator] ${target.name} holds no entry 999999 in the ledger; held: confiscation ") == true, "refused: ${operator.output.lines}")
+            helper.assertEquals(0, target.player.inventory.countItem(Items.EMERALD), "nothing given back by a refusal")
+
+            operator.output.lines.clear()
+            operator.run("narrator guards ${target.name} release ${taken!!.id}", op = true)
+            helper.assertEquals(3, target.player.inventory.countItem(Items.EMERALD), "given back now")
+            helper.assertTrue(ledger.held(target.player).isEmpty(), "out of the ledger")
+            helper.assertEquals(
+                "[Narrator] confiscation ${taken.id} of ${target.name} (${taken.what}) goes back to them now.",
+                operator.output.lines.firstOrNull(),
+                "reply",
+            )
+        } finally {
+            operator.close()
+            target.close()
+        }
+        val rows = readLater(helper) { connection ->
+            rows(connection, "SELECT decision, subject FROM engine_decisions WHERE kind = 'operator' AND subject = ? ORDER BY id", target.name)
+        }
+        helper.awaitAsync {
+            helper.assertEquals(listOf(listOf(GuardCommands.LEDGER_RELEASE, target.name)), rows.get(), "the operator decision")
         }
     }
 

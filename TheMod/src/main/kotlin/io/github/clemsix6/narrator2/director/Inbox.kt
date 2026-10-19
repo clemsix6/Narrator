@@ -33,7 +33,6 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
             is DirectorSignal.Event -> signal.urgency
             is DirectorSignal.OperatorWhisper -> Urgency.IMMEDIATE
             is DirectorSignal.MemoryNote, is DirectorSignal.MemoryCue -> Urgency.NEXT
-            is DirectorSignal.Mechanic -> Urgency.SOON
             else -> Urgency.SOON
         }
 
@@ -86,11 +85,13 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
  *
  * It holds [capacity] items at most, whatever the Director's state (a backoff keeps every event, a
  * pause or a block only what someone waits for): beyond, one item is dropped, the least pressing and
- * oldest first — a [Urgency.NEXT] event, else a [Urgency.SOON] event that is not chat, else chat
- * (addressed chat and prayers included: a flood of them must not grow without bound), else a task
- * result, a reminder or a whisper. Control signals are never dropped. What is dropped is counted by
- * kind ([EventFormatter.kind]): the next wake-up or injection that [takeOverflow] tells the model how
- * many older events were left out, by kind (M2 review, finding 22).
+ * oldest first — an item that wakes nobody ([Urgency.NEXT] or [Urgency.BATCH]: an event, a note or a cue
+ * of the memory), else a [Urgency.SOON] event that is not chat, else chat (addressed chat and prayers
+ * included: a flood of them must not grow without bound), else the oldest of the rest: a task result, a
+ * reminder, a commitment due, a mechanic's news or a whisper. Control signals are never dropped, and nobody
+ * is told of a drop but the model: what is dropped is counted by kind ([EventFormatter.kind]), and the next
+ * wake-up or injection that [takeOverflow] tells the model how many older items were left out, by kind (M2
+ * review, finding 22).
  */
 class Inbox(private val capacity: Int = CAPACITY) {
     private val lock = Any()

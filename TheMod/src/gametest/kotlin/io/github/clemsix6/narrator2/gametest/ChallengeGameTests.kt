@@ -505,15 +505,17 @@ class ChallengeGameTests {
 
     /** M4 review, finding 26: an operator in spectator mode won a `survive`; in creative, an `obtain` from the creative inventory. */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
-    fun aSpectatorMakesNoProgressAndNobodyInSpectatorOrCreativeJoinsLate(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+    fun aSpectatorOrACreativeMakesNoProgressAndNobodyInSpectatorOrCreativeJoinsLate(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 3) { rig, (bob, ann, cid) ->
             val view = rig.challenges.start(spec(GoalKind.OBTAIN, listOf(bob), "Une pomme", item = "apple", minutes = 10), DIRECTOR)
             rig.onServer {
-                bob.live.setGameMode(GameType.SPECTATOR)
                 bob.live.inventory.add(ItemStack(Items.APPLE))
-                rig.second()
-                check(rig.challenge(view.ref)?.participants?.single()?.let { it.doneAt == null } == true) {
-                    "a spectator makes no progress: ${rig.challenge(view.ref) ?: "won already"}"
+                for (mode in listOf(GameType.SPECTATOR, GameType.CREATIVE)) {
+                    bob.live.setGameMode(mode)
+                    rig.second()
+                    check(rig.challenge(view.ref)?.participants?.single()?.let { it.doneAt == null } == true) {
+                        "named, in ${mode.serializedName} mode he makes no progress: ${rig.challenge(view.ref) ?: "won already"}"
+                    }
                 }
                 bob.live.setGameMode(GameType.SURVIVAL)
                 rig.second()
@@ -693,7 +695,10 @@ class ChallengeGameTests {
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4242, taskId = null)
 
-        /** Runs [test] with a [Rig] started on the server thread and [count] players who record their boss bars; all closed however it ends. */
+        /**
+         * Runs [test] with a [Rig] started on the server thread and [count] players in survival (one in creative makes no
+         * progress, M4 review, finding 26) who record their boss bars; all closed however it ends.
+         */
         suspend fun CoroutineScope.withRig(
             helper: GameTestHelper,
             count: Int,
@@ -702,7 +707,7 @@ class ChallengeGameTests {
             test: suspend (Rig, List<TestPlayer>) -> Unit,
         ) {
             val server = helper.level.server
-            val players = server.onServerThread { List(count) { TestPlayer(helper, "ch_", keep = ::isBossBar) } }
+            val players = server.onServerThread { List(count) { TestPlayer(helper, "ch_", keep = ::isBossBar).also { it.live.setGameMode(GameType.SURVIVAL) } } }
             val rig = Rig(helper, stakes, memory(players))
             try {
                 rig.onServer { rig.engine.start(server) }

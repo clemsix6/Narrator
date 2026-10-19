@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.director.EventFormatter
 import io.github.clemsix6.narrator2.director.Salience
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.memory.BriefText
 import io.github.clemsix6.narrator2.memory.CANON_COLUMNS
 import io.github.clemsix6.narrator2.memory.CHRONICLE_COLUMNS
@@ -538,16 +539,11 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         private val LEDGER = DecisionRecord.Kind.LEDGER.id
 
         /**
-         * The `mechanic` decision of a rule that ends (M4 review, finding 31: the supervisor's contract with the
-         * rules' engine), its `detail.ending` `expired`, `disabled`, `removed` or `fulfilled`, shown after the subject.
-         */
-        const val RULE_ENDED = "rule_ended"
-
-        /**
          * The engine's decisions the log shows (M4 §19), by kind, the players' side of the mechanics: of the
          * engine (`mechanic`), the ends of a challenge or a duel (`won`, `lost`, `expired`, `cancelled`), a
          * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a rule's
-         * end ([RULE_ENDED]), a joker played (`joker`); of the ledger (M4-15), a stake or an offering put in
+         * end ([RuleBook.ENDED], its `detail.ending` shown after the subject: M4 review, finding 31), a joker
+         * played (`joker`); of the ledger (M4-15), a stake or an offering put in
          * escrow (`held`), an offering taken for good (`offered`), items given back (`returned`: an offering not
          * taken, a stake, a confiscation). Left out: what only says where items go next (`released`,
          * `forfeited`, `owed`) or what the Director's event of a challenge's end already tells (`transferred`,
@@ -555,7 +551,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
          * what happened), like the Director's event.
          */
         val ENGINE_NEWS: Map<String, Set<String>> = mapOf(
-            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", RULE_ENDED, "joker"),
+            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", RuleBook.ENDED, "joker"),
             LEDGER to setOf("held", "offered", "returned"),
         )
 

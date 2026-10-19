@@ -23,15 +23,12 @@ import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
-import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.tool.action.ItemSpecs
 import io.github.clemsix6.narrator2.tool.action.parseId
 import io.github.clemsix6.narrator2.tool.action.shortId
 import io.github.clemsix6.narrator2.tool.answer
-import io.github.clemsix6.narrator2.trace.DecisionRecord
-import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -40,7 +37,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.effect.MobEffectCategory
-import java.time.Clock
 
 /**
  * The stakes of the challenges and the duels (M4 §5.3), paid by the engine through the very tools of the Director
@@ -176,42 +172,20 @@ class Stakes(private val services: NarratorServices, private val actions: Engine
      * An item reward to [participant] ([name] online), in an act of its own (M4 review, finding 36): `give_item`'s own
      * dry checks (the item, how precious it is) and the server's limits of the gifts, as for the Director's gifts; then
      * into the inventory through the ledger ([io.github.clemsix6.narrator2.guard.ItemLedger.owe]), like a joker: what
-     * finds no room waits there and comes once there is room, never on the ground, where it would burn or vanish. The
-     * act's `mechanic action` decision is written as [EngineActions] writes those of the tools.
+     * finds no room waits there and comes once there is room, never on the ground, where it would burn or vanish
+     * ([EngineActions.runInstead]: the act's `mechanic action` decision is the one of a tool's call).
      */
     private suspend fun giveItem(challenge: ChallengeState, participant: Participant, name: String, reward: RewardSpec, what: String): ToolResult {
         val firing = open(challenge, name, REWARD, GIVE_ITEM, reward.kind.id, what)
-        val args = rewardArgs(reward, name)
-        val at = services.clock.instant()
-        val begun = System.nanoTime()
-        val result = actions.check(GIVE_ITEM, args, firing.caller) ?: try {
-            services.server.onServerThread { answer { intoLedger(challenge, participant, reward) } }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            ToolResult.failed(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
+        return actions.runInstead(firing, GIVE_ITEM, rewardArgs(reward, name)) {
+            try {
+                services.server.onServerThread { answer { intoLedger(challenge, participant, reward) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ToolResult.failed(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
+            }
         }
-        Decisions(services.trace, Clock.fixed(at, services.clock.zone)).record(
-            log, DecisionRecord.Kind.MECHANIC, EngineActions.ACTION,
-            subject = result.targets.joinToString { it.name }.ifEmpty { null },
-            reason = "$GIVE_ITEM ${result.status.id}: ${EngineActions.cut(result.text.lineSequence().first(), EngineActions.FIRST_LINE_MAX)}",
-            conversationId = firing.caller.conversationId,
-            detail = buildJsonObject {
-                put("firing", firing.id)
-                firing.caller.act?.let { put("act", it) }
-                put("ref", challenge.ref.toString())
-                put("tool", GIVE_ITEM)
-                put("effect", ToolEffect.WORLD.id)
-                put("status", result.status.id)
-                put("ms", (System.nanoTime() - begun) / 1_000_000)
-                putJsonArray("targets") { result.targets.forEach { add(it.name) } }
-                put("args", args)
-                put("result", result.text)
-                put("ledger", true)
-            },
-            level = if (result.status == ToolStatus.OK) Log.Level.DEBUG else Log.Level.INFO,
-        )
-        return result
     }
 
     /** [reward] built as `give_item` builds it, counted by the server's limits of the gifts, owed to [participant]. Server thread. */

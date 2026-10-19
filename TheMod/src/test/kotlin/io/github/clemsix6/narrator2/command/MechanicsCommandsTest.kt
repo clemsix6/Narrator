@@ -341,15 +341,4 @@ class MechanicsCommandsTest {
         assertEquals(listOf("narrator", "traps"), parsed("narrator traps"))
         assertEquals(listOf("narrator", "traps", "restore"), parsed("narrator traps restore"))
     }
-
-    @Test
-    fun `a challenge or a rule is named by its canon reference, or its number`() {
-        assertEquals(Ref(RefKind.CANON, 50), MechanicsCommands.refOf("C-50"))
-        assertEquals(Ref(RefKind.CANON, 50), MechanicsCommands.refOf("c50"))
-        assertEquals(Ref(RefKind.CANON, 50), MechanicsCommands.refOf(" 50 "))
-        assertNull(MechanicsCommands.refOf("M-50"), "a memory is not a challenge")
-        assertNull(MechanicsCommands.refOf("O-812"))
-        assertNull(MechanicsCommands.refOf("0"))
-        assertNull(MechanicsCommands.refOf("fifty"))
-    }
 }

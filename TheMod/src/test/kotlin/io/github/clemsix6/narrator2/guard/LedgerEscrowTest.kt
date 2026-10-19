@@ -205,6 +205,21 @@ class LedgerEscrowTest {
     }
 
     @Test
+    fun `an operator gives any entry back now, a stake ceded to a winner too, and nothing twice`() {
+        val at = now + minute
+        val ceded = assertNotNull(Escrow.forfeit(state(stake), 812, mimosa, now))
+        val back = assertNotNull(Escrow.returnNow(ceded, 812, at)).confiscations.single()
+        assertEquals(listOf(at, null), listOf(back.returnAt, back.owedTo), "due now, for its owner")
+        assertFalse(Escrow.isFallback(back), "settled by the operator, not its fallback deadline")
+        assertNull(Escrow.returnNow(state(back), 812, at + 1_000), "due already: nothing more")
+        assertNull(Escrow.forfeit(state(back), 812, josiane, at + 1_000), "what waits for room stays its owner's, whatever the settlement says later")
+        for (entry in listOf(confiscation, offering)) {
+            assertEquals(listOf(entry.copy(returnAt = at)), Escrow.due(assertNotNull(Escrow.returnNow(state(entry), entry.id, at)), at), entry.purpose.id)
+        }
+        assertNull(Escrow.returnNow(state(confiscation), 999, at), "no such entry")
+    }
+
+    @Test
     fun `an offering's reference reads back as its id`() {
         assertEquals("O-815", Escrow.ref(815))
         assertEquals(815L, Escrow.offeringId("O-815"))

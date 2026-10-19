@@ -124,6 +124,15 @@ data class Ref(val kind: RefKind, val id: Long) {
             val id = match.groupValues[2].toLong()
             return if (id > 0) Ref(kind, id) else null
         }
+
+        /**
+         * A canon row as a player, an operator or the model names a challenge, a duel or a rule: `C-50`, `c50` or
+         * `50` → `C-50`; null for anything else (another kind, `0`).
+         */
+        fun canonOf(typed: String): Ref? {
+            val ref = parse(typed) ?: typed.trim().toLongOrNull()?.takeIf { it > 0 }?.let { Ref(RefKind.CANON, it) }
+            return ref?.takeIf { it.kind == RefKind.CANON }
+        }
     }
 }
 
