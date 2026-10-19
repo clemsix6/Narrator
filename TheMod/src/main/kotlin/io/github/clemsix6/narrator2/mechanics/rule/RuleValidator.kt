@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.tool.action.MobAttributeKey
 import io.github.clemsix6.narrator2.tool.action.parseId
 import io.github.clemsix6.narrator2.tool.action.shortId
 import io.github.clemsix6.narrator2.tool.memory.knownPlayers
@@ -25,8 +26,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import net.minecraft.core.Registry
+import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
+import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
+import net.minecraft.world.entity.EntityType
+import net.minecraft.world.entity.LivingEntity
+import net.minecraft.world.entity.ai.attributes.DefaultAttributes
 import java.util.UUID
 
 /*
@@ -36,10 +42,12 @@ import java.util.UUID
  * 1. the specification decoded within its bounds (ToolArgs);
  * 2. each condition applies to the trigger (M4 §8.2), names ids the server knows (with the closest ones
  *    otherwise), and the players named have played here;
- * 3. each effect: a tool a rule may use, a target (`at`) it can take for this trigger, its target left out of
- *    `args` (the engine fills it), and its arguments, the target filled with a stand-in, pass the tool's own
- *    decoding and dry checks with the Director's caller (`EngineActions.check`): ids, the chaos level's caps,
- *    arguments that contradict each other. A rule cannot do what the Director may not.
+ * 3. each effect: a tool a rule may use, a target (`at`) it can take for this trigger (never more than words
+ *    for a player hurt by another), its target left out of `args` (the engine fills it), nothing a rule may never
+ *    do (a `teleport` to another player, an effect that wounds or lifts), and its arguments, the target filled with
+ *    a stand-in, pass the tool's own decoding and dry checks with the Director's caller (`EngineActions.check`):
+ *    ids, the chaos level's caps, arguments that contradict each other; then the creature named has the attribute
+ *    a `mob_attribute` changes. A rule cannot do what the Director may not.
  *
  * The limit of active rules (step 4) is the rule book's ([RuleBook]): it needs the state.
  */
@@ -189,6 +197,20 @@ object RuleTargets {
 
     /** The id of the player as a creature: a `when.entity` that names it sees only a player hurt. */
     const val PLAYER_ENTITY = "minecraft:player"
+
+    /** The tools that only speak: all a rule may aim at a player hurt by another (M4 code review, finding 12). */
+    val WORDS: List<String> = ALLOWED.filterValues { it == Aiming.AUDIENCE || it == Aiming.NEWS }.keys.toList()
+
+    /** Whether [tool] only speaks ([WORDS]). */
+    fun speaks(tool: String): Boolean = tool in WORDS
+
+    /**
+     * Why [args] of [tool] are never a rule's, whatever its target, or null: a `teleport` next to another player
+     * (`to_player`) would bring two players together without the second's consent (M4 code review, finding 12).
+     * The validation and the engine both ask.
+     */
+    fun forbidden(tool: String, args: JsonObject): String? =
+        if (tool == "teleport" && "to_player" in args) "to_player is not allowed in a rule: a law never brings a player to another; give x and z, or random_radius" else null
 
     /** What the subject of [trigger] can be, given its `when.entity` [entity] (a full id, or null): M4 §8.2. */
     fun subjects(trigger: RuleTrigger, entity: String?): Set<SubjectKind> = when (trigger) {
@@ -340,39 +362,69 @@ class RuleValidator(private val services: NarratorServices, private val actions:
             }
             reject("$prefix: leave ${given.joinToString()} out: $why")
         }
-        if (aiming == Aiming.PLAYERS) wounding(prefix, effect.args)
+        RuleTargets.forbidden(effect.tool, effect.args)?.let { reject("$prefix: $it") }
+        if (aiming == Aiming.PLAYERS) forbiddenEffect(prefix, effect.args)
         val args = RuleTargets.withActor(effect.args, STAND_IN_PLAYER)
         for (aim in standIns(effect.at, aiming, subjects, conditions)) {
             val filled = RuleTargets.aimed(effect.tool, args, aim) ?: continue
             actions.check(effect.tool, filled, caller)?.let { throw rejected(prefix, it) }
         }
+        if (effect.tool == MOB_ATTRIBUTE) attribute(prefix, effect.args, conditions.entity)
     }
 
-    /** `at subject`: [trigger] has a subject that [aiming]'s tool acts on. */
+    /**
+     * `at subject`: [trigger] has a subject that [aiming]'s tool acts on; and a subject that may be a player hurt by
+     * another player gets words only (M4 code review, finding 12): a rule never turns on the victim of a hit, or any
+     * player could set the Narrator on another by hitting them.
+     */
     private fun subject(prefix: String, tool: String, aiming: Aiming, trigger: RuleTrigger, conditions: RuleConditions, subjects: Set<SubjectKind>) {
         if (subjects.isEmpty()) {
             val with = RuleTrigger.entries.filter { RuleTargets.subjects(it, null).isNotEmpty() }.joinToString { it.id }
             reject("$prefix: at subject: ${trigger.id} has no subject; these triggers have one: $with")
         }
+        val entity = conditions.entity?.let { " (when.entity ${short(it)})" }
         if (subjects.none { it in aiming.subjects }) {
-            val entity = conditions.entity?.let { " (when.entity ${short(it)})" }.orEmpty()
             if (SubjectKind.PLAYER in aiming.subjects) {
-                reject("$prefix: at subject is a creature for ${trigger.id}$entity, and $tool acts on players; mob_effect and mob_attribute act on the creature")
+                reject("$prefix: at subject is a creature for ${trigger.id}${entity.orEmpty()}, and $tool acts on players; mob_effect and mob_attribute act on the creature")
             }
-            reject("$prefix: at subject is a player for ${trigger.id}$entity, and $tool acts on creatures")
+            reject("$prefix: at subject is a player for ${trigger.id}${entity.orEmpty()}, and $tool acts on creatures")
+        }
+        if (SubjectKind.PLAYER in subjects && SubjectKind.PLAYER in aiming.subjects && !RuleTargets.speaks(tool)) {
+            reject(
+                "$prefix: at subject may be a player hit by another for ${trigger.id}${entity ?: " (no when.entity)"}, and a rule never turns on " +
+                    "the victim of a hit: aim at the actor, name a creature in when.entity, or only speak to the subject (${RuleTargets.WORDS.joinToString()})",
+            )
         }
     }
 
-    /** `apply_effect` in a rule never gives an effect that wounds: the Director gives it himself, call by call. */
-    private fun wounding(prefix: String, args: JsonObject) {
+    /**
+     * `apply_effect` in a rule never gives an effect that wounds, nor levitation, which ends in a fall: the Director
+     * gives them himself, call by call (M4 code review, finding 8).
+     */
+    private fun forbiddenEffect(prefix: String, args: JsonObject) {
         val raw = (args["effect"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return
         val id = parseId(raw)?.toString() ?: return
-        if (id in WOUNDING) {
-            throw MechanicRejected(
-                MobEffectTool.FORBIDDEN_EFFECT,
-                "$prefix: a rule never gives ${short(id)}: an effect that wounds is yours to give, one call at a time, never a law's",
-            )
+        val why = when (id) {
+            in WOUNDING -> "an effect that wounds"
+            LEVITATION -> "an effect that ends in a fall"
+            else -> return
         }
+        throw MechanicRejected(MobEffectTool.FORBIDDEN_EFFECT, "$prefix: a rule never gives ${short(id)}: $why is yours to give, one call at a time, never a law's")
+    }
+
+    /**
+     * `mob_attribute` on a creature named in [entity] (not a tag): the creature has the attribute (M4 code review,
+     * finding 33), or every firing would be skipped.
+     */
+    private fun attribute(prefix: String, args: JsonObject, entity: String?) {
+        if (entity == null || entity.startsWith("#")) return
+        val raw = (args["attribute"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return
+        val key = MobAttributeKey.entries.firstOrNull { it.id == raw } ?: return
+        val type = parseId(entity)?.let { BuiltInRegistries.ENTITY_TYPE.get(it).orElse(null)?.value() } ?: return
+        val holder = BuiltInRegistries.ATTRIBUTE.get(Identifier.withDefaultNamespace(key.id)).orElse(null) ?: return
+        @Suppress("UNCHECKED_CAST")
+        val has = DefaultAttributes.hasSupplier(type) && DefaultAttributes.getSupplier(type as EntityType<out LivingEntity>).hasAttribute(holder)
+        if (!has) reject("$prefix: ${short(entity)} has no ${key.id}; change another attribute, or name another creature in when.entity")
     }
 
     /** The stand-in targets of an effect at [at]: one per kind of target it may get when the rule fires. */
@@ -426,6 +478,11 @@ class RuleValidator(private val services: NarratorServices, private val actions:
 
         /** Effects `apply_effect` never gives in a rule: they wound (the death guard would be a rule's only brake). */
         val WOUNDING = setOf("minecraft:wither", "minecraft:poison", "minecraft:instant_damage")
+
+        /** Nor this one: it ends in a fall. */
+        const val LEVITATION = "minecraft:levitation"
+
+        const val MOB_ATTRIBUTE = "mob_attribute"
 
         /**
          * The stand-in player of the checks: as long as the longest name, so that a text with `{actor}` that fits

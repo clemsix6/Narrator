@@ -152,9 +152,9 @@ object MechanicsSamples {
              "effects":[{"tool":"teleport","at":"actor","args":{"random_radius":300}}],"minutes":180}
         """.trimIndent(),
         "flying_cows" to """
-            {"kind":"law","statement":"Le Narrateur a décrété que les vaches frappées s'envolent puis explosent en feu d'artifice.",
+            {"kind":"law","statement":"Le Narrateur a décrété que les vaches frappées s'illuminent puis explosent en feu d'artifice.",
              "trigger":"damage_dealt","when":{"entity":"cow"},
-             "effects":[{"tool":"mob_effect","at":"subject","args":{"effect":"levitation","seconds":3,"level":2}},
+             "effects":[{"tool":"mob_effect","at":"subject","args":{"effect":"glowing","seconds":3,"level":2}},
                         {"tool":"explosion","at":"subject","args":{"power":2,"hurts":false},"delay_seconds":3},
                         {"tool":"fireworks","at":"subject","args":{"count":2,"shape":"burst"},"delay_seconds":3}],"minutes":60}
         """.trimIndent(),

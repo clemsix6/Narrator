@@ -79,6 +79,10 @@ object RuleMarks {
     /** The modifier of rule [id] on [attribute]: `narrator2:rule/60/movement_speed`. */
     fun modifier(id: Long, attribute: MobAttributeKey): Identifier = Identifier.fromNamespaceAndPath("narrator2", "rule/$id/${attribute.id}")
 
+    /** Whether [id] is the modifier of a rule, any rule, on [attribute]. */
+    fun isRules(id: Identifier, attribute: MobAttributeKey): Boolean =
+        id.namespace == "narrator2" && id.path.startsWith("rule/") && id.path.endsWith("/${attribute.id}")
+
     /** Marks [entity] as changed by rule [id]: the Narrator's creature while the rule lives. Server thread. */
     fun mark(entity: Entity, id: Long) {
         entity.addTag(NarratorMobs.TAG)
@@ -114,7 +118,7 @@ private fun ToolContext.creaturesAllowed() {
 /** The arguments of `mob_effect` (M4 §8.4): an effect on the creature of the trigger. */
 @Serializable
 data class MobEffectArgs(
-    @Doc("Effect id, e.g. levitation, speed, slowness, glowing, jump_boost.") @MaxLen(64) val effect: String,
+    @Doc("Effect id, e.g. speed, slowness, glowing, weakness.") @MaxLen(64) val effect: String,
     @Doc("How long, in seconds.") @Range(1.0, 900.0) val seconds: Int,
     @Doc("Level, 1 being the effect's first level.") @Range(1.0, 5.0) val level: Int = 1,
     @Doc("Filled by the engine: the creature of the trigger.") @MaxLen(36) val creature: String? = null,
@@ -123,8 +127,8 @@ data class MobEffectArgs(
 /**
  * `mob_effect`: puts an effect on the creature of the trigger, within the caps the chaos level sets on harmful
  * effects, whatever the effect. Never an effect that makes it hard to kill or unseen, nor one that wounds or
- * kills it (a `mob_spawn` law must not decimate the villagers or the players' cattle, M4 review finding 11),
- * nor one that acts on the world.
+ * kills it, by itself or by a fall (a law must not decimate the villagers or the players' cattle: M4 review
+ * finding 11, M4 code review finding 8), nor one that acts on the world.
  */
 class MobEffectTool : NarratorTool<MobEffectArgs>(
     name = "mob_effect",
@@ -173,6 +177,8 @@ class MobEffectTool : NarratorTool<MobEffectArgs>(
             "minecraft:wither" to "it wounds and kills: a rule never decimates the villagers or the players' animals",
             "minecraft:poison" to "it wounds: a rule never decimates the villagers or the players' animals",
             "minecraft:instant_damage" to "it wounds the living and heals the undead",
+            "minecraft:levitation" to "it ends in a fall that kills: a rule never decimates the villagers or the players' animals",
+            "minecraft:jump_boost" to "a higher jump is a fall that hurts: a rule never makes a creature fall",
         )
 
         /** Why a rule never puts [effect] on a creature, or null. */
@@ -212,10 +218,11 @@ data class MobAttributeArgs(
 )
 
 /**
- * `mob_attribute`: changes an attribute of the creature of the trigger by a factor, within the bounds of
- * `spawn`, except that a rule never lowers a creature's maximum health (M4 review, finding 11). A permanent
- * modifier of the rule ([RuleMarks.modifier]), put by `addOrReplacePermanentModifier`: a creature loaded
- * again already has it, and adding it twice would throw. The rule engine takes it off when the rule ends.
+ * `mob_attribute`: changes an attribute of the creature of the trigger by a factor, within bounds of the rules
+ * ([bounds]) narrower than `spawn`'s: a law runs without the Director's judgement and must never kill a creature
+ * (M4 code review, finding 8). A permanent modifier of the rule ([RuleMarks.modifier]), put by
+ * `addOrReplacePermanentModifier`: a creature loaded again already has it, and adding it twice would throw. The
+ * rule engine takes it off when the rule ends.
  */
 class MobAttributeTool : NarratorTool<MobAttributeArgs>(
     name = "mob_attribute",
@@ -226,11 +233,8 @@ class MobAttributeTool : NarratorTool<MobAttributeArgs>(
     override suspend fun check(ctx: ToolContext, args: MobAttributeArgs): ToolResult? = dryCheck {
         ctx.creaturesAllowed()
         val key = args.attribute
-        val min = min(key)
-        if (args.multiply < min || args.multiply > key.max) {
-            val why = if (key == MobAttributeKey.MAX_HEALTH) " in a rule: a rule never lowers a creature's health" else ""
-            refuse(ToolResult.invalid("${key.id} multiplies by ${ToolText.number(min)} to ${ToolText.number(key.max)}$why (asked ${ToolText.number(args.multiply)})"))
-        }
+        val bounds = bounds(key)
+        if (args.multiply !in bounds) refuse(ToolResult.invalid("${within(key)} (asked ${ToolText.number(args.multiply)})"))
     }
 
     override suspend fun run(ctx: ToolContext, args: MobAttributeArgs): ToolResult = answer {
@@ -240,19 +244,46 @@ class MobAttributeTool : NarratorTool<MobAttributeArgs>(
     }
 
     companion object {
-        /** The lowest factor of [key] in a rule: `spawn`'s, but a creature's maximum health is never lowered. */
-        fun min(key: MobAttributeKey): Double = if (key == MobAttributeKey.MAX_HEALTH) 1.0 else key.min
+        /**
+         * The factors of [key] a rule may set, all its rules together on one creature: never a creature so big it
+         * chokes under a low ceiling (a villager in its hall), never a lower maximum health, never a higher jump nor
+         * a lighter gravity (a fall that hurts); `spawn`'s bounds otherwise.
+         */
+        fun bounds(key: MobAttributeKey): ClosedFloatingPointRange<Double> = when (key) {
+            MobAttributeKey.SCALE -> 0.5..2.0
+            MobAttributeKey.MAX_HEALTH -> 1.0..key.max
+            MobAttributeKey.JUMP_STRENGTH -> key.min..1.0
+            MobAttributeKey.GRAVITY -> 1.0..key.max
+            MobAttributeKey.MOVEMENT_SPEED, MobAttributeKey.ATTACK_DAMAGE -> key.min..key.max
+        }
+
+        /** `scale multiplies by 0.5 to 2 in a rule: …`: [bounds] and why. */
+        private fun within(key: MobAttributeKey): String {
+            val bounds = bounds(key)
+            val why = when (key) {
+                MobAttributeKey.SCALE -> ": a creature too big chokes under a low ceiling"
+                MobAttributeKey.MAX_HEALTH -> ": a rule never lowers a creature's health"
+                MobAttributeKey.JUMP_STRENGTH, MobAttributeKey.GRAVITY -> ": a rule never makes a creature fall from higher"
+                MobAttributeKey.MOVEMENT_SPEED, MobAttributeKey.ATTACK_DAMAGE -> ""
+            }
+            return "${key.id} multiplies by ${ToolText.number(bounds.start)} to ${ToolText.number(bounds.endInclusive)} in a rule$why"
+        }
 
         /**
          * Changes [mob]'s attribute for rule [rule] and marks it ([RuleMarks]): the checks passed. A raised
-         * maximum health raises the health by the same factor, once. The rule engine may call it directly on the
-         * server thread (M4 §8.6). Server thread.
+         * maximum health raises the health by the same factor, once. The other rules' factors on the creature count:
+         * together they stay within [bounds], or nothing changes (`FAILED`, a firing skipped). The rule engine may
+         * call it directly on the server thread (M4 §8.6). Server thread.
          */
         fun apply(mob: Mob, rule: Long, args: MobAttributeArgs): ToolResult {
             val key = args.attribute
             val holder = BuiltInRegistries.ATTRIBUTE.get(Identifier.withDefaultNamespace(key.id)).orElseThrow { IllegalStateException("no attribute minecraft:${key.id}") }
             val instance = mob.getAttribute(holder) ?: refuse(ToolResult.failed("${mob.typeId} has no ${key.id}"))
             val id = RuleMarks.modifier(rule, key)
+            val others = instance.modifiers.filter { RuleMarks.isRules(it.id(), key) && it.id() != id }.fold(1.0) { factor, other -> factor * (1 + other.amount()) }
+            if (others * args.multiply !in bounds(key)) {
+                refuse(ToolResult.failed("${mob.typeId} already has ${key.id} ×${ToolText.number(others)} from other rules, and ${within(key)}, all rules together"))
+            }
             val had = instance.getModifier(id)
             instance.addOrReplacePermanentModifier(AttributeModifier(id, args.multiply - 1, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL))
             if (key == MobAttributeKey.MAX_HEALTH && had == null) mob.health = (mob.health * args.multiply).toFloat().coerceAtMost(mob.maxHealth)

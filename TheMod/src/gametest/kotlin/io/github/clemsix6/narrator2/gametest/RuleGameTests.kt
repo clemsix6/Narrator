@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.NarratorRuntime
+import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.Mechanics
@@ -39,8 +40,14 @@ import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.world.effect.MobEffects
+import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntityTypes
+import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.ai.attributes.Attributes
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.phys.Vec3
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -136,7 +143,8 @@ class RuleGameTests {
     /**
      * `mob_effect` and `mob_attribute` run by an act of a rule on real creatures: the effect is on, the modifier of
      * the rule is there (put again without trouble, as on a creature loaded again), a raised maximum health raises the
-     * health once, and each creature bears the Narrator's tag and the rule's.
+     * health once, the factors of all the rules on a creature stay within the rules' bounds, and each creature bears
+     * the Narrator's tag and the rule's.
      */
     @GameTest
     fun theCreaturesToolsMarkTheCreatureAsTheRules(helper: GameTestHelper) {
@@ -146,9 +154,9 @@ class RuleGameTests {
         val cow = helper.spawnWithNoFreeWill(EntityTypes.COW, BlockPos(2, 1, 2))
         val creeper = helper.spawnWithNoFreeWill(EntityTypes.CREEPER, BlockPos(5, 1, 5))
         try {
-            fun run(tool: String, creature: UUID, vararg args: Pair<String, Any>) = runBlocking {
+            fun run(tool: String, creature: UUID, vararg args: Pair<String, Any>, by: Ref = rule) = runBlocking {
                 actions.run(
-                    actions.open("fired", rule, null),
+                    actions.open("fired", by, null),
                     tool,
                     buildJsonObject {
                         args.forEach { (key, value) -> if (value is Number) put(key, value) else put(key, value.toString()) }
@@ -156,9 +164,22 @@ class RuleGameTests {
                     },
                 )
             }
-            val levitating = run("mob_effect", cow.uuid, "effect" to "levitation", "seconds" to 3, "level" to 2)
-            helper.assertTrue(levitating.status == ToolStatus.OK, levitating.text)
-            helper.assertTrue(cow.hasEffect(MobEffects.LEVITATION), "the cow levitates")
+            val glowing = run("mob_effect", cow.uuid, "effect" to "glowing", "seconds" to 3, "level" to 2)
+            helper.assertTrue(glowing.status == ToolStatus.OK, glowing.text)
+            helper.assertTrue(cow.hasEffect(MobEffects.GLOWING), "the cow glows")
+            val lifted = run("mob_effect", cow.uuid, "effect" to "levitation", "seconds" to 3)
+            helper.assertTrue(lifted.status == ToolStatus.DENIED && !cow.hasEffect(MobEffects.LEVITATION), "a rule never lifts a creature: ${lifted.text}")
+
+            // Two rules that make a creeper bigger: together, never more than twice its size.
+            run("mob_attribute", creeper.uuid, "attribute" to "scale", "multiply" to 1.5)
+            val bigger = run("mob_attribute", creeper.uuid, "attribute" to "scale", "multiply" to 1.5, by = Ref(RefKind.CANON, 990_102))
+            helper.assertEquals(
+                "FAILED: minecraft:creeper already has scale ×1.5 from other rules, and scale multiplies by 0.5 to 2 in a rule: a creature too big chokes " +
+                    "under a low ceiling, all rules together",
+                bigger.text,
+                "the second rule's",
+            )
+            helper.assertEquals(1.5, creeper.getAttributeValue(Attributes.SCALE), "once only")
 
             val fast = run("mob_attribute", creeper.uuid, "attribute" to "movement_speed", "multiply" to 3)
             helper.assertEquals("ok: minecraft:creeper movement_speed ×3 while C-990101 lasts", fast.text, "the answer")
@@ -173,7 +194,7 @@ class RuleGameTests {
             helper.assertEquals(10f, cow.health, "the health doubled")
             run("mob_attribute", cow.uuid, "attribute" to "max_health", "multiply" to 2)
             helper.assertEquals(10f, cow.health, "the health doubled once")
-            helper.assertEquals(1.0, MobAttributeTool.min(MobAttributeKey.MAX_HEALTH), "never lowered")
+            helper.assertEquals(1.0, MobAttributeTool.bounds(MobAttributeKey.MAX_HEALTH).start, "never lowered")
 
             for (creature in listOf(cow, creeper)) {
                 helper.assertTrue(
@@ -188,6 +209,37 @@ class RuleGameTests {
             creeper.discard()
         }
         helper.succeed()
+    }
+
+    /**
+     * A creature a rule changed bears the Narrator's tag, but lives on: it picks up what lies on the ground as any
+     * other (a piglin its gold, a villager its bread), unlike the creatures the Narrator summons (M4 code review,
+     * finding 30).
+     */
+    @GameTest(maxTicks = 400)
+    fun aCreatureARuleChangedStillPicksUpItems(helper: GameTestHelper) {
+        for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+        val at = BlockPos(3, 1, 3)
+        for (dx in -1..1) for (dz in -1..1) {
+            if (dx != 0 || dz != 0) for (y in 1..2) helper.setBlock(at.x + dx, y, at.z + dz, Blocks.STONE)
+        }
+        helper.setBlock(at.x, 3, at.z, Blocks.STONE)
+        val zombie = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
+        zombie.snapTo(helper.absoluteVec(Vec3(at.x + 0.5, 1.0, at.z + 0.5)))
+        zombie.setPersistenceRequired()
+        helper.level.addFreshEntity(zombie)
+        // Marked once loaded: the server's engine takes off, as a creature loads, the marks of the rules it does not know.
+        RuleMarks.mark(zombie, 990_103)
+        zombie.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY)
+        zombie.setCanPickUpLoot(true)
+        helper.spawnItem(Items.IRON_SWORD, at).apply { setNoPickUpDelay() }
+        helper.startSequence()
+            .thenWaitUntil { helper.assertTrue(zombie.mainHandItem.`is`(Items.IRON_SWORD), "the zombie a rule changed picks up its sword") }
+            .thenExecute {
+                helper.assertTrue(NarratorMobs.isNarrators(zombie), "it bears the Narrator's tag all the same")
+                helper.killAllEntities()
+            }
+            .thenSucceed()
     }
 
     /** A rule book of the tests: the server's tools, ids and canon, a state in memory. */
