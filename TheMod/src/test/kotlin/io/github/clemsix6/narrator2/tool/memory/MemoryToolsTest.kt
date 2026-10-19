@@ -1,6 +1,9 @@
 package io.github.clemsix6.narrator2.tool.memory
 
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.CanonDraft
+import io.github.clemsix6.narrator2.memory.CanonKind
+import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.InteractionKind
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryKind
@@ -71,9 +74,10 @@ class MemoryToolsTest {
 
         val remember = schemas.getValue("remember")
         assertEquals(
-            listOf("kind", "what", "quote", "players", "due_in_minutes", "stakes", "at_player", "importance", "evidence"),
+            listOf("kind", "what", "quote", "players", "due_in_minutes", "stakes", "at_player", "theme", "importance", "evidence"),
             remember.getValue("properties").jsonObject.keys.toList(),
         )
+        assertEquals(40.0, remember.property("theme").number("maxLength"))
         assertEquals(listOf("kind", "what"), remember.strings("required"))
         assertEquals(
             listOf(
@@ -330,9 +334,72 @@ class MemoryToolsTest {
     fun `an arc the Dreamer remembers is planned, and the Director starts it`() = fixture { f ->
         assertOk(
             "ok: remembered C-1000 (arc, planned)",
-            f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa."}""", f.dreamer(8)),
+            f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa.","theme":"proces_des_parieurs"}""", f.dreamer(8)),
         )
-        assertOk("ok: C-1000 arc is now active", f.call(resolve, """{"id":"C-1000","outcome":"active","note":"Le procès des parieurs commence."}"""))
+        assertOk(
+            "ok: C-1000 arc is now active, due 10-08 19:40, in 7d0h; a DUE event will wake you then",
+            f.call(resolve, """{"id":"C-1000","outcome":"active","note":"Le procès des parieurs commence."}"""),
+        )
+        assertEquals(listOf("active"), f.rows("SELECT status FROM canon") { getString(1) })
+    }
+
+    // ── Mechanics (M4 §12.3, §10) ───────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `while the engine runs, the Director starts a challenge with start_challenge, and a plan is no kind of remember`() = fixture { f ->
+        val challenge = """{"kind":"challenge","what":"Le Narrateur a défié Bartok de rapporter un œuf de tortue.","players":["Bartok"]}"""
+        assertInvalid("a challenge is started with start_challenge: it tracks it, shows its bar and pays its stakes", f.call(remember, challenge))
+        val plan = f.call(remember, """{"kind":"plan","what":"Le Narrateur prépare un comité d'accueil pour Bartok."}""")
+        assertEquals(ToolStatus.INVALID, plan.status)
+        assertTrue(plan.text.startsWith("Invalid arguments: kind must be one of: promise, threat, challenge"), plan.text)
+        assertEquals(0L, f.base.count("canon"))
+
+        // The Chronicler still records a challenge an operator announced in the Narrator's name.
+        f.base.chat(900, Instant.parse("2026-10-01T19:30:00Z"), "operator", "Bartok, rapporte-moi un œuf de tortue avant la nuit.")
+        val chronicler = f.chronicler(7, Instant.parse("2026-10-01T19:00:00Z"), f.clock.instant())
+        val said = """{"kind":"challenge","what":"Le Narrateur a défié Bartok de rapporter un œuf de tortue avant la nuit.","players":["Bartok"],""" +
+            """"quote":"rapporte-moi un œuf de tortue","evidence":["e900"]}"""
+        assertOk("ok: remembered C-1000 (challenge → Bartok)", f.call(remember, said, chronicler))
+        // Without the engine, the Director remembers its challenges as in M3.
+        f.mechanics.available = false
+        assertOk("ok: remembered C-1001 (challenge → Mimosa)", f.call(remember, challenge.replace("Bartok", "Mimosa")))
+    }
+
+    @Test
+    fun `remember starts an arc with its theme, due within seven days, two at most`() = fixture { f ->
+        assertInvalid(
+            "an arc needs its theme: a slug that names what it is about, like vengeance_du_warden",
+            f.call(remember, """{"kind":"arc","what":"La vengeance du Warden contre Bartok commence ce soir."}"""),
+        )
+        assertInvalid(
+            "theme only goes with an arc: leave it out",
+            f.call(remember, """{"kind":"observation","what":"Bartok a peur du Warden.","theme":"vengeance_du_warden"}"""),
+        )
+        assertOk(
+            "ok: remembered C-1000 (arc, due 10-08 19:40, in 7d0h); a DUE event will wake you then",
+            f.call(remember, """{"kind":"arc","what":"La vengeance du Warden contre Bartok commence ce soir.","theme":" Vengeance_Du_Warden "}"""),
+        )
+        assertOk(
+            "ok: remembered C-1001 (arc, due 10-02 19:40, in 1d0h); a DUE event will wake you then",
+            f.call(remember, """{"kind":"arc","what":"Mimosa doit reconstruire le pont des Soupirs avant l'hiver.","theme":"pont_des_soupirs","due_in_minutes":1440}"""),
+        )
+        val third = f.call(remember, """{"kind":"arc","what":"Les moutons du spawn complotent une révolte laineuse.","theme":"revolte_des_moutons"}""")
+        assertEquals(ToolStatus.DENIED, third.status)
+        assertEquals("DENIED (arc_limit): 2 arcs are active (C-1000, C-1001); resolve or abandon one first", third.text)
+        assertEquals(listOf("vengeance_du_warden", "pont_des_soupirs"), f.rows("SELECT theme FROM canon ORDER BY id") { getString(1) })
+    }
+
+    @Test
+    fun `resolve leaves a row the engine tracks to the engine, and names the tool that ends it`() = fixture { f ->
+        val draft = CanonDraft(
+            CanonKind.CHALLENGE, "Le Narrateur a défié Bartok et Mimosa de rapporter un œuf de tortue.", players = listOf(f.bartok.uuid, f.mimosa.uuid),
+            mechanic = CanonMechanic.CHALLENGE,
+        )
+        runBlocking { f.store.addCanon(draft, MemorySamples.director) }
+        assertInvalid(
+            "C-1000 is a challenge the engine tracks: end it with end_challenge",
+            f.call(resolve, """{"id":"C-1000","outcome":"won","note":"Mimosa a rapporté l'œuf la première.","winners":["Mimosa"]}"""),
+        )
         assertEquals(listOf("active"), f.rows("SELECT status FROM canon") { getString(1) })
     }
 
@@ -340,6 +407,7 @@ class MemoryToolsTest {
 
     @Test
     fun `resolve closes an entry once, with the outcomes of its kind`() = fixture { f ->
+        f.mechanics.available = false // the Director remembers its own challenges
         f.call(remember, """{"kind":"promise","what":"Le Narrateur a promis à Mimosa de lui rendre ses bottes.","players":["Mimosa"]}""")
         f.call(remember, """{"kind":"promise","what":"Le Narrateur a promis une averse de cookies.","players":["Bartok"]}""")
         f.call(remember, """{"kind":"challenge","what":"Le premier à trouver un œuf de tortue gagne.","stakes":"une bénédiction / une nuit de lenteur"}""")
