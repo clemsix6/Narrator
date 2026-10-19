@@ -340,6 +340,13 @@ class RuleValidationTest {
             "Invalid arguments: effect 1: create_rule cannot be used in a rule; allowed: $ALLOWED",
             f.refusal(law("chat", """{"tool":"create_rule","at":"actor","args":{}}""")),
         )
+        // One punish per target: an act punishes a player once (M4 code review, finding 16).
+        val tiny = """{"tool":"punish","at":"actor","args":{"punishment":"tiny","severity":2,"reason":"a parlé"}}"""
+        val hunger = """{"tool":"punish","at":"actor","args":{"punishment":"hunger","severity":2,"reason":"a parlé"}}"""
+        assertEquals(
+            "Invalid arguments: effect 3 (punish): effect 1 already punishes the actor, and an act punishes a player once: compose it with the other tools",
+            f.refusal(law("chat", "$tiny,$SAY,$hunger")),
+        )
         // Eight laws against Bartok at most: the ninth is refused.
         repeat(8) { f.book.create(f.spec(law("chat", SAY, """{"players":["Bartok"]}""")), f.caller) }
         assertTrue(f.refusal(law("chat", SAY, """{"players":["Bartok"]}""")).startsWith("DENIED (rule_limit): 8 rules are active"))

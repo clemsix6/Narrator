@@ -47,9 +47,10 @@ import java.util.UUID
  *    do (a `teleport` to another player, an effect that wounds or lifts), and its arguments, the target filled with
  *    a stand-in, pass the tool's own decoding and dry checks with the Director's caller (`EngineActions.check`):
  *    ids, the chaos level's caps, arguments that contradict each other; then the creature named has the attribute
- *    a `mob_attribute` changes. A rule cannot do what the Director may not.
+ *    a `mob_attribute` changes. A rule cannot do what the Director may not;
+ * 4. at most one `punish` per target.
  *
- * The limit of active rules (step 4) is the rule book's ([RuleBook]): it needs the state.
+ * The limit of active rules (step 5) is the rule book's ([RuleBook]): it needs the state.
  */
 
 /** The kinds of ids a rule's conditions name (M4 §8.3). [tags]: whether `#tag` is allowed. */
@@ -278,7 +279,22 @@ class RuleValidator(private val services: NarratorServices, private val actions:
         val conditions = conditions(spec.trigger, spec.conditions)
         val players = players(conditions.players, caller)
         spec.effects.forEachIndexed { index, effect -> effect(index + 1, effect, spec.trigger, conditions, caller) }
+        oncePunished(spec.effects)
         return ValidRule(spec.copy(conditions = conditions.copy(players = players.map { it.name }.ifEmpty { null })), players)
+    }
+
+    /**
+     * At most one `punish` per target in a rule (M4 code review, finding 16): the guards refuse a second `punish` of
+     * one act on a player, so a second effect would only ever be refused.
+     */
+    private fun oncePunished(effects: List<RuleEffect>) {
+        val punishes = effects.withIndex().filter { it.value.tool == PUNISH }
+        val twice = punishes.firstOrNull { (index, effect) -> punishes.any { it.index < index && it.value.at == effect.at } } ?: return
+        val first = punishes.first { it.value.at == twice.value.at }
+        reject(
+            "effect ${twice.index + 1} (punish): effect ${first.index + 1} already punishes the ${twice.value.at.id}, and an act punishes a player " +
+                "once: compose it with the other tools",
+        )
     }
 
     /** Step 1: the bounds of the specification, as `create_rule` decodes it (a specification built by the code too). */
@@ -483,6 +499,7 @@ class RuleValidator(private val services: NarratorServices, private val actions:
         const val LEVITATION = "minecraft:levitation"
 
         const val MOB_ATTRIBUTE = "mob_attribute"
+        const val PUNISH = "punish"
 
         /**
          * The stand-in player of the checks: as long as the longest name, so that a text with `{actor}` that fits

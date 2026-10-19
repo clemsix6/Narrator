@@ -1,4 +1,4 @@
-# Passation M4-FIX-D : règles (relecture de M4, constats 7, 8, 12, 22, 30, 31, 33)
+# Passation M4-FIX-D : règles (relecture de M4, constats 7, 8, 12, 16, 22, 30, 31, 33)
 
 Lot D des corrections de la relecture de M4 (`design/reviews/M4_REVIEW.md`), ajusté par les « Décisions du
 superviseur » (C8, C12, C31). **En cas de contradiction avec `M4.md` §8, ou avec les passations M4-14 et M4-18, le
@@ -161,6 +161,20 @@ Hors de ma liste (signalé) :
   trop forte pour un chaos abaissé (`RuleEngineTest`, `FakeGuards.chaos = 1`) et, en jeu, par une téléportation à
   `x 29999999` (au-delà de la bordure : `INVALID` seulement à l'exécution).
 
+### 16, côté règles — un seul `punish` par cible (renvoyé au lot D par M4-FIX-F)
+
+- Le lot F refuse un second `punish` d'un même acte sur un joueur (`already_punished`). Une règle à deux effets
+  `punish` sur la même cible (`at` identique) est donc refusée dès la création : `effect 3 (punish): effect 1 already
+  punishes the actor, and an act punishes a player once: compose it with the other tools`.
+- Test : `RuleValidationTest` › *a rule never piles on a player*.
+
+### Avec le lot F (fusionné avant mon dernier `build`)
+
+- La part de parole des actes du moteur (4 répliques par minute pour toutes les règles) et `glowing` tenu pour
+  nuisible par `apply_effect` ne touchent pas mes tests (`glowing` des vaches passe par `mob_effect`, pas par
+  `apply_effect`).
+- `Guards.vet` (contrôle pur) n'est pas utilisé ici : le moteur des règles n'a pas de pré-contrôle à faire de son côté.
+
 ## Ce que les lots suivants doivent savoir
 
 ### Lot H (moteur désactivé, assemblage, stabilité)
@@ -194,10 +208,11 @@ Hors de ma liste (signalé) :
   pour la lévitation et `punish at subject`).
 - GameTests lancés seuls : `rule_engine_game_tests_*` (11/11), `rule_game_tests_*` (4/4),
   `mechanics_command_game_tests_*` (2/2).
-- `git merge main` (lot E, design de M5), puis `build` : **1 496 tests unitaires verts** ; GameTests, premier
-  lancement 307/308, seul échec `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued,
-  alive, put out: 3.33 », l'instabilité connue du constat 22, lot H) ; second lancement **« All 308 required tests
-  passed »**, puis `build` final vert (voir le rapport).
+- Après `git merge main` (lot E, design de M5) : `build` à 1 496 tests unitaires verts, GameTests 307/308, seul
+  échec `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued, alive, put out:
+  3.33 », l'instabilité connue du constat 22, lot H) ; relancés : « All 308 required tests passed ».
+- Après un second `git merge main` (lot F) et l'ajout du constat 16 : **`build` vert, 1 500 tests unitaires,
+  « All 315 required tests passed »**, puis `runGameTest` relancé : de nouveau 315/315.
 - Signatures vérifiées avec `jp.ps1` : `TestInstanceBlockEntity.getTestBounds` (padding), `GameTest.padding`,
   `ServerLevel.setChunkForced`, `ServerChunkCache.getChunkNow`, `ChunkPos.containing`, `DefaultAttributes.getSupplier`
   / `hasSupplier`, `AttributeSupplier.hasAttribute`, `AttributeInstance.getModifiers`, `AttributeModifier.id` /
