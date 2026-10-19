@@ -178,10 +178,13 @@ Les autres récompenses `give_item` du Directeur (hors défis) tombent toujours 
   | 27 | `ChallengeGameTests.aParticipantGoneAsTheChallengeStartsIsOutOfASurvive`, `aGoalThatCannotBeResolvedIsSaidOnce`, `ChallengeStakesGameTests.aLostChallengesForfeitSparesTheLatecomerAndTheOffline` | Ann « en lice » ; trois `ERROR` ; « lost » pour Dan |
   | 36 | `ChallengeStakesGameTests.anItemRewardForAFullInventoryWaitsInTheLedgerNeverOnTheGround`, `StakesTest` (+1) | la pomme au sol, rien dans le registre |
 
-- `git merge main` (lot E et le design de M5) : sans conflit.
-- `.\gradlew.bat build` sur l'état fusionné : **vert**, **1 496 tests unitaires** (0 échec, 0 ignoré) et **« All 315
-  required tests passed »**. Les lancements précédents ont révélé deux défauts corrigés depuis : `Answers.matches`
+- `git merge main` trois fois (lot E et le design de M5 ; puis les lots A, C, F, G ; puis le lot D) : sans conflit.
+  Le lot A a daté `Settlement` (`at` nul par défaut) : `Reconcile.drop` et `BetBook.giveBack` le laissent nul.
+- `.\gradlew.bat build` sur l'état fusionné final : **vert**, **1 527 tests unitaires** (0 échec, 0 ignoré) et **« All
+  347 required tests passed »**. Les lancements précédents ont révélé deux défauts corrigés depuis : `Answers.matches`
   borné cassait `RuleEngineTest`, et l'ordre canon puis enjeux rendait le test d'assemblage instable (voir plus haut).
-  Un lancement a aussi échoué sur `rule_engine_game_tests_a_cow_hit_flies_then_bursts_where_it_is` (« timed out
-  waiting for: the blast where the cow is »), l'instabilité connue du constat 22 (lot H), sans lien avec ce lot.
+  Deux lancements intermédiaires ont échoué sur des tests hors de ce lot, les instabilités connues du constat 22
+  (lot H) : `rule_engine_game_tests_a_cow_hit_flies_then_bursts_where_it_is` (« timed out waiting for: the blast
+  where the cow is ») et `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued, alive,
+  put out: 3.33 », le message exact de la relecture).
 - Aucun appel réel à Claude ; pas de `runServer`.
