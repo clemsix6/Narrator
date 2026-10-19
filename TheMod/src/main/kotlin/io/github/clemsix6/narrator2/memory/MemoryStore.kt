@@ -110,7 +110,8 @@ interface MemoryStore {
 
     suspend fun addChronicle(draft: ChronicleDraft, author: Author): ChronicleEntry
 
-    suspend fun addNote(draft: NoteDraft, author: Author): Note
+    /** A note for the Director; [Added.Duplicate] when the same is open already ([Dedup.note]). */
+    suspend fun addNote(draft: NoteDraft, author: Author): Added<Note>
 
     /** A note was shown to the Director ([NoteStatus.SHOWN], `shown_count + 1`), or is [NoteStatus.DONE]. */
     suspend fun markNote(ref: Ref, status: NoteStatus, author: Author): Note

@@ -108,6 +108,12 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
   - `gateway.cacheTtl` vaut donc **`off` par défaut** (aucun marqueur envoyé) : voir § *Vérifié par liveTest*
     et « Exigences pour ClaudeClient » ci-dessous. `1h` et `5m` restent disponibles dans la configuration
     pour une passerelle qui ne poserait pas son propre marqueur.
+  - **D'une conversation à l'autre, notre prompt système n'est pas relu** (mesuré en M3-19 et M3-POST, preuve
+    dans `docs/design/handoff/M3-POST.md` §3) : le préfixe commun relu ne couvre que les outils et le bloc de la
+    passerelle, et notre prompt système est rendu **après le premier message**. Une retouche du prompt laisse
+    relire le premier message déjà vu, ce qui n'est possible que si le prompt vient après. Nos octets sont
+    identiques d'une conversation à l'autre ; le correctif est côté passerelle (un marqueur à la fin de notre
+    prompt, laissé dans `system`).
   - Ce comportement (un bloc portant déjà un `cache_control` `ttl=1h` avant l'application du nôtre) est,
     d'après la lecture du code (§ *Résumé compte amont clé API vs OAuth* ci-dessous), un signe de cloaking
     OAuth côté compte amont, pas d'un compte clé API nu.

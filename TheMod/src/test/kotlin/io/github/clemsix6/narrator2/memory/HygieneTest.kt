@@ -248,7 +248,7 @@ class HygieneTest {
     fun `every 10 minutes, notes shown as often as the briefing shows them and dream hints shown or 7 days old are done`() = runBlocking<Unit> {
         playClock.load(start.toEpochMilli())
         suspend fun note(kind: NoteKind, shown: Int): Ref {
-            val ref = fake.addNote(NoteDraft(kind, "Bartok a été vu deux fois au même endroit."), engine).ref
+            val ref = fake.addNote(NoteDraft(kind, "Bartok a été vu deux fois au même endroit."), engine).row.ref
             repeat(shown) { fake.markNote(ref, NoteStatus.SHOWN, engine) }
             return ref
         }

@@ -9,6 +9,8 @@ import io.github.clemsix6.narrator2.core.ServerThreadTimeoutException
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -23,7 +25,8 @@ import java.time.Clock
  *   `user` message returns every result.
  * - A tool the conversation does not have answers `INVALID`; while the server is not running, every
  *   call answers `FAILED: server is stopping` without running.
- * - Arguments are decoded and checked first ([ToolArgs]): `INVALID` with every problem.
+ * - Arguments are decoded and checked first ([ToolArgs]): `INVALID` with every problem. Arguments written
+ *   as JSON text and read as the value it holds are a `tool args_coerced` decision (`DEBUG`).
  * - Each run is bounded by the tool's `timeoutMs`. Past it, a read answers `TIMEOUT`; any other tool
  *   answers `UNKNOWN`, as its action may still happen (a task already started on the server thread
  *   cannot be stopped).
@@ -64,6 +67,7 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
         when (val decoded = ToolArgs.decode(tool.args, input)) {
             is ToolArgs.Decoded.Invalid -> ToolResult.invalid(decoded.problem)
             is ToolArgs.Decoded.Ok -> {
+                if (decoded.coerced.isNotEmpty()) coerced(tool, caller, decoded.coerced)
                 val context = ToolContext(services, caller, clock, tool.timeoutMs)
                 withTimeoutOrNull(tool.timeoutMs) { tool.run(context, decoded.args) } ?: overtime(tool)
             }
@@ -74,6 +78,20 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
     } catch (e: Throwable) {
         if (e is VirtualMachineError) throw e
         failure(tool, e) // an Error too (a TODO, a class missing after a game update): the call fails, not the turn
+    }
+
+    /** A `tool args_coerced` decision: arguments written as JSON text were read as the values they hold ([ToolArgs]). */
+    private fun coerced(tool: NarratorTool<*>, caller: Caller, paths: List<String>) {
+        Decisions(services.trace, clock).record(
+            log,
+            DecisionRecord.Kind.TOOL,
+            "args_coerced",
+            subject = tool.name,
+            reason = "${paths.joinToString()} written as JSON text, read as the value it holds (${caller.role.id})",
+            conversationId = caller.conversationId,
+            turnId = caller.turnId,
+            level = Log.Level.DEBUG,
+        )
     }
 
     private fun overtime(tool: NarratorTool<*>): ToolResult {

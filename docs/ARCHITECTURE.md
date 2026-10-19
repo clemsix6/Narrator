@@ -62,7 +62,7 @@ Tout vit dans le processus du serveur : un seul `.jar` à déposer dans `mods/`,
 
 L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouveau et les appels à Claude sont annulés sans rien ajouter aux conversations ; à `SERVER_STOPPED`, une fois les joueurs déconnectés et leurs départs journalisés, le Journal est vidé (avec un délai maximal) puis la base fermée.
 
-**Ce qui doit rester cohérent avec le monde vit dans le monde** : l'index des blocs posés, les lieux visités, l'état des garde-fous (modificateurs d'attributs, confiscations, mises et offrandes en séquestre, mort protégée, grâce) et l'échéance des créatures du Narrateur sont des pièces jointes Fabric persistantes, sauvées avec le tronçon ou le joueur ; les blocs que les pièges doivent remettre sont dans leur tronçon ; les défis et duels en cours, les règles actives et les rappels du Directeur sont dans une pièce jointe **globale** (`server.globalAttachments()`), sauvée avec le monde ([design M4](design/M4.md) §3). DuckDB garde l'historique ; il n'est jamais la source d'un état de jeu.
+**Ce qui doit rester cohérent avec le monde vit dans le monde** : l'index des blocs posés, les lieux visités, l'état des garde-fous (modificateurs d'attributs, confiscations, mises et offrandes en séquestre, mort protégée, grâce) et l'échéance des créatures du Narrateur sont des pièces jointes Fabric persistantes, sauvées avec le tronçon ou le joueur ; les blocs que les pièges doivent retirer sont dans leur tronçon ; les défis et duels en cours, les règles actives et les rappels du Directeur sont dans une pièce jointe **globale** (`server.globalAttachments()`), sauvée avec le monde ([design M4](design/M4.md) §3). DuckDB garde l'historique ; il n'est jamais la source d'un état de jeu.
 
 ## 3. Stack technique
 
@@ -157,8 +157,8 @@ Le Narrateur agit surtout par des outils typés, validés et journalisés — il
 
 - **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). Les barres de boss (M4) n'existent qu'attachées à un défi ou à un duel : une par participant, tenue par le moteur.
 - **Effets sur les joueurs** : `apply_effect` / `remove_effect`, `set_attribute` / `reset_attribute` (temporaire), `teleport` (atterrissage sûr, même dimension en M2), `launch`, `give_item` / `take_item` (objets décrits en JSON : nom, lore, enchantements, incassable… convertis en composants 26.x par le code ; une confiscation est toujours temporaire).
-- **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time` ; en M4, `trap` (pièges de blocs temporaires, remis tout seuls par le `BlockRestorer`, jamais sur une construction).
-- **Mécaniques** (M4, §9) : `start_challenge`, `end_challenge`, `propose_duel`, `create_rule`, `remove_rule`, `punish`, `favor`, `answer_offering` ; `teleport` sait aussi un point au hasard dans un rayon.
+- **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time`.
+- **Mécaniques** (M4, §9) : `start_challenge`, `end_challenge`, `propose_duel`, `create_rule`, `remove_rule`, `punish` (dont deux pièges de blocs, posés dans l'air pour quelques secondes et retirés tout seuls par le `BlockRestorer`), `favor` (qui prend aussi une offrande en échange d'une faveur) ; `teleport` sait aussi un point au hasard dans un rayon. Ces outils n'existent que quand le moteur des mécaniques est disponible.
 - **Commandes brutes** : `run_command`, en dernier recours. La commande est d'abord **analysée par le parseur Brigadier du serveur sans être exécutée** : si elle est invalide, le Narrateur reçoit l'erreur, sa position, et l'usage exact de la commande en 26.3. L'outil `command_help` renvoie l'arbre de syntaxe d'une commande. C'est ce qui manquait à la v1.
 
 La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retours, est dans le [design M1/M2](design/M1_M2.md) §9. Les schémas JSON sont générés depuis les classes d'arguments Kotlin et validés côté serveur ; on n'utilise pas `strict: true` (trop limité en nombre d'outils et en contraintes, et non vérifié à travers LLMGW).
@@ -279,15 +279,16 @@ le canon et prévient le Directeur (`CHALLENGE`).
 | Survie (`survive`) | « Survivre 10 minutes sans armure » | morts, armure, départs |
 | Quiz, énigme (`answer`) | Répondre dans le chat | chat public et prières, réponses normalisées |
 | Construction jugée (`judged`) | « La plus belle statue en 15 minutes » | le Narrateur nomme les gagnants à l'échéance (`JUDGE`) |
-| Duel (`propose_duel`) | PvP consenti, dans une arène ou sur place, positions restaurées | coup fatal de l'adversaire **arrêté à 1 PV** : personne ne meurt d'un duel |
+| Duel (`propose_duel`) | PvP consenti, dans une arène de leur dimension ou sur place, positions restaurées | coup fatal de l'adversaire **arrêté à 1 PV**, toute autre mort refusée avec un sauvetage : personne ne meurt d'un duel |
 | Pari (`/bet`) | Les joueurs misent la pile qu'ils tiennent sur l'issue d'un défi ou d'un duel | l'issue ; les mises perdues vont aux parieurs gagnants, **rien au Narrateur** |
 | Personnalisé | Condition implémentée par un module de la Forge | M5 |
 
 ### 9.2 Châtiments
-Un **catalogue** (`punish`) de onze punitions composées, avec une **sévérité de 1 à 5** plafonnée par le niveau de
+Un **catalogue** (`punish`) de treize punitions composées, avec une **sévérité de 1 à 5** plafonnée par le niveau de
 chaos : joueur minuscule, gravité lunaire, pioche au ralenti, pieds de plomb, faim soudaine, inventaire mélangé
 (rien n'est perdu), invités surprises (zombies nommés), pluie de slimes, envol, téléportation au sommet d'un arbre,
-foudre. Les outils bruts restent pour le reste, et les pièges de blocs (§9.4). Toute action hostile, de n'importe
+foudre, cage de verre, toiles (les pièges de blocs, §9.4). Les outils bruts restent pour le reste. Le gage d'un défi
+perdu est une punition légère (sévérité 1 ou 2), jamais pour un joueur arrivé en cours de défi. Toute action hostile, de n'importe
 quel outil, d'une règle ou d'un enjeu, porte une **catégorie** (taille, gravité, mouvement, foudre…) : une même
 catégorie ne frappe pas deux fois le même joueur avant un délai qui dépend du chaos (30 min au chaos 3). Chaque
 châtiment a une raison, gardée dans l'historique du joueur, et une durée ; il passe par les garde-fous comme tout
@@ -299,16 +300,19 @@ indices vers un trésor (l'Éclaireur et un livre), et trois faveurs que le mote
 **pardon** (tout ce que le Narrateur a infligé est levé), la **grâce** (protection temporaire : ni lui ni ses
 créatures ne touchent le joueur) et le **joker** (un objet que le joueur joue lui-même pour lever un châtiment). Leur
 **coût** : un rationnement par joueur (objets précieux, une grâce par heure, un joker par jour), et les
-**offrandes** : un joueur offre de lui-même la pile qu'il tient (`/offer`) ; si le Narrateur l'accepte, il la garde
-contre une faveur, et c'est tracé ; sinon, ou sans réponse, elle revient.
+**offrandes** : un joueur offre de lui-même la pile qu'il tient (`/offer`, une fois par 10 min au plus) ; le
+Narrateur ne la prend qu'en accordant une faveur dans le même appel (`favor` avec l'offrande), et c'est tracé ;
+sinon elle revient d'elle-même. Le Narrateur ne réclame jamais d'offrande.
 
 ### 9.4 Pièges et intentions
 Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur —
 « quand Bartok entrera dans le Nether, fais apparaître un comité d'accueil », « si Mimosa descend sous y=0,
 préviens-moi pour que je la félicite ». C'est une règle de sorte **`plan`** (§10.1), secrète et souvent à usage
 unique, gardée au canon pour qu'il s'en souvienne d'un chapitre à l'autre. Les **pièges de blocs** (cage de verre,
-fosse, toiles, sol de glace ou de slime) passent par l'outil `trap` : posés pour quelques secondes, remis tout seuls
-par le `BlockRestorer`, seul chemin d'écriture de blocs, et jamais sur ce que les joueurs ont construit.
+toiles) sont deux punitions du catalogue : posés **seulement dans l'air** autour du joueur, pour quelques secondes,
+puis retirés tout seuls par le `BlockRestorer`, seul chemin d'écriture de blocs. Ils ne remplacent jamais un bloc,
+naturel ou construit : rien de ce que les joueurs ont construit n'est touché, même s'il date d'avant le mod. Fosses et
+sols piégés attendent la Forge.
 
 ### 9.5 Récits
 Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée
@@ -342,7 +346,7 @@ Une règle est un objet JSON validé : **déclencheur → conditions → effets*
 - **Effets** (1 à 4) : **un outil du Narrateur avec ses arguments habituels**, une cible `at` que le moteur remplit
   (`actor` le joueur du déclencheur, `subject` sa créature ou le joueur touché, `position`, `everyone`) et un délai.
   Outils permis : parole, mise en scène, effets, attributs, propulsion, téléportation, invocation, foudre,
-  explosion, piège, `punish` ; et trois réservés aux règles : `mob_effect`, `mob_attribute` (sur la créature du
+  explosion, `punish` (pièges compris) ; et trois réservés aux règles : `mob_effect`, `mob_attribute` (sur la créature du
   déclencheur) et `notify` (réveille le Directeur avec sa note). Jamais de don, de confiscation, de commande, de
   météo, ni de règle qui crée une règle.
 
@@ -453,7 +457,7 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 ## 14. Claude via LLMGW
 
 - Le mod utilise le **SDK Java officiel d'Anthropic** avec l'URL de LLMGW et une **clé projet LLMGW**. C'est l'API Messages standard : LLMGW gère les comptes, les budgets et le suivi de consommation.
-- **On accède au serveur LLMGW existant du propriétaire par un tunnel SSH sur son réseau local ; on n'installe jamais LLMGW en local** (voir `CLAUDE.md` et `docs/research/LLMGW.md`).
+- **On accède au serveur LLMGW existant du propriétaire par un tunnel SSH, qui passe par Cloudflare Access (`cloudflared`) depuis le 18/10/2026 ; on n'installe jamais LLMGW en local** (voir `CLAUDE.md` et `docs/research/LLMGW.md`).
 - **Modèles** : Opus 5.5 pour le Directeur, configurable **par rôle** (modèle et effort).
 - **Effort** : le Directeur démarre à `medium`. Sur Opus 5.5, `medium` dépasse le `high` d'Opus 5 et répond plus vite ; `high` reste disponible dans la configuration. Le Forgeron et le Rêveur travaillent en `high` : ils sont asynchrones, la latence n'y coûte rien.
 - **Contraintes d'Opus 5.5 prises en compte** : réflexion toujours active (l'effort est le seul réglage), pas de `tool_choice` forcé, historique append-only, gestion du `stop_reason: refusal`.
@@ -525,9 +529,11 @@ Le design exécutable de M4 est dans [docs/design/M4.md](design/M4.md). Il tranc
 - **Un défi, un duel, une loi ou un plan est une ligne du canon** (`C-…`, colonne `mechanic`), que le moteur suit et résout lui-même ; une nouvelle sorte de canon, `plan` (migration V3).
 - **Le moteur agit par les vrais outils** (`EngineActions`), chaque acte avec son propre `Caller` : mêmes vérifications, plafonds et garde-fous que le Directeur. Les effets d'une Règle sont des appels d'outils avec une cible `at`.
 - **Châtiments** : catégories et délai par catégorie et par joueur pour toute action hostile ; catalogue `punish` à sévérité plafonnée par le chaos.
-- **Objets** : mises et offrandes en séquestre dans l'état du joueur ; paris sans maison ; offrande = don voulu et compensé, tracé.
-- **Blocs** : un seul chemin d'écriture, le `BlockRestorer`, temporaire, jamais sur une construction ; l'index des blocs posés vérifie le bloc encore en place.
-- **L'Éclaireur** entre avec `survey` ; les rappels deviennent persistants ; la reprise d'un Journal indisponible au démarrage est rangée en M6.
+- **Objets** : mises et offrandes en séquestre dans l'état du joueur, avec une échéance de secours ; paris sans maison ; une offrande n'est prise que contre une faveur accordée dans le même appel, tracée.
+- **Blocs** : un seul chemin d'écriture, le `BlockRestorer`, temporaire et **seulement dans l'air** : il ne remplace jamais un bloc, donc ne touche jamais une construction, même d'avant le mod ; l'index des blocs posés vérifie le bloc encore en place (condition `grief` des règles).
+- **Duels** : personne n'y meurt ; toute mort d'un duelliste est refusée, avec un sauvetage quand l'adversaire n'en est pas la cause.
+- **L'Éclaireur** entre avec `survey` ; les rappels deviennent persistants ; `/narrator restart` est rangé en M6, et les nouvelles tentatives d'ouverture du Journal au démarrage sont faites hors de M4.
+- **Relecture du 18/10/2026** ([relecture](design/reviews/M4_DESIGN_REVIEW.md)) : décisions A à F du superviseur intégrées, pièges limités à l'air, offrandes compensées par le code, duels sans aucune mort, découpage corrigé (44 outils pour le Directeur, tous dépendants du moteur).
 
 ## 17. Décisions prises
 
@@ -547,4 +553,4 @@ Tranché le 25/09/2026 :
 
 6. **EULA de Minecraft** : le propriétaire autorise son acceptation pour tous les serveurs de dev et de test.
 7. **Vie privée** : les messages privés entre joueurs sont journalisés, mais **jamais exposés au modèle, y compris par l'outil `sql` en lecture seule** — pas seulement écartés du flux d'événements qui réveille le Directeur (§7.2). Le schéma et les vues exposées au modèle (M1, [design M1/M2](design/M1_M2.md) §5 et §6.4) doivent en tenir compte.
-8. **Le thread serveur n'attend jamais la base, sauf au démarrage** (tranché le 18/10/2026, relecture de M3, [constat 21](design/reviews/M3_REVIEW.md)). La règle d'équipe (`CLAUDE.md`) vise la boucle de jeu : tout accès à la base passe par le Journal, hors du thread serveur. Une seule exception, bornée : **au démarrage, avant la première tick, une lecture bornée de la base (30 s au total) est permise sur le thread serveur.** Elle sert au rappel `SERVER_STARTED` de la mémoire : lire le schéma, puis charger les horloges de jeu (l'union des sessions). C'est le même régime que l'ouverture du Journal, juste avant : aucun joueur n'est placé tant que le rappel n'a pas rendu la main, et les deux lectures sont courtes. Charger l'horloge en tâche de fond et retenir les connexions ajouterait à chaque composant un état « mémoire pas prête », sans gain réel. Au-delà de la borne, la mémoire démarre désactivée (`DisabledMemory`) plutôt que de retenir le serveur. À l'arrêt, l'attente est aussi bornée (`ShutdownSequence`, 11 s pour la mémoire).
+8. **Le thread serveur n'attend jamais la base, sauf au démarrage** (tranché le 18/10/2026, relecture de M3, [constat 21](design/reviews/M3_REVIEW.md)). La règle d'équipe (`CLAUDE.md`) vise la boucle de jeu : tout accès à la base passe par le Journal, hors du thread serveur. Une seule exception, bornée : **au démarrage, avant la première tick, une lecture bornée de la base (30 s au total) est permise sur le thread serveur.** Elle sert au rappel `SERVER_STARTED` de la mémoire : lire le schéma, puis charger les horloges de jeu (l'union des sessions). C'est le même régime que l'ouverture du Journal, juste avant : aucun joueur n'est placé tant que le rappel n'a pas rendu la main, et les deux lectures sont courtes. **L'ouverture du Journal a sa propre borne, à part** : **trois tentatives en 10 s au plus** (à 0 s, puis 2 s et 6 s environ), sur le thread serveur, avant la première tick. Seule une erreur passagère est retentée (fichier tenu un instant par une sauvegarde, un antivirus ou un ancien processus ; erreur d'entrée-sortie) ; un fichier corrompu, une migration qui échoue ou une configuration invalide ne le sont jamais. Chaque tentative ratée écrit un `WARN` avec sa cause, l'échec final un `ERROR` puis `DisabledJournal` (`JOURNAL-RETRY`). Charger l'horloge en tâche de fond et retenir les connexions ajouterait à chaque composant un état « mémoire pas prête », sans gain réel. Au-delà de la borne, la mémoire démarre désactivée (`DisabledMemory`) plutôt que de retenir le serveur. À l'arrêt, l'attente est aussi bornée (`ShutdownSequence`, 11 s pour la mémoire).

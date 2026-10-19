@@ -125,6 +125,10 @@ class DreamReplayTest {
             ),
             first.path("tools").map { it.path("name").asText() },
         )
+        // The six conversations open on the same tools and system prompt, byte for byte (M3-POST, the gateway's cache).
+        val prefixes = f.fake.requests.groupBy { it.conversation }.values.map { it.first() }.map { listOf(it.raw("tools"), it.raw("system")) }
+        assertEquals(6, prefixes.size)
+        assertEquals(1, prefixes.toSet().size)
 
         // Step 1: what the model read about Bartok, and what it wrote; then the reflection is kept.
         val opening = text(first.path("messages").first())
@@ -134,7 +138,7 @@ class DreamReplayTest {
         assertTrue("<new_interactions since=\"ever\" count=\"2\">\n" in opening, opening)
         assertTrue("- ${e.insulted} 10-01 20:01 insult -2 · said « narrateur t'es nul »: a traité le Narrateur de « nul » dans le chat" in opening, opening)
         assertTrue("<stats_change>(first reflection on this player: no earlier values; the sheet has the current ones)</stats_change>" in opening, opening)
-        assertTrue("- [10-01 20:01] e${e.insult} \"narrateur t'es nul\"" in opening, opening)
+        assertTrue("- [10-01 20:01] e${e.insult} CHAT (addressed 0.9, hostile, provocation): \"narrateur t'es nul\"" in opening, opening)
         assertTrue("- Mimosa: " in opening && "toward them: none named · toward this player: none named" in opening, opening)
         assertTrue(opening.length <= DreamInputs.STEP_MAX.getValue(1), "${opening.length}")
         val trait = f.write { traits(f.bartok.uuid) }.single()

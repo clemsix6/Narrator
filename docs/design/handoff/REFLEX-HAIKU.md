@@ -77,7 +77,7 @@ Supprimés : `JevClient.kt`, `JevQuestions.kt`, `JevReflexes.kt`, `JevClientTest
 9. **Messages privés** : `triageChatMessage` refuse toujours `WHISPER` avant tout appel (test `a private message never reaches the model` : aucune requête n'arrive au faux serveur).
 10. **GameTests avec le faux LLMGW** (`DirectorEndToEndTests`, `MemoryEndToEndTests`, `NarratorGameTests`) : `"reflex": { "enabled": false }` dans leur configuration, sinon les appels des réflexes mangeraient les réponses scriptées du modèle. `LiveDirectorGameTests` utilise le vrai Haiku.
 11. **Commentaires SQL** : `V1__journal.sql` dit encore `jev:<model> | heuristic` et `anthropic | jev`, et `COMMENT ON TABLE llm_calls` parle de Jev. Une migration publiée ne se modifie pas ; **M4-01** (V3) peut corriger le commentaire de `llm_calls`.
-12. **`docs/design/M4.md`** cite encore Jev (§ tests, « aucun appel réel à Claude ni à Jev ») : non modifié, il appartient à la relecture de M4.
+12. **`docs/design/M4.md`** : sa seule mention de Jev (« aucun appel réel à Claude ni à Jev ») est corrigée, après la fusion de sa relecture.
 
 ## Mémoire (M3)
 
@@ -151,3 +151,10 @@ Variables facultatives : `NARRATOR2_REFLEX_THINKING=true`, `NARRATOR2_REFLEX_TIM
 - Un GameTest qui donne une clé et le faux LLMGW doit désactiver les réflexes ou scripter leurs réponses (requêtes sans `stream`, session `narrator2-reflex`).
 - Les signaux de personnalité se rempliront maintenant : le poids qu'ils ont dans les traits (M3 §21, point 5) reste à régler sur de vraies données.
 - Le battement réveille plus souvent qu'avant, quand l'activité vaut le coup (point 3) : à surveiller dans les décisions `heartbeat` d'une vraie partie.
+
+## Vérifications
+
+- **Tests unitaires ajoutés** : `ClaudeReflexesTest` (17 tests contre `FakeAnthropic`) : forme exacte de la requête (modèle, réflexion désactivée, effort, schéma et ordre des étiquettes, prompt système, pas d'outils, session, clé) ; lecture du verdict et ligne `llm_calls` complète ; bloc Markdown toléré ; contexte et prière ; **injection** (balises, retours à la ligne, guillemets d'attribut, prompt système intact) ; **message privé jamais envoyé** ; délai dépassé → heuristique dans le temps ; 429 et 529 jamais relancés ; 402 → silence jusqu'au `reset_at` ; disjoncteur puis sonde ; étiquettes manquantes, inconnues ou hors bornes ; refus et `max_tokens` ; battement ; sans client ; client remplacé ; réflexion activée ; la clé, le chat et la raison absents des logs. Plus : `ChatTriageTest` (prière signalée, règle de manipulation), `StatusLinesTest` (ligne du réflexe actif), `SettingsLoaderTest` (réflexes désactivés), tests de configuration (`reflex`, ancienne section `jev` ignorée sans citer sa clé).
+- **`git merge main`** (M3-POST, JOURNAL-RETRY, relecture de M4) : deux conflits de texte (`DreamInputs.kt`, `dreamer.md`), résolus en gardant les deux changements ; un `jev:` de plus dans `DreamInputsTest` corrigé.
+- **`.\gradlew.bat build` après la fusion : vert**, avec **1 169 tests unitaires** (0 échec, 0 ignoré) et **172 GameTests** (« All 172 required tests passed »).
+- **Tests réels** : `LiveReflexEvalTest`, 9 passes (chiffres ci-dessus), la dernière avec la configuration par défaut, verte. Pas de `runServer` : le chemin en jeu est couvert par les GameTests (réflexes désactivés avec le faux LLMGW, heuristique sans clé) et le vrai Haiku par le test réel.

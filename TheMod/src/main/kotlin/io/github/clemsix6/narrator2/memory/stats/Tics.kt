@@ -15,6 +15,11 @@ import kotlin.math.roundToInt
  *   lines at least (a phrase inside a longer one found as often is left out);
  * - **ellipsis**: « … » ending a sentence in more than [ELLIPSIS_SHARE] of the lines.
  *
+ * Of tics nested in one another (an opener inside a phrase, a phrase inside a longer one), one is shown
+ * (M3-POST): the one in the most lines, the longest at equal count. « Ministère de l'Aviation Divine » ×5
+ * leaves out « Ministère de l'Aviation » ×5 and « Ministère de l'Aviation Divine guichet » ×3: avoiding it
+ * avoids them too.
+ *
  * Words are compared in lower case; a tic is shown as written in its latest line. At most [MAX] tics, the
  * most frequent first: `« Ministère de la » ×7 (last 2h ago)`.
  */
@@ -48,13 +53,19 @@ object Tics {
             .sortedWith(compareByDescending<Tic> { it.text.split(' ').size }.thenByDescending { it.count })
         val kept = mutableListOf<Tic>()
         for (phrase in phrases) {
-            val inside = kept.any { longer -> " ${longer.text.lowercase()} ".contains(" ${phrase.text.lowercase()} ") && longer.count >= phrase.count }
-            if (!inside) kept += phrase
+            if (kept.none { longer -> inside(phrase, longer) && longer.count >= phrase.count }) kept += phrase
         }
-        return (openers + kept + listOfNotNull(ellipsis(lines)))
+        val shown = mutableListOf<Tic>()
+        for (tic in (openers + kept).sortedWith(compareByDescending<Tic> { it.count }.thenByDescending { it.text.split(' ').size })) {
+            if (shown.none { inside(tic, it) || inside(it, tic) }) shown += tic
+        }
+        return (shown + listOfNotNull(ellipsis(lines)))
             .sortedWith(compareByDescending<Tic> { it.count }.thenByDescending { it.last })
             .take(MAX)
     }
+
+    /** Whether the words of [tic] are a run of the words of [other]. */
+    private fun inside(tic: Tic, other: Tic): Boolean = " ${other.text.lowercase()} ".contains(" ${tic.text.lowercase()} ")
 
     /** [tics] as lines for the model: `« Ministère de la » ×7 (last 2h ago)`. */
     fun render(tics: List<Tic>, now: Instant): List<String> = tics.map { tic ->

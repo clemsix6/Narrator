@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.testing
 
+import com.fasterxml.jackson.core.JsonToken
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.MissingNode
@@ -326,6 +327,24 @@ class RecordedRequest(
 
     /** The body as JSON; a missing node when it is not JSON, so `json.path(…)` chains never throw. */
     val json: JsonNode by lazy { runCatching { MAPPER.readTree(body) }.getOrNull() ?: MissingNode.getInstance() }
+
+    /**
+     * The text of the top-level array or object [name] of the body, exactly as sent (`system`, `tools`), to
+     * compare bytes rather than JSON trees; null when the body has no such field.
+     */
+    fun raw(name: String): String? {
+        MAPPER.factory.createParser(body).use { parser ->
+            if (parser.nextToken() != JsonToken.START_OBJECT) return null
+            while (parser.nextToken() == JsonToken.FIELD_NAME) {
+                val field = parser.currentName()
+                parser.nextToken()
+                val start = parser.currentTokenLocation().charOffset.toInt()
+                parser.skipChildren()
+                if (field == name) return body.substring(start, parser.currentLocation().charOffset.toInt())
+            }
+        }
+        return null
+    }
 }
 
 /** What [FakeAnthropic] answers to one request. Built with [reply], [httpError], [budgetExceeded] or [streamError]. */
