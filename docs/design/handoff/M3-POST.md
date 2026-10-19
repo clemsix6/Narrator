@@ -139,8 +139,8 @@ Par le tunnel partagé ouvert par le superviseur (ni ouvert ni fermé par moi). 
 
 ## Vérifications
 
-- `git merge main` (le design de M4, docs seulement) : sans conflit.
-- `.\gradlew.bat build` sur l'état final : **vert**, avec **1 154 tests unitaires** (0 échec, 0 ignoré ; 11 de plus que M3-19) et **172 GameTests** (`All 172 required tests passed`).
+- `git merge main` deux fois, sans conflit : le design de M4 (docs seulement), puis JOURNAL-RETRY (`7ff9f24`).
+- `.\gradlew.bat build` sur l'état final : **vert**, avec **1 171 tests unitaires** (0 échec, 0 ignoré ; dont 11 nouveaux de ce lot) et **172 GameTests** (`All 172 required tests passed`).
 - `PromptsTest` (plafonds), `PromptToolMentionsTest` et `PersonaFrozenTest` sont verts :
   - `director.md` fait 27 874 caractères sur 30 000 ;
   - `dreamer.md` fait 14 223 caractères sur 15 000.
