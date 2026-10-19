@@ -5,9 +5,11 @@ import java.util.UUID
 
 /**
  * Thrown by the store when a write breaks a rule (M3 §4.2). [message] is written for the model, in
- * English, and says how to fix it: tools return it as `Invalid arguments: <message>`.
+ * English, and says how to fix it: tools return it as `Invalid arguments: <message>`, or as
+ * `DENIED (<rule>): <message>` when [rule] names a limit of the pace rather than a wrong argument (M4 §11:
+ * `arc_limit`).
  */
-class MemoryRejected(message: String) : Exception(message)
+class MemoryRejected(message: String, val rule: String? = null) : Exception(message)
 
 /** The result of an add: the new row, or the open row it duplicates (nothing written, M3 §4.3). */
 sealed interface Added<T> {
@@ -51,7 +53,11 @@ data class RecallContext(val conversationId: String?, val turnId: Long?, val eve
  *    - [Source.DREAMER] (it reads the players' chat, never hears the Narrator): only observations among
  *      the memories; only planned arcs and lore in the canon, without quote; resolves arcs only; no
  *      interaction. Its running gags change through [setGag];
- * 4. duplicates are looked for (M3 §4.3): an equivalent open row makes the add an [Added.Duplicate];
+ *    - a row the mechanics engine tracks (`mechanic`, M4 §3.3) is written by the Director's engine tools
+ *      only, and changes status only through [Source.ENGINE] or [Source.OPERATOR]; arcs (M4 §10) have a
+ *      theme that rests once their arc closed, two at most are active, and an active one is due within 7 days;
+ * 4. duplicates are looked for (M3 §4.3): an equivalent open row makes the add an [Added.Duplicate] (never
+ *    for a row the engine tracks);
  * 5. the row, its index terms ([Indexer]) and its `memory_log` row are written;
  * 6. a `memory` decision is recorded (`written`, `duplicate`, `rejected`).
  *

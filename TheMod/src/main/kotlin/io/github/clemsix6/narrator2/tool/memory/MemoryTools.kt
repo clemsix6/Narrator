@@ -62,8 +62,9 @@ fun memoryTools(services: NarratorServices): List<NarratorTool<*>> =
 /**
  * A tool of the memory (M3 §5, §7.5, §8.3): shown only while the memory runs ([ToolEnv.memoryAvailable]).
  * Everything it writes goes through `MemoryStore`, which checks it: a refusal of the store reaches the
- * model as `Invalid arguments: <its message>` (written for the model, with the fix); a Journal that cannot
- * read or write as `FAILED: <why>`. [act] may [refuse] from anywhere.
+ * model as `Invalid arguments: <its message>` (written for the model, with the fix), or as
+ * `DENIED (<rule>): <its message>` for a limit of the pace ([MemoryRejected.rule], `arc_limit`); a Journal
+ * that cannot read or write as `FAILED: <why>`. [act] may [refuse] from anywhere.
  */
 abstract class MemoryTool<A : Any>(name: String, description: String, args: KSerializer<A>, effect: ToolEffect) :
     NarratorTool<A>(name, description, args, effect, TIMEOUT_MS) {
@@ -72,7 +73,8 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
     final override suspend fun run(ctx: ToolContext, args: A): ToolResult = try {
         answer { act(ctx, args) }
     } catch (e: MemoryRejected) {
-        ToolResult.invalid(advice(e.message.orEmpty(), args))
+        val message = e.message.orEmpty()
+        e.rule?.let { ToolResult.denied(it, message) } ?: ToolResult.invalid(advice(message, args))
     } catch (e: JournalUnavailableException) {
         unavailable(e)
     } catch (e: JournalTimeoutException) {
@@ -108,6 +110,10 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
  * Chronicler what was told to the players ([RememberKind.told]) only with the Narrator's words in `quote`;
  * the Dreamer only [DREAMER_KINDS], never with a quote.
  *
+ * Mechanics (M4 §12.3, §10): while the engine runs, the Director starts a challenge with `start_challenge`,
+ * which tracks it, never with `remember`; a plan exists only through `create_rule` (no kind here); an arc
+ * has its [RememberArgs.theme], and an arc the Director starts is due within 7 days (the store's rules).
+ *
  * The Director never sees the `e…` refs: a canon entry it remembers cites as its evidence the lines of its
  * turn that hold its quote ([linesHolding]), so that a promise is tied to the words that made it.
  */
@@ -122,7 +128,7 @@ class RememberTool : MemoryTool<RememberArgs>(
     effect = ToolEffect.ENGINE,
 ) {
     override suspend fun act(ctx: ToolContext, args: RememberArgs): ToolResult {
-        checkApplies(args, ctx.caller.role)
+        checkApplies(args, ctx)
         val evidence = evidenceOf(args.evidence)
         val players = ctx.knownPlayers(args.players.orEmpty(), "players")
         val canon = args.kind.canon
@@ -147,18 +153,14 @@ class RememberTool : MemoryTool<RememberArgs>(
             place = place,
             evidenceEvents = evidence.events + said,
             evidenceTools = evidence.tools,
+            theme = args.theme?.trim()?.lowercase(),
         )
         val added = ctx.memory.store.addCanon(draft, ctx.author())
         val row = added.row
         if (added is Added.Duplicate) return ToolResult.ok("ok: already remembered as ${row.ref} (${ctx.canonLine(row)}); nothing added", row.players)
         if (said.isNotEmpty()) log.debug { "${row.ref} cites ${said.joinToString { "e$it" }} of turn ${ctx.caller.turnId}" }
         val replaced = row.replaces?.let { "; $it retired" }.orEmpty()
-        val wake = when {
-            row.dueAt == null -> ""
-            ctx.caller.role == Role.DIRECTOR -> "; a DUE event will wake you then"
-            else -> "; the Director will get a DUE event then"
-        }
-        return ToolResult.ok("ok: remembered ${row.ref} (${ctx.canonLine(row)})$replaced$wake", row.players)
+        return ToolResult.ok("ok: remembered ${row.ref} (${ctx.canonLine(row)})$replaced${ctx.wake(row)}", row.players)
     }
 
     private suspend fun addMemory(ctx: ToolContext, args: RememberArgs, players: List<PlayerRef>, evidence: Evidence): ToolResult {
@@ -180,9 +182,10 @@ class RememberTool : MemoryTool<RememberArgs>(
         return ToolResult.ok("ok: remembered ${row.ref} ($what)", row.players)
     }
 
-    /** The arguments that do not go with the kind or with the caller's [role], all at once. */
-    private fun checkApplies(args: RememberArgs, role: Role) {
+    /** The arguments that do not go with the kind or with the caller's role, all at once. */
+    private fun checkApplies(args: RememberArgs, ctx: ToolContext) {
         val kind = args.kind
+        val role = ctx.caller.role
         if (role == Role.DREAMER && kind !in DREAMER_KINDS) {
             refuse(
                 ToolResult.invalid(
@@ -191,7 +194,11 @@ class RememberTool : MemoryTool<RememberArgs>(
                 ),
             )
         }
+        if (role == Role.DIRECTOR && kind == RememberKind.CHALLENGE && ctx.services.mechanics.available) {
+            refuse(ToolResult.invalid("a challenge is started with start_challenge: it tracks it, shows its bar and pays its stakes"))
+        }
         val problems = buildList {
+            if (args.theme != null && kind != RememberKind.ARC) add("theme only goes with an arc: leave it out")
             if (args.dueInMinutes != null && kind.canon?.dueAllowed != true) add("due_in_minutes does not apply to ${an(kind.id)}: leave it out")
             if (args.stakes != null && kind != RememberKind.CHALLENGE) add("stakes only go with a challenge: leave stakes out")
             if (args.quote != null && kind.canon == null) add("quote does not apply to ${an(kind.id)}: put the player's own words in what, between « »")
@@ -242,7 +249,9 @@ class RememberTool : MemoryTool<RememberArgs>(
 
 /**
  * `resolve` (M3 §5.2): a canon entry kept, broken, won, lost, retired…, or a planned arc started. The
- * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge.
+ * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge. A row
+ * the mechanics engine tracks is settled by the engine (the store names the tool that ends it, M4 §3.3); an
+ * arc started is due within 7 days, and a third active arc is `DENIED (arc_limit)` (M4 §10).
  */
 class ResolveTool : MemoryTool<ResolveArgs>(
     name = "resolve",
@@ -265,7 +274,8 @@ class ResolveTool : MemoryTool<ResolveArgs>(
         val row = ctx.memory.store.resolveCanon(ref, args.outcome.status, args.note.trim(), winners.map { it.uuid }, ctx.author())
         val by = if (row.winners.isEmpty()) "" else " by ${names(row.winners)}"
         val at = row.resolvedAt?.let { " (${ctx.time(it)})" }.orEmpty()
-        return ToolResult.ok("ok: ${row.ref} ${canonWhat(row)} is now ${row.status.id}$by$at", (row.players + row.winners).distinctBy { it.uuid })
+        val due = row.dueAt?.takeIf { row.status.open }?.let { ", ${ctx.due(it)}${ctx.wake(row)}" }.orEmpty()
+        return ToolResult.ok("ok: ${row.ref} ${canonWhat(row)} is now ${row.status.id}$by$at$due", (row.players + row.winners).distinctBy { it.uuid })
     }
 }
 
@@ -533,7 +543,17 @@ private fun ToolContext.canonLine(row: CanonEntry): String = buildString {
     append(canonWhat(row))
     if (row.status == CanonStatus.PLANNED) append(", planned")
     row.place?.takeIf { row.kind == CanonKind.PLACE }?.let { append(" at ${ToolText.dimension(it.dim)} ${it.x} ${it.y} ${it.z}") }
-    row.dueAt?.let { due -> append(", due ${time(due)}, in ${ToolText.duration(due.toEpochMilli() - clock.millis())}") }
+    row.dueAt?.let { append(", ${due(it)}") }
+}
+
+/** `due 22:10, in 40m`. */
+private fun ToolContext.due(at: Instant): String = "due ${time(at)}, in ${ToolText.duration(at.toEpochMilli() - clock.millis())}"
+
+/** Who [row]'s due time will wake: `; a DUE event will wake you then` for the Director; empty without one. */
+private fun ToolContext.wake(row: CanonEntry): String = when {
+    row.dueAt == null -> ""
+    caller.role == Role.DIRECTOR -> "; a DUE event will wake you then"
+    else -> "; the Director will get a DUE event then"
 }
 
 /** `promise → Mimosa`, `law`. */

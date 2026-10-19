@@ -5,8 +5,12 @@ import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
 import io.github.clemsix6.narrator2.guard.Peril
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
+import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
@@ -40,6 +44,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
@@ -57,8 +62,10 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.enchantment.Enchantments
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.phys.Vec3
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.hypot
 
 /**
  * In-game tests of the actions on players (M1_M2 §9.3, §17.3): effects applied, replaced, capped and
@@ -494,6 +501,47 @@ class PlayerActionGameTests {
         }
     }
 
+    /**
+     * `random_radius` (M4-03): one random spot between half the radius and the radius, its chunk loaded once,
+     * then up to eight columns of it; the player lands on safe ground within the radius, under the death guard.
+     * Bob is first taken far from every test's area (the test world is flat): a spot among the other tests could
+     * land on a block that their end clears.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aRandomTeleportLandsOnSafeGroundWithinItsRadius(helper: GameTestHelper) {
+        val bob = TestPlayer(helper)
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            bob.standAt(BlockPos(1, 2, 1))
+            val faraway = helper.absolutePos(BlockPos(1, 2, 1)).offset(FARAWAY_BLOCKS, 0, FARAWAY_BLOCKS)
+            val away = runAsync(helper, TeleportTool(), TeleportArgs(bob.name, x = faraway.x, z = faraway.z))
+            val start = AtomicReference<Vec3>()
+            val result = AtomicReference<AtomicReference<ToolResult?>>(AtomicReference())
+            helper.startSequence()
+                .thenAwait { helper.assertTrue(away.get() != null, "the first teleport answers") }
+                .thenExecute {
+                    helper.assertEquals(ToolStatus.OK, away.get()!!.status, away.get()!!.text)
+                    start.set(bob.live.position())
+                    result.set(runAsync(helper, TeleportTool(), TeleportArgs(bob.name, randomRadius = 20)))
+                }
+                .thenAwait { helper.assertTrue(result.get().get() != null, "the random teleport answers") }
+                .thenExecute {
+                    val answer = result.get().get()!!
+                    helper.assertTrue(answer.text.startsWith("ok: ${bob.name} teleported at random, "), answer.text)
+                    val landed = bob.live.position()
+                    val distance = hypot(landed.x - start.get().x, landed.z - start.get().z)
+                    // A column's center is within the radius, give or take the half block of the spot drawn first.
+                    helper.assertTrue(distance > 0 && distance <= 20 + 1, "within the radius: $distance blocks from where Bob stood")
+                    val feet = BlockPos.containing(landed)
+                    val floor = helper.level.getBlockState(feet.below())
+                    helper.assertTrue(floor.isFaceSturdy(helper.level, feet.below(), Direction.UP) && floor.fluidState.isEmpty, "on solid ground: $floor")
+                    helper.assertFalse(helper.level.containsAnyLiquid(bob.live.boundingBox), "no liquid where Bob stands")
+                    helper.assertTrue(guards(helper).death.isArmed(bob.live), "any teleport arms the death guard")
+                    bob.close()
+                }
+                .thenSucceed()
+        }
+    }
+
     // ── Launch ──────────────────────────────────────────────────────────────────────────────────
 
     @GameTest(maxTicks = 100)
@@ -655,8 +703,134 @@ class PlayerActionGameTests {
         helper.assertTrue(GuardStates.read(bob.live).confiscations.isEmpty(), "nothing held")
     }
 
+    // ── For the mechanics engine (M4-03) ────────────────────────────────────────────────────────
+
+    /**
+     * The dry checks (`check`, M4 §4.3) with the game's registries: the answers `run` gives, for players who
+     * need not be online, and nothing touched. The engine runs them when a rule or a challenge is created.
+     */
+    @GameTest
+    fun theDryChecksTouchNothing(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val caps = guards(helper).caps()
+        val effect = ApplyEffectTool()
+        val nobody = listOf("nobody_here")
+        val typo = check(helper, effect, ApplyEffectArgs(nobody, "slownes", seconds = 10))
+        helper.assertTrue(typo?.text?.startsWith("Invalid arguments: unknown effect \"slownes\"; closest ids: slowness") == true, "$typo")
+        val omen = check(helper, effect, ApplyEffectArgs(nobody, "bad_omen", seconds = 10))
+        helper.assertTrue(omen?.text?.startsWith("DENIED (forbidden_effect): bad_omen is never given: ") == true, "$omen")
+        val tooLong = check(helper, effect, ApplyEffectArgs(nobody, "poison", seconds = caps.harmfulSeconds + 1))
+        helper.assertTrue(tooLong?.text?.contains("lasts at most ${caps.harmfulSeconds} s") == true, "$tooLong")
+        val immune = check(helper, effect, ApplyEffectArgs(nobody, "resistance", seconds = 60, level = 4))
+        helper.assertTrue(immune?.text?.startsWith("Invalid arguments: resistance goes up to level 3: ") == true, "$immune")
+        helper.assertEquals(null, check(helper, effect, ApplyEffectArgs(listOf(bob.name), "slowness", seconds = 30, level = caps.harmfulLevel)), "within the caps")
+
+        val limiter = GiftLimiter(Clock.systemUTC())
+        val give = GiveItemTool(limiter)
+        val item = check(helper, give, GiveItemArgs("nobody_here", "diamant"))
+        helper.assertTrue(item?.text?.startsWith("Invalid arguments: unknown item \"diamant\"; closest ids: ") == true, "$item")
+        val block = check(helper, give, GiveItemArgs(bob.name, "command_block"))
+        helper.assertTrue(block?.text?.startsWith("DENIED (${ItemSpecs.FORBIDDEN_ITEM}): command_block is never given") == true, "$block")
+        helper.assertEquals(
+            "Invalid arguments: diamond_sword stacks to 1: count must be at most 1 (got 2)",
+            check(helper, give, GiveItemArgs(bob.name, "diamond_sword", count = 2))?.text,
+            "stack size",
+        )
+        val sharp = check(helper, give, GiveItemArgs(bob.name, "iron_sword", enchantments = listOf(EnchantmentSpec("sharpness", 7))))
+        helper.assertEquals("Invalid arguments: sharpness goes up to level 6, one past the game's own maximum (asked 7)", sharp?.text, "enchantment")
+        val precious = check(helper, give, GiveItemArgs(bob.name, "diamond", count = 5))
+        helper.assertTrue(
+            precious?.text?.startsWith("DENIED (${GiftLimiter.PRECIOUS_RULE}): 5x diamond is worth 5 precious points, more than the 4 a player may get in an hour.") == true,
+            "$precious",
+        )
+        repeat(3) { helper.assertEquals(null, check(helper, give, GiveItemArgs(bob.name, "diamond", count = 4)), "4 diamonds, checked ${it + 1} times") }
+
+        helper.assertEquals(
+            "Invalid arguments: this change of scale is in nobody_here's disfavor: at chaos ${helper.narrator().settings.get().config.chaos} it lasts " +
+                "at most ${caps.harmfulSeconds} s (asked ${caps.harmfulSeconds + 1} s)",
+            check(helper, SetAttributeTool(), SetAttributeArgs("nobody_here", AttributeKey.SCALE, multiply = 0.5, seconds = caps.harmfulSeconds + 1))?.text,
+            "a size is never a gift",
+        )
+        val strong = check(helper, LaunchTool(), LaunchArgs("nobody_here", LaunchDirection.UP, caps.launchStrength + 0.5))
+        helper.assertTrue(strong?.text?.contains("a launch has a strength of at most") == true, "$strong")
+        helper.assertEquals(
+            "Invalid arguments: ${bob.name} cannot be teleported to themselves",
+            check(helper, TeleportTool(), TeleportArgs(bob.name, toPlayer = bob.name.uppercase()))?.text,
+            "to themselves",
+        )
+
+        helper.assertTrue(bob.live.activeEffects.isEmpty(), "no effect: ${bob.live.activeEffects}")
+        helper.assertTrue((0 until bob.live.inventory.containerSize).all { bob.live.inventory.getItem(it).isEmpty }, "nothing given")
+        helper.assertEquals(null, GuardStates.read(bob.live).episode, "no punishment opened")
+        helper.assertEquals(Verdict.Allowed, limiter.take(bob.ref, 4, "4x diamond"), "no gift was counted")
+    }
+
+    /**
+     * Each hostile action tells the guards its category of punishment (M4 §6.1), with the caller of the act: here
+     * an act of the engine (a rule's firing). Guards of their own ([FakeGuards]) allow and record every call.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun hostileActionsTellTheirCategory(helper: GameTestHelper) {
+        helper.setBlock(5, 40, 5, Blocks.STONE)
+        val high = helper.absolutePos(BlockPos(5, 41, 5))
+        val fake = FakeGuards(clock = Clock.systemUTC())
+        val services = TestServices(minecraft = helper.level.server, clock = Clock.systemUTC(), players = helper.narrator().players, guards = fake)
+        val bob = TestPlayer(helper)
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            bob.standAt(BlockPos(1, 1, 1))
+            fun <A : Any> act(tool: NarratorTool<A>, args: A) {
+                val result = runBlocking { tool.run(ToolContext(services, FIRING, services.clock, tool.timeoutMs), args) }
+                helper.assertEquals(ToolStatus.OK, result.status, "${tool.name}: ${result.text}")
+            }
+            act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "slowness", seconds = 10))
+            act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "poison", seconds = 5))
+            act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "blindness", seconds = 5))
+            act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.SCALE, multiply = 0.5, seconds = 10))
+            act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.BLOCK_BREAK_SPEED, multiply = 0.5, seconds = 10))
+            act(LaunchTool(), LaunchArgs(bob.name, LaunchDirection.UP, 0.5))
+            bob.live.inventory.setItem(0, ItemStack(Items.DIAMOND, 2))
+            act(TakeItemTool(), TakeItemArgs(bob.name, "diamond", 1, 1))
+            // Benefits taken away (a gift of speed, the launch's fall protection): no category of their own.
+            act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "speed", seconds = 60))
+            act(RemoveEffectTool(), RemoveEffectArgs(listOf(bob.name), "speed"))
+            act(ResetAttributeTool(), ResetAttributeArgs(bob.name, AttributeKey.FALL_DAMAGE_MULTIPLIER))
+            helper.assertEquals(
+                listOf(
+                    PunishmentCategory.MOVEMENT, PunishmentCategory.HARM, PunishmentCategory.SENSES, PunishmentCategory.SIZE, PunishmentCategory.MINING,
+                    PunishmentCategory.AIR, PunishmentCategory.INVENTORY, PunishmentCategory.OTHER, PunishmentCategory.OTHER,
+                ),
+                fake.hostiles.map { it.category },
+                "the categories, in order",
+            )
+            val far = AtomicReference<ToolResult?>()
+            CoroutineScope(Dispatchers.IO).launch {
+                far.set(TeleportTool().run(ToolContext(services, FIRING, services.clock, 12_000), TeleportArgs(bob.name, x = high.x, z = high.z, y = high.y)))
+            }
+            helper.startSequence()
+                .thenAwait { helper.assertTrue(far.get() != null, "the teleport answers") }
+                .thenExecute {
+                    helper.assertEquals(ToolStatus.OK, far.get()!!.status, far.get()!!.text)
+                    helper.assertEquals(PunishmentCategory.TELEPORT, fake.hostiles.last().category, "a teleport of more than 32 blocks")
+                    helper.assertTrue(fake.hostiles.all { it.target == bob.uuid && it.caller == FIRING && it.caller.act == -FIRING.firingId!! }, "the act of the engine")
+                    bob.close()
+                }
+                .thenSucceed()
+        }
+    }
+
     private companion object {
         val CALLER = Caller(Role.DIRECTOR, "player-action-gametest", turnId = 7_001, taskId = null)
+
+        /** An act of the mechanics engine: a firing of the rule C-60 (M4 §4.3). */
+        val FIRING = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = 9_001)
+
+        /** Along x and z, away from the test's area: past every test's area, within the teleport cap of chaos 3 (1 000 blocks). */
+        const val FARAWAY_BLOCKS = 700
+
+        /** The dry checks of [tool] for [args], as the engine runs them (`EngineActions.check`): on any thread. */
+        fun <A : Any> check(helper: GameTestHelper, tool: NarratorTool<A>, args: A): ToolResult? {
+            val runtime = helper.narrator()
+            return runBlocking { tool.check(ToolContext(runtime, CALLER, runtime.clock, tool.timeoutMs), args) }
+        }
 
         /** A later turn of the same conversation: it may not pile on the punishment of [CALLER]'s turn. */
         val OTHER_TURN = CALLER.copy(turnId = 7_002)

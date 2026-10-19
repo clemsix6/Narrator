@@ -12,6 +12,11 @@ import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import io.github.clemsix6.narrator2.trace.TraceQueries
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.minecraft.ChatFormatting
 import net.minecraft.network.chat.TextColor
 import org.junit.jupiter.api.Test
@@ -82,6 +87,61 @@ class DeathReportTest {
         val actions = runBlocking { journal.read(10_000) { DeathReport.actionsOn(it, "Bartok", died - DeathReport.WINDOW_MS, died) } }
         assertEquals(listOf(levitation to "apply_effect", maybe to "explosion"), actions.map { it.id to it.tool })
         assertEquals(NarratorAction(maybe, died - 10_000, "explosion", 42, "unknown", "explosion: done"), actions[1])
+    }
+
+    /**
+     * M4 §4.3, review finding 24: the engine's acts (a rule's firing, a challenge's stakes) write no `tool_calls` row,
+     * only `mechanic action` decisions; the report reads them too, merged with the Director's calls by time.
+     */
+    @Test
+    fun `the engine's acts on the player within the minute before, from their mechanic action decisions`() = JournalFixture().use { fixture ->
+        val journal = fixture.journal
+        fun action(
+            secondsBefore: Long,
+            subject: String?,
+            detail: JsonObject,
+            decision: String = "action",
+            kind: DecisionRecord.Kind = DecisionRecord.Kind.MECHANIC,
+        ): Long {
+            val id = journal.nextId(IdKind.DECISION)
+            val ts = Instant.ofEpochMilli(died - secondsBefore * 1_000)
+            journal.decision(DecisionRecord(id, ts, kind, decision, subject, "the act's reason", null, "mechanics:C-60", null, detail))
+            return id
+        }
+        fun detail(tool: String, status: String, effect: String? = null, targets: List<String>? = null) = buildJsonObject {
+            put("tool", tool)
+            put("status", status)
+            put("result", "$tool: done")
+            effect?.let { put("effect", it) }
+            targets?.let { put("targets", JsonArray(it.map(::JsonPrimitive))) }
+        }
+        val id = journal.nextId(IdKind.TOOL_CALL)
+        journal.toolCall(
+            ToolCallRecord(id, Instant.ofEpochMilli(died - 50_000), "director-aaaa", 42, null, "toolu_$id", Role.DIRECTOR, "apply_effect", "{}", ToolStatus.OK, "apply_effect: done", 40, listOf("Bartok"), ToolEffect.WORLD),
+        )
+        action(90, "Bartok", detail("explosion", "ok")) // more than a minute before
+        val explosion = action(30, "Bartok", detail("explosion", "ok"))
+        action(28, "Bartok", detail("say", "ok", effect = "speech")) // words do not kill
+        action(26, "Bartok", detail("punish", "denied")) // refused: nothing happened
+        action(24, "Mimosa", detail("spawn", "ok")) // someone else
+        val crowd = action(20, null, detail("lightning", "unknown", targets = listOf("Mimosa", "Bartok")))
+        action(18, "Bartok", detail("explosion", "ok"), decision = "fired") // the firing itself, not an action
+        action(16, "Bartok", detail("explosion", "ok"), kind = DecisionRecord.Kind.GUARD) // not the engine's
+        val bare = action(10, "Bartok", buildJsonObject { put("tool", "launch"); put("status", "ok") })
+        action(-5, "Bartok", detail("smite", "ok")) // after the death
+        fixture.sync()
+
+        val actions = runBlocking { journal.read(10_000) { DeathReport.actionsOn(it, "Bartok", died - DeathReport.WINDOW_MS, died) } }
+        assertEquals(listOf(id to "apply_effect", explosion to "explosion", crowd to "lightning", bare to "launch"), actions.map { it.id to it.tool })
+        assertEquals(NarratorAction(explosion, died - 30_000, "explosion", null, "ok", "explosion: done", "mechanics:C-60"), actions[1])
+        assertNull(actions[0].engine, "the Director's call")
+        assertEquals("the act's reason", actions[3].result, "without a result in its detail, the decision's reason")
+        assertEquals(
+            "the Narrator acted on Bartok in the last 1m: apply_effect 50s before (turn 42), explosion 30s before (engine, mechanics:C-60), " +
+                "lightning 20s before (engine, mechanics:C-60), launch 10s before (engine, mechanics:C-60)",
+            report.copy(actions = actions).actionsBefore(),
+        )
+        assertEquals(report.copy(actions = actions), DeathReport.parse(report.copy(actions = actions).detail().toString()), "the engine's acts read back")
     }
 
     @Test

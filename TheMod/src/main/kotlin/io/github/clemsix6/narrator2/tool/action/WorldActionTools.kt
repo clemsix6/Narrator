@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.NarratorMobs
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
@@ -95,6 +96,11 @@ import kotlin.math.sin
  *   due, never break a door, never pick anything up, and their explosions are the Narrator's;
  * - every explosion goes off in `ExplosionGuard.narrators` ([NarratorExplosionDamage]);
  * - a bolt is only visual, and never lands on copper or a lightning rod (which even a visual bolt changes).
+ *
+ * Each hostile action tells the guards its category of punishment (M4 §6.1): `creatures` for a summoning,
+ * `lightning` for a bolt that hurts, `explosion` for a blast that hurts (a creature's fuse included). The
+ * checks that need neither the players online nor the world are each tool's `check` (M4 §4.3), which `run`
+ * starts with: the mechanics engine runs them alone to refuse a rule's effect when it is created.
  */
 fun worldActionTools(services: NarratorServices): List<NarratorTool<*>> {
     val limits = services.toolLimits.world
@@ -222,7 +228,12 @@ class SpawnTool : NarratorTool<SpawnArgs>(
     args = SpawnArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    override suspend fun run(ctx: ToolContext, args: SpawnArgs): ToolResult = answer {
+    /**
+     * The caps of the chaos level, the attribute changes within their bounds, a name to show, a creature that is
+     * known and never forbidden, and equipment that may be given. Whether the creature may be summoned in the
+     * player's world (enabled, at its difficulty, a creature at all) is the spawn policy's, on the server thread.
+     */
+    override suspend fun check(ctx: ToolContext, args: SpawnArgs): ToolResult? = dryCheck {
         val caps = ctx.guards.caps()
         val chaos = ctx.chaos
         if (caps.spawnsPerAction == 0) refuse(ToolResult.denied(Rules.CHAOS_0, "the chaos level is 0: the Narrator summons nothing."))
@@ -240,15 +251,25 @@ class SpawnTool : NarratorTool<SpawnArgs>(
                 refuse(ToolResult.invalid("${key.id} multiplies by ${number(key.min)} to ${number(key.max)} (asked ${number(change.multiply)})"))
             }
         }
+        if (args.name != null && Speech.clean(args.name).isEmpty()) {
+            refuse(ToolResult.invalid("name has nothing to show once formatting codes are removed; write plain text"))
+        }
+        val id = EntityType.getKey(entityType(args.entity)).toString()
+        SpawnPolicy.FORBIDDEN[id]?.let { refuse(ToolResult.denied(SpawnPolicy.FORBIDDEN_CREATURE, "$id is not summoned: $it.")) }
+        args.equipment?.slots()?.forEach { (_, raw) -> equipmentItem(raw) }
+    }
+
+    override suspend fun run(ctx: ToolContext, args: SpawnArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
+        val caps = ctx.guards.caps()
         val name = args.name?.let { Speech.clean(it) }
-        if (name != null && name.isEmpty()) refuse(ToolResult.invalid("name has nothing to show once formatting codes are removed; write plain text"))
         val alive = ctx.guards.mobs.count()
         if (alive + args.count > caps.livingMobs) {
             val left = (caps.livingMobs - alive).coerceAtLeast(0)
             refuse(
                 ToolResult.denied(
                     MOB_CAP,
-                    "the Narrator has $alive creatures in the world, at most ${caps.livingMobs} at chaos $chaos: $left more can be " +
+                    "the Narrator has $alive creatures in the world, at most ${caps.livingMobs} at chaos ${ctx.chaos}: $left more can be " +
                         "summoned now; the others vanish at the end of their lifetime.",
                 ),
             )
@@ -284,7 +305,7 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         // Anything but a harmless creature (a whitelist): a wolf, a bee or a pufferfish is a punishment too.
         val hostile = args.target || mobs.flatMap(::group).any { !SpawnPolicy.isHarmless(it.type) }
         if (hostile) {
-            val verdict = ctx.guards.hostile(player, ctx.caller, expiresAt)
+            val verdict = ctx.guards.hostile(player, ctx.caller, expiresAt, PunishmentCategory.CREATURES)
             if (verdict is Verdict.Denied) {
                 mobs.forEach { dropRiders(level, it) } // a mount the game already added must not stay behind
                 refuse(ToolResult.denied(verdict))
@@ -593,7 +614,7 @@ internal object Fuses {
         var hurts = fuse.hurts
         if (hurts) {
             val until = fuse.services.clock.millis() + NarratorExplosionDamage.GUARD_SECONDS * 1_000L
-            val verdict = NarratorExplosionDamage.allow(NarratorExplosionDamage.bystanders(level, center), guards, fuse.caller, until)
+            val verdict = NarratorExplosionDamage.allow(NarratorExplosionDamage.bystanders(level, center), guards, fuse.caller, until, PunishmentCategory.EXPLOSION)
             if (verdict is Verdict.Denied) {
                 hurts = false
                 log.info("a ${mob.type.toShortString()} of the Narrator explodes harmlessly: ${verdict.rule}: ${verdict.message}")
@@ -636,14 +657,17 @@ class LightningTool : NarratorTool<LightningArgs>(
     args = LightningArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    override suspend fun run(ctx: ToolContext, args: LightningArgs): ToolResult = answer {
+    /** A bolt that hurts: not at chaos 0, and no more damage than the chaos level allows. */
+    override suspend fun check(ctx: ToolContext, args: LightningArgs): ToolResult? {
+        if (args.damageHearts <= 0) return null
         val caps = ctx.guards.caps()
-        if (args.damageHearts > 0) {
-            if (!caps.hostileAllowed) refuse(ToolResult.denied(Rules.CHAOS_0, "the chaos level is 0: no hostile action against any player."))
-            if (args.damageHearts > caps.lightningHearts) {
-                refuse(ToolResult.invalid("at chaos ${ctx.chaos} lightning does at most ${number(caps.lightningHearts)} hearts of damage (asked ${number(args.damageHearts)})"))
-            }
-        }
+        if (!caps.hostileAllowed) return ToolResult.denied(Rules.CHAOS_0, "the chaos level is 0: no hostile action against any player.")
+        if (args.damageHearts <= caps.lightningHearts) return null
+        return ToolResult.invalid("at chaos ${ctx.chaos} lightning does at most ${number(caps.lightningHearts)} hearts of damage (asked ${number(args.damageHearts)})")
+    }
+
+    override suspend fun run(ctx: ToolContext, args: LightningArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { strike(ctx, server, named, args) } }
     }
@@ -656,7 +680,7 @@ class LightningTool : NarratorTool<LightningArgs>(
             ?: refuse(ToolResult.failed("copper or a lightning rod everywhere above ${target.label}: a bolt would change them; strike elsewhere"))
         val victim = target.player?.takeIf { args.damageHearts > 0 }
         if (victim != null) {
-            ctx.punish(victim, ctx.clock.millis() + NarratorExplosionDamage.GUARD_SECONDS * 1_000L)
+            ctx.punish(victim, ctx.clock.millis() + NarratorExplosionDamage.GUARD_SECONDS * 1_000L, PunishmentCategory.LIGHTNING)
             ctx.guards.armDeathGuard(victim.uuid, NarratorExplosionDamage.GUARD_SECONDS)
         }
         val bolt = EntityTypes.LIGHTNING_BOLT.create(level, EntitySpawnReason.TRIGGERED) ?: refuse(ToolResult.failed("the world refused the bolt"))
@@ -731,12 +755,16 @@ class ExplosionTool : NarratorTool<ExplosionArgs>(
     args = ExplosionArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    override suspend fun run(ctx: ToolContext, args: ExplosionArgs): ToolResult = answer {
+    /** Not at chaos 0, even a harmless one; no stronger than the chaos level allows. */
+    override suspend fun check(ctx: ToolContext, args: ExplosionArgs): ToolResult? {
         val caps = ctx.guards.caps()
-        if (caps.explosionPower <= 0.0) refuse(ToolResult.denied(Rules.CHAOS_0, "the chaos level is 0: no explosion at all."))
-        if (args.power > caps.explosionPower) {
-            refuse(ToolResult.invalid("at chaos ${ctx.chaos} an explosion has a power of at most ${number(caps.explosionPower)} (asked ${number(args.power)})"))
-        }
+        if (caps.explosionPower <= 0.0) return ToolResult.denied(Rules.CHAOS_0, "the chaos level is 0: no explosion at all.")
+        if (args.power <= caps.explosionPower) return null
+        return ToolResult.invalid("at chaos ${ctx.chaos} an explosion has a power of at most ${number(caps.explosionPower)} (asked ${number(args.power)})")
+    }
+
+    override suspend fun run(ctx: ToolContext, args: ExplosionArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { blast(ctx, server, named, args) } }
     }
@@ -748,7 +776,7 @@ class ExplosionTool : NarratorTool<ExplosionArgs>(
         if (args.hurts) {
             val bystanders = NarratorExplosionDamage.bystanders(level, center)
             val until = ctx.clock.millis() + NarratorExplosionDamage.GUARD_SECONDS * 1_000L
-            val verdict = NarratorExplosionDamage.allow(bystanders, ctx.guards, ctx.caller, until)
+            val verdict = NarratorExplosionDamage.allow(bystanders, ctx.guards, ctx.caller, until, PunishmentCategory.EXPLOSION)
             if (verdict is Verdict.Denied) refuse(ToolResult.denied(verdict))
         }
         val reach = args.power * 2 + 1
@@ -815,7 +843,11 @@ class FireworksTool : NarratorTool<FireworksArgs>(
     args = FireworksArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
+    /** Colors that exist. */
+    override suspend fun check(ctx: ToolContext, args: FireworksArgs): ToolResult? = dryCheck { args.colors?.forEach { color(it) } }
+
     override suspend fun run(ctx: ToolContext, args: FireworksArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val named = args.player?.let { ctx.online(it) }
         ctx.onServer { server -> answer { launch(server, named, args) } }
     }
