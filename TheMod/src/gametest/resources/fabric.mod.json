@@ -28,7 +28,8 @@
       "io.github.clemsix6.narrator2.gametest.MemoryEndToEndTests",
       "io.github.clemsix6.narrator2.gametest.BossbarGameTests",
       "io.github.clemsix6.narrator2.gametest.EscrowGameTests",
-      "io.github.clemsix6.narrator2.gametest.TrapGameTests"
+      "io.github.clemsix6.narrator2.gametest.TrapGameTests",
+      "io.github.clemsix6.narrator2.gametest.PunishGameTests"
     ]
   },
   "depends": {
