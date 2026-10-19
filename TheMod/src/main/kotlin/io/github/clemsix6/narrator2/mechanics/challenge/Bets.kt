@@ -173,6 +173,7 @@ class Bets(
     private fun apply(player: ServerPlayer, settlement: Settlement, now: Long) {
         val stake = ledger.held(player).firstOrNull { it.id == settlement.stake && it.purpose == LedgerPurpose.STAKE }
         val to = settlement.to
+        var failed = false
         val outcome = try {
             val winner = to?.let(UUID::fromString)?.takeIf { it != player.uuid }
             if (winner == null) {
@@ -182,6 +183,7 @@ class Bets(
                 if (ledger.forfeit(player, settlement.stake, winner, now)) "ceded to $name" else null
             }
         } catch (e: Exception) {
+            failed = true
             log.error("the settlement of ${player.plainTextName}'s stake ${settlement.stake} failed: it goes back to them at its fallback deadline", e)
             "failed (${e.message ?: e.javaClass.simpleName}): back to its owner at its fallback deadline"
         }
@@ -194,9 +196,13 @@ class Bets(
                 put("stake", settlement.stake)
                 put("to", to)
                 put("canon", stake?.canon)
-                put("applied", outcome != null)
+                put("applied", outcome != null && !failed)
             },
-            level = if (outcome == null) Log.Level.DEBUG else Log.Level.INFO,
+            level = when {
+                failed -> Log.Level.OFF // logged above, with its stack trace
+                outcome == null -> Log.Level.DEBUG
+                else -> Log.Level.INFO
+            },
         )
     }
 
