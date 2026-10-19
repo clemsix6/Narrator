@@ -34,7 +34,8 @@
       "io.github.clemsix6.narrator2.gametest.MechanicsEngineGameTests",
       "io.github.clemsix6.narrator2.gametest.SurveyGameTests",
       "io.github.clemsix6.narrator2.gametest.FavorGameTests",
-      "io.github.clemsix6.narrator2.gametest.PunishGameTests"
+      "io.github.clemsix6.narrator2.gametest.PunishGameTests",
+      "io.github.clemsix6.narrator2.gametest.ChallengeGameTests"
     ]
   },
   "depends": {
