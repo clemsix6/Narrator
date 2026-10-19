@@ -8,12 +8,14 @@ import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
+import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.BriefingSection
 import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.tool.mechanics.forgeAvailable
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import kotlinx.coroutines.CancellationException
@@ -49,8 +51,9 @@ import java.util.UUID
  *   lines included (never a private message: it reads the `chat_log` view);
  * - `<your_recent_actions>`: the Narrator's last speech and world tool calls that took effect;
  * - `<engine_state>`: its effects on the players online, the protections, the deaths it may still cause
- *   each of them, its tasks and reminders; then the mechanics' lines of the situation (M4 §4.5,
- *   [MechanicsLines]: challenges, rules, pacing, offerings), within [MechanicsLimits.ENGINE_STATE] characters.
+ *   each of them, its tasks and reminders; the arsenal of the Forge while its tools are shown (M5 §9.3,
+ *   [ArsenalLine]); then the mechanics' lines of the situation (M4 §4.5, [MechanicsLines]: challenges, rules,
+ *   modules, pacing, offerings), within [MechanicsLimits.ENGINE_STATE] characters.
  *
  * Every section is always there. A source that fails is never passed over in silence: its section says
  * `(unavailable: <reason>)` and an `ERROR` is logged; the other sections are still written. An empty
@@ -371,8 +374,9 @@ class Briefing(
 
     /**
      * The engine's state: its own five lines within [ENGINE_STATE_OWN] characters together (the longest give up
-     * their last items first), then the mechanics' lines (M4 §4.5), [MechanicsLimits.SITUATION_TOTAL] at most:
-     * [MechanicsLimits.ENGINE_STATE] in all, line breaks included.
+     * their last items first), the arsenal ([arsenal], [ForgeLimits.ARSENAL_CHARS] at most), then the mechanics' lines
+     * (M4 §4.5), [MechanicsLimits.SITUATION_TOTAL] at most: [MechanicsLimits.ENGINE_STATE] in all, line breaks
+     * included. The mechanics' lines end it, as they end the situation.
      */
     private fun engineState(now: Long, reminders: List<PendingReminder>): List<String> {
         val online = services.players.online
@@ -401,7 +405,21 @@ class Briefing(
             },
             line("Reminders", REMINDERS_MAX) { reminders.sortedBy { it.at }.map { "R-${it.id} at ${time(it.at)} ${quote(it.note, REMINDER_QUOTE_MAX)}" } },
         )
-        return LineBudget.share(own, ENGINE_STATE_OWN, ENGINE_STATE_OWN) + mechanics.render(now)
+        return LineBudget.share(own, ENGINE_STATE_OWN, ENGINE_STATE_OWN) + listOfNotNull(arsenal(now)) + mechanics.render(now)
+    }
+
+    /**
+     * The modules the Director may deploy (M5 §9.3, [ArsenalLine]); none while the chapter has no tool of the Forge
+     * (the same rule as its tools, [forgeAvailable]). An arsenal that cannot be read says so, with an `ERROR` logged.
+     */
+    private fun arsenal(now: Long): String? {
+        if (!forgeAvailable(services)) return null
+        return try {
+            ArsenalLine.render(services.forge.arsenal.list(), now)
+        } catch (e: Exception) {
+            log.error("briefing: the arsenal unavailable: ${reason(e)}")
+            "Arsenal: (unavailable: ${reason(e)})"
+        }
     }
 
     /**
@@ -467,9 +485,10 @@ class Briefing(
     companion object {
         /**
          * The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token
-         * (M3 §11.1), and the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5).
+         * (M3 §11.1), the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5) and the 1,200 of the arsenal
+         * (M5 §9.3).
          */
-        const val MAX_CHARS = 71_200
+        const val MAX_CHARS = 72_400
 
         /** How far back the players and the chat go. */
         const val WINDOW_MS = 24 * 3_600_000L
@@ -512,10 +531,11 @@ class Briefing(
         const val REMINDER_QUOTE_MAX = 100
 
         /**
-         * The engine state's own five lines together: [MechanicsLimits.ENGINE_STATE] (2,700) less the mechanics'
-         * lines (1,200) and the line breaks between the section's nine lines.
+         * The engine state's own five lines together: [MechanicsLimits.ENGINE_STATE] (3,900) less the mechanics' lines
+         * (1,200), the arsenal (1,200) and the line breaks between the section's eleven lines (five of its own, the
+         * arsenal, five of the mechanics': challenges, rules, modules, pacing, offerings): 1,490.
          */
-        const val ENGINE_STATE_OWN = MechanicsLimits.ENGINE_STATE - MechanicsLimits.SITUATION_TOTAL - 8
+        const val ENGINE_STATE_OWN = MechanicsLimits.ENGINE_STATE - MechanicsLimits.SITUATION_TOTAL - ForgeLimits.ARSENAL_CHARS - 10
 
         const val READ_TIMEOUT_MS = 5_000L
         const val BARRIER_TIMEOUT_MS = 2_000L

@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.ClaudeClient
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
@@ -26,6 +27,7 @@ import io.github.clemsix6.narrator2.reflex.Tone
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
+import io.github.clemsix6.narrator2.testing.FakeForge
 import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
@@ -93,6 +95,8 @@ class DirectorHarness(
     mechanicsOff: String? = null,
     /** Real tools the Director gets besides the fake ones: a task's own tools in a scenario (M4-17). */
     tools: List<NarratorTool<*>> = emptyList(),
+    /** The worker roles that take tasks ([workers]): the forger's too, for the Forge's scenarios (M5-12). */
+    workerRoles: Set<Role> = setOf(Role.ANALYST),
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -103,12 +107,15 @@ class DirectorHarness(
     val traces = MemoryTraceSink()
     val players = PlayerStates()
     val guards = FakeGuards()
-    val workers = FakeWorkers()
+    val workers = FakeWorkers(workerRoles)
     val game = FakeGame(reminders)
     val bus = EventBus(clock, { 0L }, 1)
 
     /** The mechanics engine (M4): a fake whose situation lines the test sets ([FakeMechanics.lines]). */
     val mechanics = FakeMechanics(clock)
+
+    /** The Forge (M5): a fake, available, whose arsenal the test fills ([FakeForge.arsenal]). */
+    val forge = FakeForge(clock)
 
     /**
      * The memory (M3): a fake that records what the Director asks of it and gives back what the test set;
@@ -153,6 +160,7 @@ class DirectorHarness(
             workers = workers,
             memory = memoryOff?.let(::DisabledMemory) ?: memory,
             mechanics = mechanicsOff?.let { DisabledMechanics(it) } ?: mechanics,
+            forge = forge,
         )
         services = object : NarratorServices by base {
             override val director get() = this@DirectorHarness.director
