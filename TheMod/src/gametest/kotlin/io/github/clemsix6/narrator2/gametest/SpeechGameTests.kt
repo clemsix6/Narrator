@@ -277,8 +277,35 @@ class SpeechGameTests {
         }
     }
 
+    /**
+     * The dry checks (`check`, M4 §4.3) of the speech tools a rule may use, with the game's registries: an
+     * unknown sound gets its closest ids, as `run` answers; nobody needs to be online, and nothing is counted
+     * against the limits. The engine runs them when a rule is created.
+     */
+    @GameTest
+    fun theDryChecksTouchNothing(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
+        val limiter = SpeechLimiter(helper.narrator().clock)
+        val unknown = check(helper, PlaySoundTool(limiter), PlaySoundArgs("entity.lightning_bolt.thuner", to = listOf("nobody_here")))
+        helper.assertEquals(ToolStatus.INVALID, unknown?.status, "$unknown")
+        helper.assertTrue(unknown!!.text.contains("closest ids: entity.lightning_bolt.thunder"), unknown.text)
+        helper.assertEquals(null, check(helper, PlaySoundTool(limiter), PlaySoundArgs("minecraft:block.bell.use", to = listOf(bob.name))), "a known sound")
+        helper.assertEquals(null, check(helper, SayTool(limiter), SayArgs("La loi est la loi.", to = listOf(bob.name))), "say")
+        helper.assertEquals(null, check(helper, ShowTitleTool(limiter), ShowTitleArgs("Châtiment", to = listOf(bob.name))), "show_title")
+        helper.assertEquals(null, check(helper, ActionbarTool(limiter), ActionbarArgs("Psst.", to = listOf(bob.name))), "actionbar")
+
+        // Other tests may speak to everyone meanwhile: Bob's packets prove nothing; the limiter is this test's own.
+        helper.assertEquals(listOf(bob.ref), limiter.titles(listOf(bob.ref)).allowed, "no title was counted")
+        helper.assertEquals(listOf(bob.ref), limiter.actionbars(listOf(bob.ref)).allowed, "no line above the hotbar was counted")
+    }
+
     private companion object {
         val CALLER = Caller(Role.DIRECTOR, "speech-gametest", turnId = 4_242, taskId = null)
+
+        /** The dry checks of [tool] for [args], as the engine runs them (`EngineActions.check`). */
+        fun <A : Any> check(helper: GameTestHelper, tool: NarratorTool<A>, args: A): ToolResult? {
+            val runtime = helper.narrator()
+            return runBlocking { tool.check(ToolContext(runtime, CALLER, runtime.clock, 5_000), args) }
+        }
 
         /** Runs [tool] on the server thread, where its world access runs inline. */
         fun <A : Any> run(helper: GameTestHelper, tool: NarratorTool<A>, args: A): ToolResult {

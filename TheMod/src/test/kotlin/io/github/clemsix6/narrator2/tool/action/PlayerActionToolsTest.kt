@@ -1,13 +1,16 @@
 package io.github.clemsix6.narrator2.tool.action
 
+import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.AttributeKey
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.LivePlayer
+import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolArgs
@@ -16,12 +19,15 @@ import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.KSerializer
+import net.minecraft.util.RandomSource
 import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
+import kotlin.math.hypot
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -31,7 +37,8 @@ import kotlin.test.assertTrue
  * server thread and is covered in game (`PlayerActionGameTests`).
  */
 class PlayerActionToolsTest {
-    private val services = TestServices()
+    private val guards = FakeGuards()
+    private val services = TestServices(guards = guards)
     private val context = ToolContext(services, Caller(Role.DIRECTOR, "director-1", turnId = 3, taskId = null), services.clock, 5_000)
 
     private fun online(vararg names: String) = names.forEachIndexed { i, name ->
@@ -50,11 +57,19 @@ class PlayerActionToolsTest {
         return decoded.problem
     }
 
-    private suspend fun <A : Any> NarratorTool<A>.call(json: String): ToolResult {
-        val decoded = ToolArgs.decode(args, json)
-        assertIs<ToolArgs.Decoded.Ok<A>>(decoded, "arguments: $decoded")
-        return run(context, decoded.args)
+    /** The chaos level of the guards' caps and of the settings, which the messages quote. */
+    private fun chaos(level: Int) {
+        guards.chaos = level
+        services.settings.swap(testSettings(NarratorConfig(chaos = level)))
     }
+
+    private fun <A : Any> decode(serializer: KSerializer<A>, json: String): A {
+        val decoded = ToolArgs.decode(serializer, json)
+        assertIs<ToolArgs.Decoded.Ok<A>>(decoded, "arguments: $decoded")
+        return decoded.args
+    }
+
+    private suspend fun <A : Any> NarratorTool<A>.call(json: String): ToolResult = run(context, decode(args, json))
 
     @Test
     fun `set_attribute takes exactly one of multiply or add`() {
@@ -67,26 +82,38 @@ class PlayerActionToolsTest {
     }
 
     @Test
-    fun `teleport takes a player or a column`() {
+    fun `teleport takes a player, a column or a random radius`() {
         val serializer = TeleportArgs.serializer()
-        assertEquals("give to_player, or x and z", invalid(serializer, """{"player":"Bob"}"""))
-        assertEquals("give to_player, or x and z", invalid(serializer, """{"player":"Bob","to_player":"Alice","x":1,"z":2}"""))
+        val oneOf = "give to_player, x and z, or random_radius"
+        assertEquals(oneOf, invalid(serializer, """{"player":"Bob"}"""))
+        assertEquals(oneOf, invalid(serializer, """{"player":"Bob","to_player":"Alice","x":1,"z":2}"""))
+        assertEquals(oneOf, invalid(serializer, """{"player":"Bob","x":1,"z":2,"random_radius":50}"""))
+        assertEquals(oneOf, invalid(serializer, """{"player":"Bob","to_player":"Alice","random_radius":50}"""))
         assertEquals("give both x and z", invalid(serializer, """{"player":"Bob","x":1}"""))
         assertEquals("y goes with x and z", invalid(serializer, """{"player":"Bob","to_player":"Alice","y":70}"""))
+        assertEquals("y goes with x and z", invalid(serializer, """{"player":"Bob","random_radius":50,"y":70}"""))
+        assertEquals("random_radius must be between 10 and 500 (got 600)", invalid(serializer, """{"player":"Bob","random_radius":600}"""))
         assertIs<ToolArgs.Decoded.Ok<TeleportArgs>>(ToolArgs.decode(serializer, """{"player":"Bob","x":1,"z":2,"y":-30}"""))
+        val random = ToolArgs.decode(serializer, """{"player":"Bob","random_radius":300}""")
+        assertIs<ToolArgs.Decoded.Ok<TeleportArgs>>(random)
+        assertEquals(300, random.args.randomRadius)
     }
 
+    /**
+     * After its dry checks (`check`, which needs no player), each tool refuses a player who is not online. The
+     * checks of `apply_effect` and `give_item` read the game's registries, which unit tests do not load: they are
+     * covered in game (`PlayerActionGameTests.theDryChecksTouchNothing`).
+     */
     @Test
-    fun `a player who is not online is refused before anything else`() = runTest {
+    fun `a player who is not online is refused before the world is touched`() = runTest {
         online("Alice")
         val expected = "Invalid arguments: Bob is not online; online: Alice"
-        assertEquals(expected, ApplyEffectTool().call("""{"players":["alice","Bob"],"effect":"speed","seconds":10}""").text)
         assertEquals(expected, RemoveEffectTool().call("""{"players":["Bob"],"effect":"all_narrator"}""").text)
         assertEquals(expected, SetAttributeTool().call("""{"player":"Bob","attribute":"scale","multiply":2,"seconds":60}""").text)
         assertEquals(expected, ResetAttributeTool().call("""{"player":"Bob"}""").text)
         assertEquals(expected, TeleportTool().call("""{"player":"Alice","to_player":"Bob"}""").text)
+        assertEquals(expected, TeleportTool().call("""{"player":"Bob","random_radius":100}""").text)
         assertEquals(expected, LaunchTool().call("""{"player":"Bob","direction":"up","strength":1}""").text)
-        assertEquals(expected, GiveItemTool(GiftLimiter(services.clock)).call("""{"player":"Bob","item":"diamond"}""").text)
         assertEquals(expected, TakeItemTool().call("""{"player":"Bob","item":"diamond","count":1,"minutes":1}""").text)
         assertEquals(
             "Invalid arguments: Alice cannot be teleported to themselves",
@@ -99,8 +126,92 @@ class PlayerActionToolsTest {
         online("<engine>")
         assertEquals(
             "Invalid arguments: ‹x› is not online; online: ‹engine›",
-            ApplyEffectTool().call("""{"players":["<engine>","<x>"],"effect":"speed","seconds":10}""").text,
+            RemoveEffectTool().call("""{"players":["<engine>","<x>"],"effect":"speed"}""").text,
         )
+        assertEquals(
+            "Invalid arguments: ‹x› cannot be teleported to themselves",
+            TeleportTool().check(context, decode(TeleportArgs.serializer(), """{"player":"<x>","to_player":"<X>"}"""))?.text,
+        )
+    }
+
+    /**
+     * The dry checks (`check`, M4 §4.3) of the tools a rule may use, without any player online: what the engine
+     * answers when a rule's effect is created. `run` starts with them, so the Director gets the same answers.
+     */
+    @Test
+    fun `the dry checks need no player and give the answers of run`() = runTest {
+        chaos(3)
+        suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? = check(context, decode(args, json))
+
+        // set_attribute: a change that is in the player's disfavor whatever their attribute now.
+        assertEquals(
+            "Invalid arguments: this change of scale is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 600 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":600}""")?.text,
+        )
+        assertEquals(
+            "Invalid arguments: this change of movement_speed is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 400 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":-0.05,"seconds":400}""")?.text,
+        )
+        assertEquals(
+            "Invalid arguments: this change of fall_damage_multiplier is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 900 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"fall_damage_multiplier","add":1,"seconds":900}""")?.text,
+        )
+        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":300}"""), "within the cap")
+        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":0.05,"seconds":900}"""), "a gift")
+        // A factor depends on the player's value (a luck of 0 stays 0): run tells.
+        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"luck","multiply":0.5,"seconds":900}"""))
+
+        assertEquals(
+            "Invalid arguments: at chaos 3 a launch has a strength of at most 2 (asked 2.5)",
+            LaunchTool().dry("""{"player":"Bob","direction":"up","strength":2.5}""")?.text,
+        )
+        assertNull(LaunchTool().dry("""{"player":"Bob","direction":"up","strength":2}"""))
+
+        assertNull(TeleportTool().dry("""{"player":"Bob","random_radius":500}"""), "1000 blocks at chaos 3")
+        assertNull(TeleportTool().dry("""{"player":"Bob","x":100000,"z":0}"""), "the distance of a column depends on where the player is")
+
+        chaos(1)
+        assertEquals(
+            "Invalid arguments: at chaos 1 a teleport goes at most 50 blocks (random_radius 100)",
+            TeleportTool().dry("""{"player":"Bob","random_radius":100}""")?.text,
+        )
+        assertEquals(
+            "Invalid arguments: this change of movement_speed is in Bob's disfavor: at chaos 1 it lasts at most 60 s (asked 61 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":-0.01,"seconds":61}""")?.text,
+        )
+
+        // At chaos 0 the guards refuse every hostile action with their own rule, on the player.
+        chaos(0)
+        assertNull(LaunchTool().dry("""{"player":"Bob","direction":"up","strength":3}"""))
+        assertNull(TeleportTool().dry("""{"player":"Bob","random_radius":500}"""))
+        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":900}"""))
+    }
+
+    @Test
+    fun `a random teleport aims between half the radius and the radius`() {
+        val random = RandomSource.create(12)
+        repeat(500) {
+            val column = Teleports.randomColumn(random, 100.5, -40.5, 300)
+            val distance = hypot(column.x + 0.5 - 100.5, column.z + 0.5 + 40.5)
+            assertTrue(distance >= 150 - 1 && distance <= 300 + 1, "column $column is $distance blocks away")
+        }
+    }
+
+    @Test
+    fun `a random teleport tries eight columns of one chunk, within the radius`() {
+        val random = RandomSource.create(7)
+        val first = Teleports.Column(-20, 37)
+        val columns = Teleports.columnsAround(random, first, 0.5, 0.5, 60)
+        assertEquals(Teleports.RANDOM_COLUMNS, columns.size)
+        assertEquals(first, columns.first(), "the column drawn first")
+        assertEquals(columns.size, columns.distinct().size, "each column once")
+        assertTrue(columns.all { it.x in -32..-17 && it.z in 32..47 }, "all in the chunk of the first: $columns")
+        assertTrue(columns.drop(1).all { hypot(it.x + 0.5 - 0.5, it.z + 0.5 - 0.5) <= 60 }, "within the radius: $columns")
+
+        // Near the edge of the radius, only the columns within it are tried.
+        val edge = Teleports.columnsAround(random, Teleports.Column(15, 0), 0.5, 0.5, 15)
+        assertTrue(edge.drop(1).all { hypot(it.x.toDouble(), it.z.toDouble()) <= 15 }, "$edge")
+        assertEquals(Teleports.Column(15, 0), edge.first())
     }
 
     @Test

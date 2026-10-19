@@ -5,10 +5,13 @@ import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
 import io.github.clemsix6.narrator2.guard.NarratorMob
 import io.github.clemsix6.narrator2.guard.NarratorMobs
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolContext
@@ -69,6 +72,7 @@ import net.minecraft.world.level.block.entity.ChestBlockEntity
 import net.minecraft.world.level.storage.TagValueOutput
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
+import java.time.Clock
 import java.util.UUID
 import kotlin.math.floor
 import kotlin.math.hypot
@@ -617,8 +621,92 @@ class WorldActionGameTests {
         fun clear() = helper.killAllEntities()
     }
 
+    // ── For the mechanics engine (M4-03) ────────────────────────────────────────────────────────
+
+    /**
+     * The dry checks (`check`, M4 §4.3) with the game's registries: the answers `run` gives, for players who
+     * need not be online, and nothing summoned, struck or blown up. The engine runs them when a rule is created.
+     */
+    @GameTest
+    fun theDryChecksTouchNothing(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val caps = guards(helper).caps()
+        val spawn = SpawnTool()
+        val typo = check(helper, spawn, SpawnArgs(entity = "zombi", near = "nobody_here"))
+        helper.assertTrue(typo?.text?.startsWith("Invalid arguments: unknown creature \"zombi\"; closest ids: zombie") == true, "$typo")
+        val enderman = check(helper, spawn, SpawnArgs(entity = "enderman", near = "nobody_here"))
+        helper.assertTrue(enderman?.text?.startsWith("DENIED (${SpawnPolicy.FORBIDDEN_CREATURE}): minecraft:enderman is not summoned: ") == true, "$enderman")
+        val block = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = "command_block")))
+        helper.assertTrue(block?.text?.startsWith("DENIED (${ItemSpecs.FORBIDDEN_ITEM}): command_block is never given") == true, "$block")
+        val sword = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = "diamant_sword")))
+        helper.assertTrue(sword?.text?.startsWith("Invalid arguments: unknown item \"diamant_sword\"") == true, "$sword")
+        helper.assertEquals(null, check(helper, spawn, SpawnArgs(entity = "zombie", near = bob.name, equipment = EquipmentSpec(head = "golden_helmet"))), "a zombie")
+
+        val color = check(helper, FireworksTool(), FireworksArgs(x = 0, y = 64, z = 0, colors = listOf("chartreuse")))
+        helper.assertTrue(color?.text?.startsWith("Invalid arguments: unknown color \"chartreuse\"; use #rrggbb or a dye name: ") == true, "$color")
+        helper.assertEquals(null, check(helper, FireworksTool(), FireworksArgs(player = bob.name, colors = listOf("red", "#ffaa00"))), "colors")
+        val power = check(helper, ExplosionTool(), ExplosionArgs(player = bob.name, power = caps.explosionPower + 0.5))
+        helper.assertTrue(power?.text?.contains("an explosion has a power of at most") == true, "$power")
+        val hearts = check(helper, LightningTool(), LightningArgs(player = bob.name, damageHearts = caps.lightningHearts + 1))
+        helper.assertTrue(hearts?.text?.contains("lightning does at most") == true, "$hearts")
+
+        helper.assertTrue(summonedFor(helper, bob.uuid).isEmpty(), "nothing was summoned")
+        helper.assertEquals(20f, bob.live.health, "nothing struck")
+        helper.assertEquals(null, GuardStates.read(bob.live).episode, "no punishment opened")
+    }
+
+    /**
+     * Each hostile action tells the guards its category of punishment (M4 §6.1), with the caller of the act: here
+     * an act of the engine (a rule's firing). Guards of their own ([FakeGuards]) allow and record every call; a
+     * creature's fuse, later, goes off for the same act.
+     */
+    @GameTest(maxTicks = 200)
+    fun hostileActionsTellTheirCategory(helper: GameTestHelper) {
+        floor(helper)
+        val fake = FakeGuards(clock = Clock.systemUTC())
+        val services = TestServices(minecraft = helper.level.server, clock = Clock.systemUTC(), players = helper.narrator().players, guards = fake)
+        val bob = TestPlayer(helper)
+        helper.runAfterDelay(199) {
+            summonedFor(helper, bob.uuid).forEach { it.discard() }
+            bob.close()
+        }
+        bob.standAt(BlockPos(4, 1, 4))
+        fun <A : Any> act(tool: NarratorTool<A>, args: A) {
+            val result = runBlocking { tool.run(ToolContext(services, FIRING, services.clock, tool.timeoutMs), args) }
+            helper.assertEquals(ToolStatus.OK, result.status, "${tool.name}: ${result.text}")
+        }
+        fun bobs() = fake.hostiles.filter { it.target == bob.uuid }
+        act(SpawnTool(), SpawnArgs(entity = "zombie", near = bob.name, lifetimeMinutes = 1))
+        act(LightningTool(), LightningArgs(player = bob.name, damageHearts = 1.0))
+        act(ExplosionTool(), ExplosionArgs(player = bob.name, power = 1.0, offset = 0))
+        // A harmless creature on its fuse: its summoning is no punishment, its blast is.
+        act(SpawnTool(), SpawnArgs(entity = "pig", near = bob.name, distance = 2, lifetimeMinutes = 1, explode = ExplodeSpec(afterSeconds = 1, power = 1.0)))
+        helper.assertEquals(
+            listOf(PunishmentCategory.CREATURES, PunishmentCategory.LIGHTNING, PunishmentCategory.EXPLOSION),
+            bobs().map { it.category },
+            "the categories, in order",
+        )
+        helper.startSequence()
+            .thenWaitUntil { helper.assertTrue(bobs().size == 4, "the pig went off: ${bobs()}") }
+            .thenExecute {
+                helper.assertEquals(PunishmentCategory.EXPLOSION, bobs().last().category, "the fuse's blast")
+                helper.assertTrue(bobs().all { it.caller == FIRING }, "the act of the engine: ${bobs().map { it.caller }}")
+                summonedFor(helper, bob.uuid).forEach { it.discard() }
+                bob.close()
+            }
+            .thenSucceed()
+    }
+
     private companion object {
         val CALLER = Caller(Role.DIRECTOR, "world-action-gametest", turnId = 8_001, taskId = null)
+
+        /** An act of the mechanics engine: a firing of the rule C-60 (M4 §4.3). */
+        val FIRING = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = 9_002)
+
+        /** The dry checks of [tool] for [args], as the engine runs them (`EngineActions.check`). */
+        fun <A : Any> check(helper: GameTestHelper, tool: NarratorTool<A>, args: A): ToolResult? {
+            val runtime = helper.narrator()
+            return runBlocking { tool.check(ToolContext(runtime, CALLER, runtime.clock, tool.timeoutMs), args) }
+        }
 
         /** A later turn of the same conversation: it may not pile on the punishment of [CALLER]'s turn. */
         val OTHER_TURN = CALLER.copy(turnId = 8_002)
