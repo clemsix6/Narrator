@@ -25,7 +25,8 @@
       "io.github.clemsix6.narrator2.gametest.MemoryCommandGameTests",
       "io.github.clemsix6.narrator2.gametest.MemoryGameTests",
       "io.github.clemsix6.narrator2.gametest.MemoryEndToEndTests",
-      "io.github.clemsix6.narrator2.gametest.BossbarGameTests"
+      "io.github.clemsix6.narrator2.gametest.BossbarGameTests",
+      "io.github.clemsix6.narrator2.gametest.PlacedBlocksGameTests"
     ]
   },
   "depends": {
