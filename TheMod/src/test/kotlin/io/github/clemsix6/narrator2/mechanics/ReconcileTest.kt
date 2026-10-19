@@ -1,9 +1,12 @@
 package io.github.clemsix6.narrator2.mechanics
 
+import io.github.clemsix6.narrator2.director.DirectorSignal
+import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
+import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.testing.MechanicsSamples.evening
@@ -22,7 +25,8 @@ import kotlin.test.assertTrue
 class ReconcileTest {
     private val clock = TestClock(Instant.ofEpochMilli(evening))
     private val memory = FakeMemory(clock)
-    private val services = TestServices(clock = clock, memory = memory)
+    private val director = FakeDirector(clock)
+    private val services = TestServices(clock = clock, memory = memory, director = director)
     private val reconcile = Reconcile(services)
     private val minute = 60_000L
 
@@ -68,7 +72,11 @@ class ReconcileTest {
             "Josiane's stake on C-50 goes back to her",
         )
         assertEquals(MechanicsSamples.state.returns, kept.returns)
-        assertEquals(Startup(startedAt, setOf(60L, 61L), mapOf(50L to Reconcile.DOWN, 52L to Reconcile.DOWN), emptyList()), startup)
+        val told = listOf(
+            DirectorSignal.Mechanic(MechanicSignal.CHALLENGE, "C-50 cancelled: ${Reconcile.DOWN} (10-19 18:15); no stakes; 1 bet given back", startedAt, priority = false),
+            DirectorSignal.Mechanic(MechanicSignal.DUEL, "C-52 cancelled: ${Reconcile.DOWN} (10-19 18:06); no stakes", startedAt, priority = false),
+        )
+        assertEquals(Startup(startedAt, setOf(60L, 61L), mapOf(50L to Reconcile.DOWN, 52L to Reconcile.DOWN), emptyList(), told), startup)
         val cancelled = services.traces.decisions.filter { it.decision == Reconcile.CANCELLED }
         assertEquals(listOf("C-50", "C-52"), cancelled.map { it.subject })
         assertEquals(
@@ -76,10 +84,12 @@ class ReconcileTest {
             cancelled.first().reason,
         )
         assertTrue(memory.store.writes.isEmpty(), "never the database at the start")
+        assertTrue(director.signals.isEmpty(), "the Director is created after the engine")
 
         eveningCanon()
         val drop = reconcile.run(startup)
 
+        assertEquals<List<DirectorSignal>>(told, director.signals.toList(), "M4 review, finding 13: the Director hears of what the stop cancelled, without priority")
         assertEquals(emptySet(), drop)
         for (id in listOf(50L, 52L)) {
             assertEquals(CanonStatus.CANCELLED to Reconcile.DOWN, canon(id).status to canon(id).resolution)
@@ -99,6 +109,29 @@ class ReconcileTest {
         assertSame(state, kept, "the Director may still judge it")
         assertEquals(setOf(50L), startup.ids)
         assertEquals(emptyMap(), startup.closings)
+    }
+
+    /**
+     * M4 review, finding 13: a judged challenge whose end, or whose judging, passed while the server was down, and a
+     * challenge some participants made, stay for the challenges' part; the others go, as before.
+     */
+    @Test
+    fun `what outlives the stop stays in the state, judged or won at the first tick`() {
+        val statue = MechanicsSamples.runningChallenge.copy(id = 53, spec = MechanicsSamples.statue, bets = emptyList())
+        val judging = statue.copy(id = 54, status = ChallengeStatus.JUDGING, judgeUntil = statue.endsAt + 15 * minute)
+        val made = MechanicsSamples.runningChallenge.copy(
+            participants = MechanicsSamples.runningChallenge.participants.mapIndexed { i, p -> if (i == 1) p.copy(progress = 1, doneAt = evening + 9 * minute) else p },
+        )
+        val state = MechanicsSamples.state.copy(challenges = listOf(statue, judging, made, MechanicsSamples.invitedDuel))
+
+        val (kept, startup) = reconcile.startup(state, statue.endsAt + 20 * minute)
+
+        assertEquals(listOf(53L, 54L, 50L), kept.challenges.map { it.id }, "the statues, judged again; C-50, won by Mimosa")
+        assertSame(made, kept.challenges.last(), "left as it is: its part ends it")
+        assertEquals(MechanicsSamples.state.settlements, kept.settlements, "Josiane's bet is settled by its end, not given back here")
+        assertEquals(mapOf(52L to Reconcile.DOWN), startup.closings, "only the duel is cancelled")
+        assertEquals(listOf("C-52"), services.traces.decisions.filter { it.decision == Reconcile.CANCELLED }.map { it.subject })
+        assertEquals(listOf(MechanicSignal.DUEL), startup.told.map { it.kind })
     }
 
     @Test

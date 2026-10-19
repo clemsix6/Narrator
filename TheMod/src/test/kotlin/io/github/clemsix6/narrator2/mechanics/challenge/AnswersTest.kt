@@ -40,6 +40,44 @@ class AnswersTest {
         assertTrue(Answers.matches("Œuf de tortue", listOf("oeuf de tortue")), "a ligature is its two letters")
     }
 
+    /** M4 review, finding 14: « diamant fer or émeraude enclume pioche épée arc » won the quiz `enclume`. */
+    @Test
+    fun `a message that lists guesses answers nothing, three words besides the answer at most`() {
+        val answers = MechanicsSamples.riddle.answers!!
+        assertFalse(Answers.answers("diamant fer or émeraude enclume pioche épée arc", answers), "a list of guesses")
+        assertFalse(Answers.answers("marteau, enclume, scie, établi, pioche", answers))
+        assertTrue(Answers.answers("c'est une enclume", listOf("enclume")), "« c est une enclume »: the answer and three words")
+        assertTrue(Answers.answers("C'est une ENCLUME, évidemment !", answers), "« une enclume » and three words")
+        assertFalse(Answers.answers("C'est une ENCLUME, évidemment !", listOf("enclume")), "« enclume » and four words")
+        assertFalse(Answers.answers("je crois bien que c'est une enclume", answers))
+        assertTrue(Answers.answers("c'est le nether, évidemment", listOf("le nether")))
+        assertFalse(Answers.answers("je pense que c'est le nether", listOf("le nether")))
+        assertFalse(Answers.answers("une enclumette", answers), "never part of a word")
+        assertFalse(Answers.answers("…", listOf("…")), "nor an answer of no word")
+
+        assertTrue(Answers.matches("diamant fer or émeraude enclume pioche épée arc", answers), "a rule's words are found anywhere")
+    }
+
+    @Test
+    fun `a participant's messages are one attempt every five seconds, in each quiz`() {
+        val attempts = Attempts()
+        val bartok = MechanicsSamples.bartok.uuid
+        val mimosa = MechanicsSamples.mimosa.uuid
+        val t = MechanicsSamples.evening
+
+        assertTrue(attempts.take(50, bartok, t))
+        assertFalse(attempts.take(50, bartok, t + 1_000), "a second guess a second later is not read")
+        assertFalse(attempts.take(50, bartok, t + Answers.ATTEMPT_GAP_MS - 1), "nor just before the five seconds")
+        assertTrue(attempts.take(50, mimosa, t + 1_000), "each participant has their own")
+        assertTrue(attempts.take(53, bartok, t + 1_000), "and each quiz")
+        assertTrue(attempts.take(50, bartok, t + Answers.ATTEMPT_GAP_MS), "five seconds after the last attempt")
+        assertFalse(attempts.take(50, bartok, t + Answers.ATTEMPT_GAP_MS + 4_000), "counted from the last attempt, not from a message not read")
+
+        attempts.forget(50)
+        assertTrue(attempts.take(50, bartok, t + Answers.ATTEMPT_GAP_MS + 4_001), "a quiz that ended forgets its attempts")
+        assertFalse(attempts.take(53, bartok, t + 2_000), "the other quiz keeps its own")
+    }
+
     @Test
     fun `an answer with no letter nor digit never matches, and is found by firstEmpty`() {
         assertFalse(Answers.matches("…", listOf("…")))

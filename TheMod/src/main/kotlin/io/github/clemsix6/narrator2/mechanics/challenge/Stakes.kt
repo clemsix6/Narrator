@@ -2,8 +2,11 @@ package io.github.clemsix6.narrator2.mechanics.challenge
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
+import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.mechanics.ChallengeState
 import io.github.clemsix6.narrator2.mechanics.EngineActions
+import io.github.clemsix6.narrator2.mechanics.Firing
 import io.github.clemsix6.narrator2.mechanics.ForfeitSpec
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
@@ -17,12 +20,18 @@ import io.github.clemsix6.narrator2.memory.InteractionKind
 import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.MemoryRejected
 import io.github.clemsix6.narrator2.memory.Source
+import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
+import io.github.clemsix6.narrator2.tool.action.ItemSpecs
 import io.github.clemsix6.narrator2.tool.action.parseId
 import io.github.clemsix6.narrator2.tool.action.shortId
+import io.github.clemsix6.narrator2.tool.answer
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -31,6 +40,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.effect.MobEffectCategory
+import java.time.Clock
 
 /**
  * The stakes of the challenges and the duels (M4 §5.3), paid by the engine through the very tools of the Director
@@ -45,7 +55,9 @@ import net.minecraft.world.effect.MobEffectCategory
  *   for the guards), to the players online only. A stake refused (rationing, `favor_limit`, the guards of the
  *   punishments, a dead player) is said in the line, never retried. Each stake paid enters the player's history:
  *   an interaction `gift`, `blessing` or `punishment`, valence 0, canon = the challenge, by the engine (acts of
- *   the engine are no `tool_calls`: `Sanctions` never sees them).
+ *   the engine are no `tool_calls`: `Sanctions` never sees them). An item reward is the one stake not paid by its
+ *   tool's run: `give_item` drops what finds no room at the player's feet, so the engine gives it through the
+ *   ledger after the same checks and limits ([giveItem]; M4 review, finding 36).
  *
  * Off the server thread: the tools go to it themselves.
  */
@@ -118,7 +130,11 @@ class Stakes(private val services: NarratorServices, private val actions: Engine
     private suspend fun payReward(challenge: ChallengeState, participant: Participant, reward: RewardSpec): String {
         val what = ChallengeLines.reward(reward)
         val name = onlineName(participant) ?: return offline(challenge, participant, "reward")
-        val result = act(challenge, name, REWARD, reward.kind.tool, reward.kind.id, what, rewardArgs(reward, name))
+        val result = if (reward.kind == RewardKind.ITEM) {
+            giveItem(challenge, participant, name, reward, what)
+        } else {
+            act(challenge, name, REWARD, reward.kind.tool, reward.kind.id, what, rewardArgs(reward, name))
+        }
         if (result.status != ToolStatus.OK) return "${shown(participant)} ${notPaid(result)}"
         val kind = if (reward.kind == RewardKind.ITEM) InteractionKind.GIFT else InteractionKind.BLESSING
         remember(challenge, participant, kind, REWARD, result, what)
@@ -143,14 +159,73 @@ class Stakes(private val services: NarratorServices, private val actions: Engine
      * One act of the engine for [challenge]'s [stake] (`reward` or `penalty`) to [name]: its `mechanic stake`
      * decision, then [tool] with [args] as that act.
      */
-    private suspend fun act(challenge: ChallengeState, name: String, stake: String, tool: String, kind: String, what: String, args: JsonObject): ToolResult {
+    private suspend fun act(challenge: ChallengeState, name: String, stake: String, tool: String, kind: String, what: String, args: JsonObject): ToolResult =
+        actions.run(open(challenge, name, stake, tool, kind, what), tool, args)
+
+    /** The act of [challenge]'s [stake] to [name]: its `mechanic stake` decision. */
+    private fun open(challenge: ChallengeState, name: String, stake: String, tool: String, kind: String, what: String): Firing {
         val detail = buildJsonObject {
             put("stake", stake)
             put("kind", kind)
             put("tool", tool)
         }
-        val firing = actions.open(STAKE, challenge.ref, name, detail, reason = "${challenge.ref} $stake to ${ModelText.name(name)}: $what", level = Log.Level.INFO)
-        return actions.run(firing, tool, args)
+        return actions.open(STAKE, challenge.ref, name, detail, reason = "${challenge.ref} $stake to ${ModelText.name(name)}: $what", level = Log.Level.INFO)
+    }
+
+    /**
+     * An item reward to [participant] ([name] online), in an act of its own (M4 review, finding 36): `give_item`'s own
+     * dry checks (the item, how precious it is) and the server's limits of the gifts, as for the Director's gifts; then
+     * into the inventory through the ledger ([io.github.clemsix6.narrator2.guard.ItemLedger.owe]), like a joker: what
+     * finds no room waits there and comes once there is room, never on the ground, where it would burn or vanish. The
+     * act's `mechanic action` decision is written as [EngineActions] writes those of the tools.
+     */
+    private suspend fun giveItem(challenge: ChallengeState, participant: Participant, name: String, reward: RewardSpec, what: String): ToolResult {
+        val firing = open(challenge, name, REWARD, GIVE_ITEM, reward.kind.id, what)
+        val args = rewardArgs(reward, name)
+        val at = services.clock.instant()
+        val begun = System.nanoTime()
+        val result = actions.check(GIVE_ITEM, args, firing.caller) ?: try {
+            services.server.onServerThread { answer { intoLedger(challenge, participant, reward) } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ToolResult.failed(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
+        }
+        Decisions(services.trace, Clock.fixed(at, services.clock.zone)).record(
+            log, DecisionRecord.Kind.MECHANIC, EngineActions.ACTION,
+            subject = result.targets.joinToString { it.name }.ifEmpty { null },
+            reason = "$GIVE_ITEM ${result.status.id}: ${EngineActions.cut(result.text.lineSequence().first(), EngineActions.FIRST_LINE_MAX)}",
+            conversationId = firing.caller.conversationId,
+            detail = buildJsonObject {
+                put("firing", firing.id)
+                firing.caller.act?.let { put("act", it) }
+                put("ref", challenge.ref.toString())
+                put("tool", GIVE_ITEM)
+                put("effect", ToolEffect.WORLD.id)
+                put("status", result.status.id)
+                put("ms", (System.nanoTime() - begun) / 1_000_000)
+                putJsonArray("targets") { result.targets.forEach { add(it.name) } }
+                put("args", args)
+                put("result", result.text)
+                put("ledger", true)
+            },
+            level = if (result.status == ToolStatus.OK) Log.Level.DEBUG else Log.Level.INFO,
+        )
+        return result
+    }
+
+    /** [reward] built as `give_item` builds it, counted by the server's limits of the gifts, owed to [participant]. Server thread. */
+    private fun intoLedger(challenge: ChallengeState, participant: Participant, reward: RewardSpec): ToolResult {
+        val server = services.server
+        val player = server.playerList.getPlayer(participant.playerId) ?: return ToolResult.failed("${shown(participant)} is not online")
+        val spec = ItemSpecs.resolve(server.registryAccess(), player.level().enabledFeatures(), reward.item.orEmpty(), reward.count, reward.name, null, null, false)
+        val ref = player.ref()
+        val gift = "${spec.count}x ${shortId(spec.item)}"
+        val verdict = services.toolLimits.gifts.take(ref, ItemSpecs.preciousness(spec.item) * spec.count, gift)
+        if (verdict is Verdict.Denied) return ToolResult.denied(verdict)
+        val waiting = services.guards.items.owe(player, listOf(ItemSpecs.build(spec, null)), "the reward of the ${kindOf(challenge)} ${challenge.ref}")
+        val where = if (waiting.isEmpty()) "" else "; it waits in their ledger until their inventory has room"
+        return ToolResult.ok("ok: gave ${ItemSpecs.describe(spec)} to ${ModelText.name(ref.name)}$where", listOf(ref))
     }
 
     /** One player's stake, whatever happens: an error is logged and said, and the next players are paid. */
@@ -206,6 +281,7 @@ class Stakes(private val services: NarratorServices, private val actions: Engine
         const val PENALTY = "penalty"
 
         private const val PUNISH = "punish"
+        private const val GIVE_ITEM = "give_item"
 
         /** The player named in the dry checks: none of them looks at the players (M4-03). */
         private const val CHECKED_PLAYER = "player"
