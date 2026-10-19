@@ -148,8 +148,6 @@ class CommandPolicy(
             // every recipe for good, when the Narrator is there to slow progress down, not to hand it out).
             forbid(Reason.ITEMS, "clear", "item", "loot", "enchant", "xp", "experience", "advancement", "recipe")
             forbid(Reason.ITEMS, "give", instead = "use the give_item tool")
-            // A player's own offering to the Narrator (`/offer`, M4 §7.2): no command makes a player offer (M4-15).
-            forbid(Reason.ITEMS, "offer")
             // Players and creatures, outside the protection, the no-piling-on rule, the ledgers and the
             // caps: killing, damaging, tags (`narrator2` marks the Narrator's creatures), teams (friendly
             // fire: PvP is never forced), mounts, view and camera, screen shaders.
