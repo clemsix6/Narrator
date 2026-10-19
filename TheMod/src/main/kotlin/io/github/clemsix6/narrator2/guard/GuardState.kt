@@ -2,6 +2,8 @@ package io.github.clemsix6.narrator2.guard
 
 import com.mojang.serialization.Codec
 import com.mojang.serialization.codecs.RecordCodecBuilder
+import io.github.clemsix6.narrator2.core.LongString
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import net.fabricmc.fabric.api.attachment.v1.AttachmentRegistry
 import net.fabricmc.fabric.api.attachment.v1.AttachmentType
 import net.minecraft.core.UUIDUtil
@@ -20,7 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Ids of the game (attributes, effects, operations) are kept as plain strings, and stacks as SNBT, so
  * that decoding the state never depends on the game's registries: an item removed from the game must
- * not make a whole ledger unreadable.
+ * not make a whole ledger unreadable. A stack's SNBT has no length limit in the file ([LongString]: a full
+ * book, a shulker box of books), and the game's data version goes with it, so that a stack held across an
+ * update of the game is brought up to date before it is given back.
  */
 
 /**
@@ -115,13 +119,18 @@ enum class LedgerPurpose {
  *
  * @property id the id of its `ledger confiscated` decision (`ledger held` for a stake or an offering:
  *   an offering is `O-<id>`).
- * @property items the stacks still held, each an `ItemStack` in SNBT. A stack that no longer reads back
- *   (its item left the game) stays here: nothing is ever erased silently.
+ * @property items the stacks still held, each an `ItemStack` in SNBT, of any length (a long one is saved in
+ *   chunks, [LongString]). A stack that no longer reads back (its item left the game) stays here: nothing is
+ *   ever erased silently.
  * @property what the stacks still held, for people and the model: `6x minecraft:diamond`.
  * @property takenAt and [returnAt]: epoch milliseconds. A stake's [returnAt] is its fallback deadline, never
  *   `Long.MAX_VALUE`: nothing stays held for ever (M4 §5.6).
  * @property canon a stake: the challenge or duel bet on, `C-<canon>`.
  * @property owedTo a stake lost: the player it goes to, as soon as both are online.
+ * @property dataVersion the game's data version when [items] were written: older stacks are brought up to date by
+ *   the game's data fixer before they are given back. Null: written without it, read as they are.
+ * @property settledAt a stake: when its settlement came (given back, or ceded to a winner), epoch milliseconds.
+ *   Null while it waits for one: a stake that comes back then comes back at its fallback deadline.
  */
 data class Confiscation(
     val id: Long,
@@ -134,12 +143,14 @@ data class Confiscation(
     val purpose: LedgerPurpose = LedgerPurpose.CONFISCATION,
     val canon: Long? = null,
     val owedTo: UUID? = null,
+    val dataVersion: Int? = null,
+    val settledAt: Long? = null,
 ) {
     companion object {
         val CODEC: Codec<Confiscation> = RecordCodecBuilder.create { instance ->
             instance.group(
                 Codec.LONG.fieldOf("id").forGetter(Confiscation::id),
-                Codec.STRING.listOf().fieldOf("items").forGetter(Confiscation::items),
+                LongString.CODEC.listOf().fieldOf("items").forGetter(Confiscation::items),
                 Codec.STRING.fieldOf("what").forGetter(Confiscation::what),
                 Codec.LONG.fieldOf("taken_at").forGetter(Confiscation::takenAt),
                 Codec.LONG.fieldOf("return_at").forGetter(Confiscation::returnAt),
@@ -149,9 +160,31 @@ data class Confiscation(
                     .optionalFieldOf("purpose", LedgerPurpose.CONFISCATION).forGetter(Confiscation::purpose),
                 Codec.LONG.optionalFieldOf("canon").forGetter { Optional.ofNullable(it.canon) },
                 UUIDUtil.CODEC.optionalFieldOf("owed_to").forGetter { Optional.ofNullable(it.owedTo) },
-            ).apply(instance) { id, items, what, takenAt, returnAt, reason, turnId, purpose, canon, owedTo ->
-                Confiscation(id, items, what, takenAt, returnAt, reason.orElse(null), turnId.orElse(null), purpose, canon.orElse(null), owedTo.orElse(null))
+                Codec.INT.optionalFieldOf("data_version").forGetter { Optional.ofNullable(it.dataVersion) },
+                Codec.LONG.optionalFieldOf("settled_at").forGetter { Optional.ofNullable(it.settledAt) },
+            ).apply(instance) { id, items, what, takenAt, returnAt, reason, turnId, purpose, canon, owedTo, dataVersion, settledAt ->
+                Confiscation(
+                    id, items, what, takenAt, returnAt, reason.orElse(null), turnId.orElse(null), purpose, canon.orElse(null), owedTo.orElse(null),
+                    dataVersion.orElse(null), settledAt.orElse(null),
+                )
             }
+        }
+    }
+}
+
+/**
+ * A stake handed over to the player who won it (M4 §5.6): [stake] the id of its escrow, which its winnings keep, and
+ * [at] when, epoch milliseconds. Kept [MechanicsLimits.CEDED_RESCUE_DAYS] days, as long as the loser's file may still
+ * hold the stake: a hand-over replayed after a crash finds it here and gives nothing twice, even once the winnings
+ * were delivered.
+ */
+data class ReceivedStake(val stake: Long, val at: Long) {
+    companion object {
+        val CODEC: Codec<ReceivedStake> = RecordCodecBuilder.create { instance ->
+            instance.group(
+                Codec.LONG.fieldOf("stake").forGetter(ReceivedStake::stake),
+                Codec.LONG.fieldOf("at").forGetter(ReceivedStake::at),
+            ).apply(instance, ::ReceivedStake)
         }
     }
 }
@@ -200,6 +233,7 @@ data class OpenEpisode(val act: Long?, val until: Long) {
  * @property jokersGivenAt when the Narrator gave them a joker within the last 24 hours, epoch milliseconds.
  * @property lastOfferAt when they last made an offering (`/offer`), epoch milliseconds: one per
  *   `mechanics.offeringMinutes` (M4 §7.2).
+ * @property receivedStakes the stakes lately handed over to them, won from another player ([ReceivedStake]).
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -216,11 +250,12 @@ data class GuardState(
     val lastGraceEnd: Long? = null,
     val jokersGivenAt: List<Long> = emptyList(),
     val lastOfferAt: Long? = null,
+    val receivedStakes: List<ReceivedStake> = emptyList(),
 ) {
     companion object {
         val EMPTY = GuardState()
 
-        /** Every field is optional, so a state saved before a field existed still reads back. 14 fields of the 16 a record codec takes. */
+        /** Every field is optional, so a state saved before a field existed still reads back. 15 fields of the 16 a record codec takes. */
         val CODEC: Codec<GuardState> = RecordCodecBuilder.create { instance ->
             instance.group(
                 LedgerModifier.CODEC.listOf().optionalFieldOf("modifiers", emptyList()).forGetter(GuardState::modifiers),
@@ -237,11 +272,12 @@ data class GuardState(
                 Codec.LONG.optionalFieldOf("last_grace_end").forGetter { Optional.ofNullable(it.lastGraceEnd) },
                 Codec.LONG.listOf().optionalFieldOf("jokers_given_at", emptyList()).forGetter(GuardState::jokersGivenAt),
                 Codec.LONG.optionalFieldOf("last_offer_at").forGetter { Optional.ofNullable(it.lastOfferAt) },
+                ReceivedStake.CODEC.listOf().optionalFieldOf("received_stakes", emptyList()).forGetter(GuardState::receivedStakes),
             ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, rescues,
-                                graceUntil, lastGraceEnd, jokersGivenAt, lastOfferAt ->
+                                graceUntil, lastGraceEnd, jokersGivenAt, lastOfferAt, receivedStakes ->
                 GuardState(
                     modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null),
-                    perils, rescues, graceUntil.orElse(null), lastGraceEnd.orElse(null), jokersGivenAt, lastOfferAt.orElse(null),
+                    perils, rescues, graceUntil.orElse(null), lastGraceEnd.orElse(null), jokersGivenAt, lastOfferAt.orElse(null), receivedStakes,
                 )
             }
         }

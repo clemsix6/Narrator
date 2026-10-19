@@ -55,6 +55,7 @@ import net.minecraft.network.protocol.PacketFlow
 import net.minecraft.server.level.ClientInformation
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.network.CommonListenerCookie
+import net.minecraft.server.permissions.LevelBasedPermissionSet
 import net.minecraft.server.players.NameAndId
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.InteractionHand
@@ -65,6 +66,7 @@ import net.minecraft.world.item.component.CustomData
 import net.minecraft.world.level.storage.TagValueInput
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -198,11 +200,12 @@ class BetGameTests {
                 rig.second()
                 rig.second()
                 val waiting = listOf(Settlement(cid.uuid.toString(), cidStake), Settlement(dan.uuid.toString(), danStake, cid.uuid.toString()))
-                check(rig.store.get().challenges.isEmpty() && rig.store.get().settlements == waiting) { "the instructions wait for their owners: ${rig.store.get().settlements}" }
+                check(rig.store.get().challenges.isEmpty() && rig.undated() == waiting) { "the instructions wait for their owners: ${rig.store.get().settlements}" }
+                check(rig.store.get().settlements.all { (it.at ?: Long.MAX_VALUE) <= rig.clock.millis() }) { "dated when written: ${rig.store.get().settlements}" }
 
                 val danBack = comeBack(helper, danSaved)
                 rig.engine.onJoin(danBack) // the engine's JOIN, which the server runs before the guards'
-                check(rig.store.get().settlements == waiting.take(1)) { "the loser's instruction applied at his join" }
+                check(rig.undated() == waiting.take(1)) { "the loser's instruction applied at his join" }
                 check(rig.ledger.held(danBack).single().let { it.id == danStake && it.owedTo == cid.uuid }) { "ceded to the winner, away: it waits in the loser's ledger" }
                 check(count(danBack, Items.GOLD_INGOT) == 0) { "not his any more" }
 
@@ -284,7 +287,7 @@ class BetGameTests {
                 rig.onServer {
                     rig.clock.now = Instant.ofEpochMilli(view.endsAt + MINUTE)
                     again.engine.start(helper.level.server)
-                    check(again.store.get().challenges.isEmpty() && again.store.get().settlements == listOf(Settlement(cid.uuid.toString(), stake))) {
+                    check(again.store.get().challenges.isEmpty() && again.undated() == listOf(Settlement(cid.uuid.toString(), stake))) {
                         "taken out at the start, its stake to give back: ${again.store.get()}"
                     }
                     again.tick()
@@ -357,15 +360,102 @@ class BetGameTests {
         val runtime = helper.narrator()
         val player = TestPlayer(helper, "bt_")
         try {
-            val output = CommandOutput()
-            helper.level.server.commands.performPrefixedCommand(player.player.createCommandSourceStack().withSource(output), "bet C-999999999 nobody")
+            helper.level.server.commands.performPrefixedCommand(player.player.createCommandSourceStack(), "bet C-999999999 nobody")
             val ui = runtime.settings.get().ui
             val expected = if (runtime.mechanics.available) ui.format("command.unknown_challenge", "id" to "C-999999999") else ui["mechanics.unavailable"]
-            helper.assertEquals(listOf(expected), output.lines.toList(), "what the player reads")
+            helper.assertEquals(listOf(expected), player.lines(), "what the player reads")
         } finally {
             player.close()
         }
         helper.succeed()
+    }
+
+    /**
+     * `/bet`, `/offer` and `/duel accept` act only for the player who sends them (M4 review, finding 37): never through
+     * `execute as`, from the console, a command block or another player. Nothing is staked, offered nor accepted.
+     */
+    @GameTest
+    fun onlyThePlayerThemselvesBetsOffersOrAnswersADuel(helper: GameTestHelper) {
+        val server = helper.level.server
+        val bob = TestPlayer(helper, "bt_")
+        val ann = TestPlayer(helper, "bt_")
+        try {
+            bob.forget() // "Ann joined the game"
+            bob.hold(ItemStack(Items.DIAMOND, 10))
+            val console = CommandOutput()
+            val fromConsole = server.createCommandSourceStack().withSource(console)
+            server.commands.performPrefixedCommand(fromConsole, "execute as ${bob.uuid} run offer")
+            server.commands.performPrefixedCommand(fromConsole, "execute as ${bob.uuid} run bet C-999999999 nobody")
+            server.commands.performPrefixedCommand(fromConsole, "execute as ${bob.uuid} run duel accept C-999999999")
+            val refusal = "only a player can %s, for themselves: ${bob.name} did not send this command"
+            for ((i, action) in listOf("make an offering", "bet", "answer a duel").withIndex()) {
+                helper.assertTrue(refusal.format(action) in console.lines.getOrElse(i) { "" }, "the console is refused ($action): ${console.lines}")
+            }
+            helper.assertEquals(3, console.lines.size, "and told nothing else: ${console.lines}")
+
+            // Ann, a game master, for Bob.
+            server.commands.performPrefixedCommand(ann.player.createCommandSourceStack().withPermission(LevelBasedPermissionSet.GAMEMASTER), "execute as ${bob.uuid} run offer")
+            helper.assertTrue(ann.lines().singleOrNull()?.contains(refusal.format("make an offering")) == true, "another player is refused: ${ann.lines()}")
+            helper.assertEquals(10, count(bob.live, Items.DIAMOND), "Bob's diamonds stay in his hand")
+            helper.assertTrue(bob.lines().isEmpty(), "Bob is told nothing: ${bob.lines()}")
+
+            // Bob for himself, through execute: his own command.
+            bob.hold(ItemStack.EMPTY)
+            server.commands.performPrefixedCommand(bob.player.createCommandSourceStack().withPermission(LevelBasedPermissionSet.GAMEMASTER), "execute as ${bob.uuid} run offer")
+            val ui = helper.narrator().settings.get().ui
+            helper.assertEquals(listOf(if (helper.narrator().mechanics.available) ui["offer.no_item"] else ui["mechanics.unavailable"]), bob.lines(), "Bob may")
+        } finally {
+            bob.close()
+            ann.close()
+        }
+        helper.succeed()
+    }
+
+    /** A participant stakes on themselves only (M4 review, finding 36): never on an opponent nor on nobody, which they could bring about by losing. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aParticipantBetsOnThemselvesOnly(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 3) { rig, (bob, ann, cid) ->
+            val view = rig.challenges.start(spec(listOf(bob, ann), "Contre soi"), DIRECTOR)
+            rig.onServer {
+                bob.hold(ItemStack(Items.IRON_INGOT, 12))
+                val onlyHimself = rig.ui.format("bet.unknown_option", "options" to bob.name)
+                check(rig.bet(bob, view.ref, ann.name).string == onlyHimself) { "not on his opponent" }
+                check(rig.bet(bob, view.ref, "nobody").string == onlyHimself) { "nor on nobody" }
+                check(count(bob.live, Items.IRON_INGOT) == 12 && rig.challenge(view.ref)!!.bets.isEmpty()) { "nothing taken" }
+                rig.bet(bob, view.ref, bob.name)
+                check(rig.challenge(view.ref)!!.bets.single().on == bob.uuid.toString()) { "on himself" }
+                cid.hold(ItemStack(Items.GOLD_INGOT, 5))
+                rig.bet(cid, view.ref, ann.name)
+                check(rig.challenge(view.ref)!!.bets.size == 2) { "a spectator bets on anyone" }
+            }
+            rig.cancel(view.ref)
+            rig.onServer { rig.tick() }
+        }
+    }
+
+    /**
+     * An instruction is dated when written, or when the bets' part first sees it; one whose owner is not back within
+     * 30 days is dropped, so that the world's state does not keep it for ever (M4 review, finding 29). The stake stays
+     * in its owner's file, and goes back to them at its fallback deadline.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun anInstructionWhoseOwnerNeverComesBackIsDroppedAfterAMonth(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 0) { rig, _ ->
+            rig.onServer {
+                val away = UUID.randomUUID().toString()
+                val old = Settlement(away, 9_001, at = rig.clock.millis() - 30 * DAY - 1)
+                val undated = Settlement(away, 9_002)
+                rig.store.update { it.copy(settlements = listOf(old, undated)) }
+                rig.second()
+                check(rig.store.get().settlements == listOf(undated.copy(at = rig.clock.millis()))) { "the old one dropped, the other dated: ${rig.store.get().settlements}" }
+                val dropped = rig.decisions("settled").single()
+                check(dropped.subject == away && "not back within 30 days" in dropped.reason.orEmpty()) { "said: $dropped" }
+                rig.at(rig.clock.millis() + 30 * DAY)
+                check(rig.store.get().settlements.size == 1) { "kept 30 days" }
+                rig.second()
+                check(rig.store.get().settlements.isEmpty()) { "then dropped" }
+            }
+        }
     }
 
     // ── The rig ──
@@ -403,6 +493,9 @@ class BetGameTests {
         }
 
         fun challenge(ref: Ref) = store.get().challenge(ref.id)
+
+        /** The instructions waiting in the state, without their dates. */
+        fun undated(): List<Settlement> = store.get().settlements.map { it.copy(at = null) }
 
         fun bet(player: TestPlayer, ref: Ref, on: String): Component = bets.bet(player.live, ref, on)
 
@@ -456,6 +549,7 @@ class BetGameTests {
 
     private companion object {
         const val MINUTE = 60_000L
+        const val DAY = 24 * 60 * MINUTE
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4242, taskId = null)
 
