@@ -77,7 +77,7 @@ class DreamReplayTest {
             // Step 4: an invalid Grimoire, an arc, then the Grimoire corrected.
             reply {
                 toolUse("write_grimoire", """{"text": ${json(invalid)}}""")
-                toolUse("remember", """{"kind": "arc", "what": "Le Narrateur prépare la revanche de Bartok contre la lave du Nether.", "players": ["Bartok"], "importance": 6}""")
+                toolUse("remember", """{"kind": "arc", "what": "Le Narrateur prépare la revanche de Bartok contre la lave du Nether.", "players": ["Bartok"], "theme": "revanche_sur_la_lave", "importance": 6}""")
             },
             reply { toolUse("write_grimoire", """{"text": ${json(grimoire)}}""") },
             reply { text("Grimoire réécrit, un récit prévu.") },

@@ -31,6 +31,9 @@ internal const val PLAYERS_MAX = 8
 /** Journal refs a write may cite as its evidence (the store's limit). */
 internal const val EVIDENCE_MAX = 20
 
+/** Longest theme of an arc: the bound of `MemoryLimits.THEME`. */
+internal const val THEME_MAX = 40
+
 /**
  * What `remember` records: a canon entry ([canon]) or a memory ([memory]); exactly one is set.
  *
@@ -85,7 +88,7 @@ data class RememberArgs(
     @Items(1, PLAYERS_MAX)
     @MaxLen(NAME_MAX)
     val players: List<String>? = null,
-    @Doc("Minutes until it is due (promise, threat, challenge, prophecy, arc): a DUE event will wake you then.")
+    @Doc("Minutes until it is due (promise, threat, challenge, prophecy, arc; an arc you start: 7 days when left out): a DUE event will wake you then.")
     @Range(1.0, 10_080.0)
     @SerialName("due_in_minutes")
     val dueInMinutes: Int? = null,
@@ -96,6 +99,9 @@ data class RememberArgs(
     @MaxLen(NAME_MAX)
     @SerialName("at_player")
     val atPlayer: String? = null,
+    @Doc("Arc only, required: its theme, a slug (vengeance_du_warden). Once the arc is closed, its theme rests 20 h of play.")
+    @MaxLen(THEME_MAX)
+    val theme: String? = null,
     @Doc("1 trivial … 10 unforgettable.")
     @Range(1.0, 10.0)
     val importance: Int = 5,

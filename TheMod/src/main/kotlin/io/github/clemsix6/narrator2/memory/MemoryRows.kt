@@ -94,7 +94,7 @@ internal fun ResultSet.memoryEntry(names: Names) = MemoryEntry(
 )
 
 internal const val CANON_COLUMNS = "id, kind, created_at, statement, quote, players, stakes, importance, status, due_at, " +
-    "resolved_at, resolution, winners, replaces, dim, x, y, z, uses, last_used_at, freshness, source, archived"
+    "resolved_at, resolution, winners, replaces, dim, x, y, z, uses, last_used_at, freshness, source, archived, mechanic, theme"
 
 internal fun ResultSet.canonEntry(names: Names) = CanonEntry(
     ref = Ref(RefKind.CANON, getLong(1)),
@@ -117,6 +117,8 @@ internal fun ResultSet.canonEntry(names: Names) = CanonEntry(
     freshness = getString(21)?.let { enumOfId<GagState>(it) },
     source = code(22),
     archived = getBoolean(23),
+    mechanic = getString(24)?.let { CanonMechanic.of(it) ?: error("unknown CanonMechanic in the memory: $it") },
+    theme = getString(25),
 )
 
 internal const val INTERACTION_COLUMNS = "id, ts, player_uuid, player, kind, valence, counts, disrespect, summary, quote, played_s, " +
