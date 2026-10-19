@@ -35,13 +35,14 @@ data class RemindMeArgs(
  * `remind_me`: schedules a wake-up of the Director through `DirectorControl.scheduleReminder`. When it
  * is due, the reminder reaches the Director's `<events>` as `REMINDER R-n` with its note, like any
  * event: a tool cannot block the turn, it schedules a wake-up instead. At most [MAX_PENDING] reminders
- * wait at once (`DirectorStatus.reminders`); the Director keeps them in memory, so a restart loses them.
+ * wait at once (`DirectorStatus.reminders`); the Director keeps them in the world, so a restart keeps them
+ * (M4 §15.1).
  */
 class RemindMeTool : NarratorTool<RemindMeArgs>(
     name = "remind_me",
     description = "Wakes you up later with a note to yourself: a challenge's deadline, a punishment's end to comment on, a " +
         "prophecy to fulfil, a promise to keep, a player who must have obeyed by then. When it is due, it arrives in " +
-        "<events> as REMINDER with your note. At most $MAX_PENDING reminders wait at once; a server restart forgets them. " +
+        "<events> as REMINDER with your note. At most $MAX_PENDING reminders wait at once. " +
         "Not a polling loop: events already wake you when something happens.",
     args = RemindMeArgs.serializer(),
     effect = ToolEffect.ENGINE,

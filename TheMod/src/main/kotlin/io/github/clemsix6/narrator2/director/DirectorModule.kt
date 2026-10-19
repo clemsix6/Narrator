@@ -25,7 +25,8 @@ import java.util.UUID
  * at `SERVER_STOPPING`; the bus subscriptions that feed it (salience, thinking indicator) use the owner
  * `ShutdownSequence.DIRECTOR_OWNER`, closed at the same moment. `/narrator reload` reaches it as a
  * `DirectorSignal.SettingsChanged`. Each chapter gets the tools wired when it opens
- * (`ToolCatalog.toolSetFor`): the model only sees tools that work.
+ * (`ToolCatalog.toolSetFor`): the model only sees tools that work. Server thread: the Director reads its
+ * reminders from the world when it is created.
  */
 fun createDirector(services: NarratorServices): DirectorControl {
     val director = Director(services, ServerGameView(services), { env -> ToolCatalog.toolSetFor(Role.DIRECTOR, env, services) })
@@ -33,8 +34,14 @@ fun createDirector(services: NarratorServices): DirectorControl {
     return director
 }
 
-/** The game as the Director sees it: the running server, reached through its thread only. */
+/**
+ * The game as the Director sees it: the running server, reached through its thread only. Its reminders are
+ * in the world's global attachment `narrator2:reminders` (M4 §15.1), read when the Director is created, on
+ * the server thread while the server starts.
+ */
 private class ServerGameView(private val services: NarratorServices) : GameView {
+    override val reminders: ReminderStore = WorldReminderStore(services.server)
+
     override suspend fun worldTime(): WorldTime {
         val server = services.server
         return server.onServerThread(WORLD_TIMEOUT_MS) {

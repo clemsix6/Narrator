@@ -144,6 +144,34 @@ class WakeBudgetScenariosTest {
     }
 
     @Test
+    fun `past the budget, a mechanic's priority news still wakes the Director, its other news wait (M4 §4-4)`() = DirectorHarness(dir, turnsPerHour = 1).use { h ->
+        h.online("Bartok")
+        h.online("Mimosa")
+        repeat(2) { h.fake.enqueue(reply { text("…") }) }
+
+        h.died("Bartok")
+        h.advance(3_000)
+        h.awaitTurns(1)
+
+        val joker = DirectorSignal.Mechanic(MechanicSignal.JOKER, "Bartok played a joker: slowness II lifted", h.clock.millis(), priority = false)
+        h.director.post(joker)
+        h.advance(240_000)
+        assertEquals(1, h.startedTurns(), "a joker played waits for a turn to leave the hour")
+
+        val won = DirectorSignal.Mechanic(MechanicSignal.CHALLENGE, "C-50 won by Mimosa in 9m12s (turtle_egg 1/1)", h.clock.millis(), priority = true)
+        h.director.post(won)
+        h.advance(3_000)
+        h.awaitTurns(2)
+
+        val wake = h.wakeText(h.fake.requests.size - 1)
+        assertContains(wake, "[-4m03s] JOKER Bartok played a joker: slowness II lifted\n")
+        assertContains(wake, "[-3s] CHALLENGE C-50 won by Mimosa in 9m12s (turtle_egg 1/1)\n")
+        assertEquals(TurnRecord.Trigger.MECHANIC, h.endedTurns()[1].trigger)
+        assertEquals(2 to 1, h.director.status().let { it.turnsThisHour to it.turnsPerHour }, "the priority news is past the budget")
+        h.assertInvariants()
+    }
+
+    @Test
     fun `a player who prays every 10 s cannot spend the turns of everyone`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")
         h.online("Mimosa")
