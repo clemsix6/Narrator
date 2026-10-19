@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolResult
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import net.minecraft.network.chat.Component
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
@@ -20,17 +21,26 @@ import kotlin.reflect.KClass
 
 /**
  * A mechanic refused, written for the model (M4 §4.1): with a [rule] (`challenge_limit`, `rule_limit`,
- * `pvp_off`, `mechanics_off`…) it is `DENIED (rule): message`; without, `Invalid arguments: message`, and the
- * message says how to fix the call.
+ * `pvp_off`, `mechanics_off`, `module_limit`…) it is `DENIED (rule): message`; when [failed] (M5 §6.4: a module that
+ * no longer compiles, or fails to start: not the caller's fault), `FAILED: message`; otherwise `Invalid arguments:
+ * message`, and the message says how to fix the call.
  */
-class MechanicRejected(val rule: String?, message: String) : Exception(message) {
-    /** As a tool's answer: [ToolResult.denied] with a [rule], else [ToolResult.invalid]. */
-    fun toResult(): ToolResult = if (rule != null) ToolResult.denied(rule, message.orEmpty()) else ToolResult.invalid(message.orEmpty())
+class MechanicRejected(val rule: String?, message: String, val failed: Boolean = false) : Exception(message) {
+    init {
+        require(!(failed && rule != null)) { "a refusal of the mechanics is denied by a rule or failed, not both" }
+    }
+
+    /** As a tool's answer: [ToolResult.denied] with a [rule], [ToolResult.failed] when [failed], else [ToolResult.invalid]. */
+    fun toResult(): ToolResult = when {
+        rule != null -> ToolResult.denied(rule, message.orEmpty())
+        failed -> ToolResult.failed(message.orEmpty())
+        else -> ToolResult.invalid(message.orEmpty())
+    }
 }
 
 /**
  * The mechanics engine (M4 §4), exposed by `NarratorServices.mechanics`: challenges, duels and bets, rules,
- * and their lines of the situation. Built once per server by `createMechanics` (after the memory, before
+ * the modules of the Forge (M5 §6), and their lines of the situation. Built once per server by `createMechanics` (after the memory, before
  * the Director); [DisabledMechanics] when it is off, when the memory is unavailable (the mechanics live in
  * the canon) or when it could not start.
  *
@@ -47,10 +57,13 @@ interface Mechanics {
     val challenges: ChallengeControl
     val rules: RuleControl
 
+    /** The modules deployed (M5 §6.4-6.7) and the Forge's switch. */
+    val modules: ModuleControl
+
     /**
-     * The `Challenges: …` and `Rules: …` lines of the situation (M4 §4.5), from the snapshot rebuilt once a
-     * second: never a wait. Each at most [MechanicsLimits.SITUATION_LINE] characters; none when there is
-     * nothing to say, or when unavailable. Any thread.
+     * The `Challenges: …`, `Rules: …` and `Modules: …` lines of the situation (M4 §4.5, M5 §9.3), from the snapshot
+     * rebuilt once a second: never a wait. Each at most [MechanicsLimits.SITUATION_LINE] characters; none when there
+     * is nothing to say, or when unavailable. Any thread.
      */
     fun situationLines(now: Long): List<String>
 
@@ -126,6 +139,92 @@ interface RuleControl {
     /** The active rules, oldest first. Any thread. */
     fun list(): List<RuleView>
 }
+
+/**
+ * The modules deployed (M5 §6.4-6.7), and the Forge's switch (M5 §3.7). Task M5-11 writes it (`ModuleBook`, on the
+ * engine's state); until the assembly (M5-21), and while the engine is off, it is a [DisabledModules].
+ */
+interface ModuleControl {
+    /** The operator's switch (`/narrator forge off`), kept in the world's state; null while modules may run. Any thread. */
+    val halted: ForgeHalt?
+
+    /**
+     * Loaders of ended deployments still alive two minutes and two GC cycles after their end, since the server
+     * started (each also a `WARN` and a decision `forge leak`, M5 §3.7). Any thread.
+     */
+    val leaks: Int
+
+    /**
+     * `deploy_module` (M5 §6.4), in this order, the first refusal thrown as a [MechanicRejected]: the Forge runs and is
+     * not switched off (`forge_off`), the engine runs (`mechanics_off`); the module and its version (the latest `ready`
+     * when [DeploySpec.version] is null; `awaiting_approval`; failed when it no longer compiles); its parameters
+     * against its manifest; the judged challenge it referees; `forge.maxActive` (`module_limit`); then it is built
+     * (`Forge.build`), its canon row written (`law` or `plan`, mechanic `module`, as [caller]), its entry put in the
+     * state, and its first start awaited (a second at most: failed when it faults there).
+     */
+    suspend fun deploy(spec: DeploySpec, caller: Caller): ModuleView
+
+    /**
+     * Stops the running module [ref] now (`stop_module`, `/narrator module stop`): `stop(STOPPED)`, its creatures back
+     * to normal, its canon `retired` (a law) or `cancelled` (a plan) with [note]; [author] says who asked (an operator's
+     * stop tells the Director). Throws [MechanicRejected] for a module that does not run.
+     */
+    suspend fun stop(ref: Ref, note: String, author: Author): ModuleView
+
+    /**
+     * The switch (M5 §3.7): every module ends (`stop(FORGE_OFF)`, canon resolved, one `MODULE` line for all), and
+     * nothing is deployed nor restarted until [resume], across restarts (kept in the state). [reason]: the operator's
+     * words, or a default. Returns the modules stopped.
+     */
+    suspend fun halt(reason: String, operator: String): List<ModuleView>
+
+    /** Lifts the switch: modules may be deployed again. */
+    suspend fun resume(operator: String)
+
+    /** The running modules, oldest first. Any thread. */
+    fun list(): List<ModuleView>
+}
+
+/**
+ * What `deploy_module` asks (M5 §6.4, §9.1), its arguments as the tool decoded them.
+ *
+ * @property version null for the latest `ready` version.
+ * @property params the module's parameters, unchecked: [ModuleControl.deploy] checks them against its manifest.
+ * @property statement its canon's statement, French, third person; [quote] the Director's words (a law).
+ * @property challenge a running judged challenge it referees.
+ */
+data class DeploySpec(
+    val module: String,
+    val version: Int?,
+    val params: JsonObject,
+    val kind: RuleKind,
+    val statement: String,
+    val quote: String?,
+    val minutes: Int,
+    val challenge: Ref?,
+)
+
+/**
+ * What the tools and the commands show of a running module (M5 §9, §14).
+ *
+ * @property acts the acts it asked so far (refused ones included); [faults] its faults (M5 §3.7).
+ * @property msPerSecond its code's time in the last second, in milliseconds.
+ * @property line its line as the call that gives the view tells it: the line of its deployment from
+ *   [ModuleControl.deploy], of its end from [ModuleControl.stop]; otherwise its line of the situation, e.g.
+ *   `C-70 orbiting_chickens law Bartok (until 20:40)`.
+ */
+data class ModuleView(
+    val ref: Ref,
+    val module: String,
+    val version: Int,
+    val kind: RuleKind,
+    val endsAt: Long,
+    val acts: Int,
+    val faults: Int,
+    val challenge: Ref?,
+    val msPerSecond: Double,
+    val line: String,
+)
 
 /**
  * What the tools and the commands show of a challenge or a duel.
@@ -244,9 +343,9 @@ interface MechanicPart {
 
 /**
  * The engine when it does not run (M4 §4.1): [reason] says why (`mechanics.enabled is false`, `the Journal is
- * unavailable: …`, `the memory is unavailable: …`, `it could not start: …`). Starting a challenge, a duel or a rule fails with
- * `DENIED (mechanics_off): the mechanics are unavailable: <reason>`; ending or removing one fails the same
- * way. Lists are empty, there is no situation line and every death is allowed.
+ * unavailable: …`, `the memory is unavailable: …`, `it could not start: …`). Starting a challenge, a duel, a rule or a
+ * module fails with `DENIED (mechanics_off): the mechanics are unavailable: <reason>`; ending, removing or stopping
+ * one fails the same way. Lists are empty, there is no situation line and every death is allowed.
  *
  * [guardian], on a server, keeps what the engine left in the world from staying frozen there (M4 review, finding
  * 9): its ticks, joins and creature loads go to it; without one, the hooks do nothing. [ui] gives the texts of the
@@ -283,6 +382,8 @@ class DisabledMechanics(
         override fun list(): List<RuleView> = emptyList()
     }
 
+    override val modules: ModuleControl = DisabledModules(MECHANICS_OFF, "the mechanics are unavailable: $reason")
+
     private fun rejected() = MechanicRejected(MECHANICS_OFF, "the mechanics are unavailable: $reason")
 
     private fun unavailable(): Component = Component.literal(ui?.invoke()?.get("mechanics.unavailable") ?: "the mechanics are unavailable")
@@ -313,4 +414,26 @@ class DisabledMechanics(
         /** The rule of every refusal: `DENIED (mechanics_off): …`. */
         const val MECHANICS_OFF = "mechanics_off"
     }
+}
+
+/**
+ * The modules when they cannot run (M5 §11): every deployment, stop or switch is refused with
+ * `DENIED (<rule>): <reason>` ([rule] `mechanics_off` with the engine off, `forge_off` until the modules are wired,
+ * M5-21); nothing runs, nothing is halted, nothing leaks.
+ */
+class DisabledModules(private val rule: String, private val reason: String) : ModuleControl {
+    override val halted: ForgeHalt? = null
+    override val leaks: Int = 0
+
+    override suspend fun deploy(spec: DeploySpec, caller: Caller): ModuleView = throw rejected()
+
+    override suspend fun stop(ref: Ref, note: String, author: Author): ModuleView = throw rejected()
+
+    override suspend fun halt(reason: String, operator: String): List<ModuleView> = throw rejected()
+
+    override suspend fun resume(operator: String): Unit = throw rejected()
+
+    override fun list(): List<ModuleView> = emptyList()
+
+    private fun rejected() = MechanicRejected(rule, reason)
 }

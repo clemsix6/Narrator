@@ -19,8 +19,9 @@ import java.time.Duration
  * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players. No new work
  * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The mechanics
  * engine stops first ([stopMechanics], on the server thread, without waiting: no new act, its queue
- * dropped, its boss bars taken down; its state stays in the world, which the stopping save writes). Then
- * the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
+ * dropped, its boss bars taken down, its modules stopped; its state stays in the world, which the stopping save
+ * writes). Then the Forge ([stopForge], a second at most: its compiler thread ends, its bench runs are cancelled).
+ * Then the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
  * cancelled and the world play clock saved, while the Journal still writes. Then the work in flight is
  * cancelled: every coroutine of [scope] (Director, workers, model calls, which close their streams
  * without appending anything, SQL reads, reloads), waited for at most [workTimeout]. The
@@ -44,18 +45,20 @@ class ShutdownSequence(
     private val stopMemory: suspend () -> Unit = {},
     private val memoryTimeout: Duration = MEMORY_TIMEOUT,
     private val stopMechanics: () -> Unit = {},
+    private val stopForge: () -> Unit = {},
 ) {
     private val log = Log.main
 
     @Volatile
     private var begun = false
 
-    /** `SERVER_STOPPING`: takes no new work, stops the mechanics engine, then the memory, then cancels the work in flight. */
+    /** `SERVER_STOPPING`: takes no new work, stops the mechanics engine (its modules first), then the Forge, then the memory, then cancels the work in flight. */
     fun begin() {
         if (begun) return
         begun = true
         setPhase(Phase.STOPPING)
         step("stop the mechanics") { stopMechanics() }
+        step("stop the Forge") { stopForge() }
         step("stop the memory") {
             val start = System.nanoTime()
             val stopped = runBlocking { withTimeoutOrNull(memoryTimeout.toMillis()) { stopMemory() } } != null

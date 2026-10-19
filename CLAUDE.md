@@ -24,7 +24,7 @@ La v2 est une réécriture complète. Les leçons de la v1 sont résumées dans 
 - **Les structures de données sont libres.** Si un format, un schéma ou une structure des docs peut être meilleur, améliore-le, puis mets la doc à jour et signale-le dans ton rapport. Chaque fois qu'on peut faire mieux que la v1, on le fait.
 
 ## Arborescence
-- `TheMod/` : le mod (Gradle). Le code est sous `src/main/kotlin/io/github/clemsix6/narrator2/`, les mixins Java sous `src/main/java/.../mixin/` et les prompts sous `src/main/resources/narrator2/prompts/`.
+- `TheMod/` : le mod (Gradle). Le code est sous `src/main/kotlin/io/github/clemsix6/narrator2/`, les mixins Java sous `src/main/java/.../mixin/`, le SDK Java de la Forge sous `src/main/java/.../forge/api/` et `forge/rt/`, et les prompts sous `src/main/resources/narrator2/prompts/`.
 - `TheServer/` : le dossier d'exécution du serveur de dev (`runServer`). Il n'est pas versionné.
 - `docs/` : la documentation en français.
 
@@ -41,7 +41,7 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - Le JDK est installé dans `C:\Program Files\Java\jdk-25`.
 
 ## Conventions de code
-- Kotlin pour le mod, Java uniquement pour les mixins.
+- Kotlin pour le mod, Java uniquement pour les mixins et pour la Forge vue par les modules (décision Q2 de M5) : le SDK des modules (`forge/api`) et ce qu'appelle leur bytecode réécrit (`forge/rt`). C'est l'API que lit et qu'appelle du code Java : elle reste idiomatique (records, interfaces fonctionnelles du JDK, aucun type `kotlin.*` visible). Tout le reste de la Forge, son implémentation comprise, est en Kotlin.
 - **Tout ce qui est dans le code est en anglais** : identifiants, commentaires, KDoc, messages de log, textes des commandes d'administration, messages d'erreur, noms de fichiers et de tables, en-têtes des transcriptions, noms des tests.
 - Le français est réservé à ce qui est hors du code : les prompts (`src/main/resources/narrator2/prompts/`), la documentation (`docs/`) et les échanges avec le propriétaire. Ce que le Narrateur dit aux joueurs est en français parce que c'est Claude qui l'écrit, guidé par les prompts, pas parce qu'il y a du texte français dans le code.
 - Les définitions d'outils (noms, descriptions, schémas), les résultats d'outils et les messages d'événements générés par le moteur pour Claude sont eux aussi en anglais : ce sont des sorties du code.

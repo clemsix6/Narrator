@@ -115,6 +115,12 @@ enum class MechanicSignal {
 
     /** A player played a joker. No priority. */
     JOKER,
+
+    /**
+     * A module of the Forge ended (its time, by itself, by an operator, disabled, the Forge switched off, a restart that
+     * failed) or tells the Director something (`tellDirector`, once every 5 minutes). No priority (M5 §9.2).
+     */
+    MODULE,
 }
 
 /** What brought a memory back by itself (M3 §10.5). */

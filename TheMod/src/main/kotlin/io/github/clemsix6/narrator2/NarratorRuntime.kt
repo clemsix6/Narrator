@@ -11,6 +11,8 @@ import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.createDirector
 import io.github.clemsix6.narrator2.event.EventBus
+import io.github.clemsix6.narrator2.forge.Forge
+import io.github.clemsix6.narrator2.forge.createForge
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.createGuards
 import io.github.clemsix6.narrator2.journal.DuckJournal
@@ -54,12 +56,12 @@ import java.time.Clock
 /**
  * Everything the Narrator runs while a server is up (M1_M2 §2), from `SERVER_STARTED` to
  * `SERVER_STOPPED`: the bus, the Journal, the player states, the Observer, the guards, the reflexes,
- * the workers, the memory, the mechanics engine and the Director. None of them is ever rebuilt while the
- * server runs: `/narrator reload` only replaces the [settings] (configuration, prompts, texts and clients).
+ * the workers, the memory, the Forge, the mechanics engine and the Director. None of them is ever rebuilt while
+ * the server runs: `/narrator reload` only replaces the [settings] (configuration, prompts, texts and clients).
  *
  * Components depend on [NarratorServices], never on this class. They are created in this order, each
  * factory receiving the runtime with the services created before it: Journal, bus, player states,
- * guards, Observer, reflexes, workers, memory, mechanics, Director.
+ * guards, Observer, reflexes, workers, memory, Forge, mechanics, Director.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -121,6 +123,9 @@ class NarratorRuntime private constructor(
     final override lateinit var memory: Memory
         private set
 
+    final override lateinit var forge: Forge
+        private set
+
     final override lateinit var mechanics: Mechanics
         private set
 
@@ -142,10 +147,12 @@ class NarratorRuntime private constructor(
         reflexes = createReflexes(this)
         workers = createWorkers(this)
         memory = createMemory(this)
+        forge = createForge(this)
         mechanics = createMechanics(this)
         director = createDirector(this)
         shutdown = ShutdownSequence(
             scope, bus, journal, settings, observer::flushAll, { phase = it }, stopMemory = memory::stop, stopMechanics = mechanics::stop,
+            stopForge = forge::stop,
         )
         phase = Phase.RUNNING
     }
@@ -259,7 +266,8 @@ class NarratorRuntime private constructor(
                 "ready · gateway ${config.gateway.baseUrl} · LLMGW key ${if (settings.claude != null) "present" else "missing"} · " +
                     "Journal ${if (runtime.journal.available) "available" else "unavailable"} · " +
                     "memory ${if (runtime.memory.available) "on" else "off (${runtime.memory.unavailableReason})"} · " +
-                    "mechanics ${if (runtime.mechanics.available) "on" else "off (${runtime.mechanics.unavailableReason})"} · data in ${runtime.dataDir}",
+                    "mechanics ${if (runtime.mechanics.available) "on" else "off (${runtime.mechanics.unavailableReason})"} · " +
+                    "forge ${if (runtime.forge.available) "on" else "off (${runtime.forge.unavailableReason})"} · data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }

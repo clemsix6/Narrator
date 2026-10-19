@@ -29,7 +29,7 @@ class ConfigStoreTest {
         assertEquals(NarratorConfig(), config)
         val written = Json.parseToJsonElement(file.readText()).jsonObject
         assertEquals(
-            setOf("gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "memory", "mechanics", "safety", "reflex", "logging"),
+            setOf("gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex", "logging"),
             written.keys,
             "only the settings in use",
         )

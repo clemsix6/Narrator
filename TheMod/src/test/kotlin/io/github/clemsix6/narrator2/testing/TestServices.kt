@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.config.Prompts
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.event.EventBus
+import io.github.clemsix6.narrator2.forge.Forge
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.journal.DisabledJournal
 import io.github.clemsix6.narrator2.journal.Journal
@@ -39,7 +40,7 @@ fun testSettings(config: NarratorConfig = NarratorConfig(), claude: ClaudeClient
 /**
  * The services of a runtime, for unit tests: every part is a constructor parameter, with a harmless
  * default (a real bus, a disabled Journal, traces in memory, fakes for the guards, the reflexes, the
- * Director, the workers, the memory and the mechanics engine). There is no Minecraft server: [server]
+ * Director, the workers, the memory, the Forge and the mechanics engine). There is no Minecraft server: [server]
  * fails unless one is given.
  * [phase] can be changed to test the stopping server.
  */
@@ -59,6 +60,7 @@ class TestServices(
     override val director: DirectorControl = FakeDirector(clock),
     override val workers: WorkersControl = FakeWorkers(),
     override val memory: Memory = FakeMemory(clock),
+    override val forge: Forge = FakeForge(clock),
     override val mechanics: Mechanics = FakeMechanics(clock),
 ) : NarratorServices {
     override val server: MinecraftServer get() = minecraft ?: error("no Minecraft server in unit tests")

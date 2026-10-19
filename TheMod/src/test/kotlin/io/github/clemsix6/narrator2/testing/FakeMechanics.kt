@@ -1,14 +1,19 @@
 package io.github.clemsix6.narrator2.testing
 
+import io.github.clemsix6.narrator2.forge.DisabledForge
 import io.github.clemsix6.narrator2.mechanics.ChallengeControl
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeSpec
 import io.github.clemsix6.narrator2.mechanics.ChallengeState
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
+import io.github.clemsix6.narrator2.mechanics.DeploySpec
 import io.github.clemsix6.narrator2.mechanics.DuelSpec
+import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.Mechanics
+import io.github.clemsix6.narrator2.mechanics.ModuleControl
+import io.github.clemsix6.narrator2.mechanics.ModuleView
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.RuleControl
 import io.github.clemsix6.narrator2.mechanics.RuleSpec
@@ -33,8 +38,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * A mechanics engine for tests (design M4 §4.1): it records the calls and gives back what the test set.
  * [situationLines] answers [lines]; [allowDeath] answers [allowDeaths]; the hooks are recorded in [calls]
- * (`tick`, `join Bartok`, `stop`…). Its controls ([FakeChallenges], [FakeRules]) record what they are given
- * and answer views numbered from `C-1` (one sequence for both), or throw their [FakeChallenges.rejection].
+ * (`tick`, `join Bartok`, `stop`…). Its controls ([FakeChallenges], [FakeRules], [FakeModules]) record what they are
+ * given and answer views numbered from `C-1` (one sequence for all), or throw their [FakeChallenges.rejection].
  * Set [available] false (and [reason]) to test what happens without the engine.
  */
 class FakeMechanics(private val clock: Clock = TestClock()) : Mechanics {
@@ -61,6 +66,7 @@ class FakeMechanics(private val clock: Clock = TestClock()) : Mechanics {
 
     override val challenges = FakeChallenges(clock, ids)
     override val rules = FakeRules(clock, ids)
+    override val modules = FakeModules(clock, ids)
 
     override fun situationLines(now: Long): List<String> = lines
 
@@ -203,4 +209,71 @@ class FakeRules(private val clock: Clock, private val ids: AtomicLong) : RuleCon
     }
 
     override fun list(): List<RuleView> = views.toList()
+}
+
+/**
+ * The modules of [FakeMechanics] (design M5 §6.4): what the tools and commands asked, and what they get back. While
+ * [halted] is set, [deploy] is refused `forge_off`, as the real one; [halt] stops every view and sets it, [resume]
+ * lifts it.
+ */
+class FakeModules(private val clock: Clock, private val ids: AtomicLong) : ModuleControl {
+    /** One call to [stop]. */
+    data class Stopped(val ref: Ref, val note: String, val author: Author)
+
+    /** One call to [halt]. */
+    data class Halt(val reason: String, val operator: String)
+
+    @Volatile
+    override var halted: ForgeHalt? = null
+
+    @Volatile
+    override var leaks: Int = 0
+
+    /** Thrown by [deploy], [stop], [halt] and [resume] when set. */
+    @Volatile
+    var rejection: MechanicRejected? = null
+
+    val deployed = CopyOnWriteArrayList<Pair<DeploySpec, Caller>>()
+    val stopped = CopyOnWriteArrayList<Stopped>()
+    val halts = CopyOnWriteArrayList<Halt>()
+    val resumes = CopyOnWriteArrayList<String>()
+
+    /** What [list] answers: the views [deploy] gave, and any the test adds; [stop] and [halt] remove theirs. */
+    val views = CopyOnWriteArrayList<ModuleView>()
+
+    override suspend fun deploy(spec: DeploySpec, caller: Caller): ModuleView {
+        rejection?.let { throw it }
+        halted?.let { throw MechanicRejected(DisabledForge.FORGE_OFF, "the Forge was switched off by ${it.by}: ${it.reason}") }
+        deployed += spec to caller
+        val ref = Ref(RefKind.CANON, ids.getAndIncrement())
+        val view = ModuleView(
+            ref, spec.module, spec.version ?: 1, spec.kind, clock.millis() + spec.minutes * 60_000L, acts = 0, faults = 0, challenge = spec.challenge,
+            msPerSecond = 0.0, line = "$ref ${spec.module} ${spec.kind.id}",
+        )
+        views += view
+        return view
+    }
+
+    override suspend fun stop(ref: Ref, note: String, author: Author): ModuleView {
+        rejection?.let { throw it }
+        stopped += Stopped(ref, note, author)
+        val view = views.firstOrNull { it.ref == ref } ?: throw MechanicRejected(null, "$ref is not a running module")
+        views.remove(view)
+        return view
+    }
+
+    override suspend fun halt(reason: String, operator: String): List<ModuleView> {
+        rejection?.let { throw it }
+        halts += Halt(reason, operator)
+        halted = ForgeHalt(reason, operator, clock.millis())
+        return views.toList().also { views.clear() }
+    }
+
+    override suspend fun resume(operator: String) {
+        rejection?.let { throw it }
+        resumes += operator
+        halted = null
+    }
+
+    override fun list(): List<ModuleView> = views.toList()
 }

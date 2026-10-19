@@ -19,6 +19,7 @@ import kotlinx.serialization.SerialInfo
 import kotlinx.serialization.Serializable
 import net.minecraft.server.MinecraftServer
 import java.time.Clock
+import java.util.UUID
 
 /*
  * Argument annotations. They document the JSON schema sent to the model (`description`, `minimum`,
@@ -102,13 +103,20 @@ enum class ToolStatus {
  * with `is_error: true`.
  *
  * @property targets players the call affected, for the audit.
+ * @property entities the creatures the call brought into the world (`spawn`'s), by UUID: what a module's act makes its
+ *   own (M5 §4.4). Never sent to the model.
  */
-data class ToolResult(val status: ToolStatus, val text: String, val targets: List<PlayerRef> = emptyList()) {
+data class ToolResult(
+    val status: ToolStatus,
+    val text: String,
+    val targets: List<PlayerRef> = emptyList(),
+    val entities: List<UUID> = emptyList(),
+) {
     val isError: Boolean get() = status != ToolStatus.OK
 
     companion object {
         /** Success; [text] is returned as is. */
-        fun ok(text: String, targets: List<PlayerRef> = emptyList()) = ToolResult(ToolStatus.OK, text, targets)
+        fun ok(text: String, targets: List<PlayerRef> = emptyList(), entities: List<UUID> = emptyList()) = ToolResult(ToolStatus.OK, text, targets, entities)
 
         /** Bad arguments: `Invalid arguments: <problem>`. Say how to fix it (valid values, online players, the cap in force). */
         fun invalid(problem: String) = ToolResult(ToolStatus.INVALID, "Invalid arguments: $problem")
@@ -159,12 +167,15 @@ data class Caller(val role: Role, val conversationId: String, val turnId: Long?,
  * @property memoryAvailable the memory runs (`Memory.available`): the memory tools need it (M3 §5).
  * @property mechanicsAvailable the mechanics engine runs (`Mechanics.available`): every tool of M4 needs it,
  *   `punish` and `favor` included (M4 §12.1).
+ * @property forgeAvailable the Forge runs (`Forge.available`) and no operator switched it off
+ *   (`ModuleControl.halted`): every tool of M5 needs it, with the engine (M5 §9.1).
  */
 data class ToolEnv(
     val journalAvailable: Boolean,
     val workerRoles: Set<Role>,
     val memoryAvailable: Boolean = false,
     val mechanicsAvailable: Boolean = false,
+    val forgeAvailable: Boolean = false,
 )
 
 /**
@@ -237,6 +248,22 @@ abstract class MechanicsTool<A : Any>(
     timeoutMs: Long = 5_000,
 ) : NarratorTool<A>(name, description, args, effect, timeoutMs) {
     final override fun isAvailable(env: ToolEnv): Boolean = env.mechanicsAvailable
+}
+
+/**
+ * A tool of M5 (M5 §8.3, §9.1): shown only while the mechanics engine and the Forge run and no operator switched the
+ * Forge off ([ToolEnv.mechanicsAvailable] and [ToolEnv.forgeAvailable]): the Director's `forge_module`,
+ * `deploy_module`, `stop_module`, and the forger's own. A chapter opened while they ran keeps the tool declared if
+ * the Forge falls later, or is switched off: the tool then answers `DENIED (forge_off): …`.
+ */
+abstract class ForgeTool<A : Any>(
+    name: String,
+    description: String,
+    args: KSerializer<A>,
+    effect: ToolEffect,
+    timeoutMs: Long = 5_000,
+) : NarratorTool<A>(name, description, args, effect, timeoutMs) {
+    final override fun isAvailable(env: ToolEnv): Boolean = env.mechanicsAvailable && env.forgeAvailable
 }
 
 /** What a running tool can use. */

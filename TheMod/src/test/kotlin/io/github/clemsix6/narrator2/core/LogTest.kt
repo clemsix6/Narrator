@@ -28,7 +28,7 @@ class LogTest {
         logs.use { Log.applyLevels(mapOf("Directr" to "DEBUG", "LLM" to "VERBOSE")) }
 
         assertContains(logs.text, "unknown subsystem 'Directr'")
-        assertContains(logs.text, "known: Bus, Command, Config, Director, Guard, Journal, LLM, Mechanics, Memory, Narrator, Observer, Reflex, Sql, Tool, Trace, Worker")
+        assertContains(logs.text, "known: Bus, Command, Config, Director, Forge, Guard, Journal, LLM, Mechanics, Memory, Narrator, Observer, Reflex, Sql, Tool, Trace, Worker")
         assertContains(logs.text, "logging.levels.LLM: unknown level 'VERBOSE'")
         assertEquals(Log.Level.INFO, Log.llm.level)
     }
