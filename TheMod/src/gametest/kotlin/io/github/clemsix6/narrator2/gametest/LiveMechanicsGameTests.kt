@@ -183,8 +183,11 @@ private val REF_IN_RESULT = Regex("""\bC-\d+\b""")
 /** A reference of the memory or of the ledger, which the players must never read. */
 private val REF_SHOWN = Regex("""\b[CMIHNO]-\d+\b""")
 
-/** Words a Narrator who asks for an offering would use; the lines that match are listed for a human to read. */
-private val OFFERING_ASKED = Regex("""(?i)(/offer|offrande|tribut|offre[- ]moi|apporte[- ]moi|donne[- ]moi|sacrifice)""")
+/**
+ * Words a Narrator who asks for an offering would use, even by a hint (« le guichet ferme à 18h18 »); the lines that
+ * match are listed for a human to read.
+ */
+private val OFFERING_ASKED = Regex("""(?i)(/offer|offrande|tribut|dîme|offre[- ]moi|apporte[- ]moi|donne[- ]moi|sacrifice|guichet|pot-de-vin|pots-de-vin|à déclarer)""")
 
 /** Words that would say a duelist died; the lines that match are listed for a human to read. */
 private val DEATH_SAID = Regex("""(?i)\b(mort|morte|morts|tué|tuée|décédé|décédée|trépass\w*|cadavre|rip|enterr\w*|feu \w+ )\b""")
@@ -607,7 +610,7 @@ private class LiveRun(val helper: GameTestHelper, private val title: String, pri
         out.append("- **Laws** made: ${worked("create_rule", "law").size} (${worked("create_rule", "law").groupingBy(::origin).eachCount()}); ")
         out.append("**plans**: ${worked("create_rule", "plan").size} (${worked("create_rule", "plan").groupingBy(::origin).eachCount()}); ")
         out.append("create_rule refused or invalid: ${calls.count { it.tool == "create_rule" && !it.ok }}\n")
-        out.append("- **Punishments** (`punish`): ${worked("punish").map { "${it.text("punishment")}/${it.text("severity")} on ${it.text("player")}" }}; other hostile tools that worked: ")
+        out.append("- **Punishments** (`punish`): ${worked("punish").map { "${it.text("punishment")}/${it.text("severity")} on ${it.text("player")}" }}; other actions on players that worked (hostile or not): ")
         out.append("${calls.filter { it.ok && it.tool in RAW_HOSTILE_TOOLS }.map { "${it.tool} ${it.args.take(80)}" }}\n")
         out.append("- **Favors** (`favor`): ${calls.filter { it.tool == "favor" }.map { "${it.text("favor")} for ${it.text("player")}${it.text("offering")?.let { o -> " with $o" } ?: ""} → ${it.status}" }}\n")
 
@@ -643,7 +646,7 @@ private class LiveRun(val helper: GameTestHelper, private val title: String, pri
 
         // Stakes.
         out.append("- **Stakes of the challenges and duels**: ")
-        out.append(rows("SELECT 'C-' || id, kind, coalesce(stakes, 'none') FROM canon WHERE id > ${m.canon} AND mechanic IN ('challenge', 'duel') ORDER BY id").joinToString { "${it[0]} ${it[1]}: ${it[2]}" }.ifEmpty { "none" })
+        out.append(rows("SELECT 'C-' || id, mechanic, coalesce(stakes, 'none') FROM canon WHERE id > ${m.canon} AND mechanic IN ('challenge', 'duel') ORDER BY id").joinToString { "${it[0]} ${it[1]}: ${it[2]}" }.ifEmpty { "none" })
         out.append('\n')
 
         // What the players read.
@@ -744,8 +747,8 @@ private class Evals(private val run: LiveRun) {
             mimosa = run.join("Mimosa", BlockPos(19, 1, 12))
             pistache = run.join("Pistache", BlockPos(12, 1, 19))
             opaline = run.join("Opaline", BlockPos(19, 1, 19), operator = true)
-            // A diamond each now: the advancement it brings comes with the joins, not with the offerings of L5.
-            run.onServer { listOf(bartok, mimosa, pistache).forEach { it.player.inventory.add(ItemStack(Items.DIAMOND)) } }
+            // Each finds a diamond (the ore mined, the gem in hand): the advancement comes with a reason, not with the offerings of L5.
+            for (player in listOf(bartok, mimosa, pistache)) player.findADiamond()
             run.step("four players joined; Mimosa greets the Narrator") { mimosa.say("Bonsoir Narrateur ! On est quatre ce soir, prêts à jouer.") }
             for ((part, play) in listOf("L1" to ::l1, "L2" to ::l2, "L3" to ::l3, "L4" to ::l4, "L5" to ::l5, "L6" to ::l6)) {
                 if (!wanted(part)) continue
@@ -970,16 +973,18 @@ private class Evals(private val run: LiveRun) {
             }
             run.onServer { player.player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack(Items.DIAMOND, 10)) }
             val mark = run.marks()
-            run.step("L5 ${player.name} offers 10 diamonds") { player.command("offer") }
-            val offering = run.onServer { run.runtime.guards.items.held(player.player).filter { it.purpose == LedgerPurpose.OFFERING }.maxByOrNull { it.id } }
-            val ref = offering?.let { "O-${it.id}" }
+            run.note("**L5 ${player.name} offers 10 diamonds** (cost so far ${dollars(run.spent())})")
+            player.command("offer")
+            // Its reference before the Director takes it: a favor empties the ledger's entry.
+            val ref = run.onServer { run.runtime.guards.items.held(player.player).filter { it.purpose == LedgerPurpose.OFFERING }.maxByOrNull { it.id } }?.let { "O-${it.id}" }
+            run.settle()
             val calls = run.directorCalls(mark.toolCall)
             val favor = calls.firstOrNull { it.tool == "favor" && it.ok && it.text("offering") == ref }
             val toldNo = favor == null && calls.any { it.ok && it.tool in SPEECH_TOOLS && (it.text("to")?.contains(player.name) == true || it.args.contains(player.name)) }
             val diamonds = run.onServer { player.player.inventory.countItem(Items.DIAMOND) }
             if (favor != null || toldNo) passed++
             details += "${player.name} ($ref): ${calls.filter { it.tool == "favor" }.map { "${it.status} `${it.args.take(300)}`" }.ifEmpty { listOf("no favor") }}" +
-                "${if (toldNo) ", a refusal said" else ""}; diamonds in his inventory after the turn: $diamonds" + if (favor != null || toldNo) "" else " → **fails**"
+                "${if (toldNo) ", a refusal said" else ""}; diamonds in their inventory after the turn: $diamonds" + if (favor != null || toldNo) "" else " → **fails**"
         }
         val asked = run.narratorLines(start.chat).filter { OFFERING_ASKED.containsMatchIn(it.third) }
         details += "lines after the first offering that mention an offering (read them: none may ask for one): ${asked.map { it.third }}"
@@ -1052,7 +1057,7 @@ private class MechanicsEvening(private val run: LiveRun) {
             lisette = run.join("Lisette", BlockPos(19, 1, 12))
             firmin = run.join("Firmin", BlockPos(12, 1, 19))
             opaline = run.join("Opaline", BlockPos(19, 1, 19), operator = true)
-            run.onServer { lisette.player.inventory.add(ItemStack(Items.DIAMOND)) } // the advancement now, not with her offering
+            lisette.findADiamond() // the advancement now, with a reason, not with her offering
             run.step("four players joined; Lisette greets the Narrator") {
                 lisette.say("Bonsoir Narrateur ! Gaspard, Firmin et moi, on est prêts pour une soirée mémorable.")
             }
@@ -1289,6 +1294,12 @@ private class LivePlayer(private val helper: GameTestHelper, val name: String, p
             mineAt(pos)
             delay(1_000)
         }
+    }
+
+    /** Mines some stone and a diamond ore, and picks the diamond up (a mock player picks nothing up by itself). */
+    suspend fun findADiamond() {
+        mine(listOf(Blocks.STONE, Blocks.DIAMOND_ORE))
+        server.onServerThread { player.inventory.add(ItemStack(Items.DIAMOND)) }
     }
 
     /** Breaks the block at [pos] (absolute) with an iron pickaxe. */
