@@ -80,7 +80,8 @@ class PunishTool : MechanicsTool<PunishArgs>(
     name = "punish",
     description = "Punishes a player with a ready-made, composed punishment of the catalogue, at a severity from 1 to 5 " +
         "(capped by the chaos level): tiny, moon_gravity, slow_hands, heavy_feet, hunger, butterfingers (inventory shuffled, " +
-        "nothing lost), guests (named zombies), slime_rain, skyward, tree_top, smite, cage (a glass cage) and web (cobwebs): " +
+        "nothing lost), guests (named zombies) and slime_rain (creatures after that player alone, who never kill), skyward, " +
+        "tree_top, smite, cage (a glass cage) and web (cobwebs): " +
         "traps of a few seconds, set in thin air only, taken away by themselves. Refused like any punishment: protected, " +
         "recently dead, already punished, too many this hour, or the same kind of punishment too recently. The reason goes " +
         "into their history.",
@@ -115,7 +116,7 @@ class PunishTool : MechanicsTool<PunishArgs>(
         val plan = PunishmentCatalog.plan(args.punishment, args.severity, ctx.guards.caps(), ref.name, name)
         val until = ctx.clock.millis() + plan.seconds * 1_000L
         val opened = ctx.onServer { server -> open(ctx, server, ref, plan, until) }
-        val outcomes = opened.steps.map { step -> Outcome(step, runStep(ctx, ref, step, opened)) }
+        val outcomes = opened.steps.map { step -> Outcome(step, runStep(ctx, ref, plan.punishment, step, opened)) }
         if (nothingDone(opened, outcomes)) {
             // Every step failed: not a punishment the player bore, so not one the guards count (M4 review, finding 39).
             ctx.onServer { server -> server.playerList.getPlayer(ref.uuid)?.let { ctx.guards.withdraw(it, ctx.caller) } }
@@ -182,8 +183,11 @@ class PunishTool : MechanicsTool<PunishArgs>(
         return Opened(steps, done, notes, before)
     }
 
-    /** Runs [step] through its real tool, in the punishment's act; an exception becomes the step's failure. */
-    private suspend fun runStep(ctx: ToolContext, ref: PlayerRef, step: Step, opened: Opened): StepResult {
+    /**
+     * Runs [step] of [punishment] through its real tool, in the punishment's act; an exception becomes the step's
+     * failure. Its creatures are [punishment]'s: the player's alone, and they never kill (M4-POST).
+     */
+    private suspend fun runStep(ctx: ToolContext, ref: PlayerRef, punishment: PunishmentId, step: Step, opened: Opened): StepResult {
         val result = try {
             when (step) {
                 is Step.Attribute -> StepResult(setAttribute.run(ctx, step.args))
@@ -192,7 +196,7 @@ class PunishTool : MechanicsTool<PunishArgs>(
                 is Step.Launch -> StepResult(launch.run(ctx, step.args))
                 is Step.Lightning -> StepResult(lightning.run(ctx, step.args))
                 is Step.Spawn -> {
-                    val result = spawn.run(ctx, step.args)
+                    val result = spawn.run(ctx, step.args, punishment)
                     val summoned = if (result.status != ToolStatus.OK) 0 else ctx.onServer { server -> summoned(server, ref, step, opened.before) }
                     StepResult(result, summoned)
                 }

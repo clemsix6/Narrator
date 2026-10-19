@@ -66,6 +66,18 @@ class SpeechLimiter(private val clock: Clock) {
     /** An act of the mechanics engine (a rule's firing, a challenge's stake), not a turn of the Director. */
     private fun isEngine(caller: Caller): Boolean = caller.turnId == null && caller.firingId != null
 
+    /**
+     * Forgets the lines and sounds of the sliding minute, as a restart does; the cooldowns per player and the counts
+     * per turn stay. For the in-game tests that run the server's own Director: its limits are the server's, shared
+     * by every batch of tests, and a batch must not find the minute spent by the one before it.
+     */
+    @Synchronized
+    fun forgetTheMinute() {
+        lines.clear()
+        engineLines.clear()
+        sounds.clear()
+    }
+
     /** One `play_sound` call: allowed and counted, or refused with when to try again. */
     @Synchronized
     fun sound(): Verdict {
@@ -115,6 +127,8 @@ class SpeechLimiter(private val clock: Clock) {
         }
 
         fun add(now: Long) = uses.addLast(now)
+
+        fun clear() = uses.clear()
     }
 
     /** At most one use per player every [ms]. */

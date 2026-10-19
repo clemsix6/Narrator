@@ -46,6 +46,7 @@ import java.util.UUID
  * It runs in a batch of its own (the `narrator2-gametest:mechanics_e2e` test environment): it gives the Director a key,
  * which every test of the default batch expects asleep, and shares the server's engine with the `assembly` batch. It
  * leaves everything as it found it: no key, the Director disabled, no challenge nor law running, the pace of challenges.
+ * It starts with the minute of the server's speech limits forgotten, whatever the batch before it said.
  *
  * Owned by M4-24.
  */
@@ -73,6 +74,9 @@ class MechanicsEndToEndTests {
             runtime.reload()
             awaitCondition("the Director wakes up with a key") { runtime.director.status().state != DirectorState.DISABLED }
             awaitQuiet(runtime, 30_000)
+            // The server's limits on speech are shared by every batch: the batch run just before (`director`) may have
+            // said its 8 lines of the minute, and this test's would be refused (M4-POST).
+            runtime.toolLimits.speech.forgetTheMinute()
 
             // 1. A challenge asked for, won, its reward paid, its end told.
             server.onServerThread {

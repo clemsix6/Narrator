@@ -120,9 +120,9 @@ class MechanicsContractsTest {
 
     /**
      * The seven new tools of the Director cost at most 14 000 characters of definitions (M4 §12.1, checked by
-     * `ToolCatalogTest` once they exist, M4-22); their arguments take at most this share (9 261 when written),
-     * leaving about 4 700 characters for their names and descriptions (about 3 800 in §12.2, 4 150 with the names
-     * and the keys of the definitions).
+     * `ToolCatalogTest` once they exist, M4-22); their arguments take at most this share (9 261 when written, 9 327
+     * once `when.entity`, `block` and `item` said they take a `#tag`, M4-POST), leaving about 4 600 characters for
+     * their names and descriptions (about 3 800 in §12.2, 4 150 with the names and the keys of the definitions).
      */
     @Test
     fun `the arguments of the seven new tools build a schema, and fit their share of the budget`() {
@@ -136,6 +136,6 @@ class MechanicsContractsTest {
     }
 
     private companion object {
-        const val ARGUMENTS_BUDGET = 9_300
+        const val ARGUMENTS_BUDGET = 9_400
     }
 }

@@ -35,6 +35,7 @@
       "io.github.clemsix6.narrator2.gametest.SurveyGameTests",
       "io.github.clemsix6.narrator2.gametest.FavorGameTests",
       "io.github.clemsix6.narrator2.gametest.PunishGameTests",
+      "io.github.clemsix6.narrator2.gametest.PunishmentCreaturesGameTests",
       "io.github.clemsix6.narrator2.gametest.ChallengeGameTests",
       "io.github.clemsix6.narrator2.gametest.ChallengeStakesGameTests",
       "io.github.clemsix6.narrator2.gametest.BetGameTests",
@@ -45,7 +46,8 @@
       "io.github.clemsix6.narrator2.gametest.MechanicsAssemblyGameTests",
       "io.github.clemsix6.narrator2.gametest.LiveMechanicsGameTests",
       "io.github.clemsix6.narrator2.gametest.MechanicsEndToEndTests",
-      "io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests"
+      "io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests",
+      "io.github.clemsix6.narrator2.gametest.ForgeCompilerGameTests"
     ]
   },
   "depends": {
