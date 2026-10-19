@@ -65,6 +65,29 @@ class ChroniclerToolsTest {
     }
 
     @Test
+    fun `the same incoherence noted again on the same rows is one note, given to the Director once`() {
+        val e = f.scenario()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.runRow(8, RunKind.NAP, "20:00", "21:00")
+        val first = f.call(
+            NoteToDirectorTool(),
+            """{"text": "Le Narrateur a appelé Bartok « le Plongeur » alors que la lave était en cause, pas l'eau.", "players": ["Bartok"], "refs": ["${e.nickname}"]}""",
+            batch,
+        )
+        val ref = first.text.substringAfter("noted ").substringBefore(' ')
+        val again = f.call(
+            NoteToDirectorTool(),
+            """{"text": "Le surnom « le Plongeur » de Bartok contredit sa mort dans la lave.", "players": ["Bartok"], "refs": ["${e.nickname}"]}""",
+            RunContext(8, RunKind.NAP, at("20:00"), at("21:00"), "director-c13"),
+            conversation = "chronicler-nap",
+        )
+
+        assertEquals("ok: already noted as $ref for the Narrator (the same rows, still shown to it); nothing added", again.text)
+        assertEquals(1L, f.count("notes"))
+        assertEquals(1, f.director.signals.filterIsInstance<DirectorSignal.MemoryNote>().size)
+    }
+
+    @Test
     fun `what the Narrator told the players is remembered only with its own words`() {
         val e = f.scenario()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")

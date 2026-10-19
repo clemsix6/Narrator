@@ -644,7 +644,7 @@ object MemoryCommands {
 
     /** `/narrator memory note <text>`: a note for the Director, shown in its next briefings until it is done. */
     internal suspend fun note(services: NarratorServices, operator: String, text: String): Reply = changing {
-        val note = services.memory.store.addNote(NoteDraft(NoteKind.OPERATOR, text.trim()), author(operator))
+        val note = services.memory.store.addNote(NoteDraft(NoteKind.OPERATOR, text.trim()), author(operator)).row
         record(services, "memory_note", operator, "${note.ref}: ${TraceText.quote(note.text, REASON_CHARS)}")
         Reply.done(narratorLine("${note.ref} written: the Director reads it at its next chapter's briefing."))
     }

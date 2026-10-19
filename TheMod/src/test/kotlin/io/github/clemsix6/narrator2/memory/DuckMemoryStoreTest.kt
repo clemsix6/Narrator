@@ -576,8 +576,8 @@ class DuckMemoryStoreTest {
 
     @Test
     fun `notes are shown, then done`() = runBlocking<Unit> {
-        val note = store.addNote(MemorySamples.noteDraft.copy(refs = emptyList()), MemorySamples.chronicler)
-        val hint = store.addNote(NoteDraft(NoteKind.DREAM_HINT, "Bartok est mort trois fois de chute cette semaine.", listOf(f.bartok.uuid)), f.dreamer)
+        val note = store.addNote(MemorySamples.noteDraft.copy(refs = emptyList()), MemorySamples.chronicler).row
+        val hint = store.addNote(NoteDraft(NoteKind.DREAM_HINT, "Bartok est mort trois fois de chute cette semaine.", listOf(f.bartok.uuid)), f.dreamer).row
         rejected("text is longer than 200 characters") { store.addNote(NoteDraft(NoteKind.DREAM_HINT, "a".repeat(201)), f.dreamer) }
         rejected("refs: C-404 does not exist") { store.addNote(MemorySamples.noteDraft.copy(refs = listOf(Ref(RefKind.CANON, 404))), f.dreamer) }
         assertEquals(listOf(note.ref, hint.ref), store.openNotes().map { it.ref })
@@ -590,6 +590,34 @@ class DuckMemoryStoreTest {
         store.markNote(note.ref, NoteStatus.DONE, f.director)
         assertEquals(emptyList(), store.openNotes())
         rejected("never open again") { store.markNote(note.ref, NoteStatus.OPEN, f.director) }
+    }
+
+    @Test
+    fun `the same note on the same rows while the first is not done is one note`() = runBlocking<Unit> {
+        // M3-19: the nap wrote N-8 on C-5 for Mimosa, then the dream N-12, the same contradiction in other words.
+        val promise = store.addCanon(canonDraft, f.director).row.ref
+        val draft = NoteDraft(NoteKind.COHERENCE, "La promesse C-5 a été dite au nom du Narrateur, mais aucune confiscation n'est consignée.", listOf(f.mimosa.uuid), listOf(promise))
+        val nap = store.addNote(draft, MemorySamples.chronicler)
+        assertIs<Added.New<*>>(nap)
+        val dream = store.addNote(draft.copy(text = "La promesse C-5 de rendre ses bottes à Mimosa ne correspond à aucune confiscation enregistrée."), f.dreamer)
+        assertIs<Added.Duplicate<*>>(dream)
+        assertEquals(nap.row.ref, dream.row.ref)
+        assertEquals(1L, f.count("notes"))
+        assertEquals(listOf(nap.row.ref.toString()), decisions("duplicate").map { it.subject })
+
+        // Other players, other rows, another kind, a note without rows: other notes.
+        val law = store.addCanon(CanonDraft(CanonKind.LAW, "Le Narrateur interdit de creuser sous le spawn.", importance = 8), f.director).row.ref
+        assertIs<Added.New<*>>(store.addNote(draft.copy(players = listOf(f.bartok.uuid)), f.dreamer))
+        assertIs<Added.New<*>>(store.addNote(draft.copy(refs = listOf(promise, law)), f.dreamer))
+        assertIs<Added.New<*>>(store.addNote(draft.copy(kind = NoteKind.EXPIRED), f.director))
+        assertIs<Added.New<*>>(store.addNote(draft.copy(refs = emptyList()), f.dreamer))
+        assertIs<Added.New<*>>(store.addNote(draft.copy(refs = emptyList()), f.dreamer), "without rows, nothing says it is the same")
+        assertEquals(6L, f.count("notes"))
+        store.markNote(nap.row.ref, NoteStatus.SHOWN, f.director)
+        assertIs<Added.Duplicate<*>>(store.addNote(draft, f.dreamer), "shown, not done yet: still the same note")
+        // Once done, the same contradiction noted again is new.
+        store.markNote(nap.row.ref, NoteStatus.DONE, f.director)
+        assertIs<Added.New<*>>(store.addNote(draft, f.dreamer))
     }
 
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────

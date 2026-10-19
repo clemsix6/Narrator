@@ -334,7 +334,7 @@ class DreamHintTool : MemoryTool<DreamHintArgs>(
         val player = ctx.knownPlayers(listOf(args.player), "player").single()
         val store = ctx.memory.store
         val author = ctx.author()
-        val note = store.addNote(NoteDraft(NoteKind.DREAM_HINT, args.text.trim(), listOf(player.uuid)), author)
+        val note = store.addNote(NoteDraft(NoteKind.DREAM_HINT, args.text.trim(), listOf(player.uuid)), author).row
         val replaced = store.openNotes()
             .filter { it.kind == NoteKind.DREAM_HINT && it.ref != note.ref && it.shownCount == 0 && it.players.any { p -> p.uuid == player.uuid } }
             .onEach { store.markNote(it.ref, NoteStatus.DONE, author) }

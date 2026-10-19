@@ -323,11 +323,11 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         return row
     }
 
-    override suspend fun addNote(draft: NoteDraft, author: Author): Note {
+    override suspend fun addNote(draft: NoteDraft, author: Author): Added<Note> {
         val row = Note(next(RefKind.NOTE), now(), draft.kind, draft.text, draft.players.map(::player), draft.refs, NoteStatus.OPEN, 0)
         rows[row.ref] = row
         wrote("addNote", row.ref, author)
-        return row
+        return Added.New(row)
     }
 
     override suspend fun markNote(ref: Ref, status: NoteStatus, author: Author): Note {
