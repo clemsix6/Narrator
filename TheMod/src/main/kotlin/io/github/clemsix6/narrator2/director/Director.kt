@@ -1088,7 +1088,7 @@ class Director(
         val gone = synchronized(reminderLock) {
             ids.filter { reminders.remove(it) != null }.also { if (it.isNotEmpty()) saveReminders() }
         }
-        if (gone.isNotEmpty()) log.debug { "${gone.joinToString { "R-$it" }} told: no longer kept in the world" }
+        if (gone.isNotEmpty()) log.debug { "${gone.joinToString { "R-$it" }} no longer kept in the world: told, or dropped" }
     }
 
     /** The reminders among [items], taken out of the inbox untold, wait again to be given back ([releaseReminders]). */
