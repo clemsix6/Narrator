@@ -102,7 +102,7 @@ Un journal de chaque interaction marquante entre le Narrateur et le joueur : dat
 - **Faveur** : la moyenne des valences de la conduite du joueur, pondérée par l'âge (en heures de jeu du joueur) sur deux échelles de temps (10 h et 100 h), avec un a priori neutre. Bornée, elle ne sature pas : une insulte seule vaut −25, cinq d'affilée −62 ; un joueur insolent pendant 20 heures de jeu descend autour de −40 et remonte en une vingtaine d'heures de bonne conduite. Les châtiments, bienfaits et cadeaux du Narrateur ne comptent pas dans la faveur : ce sont ses réponses, pas la conduite du joueur (sinon une insulte serait punie deux fois). Les vieilles fautes pèsent de moins en moins, mais elles restent dans l'historique.
 - **Manques de respect retenus** : insultes, provocations, manipulations et toute interaction à −2 ou moins ; leur nombre et les trois dernières, avec citation, sont sur la fiche.
 - **Dette d'attention** : temps de jeu du joueur depuis la dernière attention du Narrateur. Au-delà de 40 minutes, la situation du Directeur le signale, pour que personne ne soit oublié.
-- **Châtiments et bienfaits** : chacun est une interaction liée aux appels d'outils qui l'ont fait. Si ni le Directeur ni le Chroniqueur ne l'ont noté, le code l'ajoute lui-même : aucun n'échappe à l'historique.
+- **Châtiments et bienfaits** : chacun est une interaction liée aux appels d'outils qui l'ont fait. Si ni le Directeur ni le Chroniqueur ne l'ont noté, le code l'ajoute lui-même : aucun n'échappe à l'historique. Les faveurs (`favor` : pardon, grâce, joker) sont des bienfaits, même payées par une offrande ; ce que fait le moteur des mécaniques (enjeux d'un défi, châtiment d'une loi), il le note lui-même.
 - Dans le prompt : les dernières interactions et les plus marquantes de toujours.
 
 ### 3.6 Rendu dans le prompt
@@ -131,7 +131,7 @@ Toute écriture passe par un seul point, qui vérifie les vocabulaires et les bu
 | Quand | Qui | Quoi |
 |---|---|---|
 | En direct | Directeur (outils) | `remember` (canon : promesses, menaces, défis, lois, surnoms, titres, lieux, récits… ; ou une observation sur un joueur), `resolve` (une promesse tenue, un défi gagné), `note_interaction` |
-| Toutes les 10 min | Chroniqueur (lots) | Relit le Journal de la fenêtre (chat, répliques et actions du Narrateur, faits notables) : engagements oubliés, statuts, interactions notées, gags resservis, contradictions — le filet de sécurité. Une promesse n'est enregistrée que si le Narrateur l'a vraiment dite : la citation est vérifiée dans ses répliques. |
+| Toutes les 10 min | Chroniqueur (lots) | Relit le Journal de la fenêtre (chat, répliques et actions du Narrateur, faits notables, nouvelles du moteur des mécaniques : fins de défis et de duels, offrandes, jokers) : engagements oubliés, statuts, interactions notées, gags resservis, contradictions — le filet de sécurité. Une promesse n'est enregistrée que si le Narrateur l'a vraiment dite : la citation est vérifiée dans ses répliques. |
 | Toutes les 10 min, et à chaque départ | Code (SQL, sans LLM) | Stats et lieux des fiches, temps passé ensemble |
 | En continu | Code | Échéances (un événement `DUE` réveille le Directeur), expirations, châtiments et bienfaits non notés, horloge de jeu |
 | Fin de chapitre, avec ou sans résumé | Chroniqueur (« sieste ») | Souvenirs du chapitre, statut du canon, chronique du chapitre, « depuis la dernière fois » des joueurs partis, souvenirs réellement réutilisés. Un chapitre clos par un arrêt ou un crash est consolidé au démarrage suivant. |
@@ -203,7 +203,7 @@ Un peu de hasard contrôlé fait remonter de vieux souvenirs importants : **reto
    | Grimoire | 10 000 caractères (≈ 3k tokens) |
    | Chronique (saga, saison en cours, deux dernières sessions) | 8 000 |
    | Deux derniers résumés de chapitre | 8 000 |
-   | Canon : engagements ouverts avec leur citation et leur échéance, lois, surnoms et titres, lieux, gags, récits | 4 000 |
+   | Canon : engagements ouverts avec leur citation et leur échéance (plans du moteur compris), lois, surnoms et titres, lieux, gags, récits ; ce que le moteur suit est marqué `tracked` ou `enforced` | 4 000 |
    | Monde et joueurs en ligne | ≈ 3 600 |
    | Fiches condensées des joueurs en ligne | 1 800 par joueur, 6 au plus |
    | Souvenirs les plus forts sur les joueurs en ligne | 5 000 |

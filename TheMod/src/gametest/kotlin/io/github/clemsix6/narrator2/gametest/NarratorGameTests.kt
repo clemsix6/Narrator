@@ -21,7 +21,6 @@ import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.Hold
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.reply
-import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -205,23 +204,23 @@ class NarratorGameTests {
         val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
         val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
         val gone = UUID.fromString("00000000-0000-4000-8000-0000000000c0")
-        val placements = ChunkPlacements(
-            mutableListOf(gone, alice, bob),
-            Int2IntOpenHashMap().apply {
-                put(0x1_2_3, 1)
-                put(0x40_F_F, 2)
-                put(0x7F_0_0, 1)
-            },
-        )
+        val planks = Blocks.OAK_PLANKS.defaultBlockState()
+        val placements = ChunkPlacements().apply {
+            put(0x1_2_3, gone, Blocks.STONE)
+            put(0x1_2_3, alice, planks.block) // gone and stone have no position left
+            put(0x40_F_F, bob, planks.block)
+            put(0x7F_0_0, alice, null) // an entry from before M4
+        }
         helper.assertTrue(PlacedBlocks.TYPE.isPersistent, "the index is saved with the chunk")
 
         val saved = ChunkPlacements.CODEC.encodeStart(NbtOps.INSTANCE, placements).getOrThrow()
         val restored = ChunkPlacements.CODEC.parse(NbtOps.INSTANCE, saved).getOrThrow()
         helper.assertValueEqual(listOf(alice, bob), restored.placers.toList(), "placers without positions are dropped")
-        helper.assertEquals(alice, restored.placerAt(0x1_2_3), "0x123")
-        helper.assertEquals(bob, restored.placerAt(0x40_F_F), "0x40ff")
-        helper.assertEquals(alice, restored.placerAt(0x7F_0_0), "0x7f00")
-        helper.assertEquals(null, restored.placerAt(0x5), "a position nobody placed")
+        helper.assertValueEqual(listOf<Block>(Blocks.OAK_PLANKS), restored.blocks.toList(), "blocks without positions are dropped")
+        helper.assertEquals(alice, restored.placerAt(0x1_2_3, planks), "0x123")
+        helper.assertEquals(bob, restored.placerAt(0x40_F_F, planks), "0x40ff")
+        helper.assertEquals(alice, restored.placerAt(0x7F_0_0, Blocks.STONE.defaultBlockState()), "0x7f00, block unknown")
+        helper.assertEquals(null, restored.placerAt(0x5, planks), "a position nobody placed")
 
         val broken = (saved.copy() as CompoundTag).apply { put("owners", IntArrayTag(intArrayOf(0))) }
         helper.assertTrue(ChunkPlacements.CODEC.parse(NbtOps.INSTANCE, broken).isError, "mismatched arrays are refused")
@@ -240,6 +239,7 @@ class NarratorGameTests {
         val stone = Blocks.STONE.defaultBlockState()
         val pos = helper.absolutePos(BlockPos(1, 1, 1))
         val chunk = level.getChunkAt(pos)
+        helper.setBlock(BlockPos(1, 1, 1), stone) // the index answers only while the block placed is there
 
         chunk.tryMarkSaved()
         PlacedBlocks.mark(level, pos, stone, alice)
@@ -269,6 +269,9 @@ class NarratorGameTests {
         val door = helper.absolutePos(BlockPos(0, 1, 0))
         val lower = Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.LOWER)
         val upper = lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER)
+        // The index answers only while the blocks placed are there: both halves, without shape updates.
+        level.setBlock(door, lower, Block.UPDATE_CLIENTS)
+        level.setBlock(door.above(), upper, Block.UPDATE_CLIENTS)
 
         PlacedBlocks.mark(level, door, lower, alice)
         helper.assertEquals(alice, PlacedBlocks.placerAt(level, door.above()), "upper half of the door")
@@ -279,6 +282,8 @@ class NarratorGameTests {
         val bed = Blocks.BED.red().defaultBlockState()
             .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.NORTH)
             .setValue(BlockStateProperties.BED_PART, BedPart.FOOT)
+        level.setBlock(foot, bed, Block.UPDATE_CLIENTS)
+        level.setBlock(foot.relative(Direction.NORTH), bed.setValue(BlockStateProperties.BED_PART, BedPart.HEAD), Block.UPDATE_CLIENTS)
         PlacedBlocks.mark(level, foot, bed, alice)
         helper.assertEquals(alice, PlacedBlocks.placerAt(level, foot.relative(Direction.NORTH)), "head of the bed")
         helper.succeed()

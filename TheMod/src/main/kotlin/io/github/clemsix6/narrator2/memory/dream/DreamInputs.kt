@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory.dream
 
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.memory.BriefText
 import io.github.clemsix6.narrator2.memory.CHRONICLE_COLUMNS
 import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonFilter
@@ -11,12 +12,14 @@ import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.Decay
 import io.github.clemsix6.narrator2.memory.DocKey
+import io.github.clemsix6.narrator2.memory.DuckPlayClock
 import io.github.clemsix6.narrator2.memory.GagState
 import io.github.clemsix6.narrator2.memory.INTERACTION_COLUMNS
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.MEMORY_COLUMNS
 import io.github.clemsix6.narrator2.memory.MemoryDoc
 import io.github.clemsix6.narrator2.memory.MemoryEntry
+import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.MergeCandidate
 import io.github.clemsix6.narrator2.memory.Names
 import io.github.clemsix6.narrator2.memory.Note
@@ -51,6 +54,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
+import java.sql.Connection
 import java.sql.ResultSet
 import java.time.Duration
 import java.time.Instant
@@ -76,7 +80,8 @@ import kotlin.math.roundToLong
  * - **Step 3** ([chronicle]): the chapter entries no session covers yet, grouped by server session; the
  *   season in progress; the closed seasons; the saga.
  * - **Step 4** ([grimoire]): the Grimoire, one line per player, the review, the latest session, the open
- *   canon, the arcs, the open notes.
+ *   canon (the mechanics engine's rows marked, M4 §3.3), the arcs with their themes and the themes at rest
+ *   (M4 §10: a new arc takes neither), the open notes.
  * - **Step 5** ([merges]): the merge candidates of the hygiene, with both texts.
  */
 internal class DreamInputs(private val services: NarratorServices) {
@@ -446,6 +451,7 @@ internal class DreamInputs(private val services: NarratorServices) {
         val session = store.chronicle(ChronicleLevel.SESSION, 1).firstOrNull()
         val open = store.canon(CanonFilter(open = true, limit = CANON_READ))
         val (arcs, canon) = open.partition { it.kind == CanonKind.ARC }
+        val resting = journal.read(READ_TIMEOUT_MS) { restingThemes(it, now) }
         val notes = store.openNotes()
         return listOf(
             job(runId, 4, "grimoire"),
@@ -454,15 +460,49 @@ internal class DreamInputs(private val services: NarratorServices) {
             document("review", store.doc(DocKey.Review.key), REVIEW_MAX, "(none yet)"),
             session?.let { entry("session", it, "", SESSION_MAX) } ?: block("session", "", emptyList(), SESSION_MAX, "(none yet)"),
             block("canon", "count=\"${canon.size}\"", shared(canon.take(CANON_COUNT).map(::canonItem), CANON_MAX), CANON_MAX, "(no open entry)"),
-            block("arcs", "count=\"${arcs.size}\"", arcs.map { canonItem(it).let { (head, body) -> head + body } }, ARCS_MAX, "(no arc open)"),
+            block("arcs", "count=\"${arcs.size}\"", arcLines(arcs, resting), ARCS_MAX, "(no arc open)"),
             block("notes", "count=\"${notes.size}\"", notes.map(::noteLine), NOTES_MAX, "(no open note)"),
         ).joinToString("\n")
+    }
+
+    /**
+     * The lines of `<arcs>`: the themes at rest first, when there are some (short, never cut), then each open
+     * arc with its theme, which it holds while open (M4 §10): a new arc needs a theme of neither.
+     */
+    private fun arcLines(arcs: List<CanonEntry>, resting: List<String>): List<String> {
+        val open = arcs.map { canonItem(it).let { (head, body) -> head + body } }
+        if (resting.isEmpty()) return open
+        val rest = "Themes at rest (${MemoryLimits.THEME_REST_PLAY_HOURS}h of world play once their arc closed): ${resting.joinToString(" · ")}"
+        return listOf(rest) + open.ifEmpty { listOf("(no arc open)") }
+    }
+
+    /**
+     * The themes whose last arc closed less than [MemoryLimits.THEME_REST_PLAY_HOURS] hours of world play ago
+     * (M4 §10, as the store counts them: the sessions played since, an open one up to now), the latest
+     * closed first, [RESTING_COUNT] at most: `vengeance_du_warden until about 10-02 15:40 (C-60 closed 10-01
+     * 19:40)`. A theme an open arc holds is left out: that arc's line names it.
+     */
+    private fun restingThemes(connection: Connection, now: Instant): List<String> {
+        val closed = connection.query(CLOSED_THEMES_SQL) { Triple(getString(1), getLong(2), instant(3)) }
+        if (closed.isEmpty()) return emptyList()
+        val running = connection.query("SELECT session_id FROM sessions WHERE left_at IS NULL") { getLong(1) }.toSet()
+        val rest = Duration.ofHours(MemoryLimits.THEME_REST_PLAY_HOURS.toLong()).seconds
+        val themes = mutableListOf<String>()
+        for ((theme, id, closedAt) in closed) {
+            val left = rest - DuckPlayClock.unionSeconds(connection, closedAt, now, running)
+            if (left <= 0) break // the themes closed before it have been played over longer still
+            themes += "${ModelText.escape(theme)} until about ${dayTime(now.plusSeconds(left))} (C-$id closed ${dayTime(closedAt)})"
+            if (themes.size >= RESTING_COUNT) break
+        }
+        return themes
     }
 
     private fun canonItem(entry: CanonEntry): Pair<String, String> {
         val to = entry.players.takeIf { it.isNotEmpty() }?.let { " → ${ToolText.names(it)}" }.orEmpty()
         val state = listOfNotNull(
             if (entry.status == CanonStatus.PLANNED) "planned" else null,
+            BriefText.engineMark(entry),
+            entry.theme?.let { "theme ${ModelText.escape(it)}" },
             entry.dueAt?.let { "due ${dayTime(it)}" },
             "since ${day(entry.createdAt)}",
         ).joinToString(", ")
@@ -649,6 +689,9 @@ internal class DreamInputs(private val services: NarratorServices) {
         const val CANON_MAX = 6_000
         const val CANON_COUNT = 40
         const val ARCS_MAX = 3_000
+
+        /** Themes at rest named in `<arcs>`, at most: about 80 characters each. */
+        const val RESTING_COUNT = 8
         const val NOTES_MAX = 3_000
         const val CANDIDATES_MAX = 30_000
 
@@ -669,6 +712,16 @@ internal class DreamInputs(private val services: NarratorServices) {
                        QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY ts DESC) = 1) s ON s.event_id = c.id
             WHERE c.player_uuid = ? AND c.channel IN ('public', 'pray')
             ORDER BY c.ts DESC, c.id DESC LIMIT ?"""
+
+        /**
+         * The last closed arc of each theme no open arc holds (archived arcs left out, as the store does), the
+         * latest closed first: theme, id, when it closed.
+         */
+        private const val CLOSED_THEMES_SQL = """
+            SELECT theme, arg_max(id, resolved_at), max(resolved_at) FROM canon
+            WHERE kind = 'arc' AND theme IS NOT NULL AND resolved_at IS NOT NULL AND NOT archived
+              AND theme NOT IN (SELECT theme FROM canon WHERE kind = 'arc' AND theme IS NOT NULL AND status IN ('planned', 'active') AND NOT archived)
+            GROUP BY theme ORDER BY 3 DESC, 1"""
 
         private const val SIGNALS = "signals"
         private const val PLAYTIME = "playtime"

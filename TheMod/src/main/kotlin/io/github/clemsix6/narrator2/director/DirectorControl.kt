@@ -43,8 +43,11 @@ sealed interface DirectorSignal {
     /** A delegated task ended ([TaskRecord.Status.DONE], `FAILED`, `CANCELLED` or `TIMEOUT`); [result] is its result or error. */
     data class TaskDone(val taskId: Long, val role: Role, val status: TaskRecord.Status, val result: String, val at: Long) : DirectorSignal
 
-    /** A reminder set with `remind_me` is due. */
-    data class ReminderDue(val id: Long, val note: String, val setAt: Long, val at: Long) : DirectorSignal
+    /**
+     * A reminder set with `remind_me` is due. [dueAt]: when it came due while the server was down (M4 §15.1);
+     * it is told late, [at] being then when the Director got it back. Null when it is told on time.
+     */
+    data class ReminderDue(val id: Long, val note: String, val setAt: Long, val at: Long, val dueAt: Long? = null) : DirectorSignal
 
     /** `/narrator whisper`: an instruction from operator [from]. */
     data class OperatorWhisper(val from: String, val text: String, val at: Long) : DirectorSignal
@@ -168,7 +171,8 @@ data class PendingReminder(val id: Long, val note: String, val at: Long)
  * @property turnId the running turn, if any.
  * @property turnsThisHour the turns started within the last hour, against [turnsPerHour]
  *   (`director.turnsPerHour`, M2 review, finding 26): once they are all used, only addressed chat,
- *   prayers, whispers and the commitments that come due (`DUE`, M3 §11.3) wake the Director.
+ *   prayers, whispers, the commitments that come due (`DUE`, M3 §11.3) and the mechanics' priority news
+ *   ([DirectorSignal.Mechanic.priority], M4 §4.4) wake the Director.
  */
 data class DirectorStatus(
     val state: DirectorState,

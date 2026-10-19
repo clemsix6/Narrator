@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.ClaudeClient
+import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
@@ -26,6 +27,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.FakeReflexes
 import io.github.clemsix6.narrator2.testing.FakeWorkers
@@ -85,6 +87,10 @@ class DirectorHarness(
     heartbeatMinutes: List<Int> = listOf(3, 3),
     turnsPerHour: Int = NarratorConfig().director.turnsPerHour,
     memoryOff: String? = null,
+    /** The reminders saved by a previous server (M4 §15.1): another harness's [FakeGame.reminders] plays a restart. */
+    reminders: InMemoryReminderStore = InMemoryReminderStore(),
+    /** When set, the services have a `DisabledMechanics` with this reason instead of [mechanics]. */
+    mechanicsOff: String? = null,
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -96,8 +102,11 @@ class DirectorHarness(
     val players = PlayerStates()
     val guards = FakeGuards()
     val workers = FakeWorkers()
-    val game = FakeGame()
+    val game = FakeGame(reminders)
     val bus = EventBus(clock, { 0L }, 1)
+
+    /** The mechanics engine (M4): a fake whose situation lines the test sets ([FakeMechanics.lines]). */
+    val mechanics = FakeMechanics(clock)
 
     /**
      * The memory (M3): a fake that records what the Director asks of it and gives back what the test set;
@@ -141,6 +150,7 @@ class DirectorHarness(
             reflexes = reflexes,
             workers = workers,
             memory = memoryOff?.let(::DisabledMemory) ?: memory,
+            mechanics = mechanicsOff?.let { DisabledMechanics(it) } ?: mechanics,
         )
         services = object : NarratorServices by base {
             override val director get() = this@DirectorHarness.director
@@ -285,8 +295,11 @@ class DirectorHarness(
         }
     }
 
-    /** The game: a fixed world clock, and what was shown to players and told to operators. */
-    class FakeGame : GameView {
+    /**
+     * The game: a fixed world clock, what was shown to players and told to operators, and the reminders kept
+     * in memory ([reminders]: what the world would hold, M4 §15.1).
+     */
+    class FakeGame(override val reminders: InMemoryReminderStore = InMemoryReminderStore()) : GameView {
         @Volatile
         var world: WorldTime? = WorldTime(37, "night", "clear")
         val shown = CopyOnWriteArrayList<Pair<List<UUID>, String>>()
