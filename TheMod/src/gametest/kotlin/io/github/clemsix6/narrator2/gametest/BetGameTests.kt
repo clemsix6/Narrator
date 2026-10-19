@@ -63,6 +63,7 @@ import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.component.CustomData
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.storage.TagValueInput
 import java.time.Duration
 import java.time.Instant
@@ -553,10 +554,18 @@ class BetGameTests {
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4242, taskId = null)
 
-        /** Runs [test] with a [Rig] started on the server thread and [count] players; all closed however it ends (those who came back too). */
+        /**
+         * Runs [test] with a [Rig] started on the server thread and [count] players in survival (one in creative makes no
+         * progress, M4 review, finding 26); all closed however it ends (those who came back too).
+         */
         suspend fun CoroutineScope.withRig(helper: GameTestHelper, count: Int, test: suspend (Rig, List<TestPlayer>) -> Unit) {
             val server = helper.level.server
-            val players = server.onServerThread { List(count) { TestPlayer(helper, "bt_") }.onEach { it.forget() } }
+            val players = server.onServerThread {
+                List(count) { TestPlayer(helper, "bt_") }.onEach {
+                    it.live.setGameMode(GameType.SURVIVAL)
+                    it.forget()
+                }
+            }
             val rig = Rig(helper)
             try {
                 rig.onServer { rig.engine.start(server) }

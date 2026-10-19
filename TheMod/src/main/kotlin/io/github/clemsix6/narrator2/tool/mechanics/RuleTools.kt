@@ -11,7 +11,6 @@ import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.mechanics.rule.RuleText
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.Ref
-import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Doc
@@ -90,7 +89,7 @@ class RemoveRuleTool : MechanicsTool<RemoveRuleArgs>(
 ) {
     override suspend fun run(ctx: ToolContext, args: RemoveRuleArgs): ToolResult = engine(name) {
         val rules = ctx.services.mechanics.rules
-        val ref = Ref.parse(args.id)?.takeIf { it.kind == RefKind.CANON }
+        val ref = Ref.canonOf(args.id)
             ?: return@engine ToolResult.invalid("${args.id} is not a rule; active: ${rules.list().joinToString { it.ref.toString() }.ifEmpty { "none" }}")
         val author = Author(Source.DIRECTOR, turnId = ctx.caller.turnId, conversationId = ctx.caller.conversationId)
         val view = rules.remove(ref, args.note.trim(), author)

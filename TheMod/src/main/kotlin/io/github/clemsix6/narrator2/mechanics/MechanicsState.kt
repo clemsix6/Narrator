@@ -64,6 +64,21 @@ data class MechanicsState(
     /** The rule of canon row [id], if it is active. */
     fun rule(id: Long): RuleState? = rules.firstOrNull { it.id == id }
 
+    /** With the settlements [new], but for a stake that has one already: never two for the same stake. */
+    fun settling(new: List<Settlement>): MechanicsState {
+        val added = new.distinctBy { it.owner to it.stake }.filter { n -> settlements.none { it.owner == n.owner && it.stake == n.stake } }
+        return if (added.isEmpty()) this else copy(settlements = settlements + added)
+    }
+
+    /** With every stake of [bets] given back to its owner ([settling]). */
+    fun givingBack(bets: List<Bet>): MechanicsState = settling(bets.map { Settlement(owner = it.uuid, stake = it.stake) })
+
+    /** With the duelists of [arena] to put back where they stood, but for one who already has a return waiting. */
+    fun puttingBack(arena: List<SavedPosition>): MechanicsState {
+        val added = arena.filter { new -> returns.none { it.uuid == new.uuid } }
+        return if (added.isEmpty()) this else copy(returns = returns + added)
+    }
+
     companion object {
         val EMPTY = MechanicsState()
 
@@ -105,9 +120,10 @@ data class MechanicsState(
             val returns = each(raw.returns, SavedPosition.serializer(), "return", unreadable)
             val settlements = each(raw.settlements, Settlement.serializer(), "settlement", unreadable) { rescued += givenBack(JsonArray(listOf(it))) }
             val rewards = each(raw.rewards, OwedReward.serializer(), "reward", unreadable)
-            val added = rescued.distinctBy { it.owner to it.stake }.filter { new -> settlements.none { it.owner == new.owner && it.stake == new.stake } }
+            val state = MechanicsState(challenges, rules, raw.lastChallengeAt, returns, settlements, rewards, unreadable).settling(rescued)
+            val added = state.settlements.drop(settlements.size)
             if (added.isNotEmpty()) log.warn("${added.size} stakes of unreadable entries of the mechanics' state go back to their owners: ${added.joinToString { "stake ${it.stake}" }}")
-            return MechanicsState(challenges, rules, raw.lastChallengeAt, returns, settlements + added, rewards, unreadable)
+            return state
         }
 
         /**
@@ -251,20 +267,17 @@ data class ChallengeState(
     fun participant(uuid: UUID): Participant? = participants.firstOrNull { it.uuid == uuid.toString() }
 }
 
-/** Why a participant is out of a challenge before its end (M4 §5.2, §5.5). */
+/** Why a participant is out of a `survive` challenge before its end (M4 §5.2); a duel ends instead. */
 @Serializable
 enum class OutReason {
-    /** `survive`: they died. */
+    /** They died. */
     @SerialName("died") DIED,
 
-    /** `survive` with `no_armor`: they wore armor. */
+    /** With `no_armor`: they wore armor. */
     @SerialName("armor") ARMOR,
 
-    /** `survive`, or a duel: they left the server. */
+    /** They left the server, or were away as it started. */
     @SerialName("left") LEFT,
-
-    /** A duel: they declined the invitation. */
-    @SerialName("declined") DECLINED,
     ;
 
     val id: String get() = name.lowercase()

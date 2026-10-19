@@ -193,7 +193,7 @@ class EngineActionsTest {
     @Test
     fun `the first line of a result is cut in the decision, never inside a character`() = runTest {
         val long = object : NarratorTool<NoArgs>("long", "Says a lot.", NoArgs.serializer(), ToolEffect.WORLD) {
-            override suspend fun run(ctx: ToolContext, args: NoArgs): ToolResult = ToolResult.ok("ok: " + "😀".repeat(150))
+            override suspend fun run(ctx: ToolContext, args: NoArgs): ToolResult = ToolResult.ok("ok: " + "😀".repeat(250))
         }
         val engine = EngineActions(services, listOf(long))
 
@@ -201,7 +201,8 @@ class EngineActionsTest {
 
         val reason = decisions.last().reason!!
         assertTrue(reason.startsWith("long ok: ok: 😀") && reason.endsWith("…"), reason)
-        assertTrue(reason.length <= "long ok: ".length + EngineActions.FIRST_LINE_MAX, "${reason.length}")
+        val characters = reason.codePointCount(0, reason.length)
+        assertTrue(characters <= "long ok: ".length + EngineActions.FIRST_LINE_MAX, "$characters")
         assertTrue(!reason.dropLast(1).last().isHighSurrogate())
     }
 

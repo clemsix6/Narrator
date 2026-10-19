@@ -7,8 +7,6 @@ import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.OutReason
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.Settlement
-import io.github.clemsix6.narrator2.memory.Ref
-import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -169,12 +167,5 @@ class BetSettlementTest {
         val c = challenge(bet(josiane, mimosa, 1, "12x iron_ingot"))
         val (state, _) = BetSettlement.settle(empty, c, Ending.CANCELLED, emptyList(), at = 1_234)
         assertEquals(listOf(Settlement(josiane.uuid.toString(), 1, at = 1_234)), state.settlements)
-    }
-
-    @Test
-    fun `the challenge a player types`() {
-        val c50 = Ref(RefKind.CANON, 50)
-        for (typed in listOf("C-50", "c50", "50", " 50 ")) assertEquals(c50, Bets.challengeRef(typed), typed)
-        for (typed in listOf("0", "-3", "M-50", "abc", "")) assertNull(Bets.challengeRef(typed), typed)
     }
 }

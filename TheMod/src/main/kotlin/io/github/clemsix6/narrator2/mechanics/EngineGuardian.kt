@@ -180,20 +180,14 @@ class EngineGuardian(
             }
             if (freed.isEmpty()) return state
             val ids = freed.mapTo(HashSet()) { it.id }
-            val settlements = freed.flatMap { it.bets }.map { Settlement(owner = it.uuid, stake = it.stake) }
-                .filter { new -> state.settlements.none { it.owner == new.owner && it.stake == new.stake } }
-            val returns = freed.flatMap { it.arena }.filter { new -> state.returns.none { it.uuid == new.uuid } }
-            return state.copy(
-                challenges = state.challenges.map { challenge ->
-                    when {
-                        challenge.id !in ids -> challenge
-                        challenge.isDuel -> challenge.copy(arena = emptyList(), bets = emptyList(), endsAt = minOf(challenge.endsAt, now))
-                        else -> challenge.copy(bets = emptyList())
-                    }
-                },
-                settlements = state.settlements + settlements,
-                returns = state.returns + returns,
-            )
+            val released = state.challenges.map { challenge ->
+                when {
+                    challenge.id !in ids -> challenge
+                    challenge.isDuel -> challenge.copy(arena = emptyList(), bets = emptyList(), endsAt = minOf(challenge.endsAt, now))
+                    else -> challenge.copy(bets = emptyList())
+                }
+            }
+            return state.copy(challenges = released).givingBack(freed.flatMap { it.bets }).puttingBack(freed.flatMap { it.arena })
         }
     }
 }

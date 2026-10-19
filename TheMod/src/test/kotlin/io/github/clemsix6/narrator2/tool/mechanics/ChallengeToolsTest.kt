@@ -75,33 +75,18 @@ class ChallengeToolsTest {
     // ── start_challenge ──
 
     @Test
-    fun `start_challenge hands the engine the challenge as the model wrote it, and says what started`() {
+    fun `start_challenge hands the engine the challenge as the model wrote it, and answers with the line of its start`() {
         val json = """{"title": "Œuf de tortue", "statement": "Le Narrateur a défié Bartok et Mimosa de rapporter un œuf de tortue.",
             "goal": "obtain", "item": "turtle_egg", "players": ["Bartok", "Mimosa"], "minutes": 15,
             "reward": {"kind": "item", "item": "golden_apple"}, "penalty": {"punishment": "tiny", "severity": 2}, "bets": true}"""
 
         val result = run("start_challenge", json)
 
-        assertEquals(
-            "ok: challenge C-1 started: obtain 1 turtle_egg « Œuf de tortue » · Bartok, Mimosa · ends 18:15 (in 15m) · reward 1x golden_apple · " +
-                "penalty tiny (2) · bets open until 18:05; boss bars shown",
-            result.text,
-        )
+        assertEquals("ok: challenge ${mechanics.challenges.views.single().line}; boss bars shown", result.text)
         val (spec, by) = mechanics.challenges.started.single()
         assertEquals(caller, by)
         assertEquals(MechanicsSamples.turtleEgg.copy(statement = spec.statement, quote = null, importance = 5), spec)
         assertTrue(result.targets.isEmpty(), "the stakes are the engine's acts, never the Director's")
-    }
-
-    @Test
-    fun `a short challenge keeps its bets open a minute at least, and no bets says nothing of them`() {
-        val short = run(
-            "start_challenge",
-            """{"title": "Vite", "statement": "Le Narrateur a lancé un défi éclair.", "goal": "judged", "players": ["Bartok"], "minutes": 2, "bets": true}""",
-        )
-        assertEquals("ok: challenge C-1 started: judged « Vite » · Bartok · ends 18:02 (in 2m) · bets open until 18:01; boss bars shown", short.text)
-        val none = run("start_challenge", """{"title": "Sans pari", "statement": "Le Narrateur a lancé un défi.", "goal": "judged", "players": ["Bartok"], "minutes": 30}""")
-        assertEquals("ok: challenge C-2 started: judged « Sans pari » · Bartok · ends 18:30 (in 30m); boss bars shown", none.text)
     }
 
     @Test

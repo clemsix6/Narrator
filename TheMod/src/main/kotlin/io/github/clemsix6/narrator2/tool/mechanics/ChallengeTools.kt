@@ -3,14 +3,11 @@ package io.github.clemsix6.narrator2.tool.mechanics
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeSpec
-import io.github.clemsix6.narrator2.mechanics.ChallengeState
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
-import io.github.clemsix6.narrator2.mechanics.challenge.ChallengeLines
 import io.github.clemsix6.narrator2.memory.Ref
-import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Doc
 import io.github.clemsix6.narrator2.tool.Items
@@ -66,30 +63,7 @@ class StartChallengeTool : MechanicsTool<ChallengeSpec>(
         } catch (e: MechanicRejected) {
             return e.toResult()
         }
-        return ToolResult.ok("ok: challenge ${started(ctx, args, view)}; boss bars shown")
-    }
-
-    /**
-     * The start's line (`ChallengeLines.started`), from the view of the challenge just started: it began [ChallengeSpec.minutes]
-     * before its end, and its bets close when `Challenges` closes them (M4 §5.6).
-     */
-    private fun started(ctx: ToolContext, spec: ChallengeSpec, view: ChallengeView): String {
-        val start = view.endsAt - spec.minutes * MINUTE
-        val config = ctx.settings.config.mechanics
-        val window = maxOf(MechanicsLimits.MIN_BET_WINDOW_MINUTES * MINUTE, minOf(config.betWindowMinutes * MINUTE, spec.minutes * MINUTE / 3))
-        val state = ChallengeState(
-            id = view.ref.id,
-            spec = view.spec ?: spec,
-            status = view.status,
-            createdAt = start,
-            startedAt = start,
-            endsAt = view.endsAt,
-            participants = view.participants,
-            betsCloseAt = if (spec.bets) start + window else null,
-            turnId = ctx.caller.turnId,
-            conversationId = ctx.caller.conversationId,
-        )
-        return ChallengeLines.started(state, ctx.clock)
+        return ToolResult.ok("ok: challenge ${view.line}; boss bars shown")
     }
 }
 
@@ -111,13 +85,13 @@ class EndChallengeTool : MechanicsTool<EndChallengeArgs>(
 ) {
     /** The id is a canon reference (`C-50`, `c50`, `50`). */
     override suspend fun check(ctx: ToolContext, args: EndChallengeArgs): ToolResult? =
-        if (refOf(args.id) == null) ToolResult.invalid("id is one of your challenges or duels, like C-50 (got \"${ModelText.escape(args.id)}\")") else null
+        if (Ref.canonOf(args.id) == null) ToolResult.invalid("id is one of your challenges or duels, like C-50 (got \"${ModelText.escape(args.id)}\")") else null
 
     override suspend fun run(ctx: ToolContext, args: EndChallengeArgs): ToolResult {
         check(ctx, args)?.let { return it }
         val mechanics = ctx.services.mechanics
         if (!mechanics.available) return unavailable(mechanics)
-        val ref = refOf(args.id)!!
+        val ref = Ref.canonOf(args.id)!!
         return try {
             val winners = mechanics.challenges.list().firstOrNull { it.ref == ref }?.let { winnersOf(it, args) }.orEmpty()
             ToolResult.ok("ok: ${mechanics.challenges.end(ref, args.outcome, winners, args.note, ctx.author()).line}")
@@ -142,18 +116,10 @@ class EndChallengeTool : MechanicsTool<EndChallengeArgs>(
                 ?: throw MechanicRejected(null, "won needs winners among the participants: ${challenge.participants.joinToString { ModelText.name(it.name) }}")
         }.distinct()
     }
-
-    private fun refOf(id: String): Ref? {
-        val text = id.trim()
-        val ref = Ref.parse(text) ?: text.toLongOrNull()?.takeIf { it > 0 }?.let { Ref(RefKind.CANON, it) }
-        return ref?.takeIf { it.kind == RefKind.CANON }
-    }
 }
 
 /** `FAILED: the mechanics are unavailable: …`: a chapter keeps its tools when the engine falls (M4 §12.1). */
 private fun unavailable(mechanics: Mechanics): ToolResult = ToolResult.failed("the mechanics are unavailable: ${mechanics.unavailableReason}")
-
-private const val MINUTE = 60_000L
 
 /** A start writes the canon (a barrier of the Journal, then a write) and goes twice to the server thread. */
 private const val START_TIMEOUT_MS = 10_000L

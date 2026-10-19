@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.Subscription
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -171,7 +172,7 @@ class Engine(
         if (nanos > MechanicsLimits.SLOW_SECOND_MS * 1_000_000) slow(now, nanos, slowest)
     }
 
-    /** The bus subscriber: [envelope] to the parts that listen to its class. Server thread, inline. */
+    /** The bus subscriber: [envelope] to the parts that listen to its class, inline on the publishing thread. */
     private fun deliver(envelope: Envelope) {
         if (stopped) return
         listeners[envelope.event.javaClass]?.forEach { part -> call(part, "onEvent", Unit) { part.onEvent(envelope) } }
@@ -180,7 +181,7 @@ class Engine(
     /** Rebuilds the snapshot of the situation lines at [now], each cut to [MechanicsLimits.SITUATION_LINE]. */
     private fun refresh(now: Long) {
         lines = parts.flatMap { part -> call(part, "situation", emptyList()) { part.situation(now) } }
-            .map { EngineActions.cut(it, MechanicsLimits.SITUATION_LINE) }
+            .map { ModelText.cut(it, MechanicsLimits.SITUATION_LINE) }
     }
 
     private fun launchReconciliation() {

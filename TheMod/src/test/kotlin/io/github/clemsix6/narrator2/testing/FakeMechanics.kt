@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.testing
 import io.github.clemsix6.narrator2.mechanics.ChallengeControl
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeSpec
+import io.github.clemsix6.narrator2.mechanics.ChallengeState
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
 import io.github.clemsix6.narrator2.mechanics.DuelSpec
@@ -12,6 +13,7 @@ import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.RuleControl
 import io.github.clemsix6.narrator2.mechanics.RuleSpec
 import io.github.clemsix6.narrator2.mechanics.RuleView
+import io.github.clemsix6.narrator2.mechanics.challenge.ChallengeLines
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
@@ -121,10 +123,13 @@ class FakeChallenges(private val clock: Clock, private val ids: AtomicLong) : Ch
         started += spec to caller
         val ref = Ref(RefKind.CANON, ids.getAndIncrement())
         val participants = spec.players.orEmpty().map { Participant(playerId(it).toString(), it) }
-        val view = ChallengeView(
-            ref, spec, null, ChallengeStatus.RUNNING, clock.millis() + spec.minutes * 60_000L, participants, 0,
-            "$ref ${spec.goal.id} « ${spec.title} »",
+        val now = clock.millis()
+        val state = ChallengeState(
+            ref.id, spec = spec, status = ChallengeStatus.RUNNING, createdAt = now, startedAt = now, endsAt = now + spec.minutes * 60_000L,
+            participants = participants, turnId = caller.turnId, conversationId = caller.conversationId,
         )
+        // The line of its start, as the engine says it (without the bets' window, the engine's to set).
+        val view = ChallengeView(ref, spec, null, ChallengeStatus.RUNNING, state.endsAt, participants, 0, ChallengeLines.started(state, clock))
         views += view
         return view
     }

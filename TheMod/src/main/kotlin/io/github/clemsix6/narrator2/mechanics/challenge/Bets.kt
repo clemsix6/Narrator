@@ -162,13 +162,6 @@ class Bets(
 
         /** A refusal of `/bet`: gray italic, like the refusals of `/offer` and the replies of `/pray`. */
         fun refused(text: String): Component = Component.literal(text).withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)
-
-        /** The challenge a player typed: `C-50`, `c50` or `50`; null for anything else. */
-        fun challengeRef(typed: String): Ref? {
-            val text = typed.trim()
-            text.toLongOrNull()?.let { return if (it > 0) Ref(RefKind.CANON, it) else null }
-            return Ref.parse(text)?.takeIf { it.kind == RefKind.CANON }
-        }
     }
 }
 
@@ -321,8 +314,7 @@ object BetSettlement {
         val winning = winning(bets, ending, winners)
         val shares = shares(bets, winning)
         val instructions = bets.mapIndexed { i, bet -> Settlement(owner = bet.uuid, stake = bet.stake, to = shares[i]?.let { bets[it].uuid }, at = at) }
-            .filter { new -> state.settlements.none { it.owner == new.owner && it.stake == new.stake } }
-        return state.copy(settlements = state.settlements + instructions) to line(challenge, ending, winning)
+        return state.settling(instructions) to line(challenge, ending, winning)
     }
 
     /** The indexes in [bets] of the winning bets: on a winner when [ending] is won, on nobody when lost; none for an end without verdict. */
