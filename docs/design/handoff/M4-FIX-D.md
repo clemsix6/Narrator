@@ -124,8 +124,9 @@ Hors de ma liste (signalé) :
 - **Retrait par un opérateur** (`/narrator rule remove`, et tout auteur qui n'est pas le Directeur) : un `RULE` non
   prioritaire part, `C-60 law ended: removed by operator Clement (12 fired, 3 skipped); « note »` (note échappée,
   ligne coupée à `RULE_LINE`). Un retrait par `remove_rule` ne prévient pas le Directeur (c'est lui).
-- **Pour le lot G** : ajouter `rule_ended` aux décisions `mechanic` de `ExchangeLog.ENGINE_NEWS`. Le `detail.ending`
-  dit comment ; la raison suffit à la ligne `ENGINE`.
+- **Lot G (fusionné)** : `ExchangeLog.ENGINE_NEWS` lit `rule_ended` et montre `detail.ending` après le sujet ; la
+  raison répète la fin, ce qui la laisse lisible seule ailleurs (`engine_decisions`, logs). **Lot I** :
+  `ExchangeLog.RULE_ENDED` peut pointer vers `RuleBook.ENDED`.
 - Tests : `RuleBookTest` (raisons, `detail.ending`, le `RULE` d'un retrait d'opérateur, rien pour un retrait du
   Directeur), `RuleEngineTest` (`expired` ×2, `fulfilled`, `disabled` dans `detail.ending`), GameTest
   `aRuleThatFailsFiveTimesInARowIsDisabled`.
@@ -213,6 +214,9 @@ Hors de ma liste (signalé) :
   3.33 », l'instabilité connue du constat 22, lot H) ; relancés : « All 308 required tests passed ».
 - Après un second `git merge main` (lot F) et l'ajout du constat 16 : **`build` vert, 1 500 tests unitaires,
   « All 315 required tests passed »**, puis `runGameTest` relancé : de nouveau 315/315.
+- Après un troisième `git merge main` (lot G, qui lit déjà `rule_ended` et son `detail.ending`) : `build` à
+  1 512 tests unitaires verts, GameTests 314/315 (de nouveau le seul duel de l'assemblage, même message) ;
+  `runGameTest` relancé : **« All 315 required tests passed »**.
 - Signatures vérifiées avec `jp.ps1` : `TestInstanceBlockEntity.getTestBounds` (padding), `GameTest.padding`,
   `ServerLevel.setChunkForced`, `ServerChunkCache.getChunkNow`, `ChunkPos.containing`, `DefaultAttributes.getSupplier`
   / `hasSupplier`, `AttributeSupplier.hasAttribute`, `AttributeInstance.getModifiers`, `AttributeModifier.id` /
