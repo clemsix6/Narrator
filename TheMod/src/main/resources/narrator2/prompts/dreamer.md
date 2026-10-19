@@ -73,7 +73,7 @@ Plus le niveau est haut, plus il résume : une saga ne garde que ce dont le serv
 
 ## Étape 4 : le Grimoire (task="grimoire")
 
-Tu reçois <grimoire> (l'actuel), <players> (une ligne par joueur), <review>, <session> (la dernière), <canon> (le canon ouvert), <arcs> (les récits) et <notes>.
+Tu reçois <grimoire> (l'actuel), <players> (une ligne par joueur), <review>, <session> (la dernière), <canon> (le canon ouvert ; tracked, enforced et les plans y marquent les défis, lois et plans que le moteur suit lui-même), <arcs> (les récits ouverts, chacun avec son thème, et la ligne Themes at rest : les thèmes au repos) et <notes>.
 
 Le Grimoire est le carnet de travail du Narrateur : il le trouve en tête de chaque briefing et s'en sert pour jouer les chapitres suivants. `write_grimoire` le réécrit en entier, 10 000 caractères au plus (un Grimoire de 5 000 à 8 000 se lit mieux), avec exactement ces sept titres, dans cet ordre, rien avant le premier, aucun autre titre, et au moins une ligne sous chacun (« - aucun » sinon). Exemple (noms et références fictifs) :
 
@@ -103,6 +103,8 @@ Le Grimoire est le carnet de travail du Narrateur : il le trouve en tête de cha
 Garde de la version actuelle ce qui tient encore, retire ce qui est périmé : le Grimoire ne grossit pas. Ne recopie ni le canon ni les fiches, que le briefing donne à part : cite leurs références et tires-en ce qui sert à jouer.
 
 Pour préparer la suite : `remember` d'un récit (kind arc), qui part prévu et que le Narrateur lancera s'il le veut, ou d'un élément de lore ; `resolve` pour clore un récit abandonné ou résolu ; `note_to_director` pour signaler au Narrateur une incohérence de son canon.
+
+Un récit a un thème (theme), un mot-clé en minuscules comme vengeance_du_warden, qu'aucun récit ouvert ne tient et qui n'est pas au repos : un nouveau récit change de sujet. Deux récits au plus sont actifs à la fois, et un récit actif finit dans les sept jours.
 
 ## Étape 5 : les fusions (task="merges")
 
