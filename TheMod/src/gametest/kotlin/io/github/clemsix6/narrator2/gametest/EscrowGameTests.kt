@@ -14,6 +14,7 @@ import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.namedSword
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.reconnect
 import io.github.clemsix6.narrator2.guard.Confiscation
 import io.github.clemsix6.narrator2.guard.Escrow
+import io.github.clemsix6.narrator2.guard.GuardState
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.guard.LedgerPurpose
@@ -28,29 +29,46 @@ import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import net.fabricmc.fabric.api.attachment.v1.AttachmentTarget
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.component.DataComponents
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import net.minecraft.nbt.NbtIo
+import net.minecraft.nbt.NbtOps
+import net.minecraft.nbt.StringTag
 import net.minecraft.network.Connection
+import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.PacketFlow
 import net.minecraft.server.level.ClientInformation
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.network.CommonListenerCookie
+import net.minecraft.server.network.Filterable
 import net.minecraft.server.players.NameAndId
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.InteractionHand
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.BundleContents
 import net.minecraft.world.item.component.CustomData
+import net.minecraft.world.item.component.ItemContainerContents
+import net.minecraft.world.item.component.WritableBookContent
+import net.minecraft.world.item.component.WrittenBookContent
 import net.minecraft.world.level.storage.TagValueInput
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
+import java.util.stream.Stream
 
 /**
  * In-game tests of the escrow (M4 §5.6, §7.2, M4-15): stakes held from the hand, released, ceded and handed over
@@ -368,11 +386,149 @@ class EscrowGameTests {
     @GameTest
     fun offerIsACommandForEveryPlayer(helper: GameTestHelper) = withPlayers(helper, 1) { (offerer) ->
         val runtime = helper.narrator()
-        val output = CommandOutput()
-        helper.level.server.commands.performPrefixedCommand(offerer.player.createCommandSourceStack().withSource(output), "offer")
+        helper.level.server.commands.performPrefixedCommand(offerer.player.createCommandSourceStack(), "offer")
         val ui = runtime.settings.get().ui
         val expected = if (runtime.mechanics.available) ui["offer.no_item"] else ui["mechanics.unavailable"]
-        helper.assertEquals(listOf(expected), output.lines.toList(), "what the player reads, with an empty hand")
+        helper.assertEquals(listOf(expected), offerer.lines(), "what the player reads, with an empty hand")
+    }
+
+    /**
+     * The scenario of the M4 review (finding 1): a book and quill full to the brim, and a shulker box full of written
+     * books, held in escrow. Each one's SNBT is far past the 65,535 bytes of an NBT string, which the game writes `""`
+     * instead: through the player's file, they must come back whole.
+     */
+    @GameTest
+    fun aFullBookAndAShulkerBoxOfBooksComeBackWholeThroughThePlayersFile(helper: GameTestHelper) = GuardGameTests.withPlayer(helper) { player ->
+        val escrow = Escrowed()
+        val now = escrow.clock.millis()
+        val book = fullBook()
+        val box = ItemStack(Items.SHULKER_BOX)
+        box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(List(27) { i -> writtenBook("Tome $i", pages = 20) }))
+        player.setItemInHand(InteractionHand.MAIN_HAND, book.copy())
+        val stake = escrow.ledger.hold(player, InteractionHand.MAIN_HAND, LedgerPurpose.STAKE, Escrow.stakeDeadline(now), 50, "bet on Mimosa")!!
+        player.setItemInHand(InteractionHand.MAIN_HAND, box.copy())
+        val offering = escrow.ledger.hold(player, InteractionHand.MAIN_HAND, LedgerPurpose.OFFERING, now + 10 * MINUTE, null, "offered by the player")!!
+        helper.assertTrue(stake.items.single().length > 100_000 && offering.items.single().length > 500_000, "far past an NBT string")
+
+        // The review's loop: the state through the codec, the game's NBT writer, and back.
+        val ops = player.registryAccess().createSerializationContext(NbtOps.INSTANCE)
+        val state = GuardStates.read(player)
+        val bytes = ByteArrayOutputStream().also { NbtIo.write(GuardState.CODEC.encodeStart(ops, state).getOrThrow() as CompoundTag, DataOutputStream(it)) }.toByteArray()
+        val read = GuardState.CODEC.parse(ops, NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))).getOrThrow()
+        helper.assertEquals(state, read, "the state reads back as it was written, no stack written as \"\"")
+
+        // And the player's own file, through a reconnection.
+        val back = reconnect(helper, player)
+        helper.assertEquals(listOf(stake, offering), GuardStates.read(back).confiscations, "both read back from the player's file")
+        helper.assertTrue(escrow.ledger.release(back, stake.id, now + MINUTE), "the stake released")
+        escrow.ledger.giveBack(back, now + 10 * MINUTE)
+        helper.assertTrue(ItemStack.matches(book, find(back, Items.WRITABLE_BOOK)), "the book comes back whole")
+        helper.assertTrue(ItemStack.matches(box, find(back, Items.SHULKER_BOX)), "the shulker box and its 27 books come back whole")
+        helper.assertEquals(emptyList<Confiscation>(), escrow.ledger.held(back), "the ledger is empty")
+    }
+
+    /**
+     * A hand-over writes the winner's file, then the loser's, at once, and nobody else's (M4 review, finding 4: no
+     * `saveAll`, which wrote every player online twice per stake on the server thread). Each file holds its side of
+     * the hand-over as soon as it is done.
+     */
+    @GameTest
+    fun aHandOverWritesTheTwoPlayersFilesAndNobodyElses(helper: GameTestHelper) = withPlayers(helper, 3) { (loser, winner, bystander) ->
+        val escrow = Escrowed()
+        val now = escrow.clock.millis()
+        loser.player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack(Items.IRON_INGOT, 12))
+        val stake = escrow.ledger.hold(loser.player, InteractionHand.MAIN_HAND, LedgerPurpose.STAKE, Escrow.stakeDeadline(now), 50, "bet on Bartok")!!
+        bystander.player.inventory.add(ItemStack(Items.EMERALD, 3)) // never saved: nobody wrote the bystander's file since
+
+        helper.assertTrue(escrow.ledger.forfeit(loser.player, stake.id, winner.uuid, now), "ceded, both online: handed over at once")
+        helper.assertEquals(12, count(winner.player, Items.IRON_INGOT), "delivered")
+        val winnerFile = fromFile(helper, winner.player)!!
+        helper.assertEquals(listOf(stake.id), winnerFile.receivedStakes.map { it.stake }, "the winner's file knows the stake was received")
+        helper.assertEquals(listOf(LedgerPurpose.OWED), winnerFile.confiscations.map { it.purpose }, "and holds the winnings, written before the loser's")
+        helper.assertEquals(emptyList<Confiscation>(), fromFile(helper, loser.player)!!.confiscations, "the loser's file no longer holds the stake")
+        val bystanderFile = helper.level.server.playerList.loadPlayerData(bystander.player.nameAndId())
+        helper.assertFalse(bystanderFile.isPresent && "minecraft:emerald" in bystanderFile.get().toString(), "nobody else's file is written")
+    }
+
+    /**
+     * The M4 review's scenario (finding 28): a crash after the winner's file was written, before the loser's. At the
+     * restart the winner is paid first; then the loser's file, still holding the stake, replays the hand-over. The
+     * winner's ledger remembers the stake: 12 ingots, not 24.
+     */
+    @GameTest
+    fun aHandOverReplayedAfterTheWinnerWasPaidGivesNothingTwice(helper: GameTestHelper) = withPlayers(helper, 2) { (loser, away) ->
+        val escrow = Escrowed()
+        val now = escrow.clock.millis()
+        val saved = away.player.nameAndId()
+        away.close()
+        loser.player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack(Items.IRON_INGOT, 12))
+        val stake = escrow.ledger.hold(loser.player, InteractionHand.MAIN_HAND, LedgerPurpose.STAKE, Escrow.stakeDeadline(now), 50, "bet on Bartok")!!
+        helper.assertTrue(escrow.ledger.forfeit(loser.player, stake.id, saved.id(), now), "ceded to the winner, away")
+        val lostFile = GuardStates.read(loser.player) // what the loser's file holds if the crash comes before it is written again
+
+        val winner = comeBack(helper, saved)
+        escrow.ledger.giveBack(loser.player, now + MINUTE)
+        helper.assertEquals(12, count(winner, Items.IRON_INGOT), "the winner is paid")
+        helper.assertEquals(emptyList<Confiscation>(), escrow.ledger.held(winner), "delivered: nothing waits in the winner's ledger")
+
+        escrow.states.update(loser.player) { lostFile } // the loser's file was never written: the stake is back in it
+        escrow.ledger.giveBack(loser.player, now + 2 * MINUTE)
+        helper.assertEquals(12, count(winner, Items.IRON_INGOT), "12 ingots, never 24")
+        helper.assertEquals(emptyList<Confiscation>(), escrow.ledger.held(loser.player), "the stake left the loser's ledger again")
+        helper.assertEquals(listOf(false, true), escrow.transfers(stake.id).map { it.detail?.get("replayed")?.jsonPrimitive?.booleanOrNull }, "the replay is traced")
+    }
+
+    /** A joker hidden in a shulker box or a bundle is neither staked nor offered (M4 review, finding 40): it would be lost with an offering taken. */
+    @GameTest
+    fun aJokerHiddenInAShulkerBoxOrABundleIsNeitherStakedNorOffered(helper: GameTestHelper) = withPlayers(helper, 1) { (offerer) ->
+        val offers = Offers(helper)
+        val player = offerer.player
+        val box = ItemStack(Items.SHULKER_BOX)
+        box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(ItemStack(Items.DIAMOND, 3), joker())))
+        val bundle = ItemStack(Items.BUNDLE)
+        bundle.set(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY.copyWithContents(Stream.of(ItemStack(Items.STRING), joker())))
+        val nested = ItemStack(Items.SHULKER_BOX)
+        nested.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(bundle.copy())))
+        val now = offers.clock.millis()
+
+        for ((what, stack) in listOf("a shulker box" to box, "a bundle" to bundle, "a bundle in a shulker box" to nested)) {
+            player.setItemInHand(InteractionHand.MAIN_HAND, stack.copy())
+            helper.assertEquals(UI["offer.no_item"], offers.offer(player).reply.string, "$what with a joker is not offered")
+            helper.assertEquals(null, offers.escrow.ledger.hold(player, InteractionHand.MAIN_HAND, LedgerPurpose.STAKE, Escrow.stakeDeadline(now), 50, "bet"), "nor staked: $what")
+            helper.assertTrue(ItemStack.matches(stack, player.mainHandItem), "$what stays in hand")
+        }
+        box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(ItemStack(Items.DIAMOND, 3))))
+        player.setItemInHand(InteractionHand.MAIN_HAND, box.copy())
+        helper.assertTrue(offers.offer(player).held != null, "without the joker, it is an offering like any other")
+    }
+
+    /**
+     * A stack held across an update of the game (M4 review, finding 40): written at an older data version, it comes
+     * back brought up to date by the game's data fixer, not read as the new format would and stripped.
+     */
+    @GameTest
+    fun aStackHeldAcrossAnUpdateOfTheGameComesBackUpToDate(helper: GameTestHelper) = withPlayers(helper, 1) { (owner) ->
+        val escrow = Escrowed()
+        val player = owner.player
+        val now = escrow.clock.millis()
+        // A sword confiscated under Minecraft 1.20.4 (data version 3700), saved in that version's format.
+        val entry = CompoundTag()
+        entry.putLong("id", 7_001)
+        entry.put("items", ListTag().also { it.add(StringTag.valueOf("""{id:"minecraft:diamond_sword",Count:1b,tag:{Damage:5,display:{Name:'{"text":"Excalibur"}'}}}""")) })
+        entry.putString("what", "1x minecraft:diamond_sword")
+        entry.putLong("taken_at", now)
+        entry.putLong("return_at", now)
+        entry.putString("reason", "greed")
+        entry.putInt("data_version", 3_700)
+        val saved = CompoundTag().also { it.put("confiscations", ListTag().also { list -> list.add(entry) }) }
+        val state = GuardState.CODEC.parse(player.registryAccess().createSerializationContext(NbtOps.INSTANCE), saved).getOrThrow()
+        escrow.states.update(player) { state }
+
+        escrow.ledger.giveBack(player, now)
+        val sword = find(player, Items.DIAMOND_SWORD)
+        helper.assertEquals(5, sword.get(DataComponents.DAMAGE), "its wear kept: $sword")
+        helper.assertEquals("Excalibur", sword.get(DataComponents.CUSTOM_NAME)?.string, "its name kept: $sword")
+        helper.assertEquals(emptyList<Confiscation>(), escrow.ledger.held(player), "the ledger is empty")
     }
 
     /** A joker owed to a player whose inventory is full waits in their ledger, never on the ground, and comes once there is room. */
@@ -418,6 +574,9 @@ class EscrowGameTests {
         /** The reason of the [decision] about entry [id]. */
         fun reasonOf(id: Long, decision: String): String = ledgerDecisions(id).first { it.decision == decision }.reason.orEmpty()
 
+        /** The `ledger transferred` decisions of stake [id], in order. */
+        fun transfers(id: Long): List<DecisionRecord> = ledgerDecisions(id).filter { it.decision == "transferred" }
+
         private fun ledgerDecisions(id: Long): List<DecisionRecord> = traces.decisions.filter { record ->
             record.kind == DecisionRecord.Kind.LEDGER &&
                 (record.id == id || ENTRY_KEYS.any { key -> record.detail?.get(key)?.jsonPrimitive?.longOrNull == id })
@@ -460,6 +619,24 @@ class EscrowGameTests {
         /** Fills the 36 slots of [player]'s inventory: nothing more fits. */
         fun fill(player: ServerPlayer) {
             for (slot in 0 until 36) player.inventory.setItem(slot, ItemStack(Items.DIRT, 64))
+        }
+
+        /** A book and quill full to the brim: 100 pages of 1,024 characters. */
+        fun fullBook(): ItemStack = ItemStack(Items.WRITABLE_BOOK).also { book ->
+            book.set(DataComponents.WRITABLE_BOOK_CONTENT, WritableBookContent(List(100) { page -> Filterable.passThrough("Page $page ".padEnd(1_024, 'é')) }))
+        }
+
+        /** A written book titled [title], of [pages] pages of 1,024 characters. */
+        fun writtenBook(title: String, pages: Int): ItemStack = ItemStack(Items.WRITTEN_BOOK).also { book ->
+            val text = List(pages) { page -> Filterable.passThrough<Component>(Component.literal("$title, page $page ".padEnd(1_024, 'a'))) }
+            book.set(DataComponents.WRITTEN_BOOK_CONTENT, WrittenBookContent(Filterable.passThrough(title), "Mimosa", 0, text, true))
+        }
+
+        /** [player]'s guards' state as their file holds it now; null when they have no file yet. */
+        fun fromFile(helper: GameTestHelper, player: ServerPlayer): GuardState? {
+            val data = helper.level.server.playerList.loadPlayerData(player.nameAndId()).orElse(null) ?: return null
+            val saved = data.getCompoundOrEmpty(AttachmentTarget.NBT_ATTACHMENT_KEY).get("narrator2:guard_state") ?: return GuardState.EMPTY
+            return GuardState.CODEC.parse(player.registryAccess().createSerializationContext(NbtOps.INSTANCE), saved).getOrThrow()
         }
 
         /** Runs [test] with [count] new players, removed however it ends (those who came back too), then succeeds. */
