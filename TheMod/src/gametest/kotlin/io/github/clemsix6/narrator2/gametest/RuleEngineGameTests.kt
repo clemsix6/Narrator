@@ -25,7 +25,6 @@ import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.InteractionKind
-import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.observer.PlacedBlocks
 import io.github.clemsix6.narrator2.runtime.NarratorServices

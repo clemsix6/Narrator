@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.event.ChatMessage
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.mechanics.Engine
+import io.github.clemsix6.narrator2.mechanics.RuleState
 import io.github.clemsix6.narrator2.mechanics.RuleView
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.observer.LivePlayer
@@ -236,7 +237,7 @@ class RuleEngineTest {
         f.services.traces.decisions.filter { it.kind == DecisionRecord.Kind.MECHANIC && it.decision == name }
 
     /** Ticks until the firings are counted in [rule]'s state as [counted] says. */
-    private suspend fun awaitCounted(rule: RuleView, counted: (io.github.clemsix6.narrator2.mechanics.RuleState) -> Boolean) =
+    private suspend fun awaitCounted(rule: RuleView, counted: (RuleState) -> Boolean) =
         awaitCondition("the counts of ${rule.ref}") {
             tick()
             f.store.get().rule(rule.ref.id)?.let(counted) == true

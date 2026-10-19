@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.event.ItemCrafted
 import io.github.clemsix6.narrator2.event.PlaceKind
 import io.github.clemsix6.narrator2.event.PlayerDied
 import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.ProjectileHit
 import io.github.clemsix6.narrator2.event.SleepStarted
@@ -387,7 +388,7 @@ class RuleMatcherTest {
         return RuleMatcher(RuleState(60, spec, T0, T0 + 3_600_000, null, null, players.map { it.toString() }), tags)
     }
 
-    private fun online(player: io.github.clemsix6.narrator2.event.PlayerRef, pos: Pos) {
+    private fun online(player: PlayerRef, pos: Pos) {
         players.put(LivePlayer(player, 1, T0, false, "survival", pos, null, null, false, 20f, 20f, 20, null, null, T0, false))
     }
 
