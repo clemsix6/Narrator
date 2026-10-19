@@ -106,7 +106,7 @@ object AdminCommands {
 
     /**
      * What runs and how well (M1_M2 §14.4): phase, settings, gateway, key presence (never its value),
-     * Director, chapter, tasks, Journal, reflexes, guards, memory, mechanics, folders, roles; then, read from the Journal
+     * Director, chapter, tasks, Journal, reflexes, guards, memory, mechanics, Forge, folders, roles; then, read from the Journal
      * off the server thread, the model calls of the last 24 hours.
      */
     private fun status(source: CommandSourceStack): Int {
@@ -150,6 +150,7 @@ object AdminCommands {
             add(detailLine(guardsLine(services)))
             add(detailLine(MemoryCommands.statusLine(services.memory, text)))
             add(detailLine(MechanicsCommands.statusLine(services.mechanics, BlockRestorer.pending())))
+            add(detailLine(ForgeCommands.statusLine(services)))
             add(detailLine("Config: $configDir"))
             add(detailLine("Data: ${services.dataDir}"))
             add(detailLine("Transcripts (${if (services.transcripts.enabled) "on" else "off"}): ${services.transcripts.root}"))

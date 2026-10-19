@@ -452,8 +452,9 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator chapter close          # clore le chapitre au prochain moment calme
 /narrator sql <requête>          # lecture seule
 /narrator rule list | remove <id>
-/narrator forge status | list | show <nom> | approve <nom> | reject <nom> | off | on
-/narrator module list | stop <id>
+/narrator forge [status] | list [page] | show <nom> [version] | approve|reject <nom> [version]
+/narrator forge off [raison] | on   # coupe-circuit : tout s'arrête, même après un redémarrage
+/narrator module [list] [page] | stop <id> [note]
 /narrator challenge list | cancel <id>
 /narrator traps [restore]        # pièges en cours ; tout remettre maintenant
 /narrator sheet <joueur>
