@@ -7,12 +7,15 @@ import io.github.clemsix6.narrator2.guard.CommandPolicy
 import io.github.clemsix6.narrator2.guard.ExplosionGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
+import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.OpenEpisode
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.action.NarratorExplosionDamage
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.commands.Commands
 import net.minecraft.core.BlockPos
@@ -237,6 +240,9 @@ class GuardPolicyGameTests {
      * also waits on conditions, not on a number of ticks: the ordinary zombie's door is broken (within a
      * wide budget), and the Narrator's zombie has stood within reach of its own door (the 2 blocks
      * `BreakDoorGoal` works from) for twice the time a door takes to break.
+     *
+     * The Narrator's zombie here is one a rule marked (the `narrator2` tag, which the door guard reads): a zombie the
+     * Narrator summoned never goes for a villager at all (M4 review, finding 17).
      */
     @GameTest(maxTicks = DOOR_TICKS)
     fun theNarratorsZombieNeverBreaksADoor(helper: GameTestHelper) {
@@ -246,7 +252,11 @@ class GuardPolicyGameTests {
         val narratorTarget = helper.spawnWithNoFreeWill(EntityTypes.VILLAGER, BlockPos(6, 1, 1))
         val ordinaryTarget = helper.spawnWithNoFreeWill(EntityTypes.VILLAGER, BlockPos(6, 1, 5))
 
-        val narrators = summonAsNarrator(helper, EntityTypes.ZOMBIE, Vec3(1.5, 1.0, 1.5), noAi = false)
+        val narrators = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
+        narrators.snapTo(helper.absoluteVec(Vec3(1.5, 1.0, 1.5)))
+        narrators.addTag(NarratorMobs.TAG)
+        narrators.setPersistenceRequired()
+        helper.level.addFreshEntity(narrators)
         val ordinary = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
         ordinary.snapTo(helper.absoluteVec(Vec3(1.5, 1.0, 5.5)))
         ordinary.setPersistenceRequired()
@@ -361,6 +371,56 @@ class GuardPolicyGameTests {
             helper.level.server.playerList.remove(player)
         }
         helper.succeed()
+    }
+
+    /**
+     * An explosion refused for one bystander punishes none of the others (M4 review, finding 11): Bob, next to
+     * Mimosa whom another act already punishes, is not counted punished by a blast that never hurt him.
+     */
+    @GameTest
+    fun aRefusedExplosionPunishesNoBystander(helper: GameTestHelper) {
+        val guards = guards(helper)
+        val bob = mockPlayer(helper, BlockPos(1, 1, 1))
+        val mimosa = mockPlayer(helper, BlockPos(2, 1, 1))
+        try {
+            val now = System.currentTimeMillis()
+            fun turn(id: Long) = Caller(Role.DIRECTOR, "policy-test", turnId = id, taskId = null)
+            helper.assertEquals(Verdict.Allowed, guards.hostile(mimosa, turn(201), now + 60_000, PunishmentCategory.SIZE), "another act punishes Mimosa")
+            val verdict = NarratorExplosionDamage.allow(listOf(bob, mimosa), guards, turn(202), now + 5_000, PunishmentCategory.EXPLOSION)
+            helper.assertTrue(verdict is Verdict.Denied && verdict.rule == Rules.ALREADY_PUNISHED, "the explosion is refused: $verdict")
+            helper.assertEquals(null, GuardStates.read(bob).episode, "no punishment opened on Bob")
+            val pace = guards.pacing(listOf(bob.uuid), now).single()
+            helper.assertEquals(0 to emptySet<PunishmentCategory>(), pace.punishedThisHour to pace.resting.keys, "nothing counted against Bob, explosion not resting")
+            helper.assertEquals(Verdict.Allowed, guards.hostile(bob, turn(203), now + 60_000, PunishmentCategory.EXPLOSION), "Bob is fair game for another act")
+        } finally {
+            removePlayers(helper, bob, mimosa)
+        }
+        helper.succeed()
+    }
+
+    /**
+     * The creatures the Narrator summons go for players only (M4 review, finding 17): never a villager nor an animal,
+     * whom the game would let a zombie hunt. A villager left beside the Narrator's zombie is never hurt.
+     */
+    @GameTest(maxTicks = 400)
+    fun theNarratorsCreaturesLeaveVillagersAndAnimalsAlone(helper: GameTestHelper) {
+        floor(helper)
+        val villager = helper.spawnWithNoFreeWill(EntityTypes.VILLAGER, BlockPos(4, 1, 4))
+        val pig = helper.spawnWithNoFreeWill(EntityTypes.PIG, BlockPos(6, 1, 6))
+        val zombie = summonAsNarrator(helper, EntityTypes.ZOMBIE, Vec3(2.5, 1.0, 2.5), noAi = false)
+        zombie.target = villager
+        helper.assertTrue(zombie.target == null, "the villager is no target: ${zombie.target}")
+        zombie.target = pig
+        helper.assertTrue(zombie.target == null, "nor the pig: ${zombie.target}")
+        helper.startSequence()
+            .thenIdle(300)
+            .thenExecute {
+                helper.assertTrue(zombie.target == null, "the zombie found no target: ${zombie.target}")
+                helper.assertValueEqual(villager.maxHealth, villager.health, "the villager's health")
+                helper.assertFalse(villager.isRemoved, "the villager is still there")
+                helper.killAllEntities()
+            }
+            .thenSucceed()
     }
 
     /**

@@ -178,6 +178,26 @@ class JoinBriefTest {
         }
     }
 
+    /** Known point of the M4 review (M4-08): a plan that targets the player is among what is open about them, as in the briefing. */
+    @Test
+    fun `what is open about a player who joins includes the plans that target them`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            fun canon(id: Long, kind: CanonKind, statement: String, status: CanonStatus = CanonStatus.ACTIVE) =
+                SheetSamples.canon(id, kind, statement, players = listOf(mimosa), status = status).copy(mechanic = CanonMechanic.RULE)
+            val open = listOf(
+                canon(64, CanonKind.PLAN, "Un comité d'accueil attend Mimosa dans le Nether."),
+                canon(65, CanonKind.PLAN, "Une pluie de slimes déjà tombée sur Mimosa.", CanonStatus.FULFILLED),
+                canon(66, CanonKind.LAW, "Mimosa rapetisse quand elle casse chez un autre."),
+            )
+            f.sheets.sheets[mimosa.uuid] = BriefingFixture.mimosaSheet.copy(openCanon = open)
+            f.session(801, mimosa, at("2026-10-03T18:00:00Z"), at("2026-10-03T19:00:00Z"))
+            val chapter = f.chapter()
+            val lines = f.joins.lines(listOf(f.join(mimosa)), chapter, f.now)
+            assertEquals("  While away: open about this player: C-64 plan: Un comité d'accueil attend Mimosa dans le Nether.", lines.last())
+            assertTrue(Ref(RefKind.CANON, 64) in chapter.shownRefs)
+        }
+    }
+
     @Test
     fun `a since-last text written before the last session says so`() = runBlocking<Unit> {
         BriefingFixture().use { f ->

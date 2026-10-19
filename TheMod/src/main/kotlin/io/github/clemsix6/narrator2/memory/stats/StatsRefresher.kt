@@ -18,8 +18,9 @@ import java.util.UUID
 /**
  * Computes the sheets' statistics again (M3 §6.1, §6.3, §6.7): the pairs first (the style's social share
  * reads them), then the server's rates (luck and style compare each player with the others), then each
- * player's stats. Everything is read on the Journal's SQL pool; each result is written in a short
- * `Journal.write` job of its own (the pairs, then one per player), so the writer is held for milliseconds.
+ * player's stats. Everything is read on the Journal's SQL pool; each result is written in short
+ * `Journal.write` jobs of its own (the pairs, [PairStats.CHUNK] a job, then one per player), so the writer is
+ * held for milliseconds.
  *
  * Called by the memory's jobs (M3-12): every `memory.statsMinutes` for the players online, at each
  * departure, and before a dream for the players active since the last one ([activeSince]). Never on the
@@ -44,7 +45,7 @@ class StatsRefresher(private val journal: Journal, private val clock: Clock) {
         val now = clock.instant()
         val pairs = step("pairs") {
             val computed = journal.read(READ_TIMEOUT_MS) { PairStats.compute(it, now) }
-            journal.write(WRITE_TIMEOUT_MS) { PairStats.write(it, computed) }
+            PairStats.store(journal, computed, WRITE_TIMEOUT_MS)
             computed.size
         }
         val rates = step("rates") { journal.read(READ_TIMEOUT_MS) { Rates.read(it, now) } }.orEmpty()

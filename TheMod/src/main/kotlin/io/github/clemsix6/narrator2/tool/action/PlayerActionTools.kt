@@ -137,7 +137,7 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
         val effect = Effects.lookup(args.effect)
         val id = shortId(effect)
         Effects.forbidden(effect)?.let { refuse(ToolResult.denied(Effects.FORBIDDEN_EFFECT, "$id is never given: $it; the Narrator's effects never act on the world.")) }
-        val harmful = effect.value().category == MobEffectCategory.HARMFUL
+        val harmful = Effects.harmful(effect)
         val instant = effect.value().isInstantaneous
         val caps = ctx.guards.caps()
         val (maxSeconds, maxLevel) = if (harmful) caps.harmfulSeconds to caps.harmfulLevel else Caps.BENEFICIAL_SECONDS to Caps.BENEFICIAL_LEVEL
@@ -168,7 +168,7 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
         check(ctx, args)?.let { return@answer it }
         val targets = ctx.online(args.players)
         val effect = Effects.lookup(args.effect)
-        val harmful = effect.value().category == MobEffectCategory.HARMFUL
+        val harmful = Effects.harmful(effect)
         val instant = effect.value().isInstantaneous
         val category = PunishmentCategory.ofEffect(effect.registeredName)
         val shown = "${shortId(effect)} ${roman(args.level)}"
@@ -263,6 +263,13 @@ private object Effects {
         "minecraft:weaving" to "it places cobwebs when the player dies",
         "minecraft:wind_charged" to "it bursts a wind charge when the player dies, which works doors, levers and buttons",
     )
+
+    /**
+     * Whether giving [effect] is a punishment: every effect but the beneficial ones. The neutral ones count
+     * (M4 review, finding 33): `glowing` shows a player through walls to everyone, for up to 15 minutes. The
+     * effect ledger says the same (`EffectLedger.apply`), so a pardon lifts them.
+     */
+    fun harmful(effect: Holder<MobEffect>): Boolean = effect.value().category != MobEffectCategory.BENEFICIAL
 
     /** The effect called [raw]; refuses with the closest ids otherwise. */
     fun lookup(raw: String): Holder.Reference<MobEffect> =
@@ -626,8 +633,9 @@ class TeleportTool : NarratorTool<TeleportArgs>(
             if (!level.worldBorder.isWithinBounds(column.x + 0.5, column.z + 0.5)) refuse(ToolResult.invalid("x ${column.x}, z ${column.z} is beyond the world border"))
             val far = hypot(player.x - (column.x + 0.5), player.z - (column.z + 0.5))
             if (far > Caps.HOSTILE_TELEPORT_BLOCKS) {
-                // Certainly a punishment: refused before loading anything when it cannot be one.
-                if (!caps.hostileAllowed || ctx.guards.isProtected(ref.uuid)) ctx.punish(player, ctx.clock.millis(), PunishmentCategory.TELEPORT)
+                // Certainly a punishment: refused before loading (or generating) anything when the guards would refuse it
+                // (M4 review, finding 33), with nothing counted; the punishment opens once the landing is found.
+                ctx.guards.vet(player, ctx.caller, PunishmentCategory.TELEPORT).let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
                 if (far > caps.teleportBlocks) refuse(tooFar(ctx, far, caps))
             }
             val columns = args.randomRadius?.let { Teleports.columnsAround(level.random, column, player.x, player.z, it) } ?: listOf(column)

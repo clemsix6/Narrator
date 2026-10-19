@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.tool.action
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
@@ -28,7 +29,6 @@ import io.github.clemsix6.narrator2.tool.at
 import io.github.clemsix6.narrator2.tool.chaos
 import io.github.clemsix6.narrator2.tool.live
 import io.github.clemsix6.narrator2.tool.online
-import io.github.clemsix6.narrator2.tool.punish
 import io.github.clemsix6.narrator2.tool.refuse
 import io.github.clemsix6.narrator2.tool.shownName
 import io.github.clemsix6.narrator2.tool.speech.Speech
@@ -66,10 +66,12 @@ data class PunishArgs(
  * 2. on the server thread, in one tick: what can fail without changing anything (the player alive, the terrain of a
  *    trap, a top to put them on, something to shuffle, the creatures allowed and room for them), so that a
  *    punishment that cannot happen opens no episode; then the episode itself, `Guards.hostile` with the
- *    punishment's category until its end (a refusal comes back as it is: protected, chaos 0, grace, no piling on,
- *    already punished, fair share, the category resting); then the death guard for its perils; then the primitive;
+ *    punishment's category until its end, as the act's one `punish` of the player (a refusal comes back as it is:
+ *    protected, chaos 0, grace, a duel, no piling on, already punished or already punished by this act, fair share,
+ *    the category resting); then the death guard for its perils; then the primitive;
  * 3. the steps, in order, through the real tools: their own hostile checks see the act's episode and pass, each
- *    strikes its own category. A step that fails is said; the others stay.
+ *    strikes its own category. A step that fails is said; the others stay. When nothing at all was done, the
+ *    punishment is withdrawn from the guards (`Guards.withdraw`): it counts nowhere.
  *
  * The answer's first line says who, what, how hard and why: `Sanctions` makes it the summary of the player's
  * `punishment` interaction.
@@ -114,8 +116,16 @@ class PunishTool : MechanicsTool<PunishArgs>(
         val until = ctx.clock.millis() + plan.seconds * 1_000L
         val opened = ctx.onServer { server -> open(ctx, server, ref, plan, until) }
         val outcomes = opened.steps.map { step -> Outcome(step, runStep(ctx, ref, step, opened)) }
+        if (nothingDone(opened, outcomes)) {
+            // Every step failed: not a punishment the player bore, so not one the guards count (M4 review, finding 39).
+            ctx.onServer { server -> server.playerList.getPlayer(ref.uuid)?.let { ctx.guards.withdraw(it, ctx.caller) } }
+        }
         report(ctx, ref, args, plan, until, opened, outcomes)
     }
+
+    /** Whether neither the primitive nor any step did anything. */
+    private fun nothingDone(opened: Opened, outcomes: List<Outcome>): Boolean =
+        opened.done?.isSuccess != true && outcomes.none { it.result.result.status == ToolStatus.OK }
 
     /**
      * What the punishment opened, on the server thread: [steps] (a spawn may be fewer creatures than planned),
@@ -162,8 +172,11 @@ class PunishTool : MechanicsTool<PunishArgs>(
             step.copy(args = step.args.copy(count = room))
         }
         val before = if (steps.any { it is Step.Spawn }) Primitives.summonedFor(player).keys else emptySet()
-        ctx.punish(player, until, plan.category)
+        // Once per act and player (M4 review, finding 16): a second punish of the same act is refused already_punished.
+        val verdict = ctx.guards.hostile(player, ctx.caller, until, plan.category, plan.punishment)
+        if (verdict is Verdict.Denied) refuse(ToolResult.denied(verdict))
         plan.peril?.let { ctx.guards.armDeathGuard(player.uuid, plan.seconds, it) }
+        prepared?.fallSeconds?.takeIf { it > 0 }?.let { ctx.guards.armDeathGuard(player.uuid, it, Peril.FALL) }
         val done = prepared?.apply(ctx.caller.act)
         done?.exceptionOrNull()?.let { log.warn("punish ${plan.punishment.id} on ${ref.name}: the ${plan.punishment.id} failed after the guards allowed it: ${it.message}") }
         return Opened(steps, done, notes, before)

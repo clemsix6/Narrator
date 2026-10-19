@@ -337,6 +337,29 @@ class ChroniclerTest {
         assertContains(opening, "\n[20:05:00] ENGINE mechanic won C-50: $won\n")
     }
 
+    /** M4 review, finding 41: the ledger's news are context, never a reason for a batch (an M2 confiscation given back). */
+    @Test
+    fun `a window whose only news is the ledger's is skipped, with no conversation`() = runBlocking<Unit> {
+        f.chapterRow()
+        f.publish("20:01:00", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
+        listOf("20:05" to "returned", "20:06" to "held").forEach { (time, decision) ->
+            f.journal.journal.decision(
+                DecisionRecord(
+                    f.journal.journal.nextId(IdKind.DECISION), at(time), DecisionRecord.Kind.LEDGER, decision, "Bartok",
+                    "confiscation 4001: 1x iron_sword $decision", null, null, null, null,
+                ),
+            )
+        }
+        f.journal.sync()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+
+        val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+
+        assertEquals(RunStatus.SKIPPED, outcome.status)
+        assertEquals("nothing to note: no chat, no line of the Narrator, no tool call and no news of a mechanic in the window", outcome.report)
+        assertEquals(0, f.fake.requests.size)
+    }
+
     @Test
     fun `a window too long for one block is chronicled in one conversation per block`() = runBlocking<Unit> {
         longWindow()

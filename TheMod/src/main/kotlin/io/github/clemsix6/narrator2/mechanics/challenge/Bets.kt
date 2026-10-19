@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.GoalKind
 import io.github.clemsix6.narrator2.mechanics.MechanicPart
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.Settlement
@@ -35,8 +36,9 @@ import java.util.UUID
 
 /**
  * The bets (M4 §5.6): no house. A player stakes the stack they hold on a participant of a challenge or a duel, or on
- * nobody; when it ends, the winning bettors get their stakes back and share the losing ones, and nothing ever goes
- * to the Narrator. When no bet won, or the challenge did not really end (cancelled, expired), every stake goes back.
+ * nobody; a participant stakes on themselves only (they could lose on purpose otherwise). When it ends, the winning
+ * bettors get their stakes back and share the losing ones, and nothing ever goes to the Narrator. When no bet won,
+ * or the challenge did not really end (cancelled, expired), every stake goes back.
  *
  * - [bet] (`ChallengeControl.bet`, `/bet`): the stake goes into escrow in the bettor's ledger
  *   ([ItemLedger.hold], purpose `stake`, its fallback deadline a week after the challenge's planned end), then
@@ -44,14 +46,12 @@ import java.util.UUID
  * - [settle] ([BetBook], pure): when the challenge ends, the settlement is written as instructions
  *   ([MechanicsState.settlements]: give back, or cede to a winning bettor) in the very update that takes the
  *   challenge out of the state; they are saved together. See [BetSettlement].
- * - The part applies the instructions of the owners online: each tick and each second (a challenge that ends
- *   settles in the same tick), and at a join, before the guards give anything back (the engine's `JOIN` comes
- *   first). An instruction applied twice does nothing more: the ledger knows the stake by its id. The ledger
- *   does the rest: the hand-over to a winner once both are online, what does not fit, the fallback deadline, and
- *   what the players read (`bet.won`, `bet.lost`, `bet.returned`).
+ * - The part applies the instructions of the owners online ([BetInstructions]): each tick and each second (a
+ *   challenge that ends settles in the same tick), and at a join, before the guards give anything back (the
+ *   engine's `JOIN` comes first).
  *
- * Decisions `mechanic bet` (a bet placed) and `mechanic settled` (an instruction applied); the ledger's own
- * (`held`, `released`, `forfeited`, `transferred`…). Server thread.
+ * Decisions `mechanic bet` (a bet placed) and those of [BetInstructions]; the ledger's own (`held`, `released`,
+ * `forfeited`, `transferred`…). Server thread.
  *
  * @param ledger the escrow: the guards' ledger, or a test's own.
  * @param clock the engine's clock: a GameTest moves it on.
@@ -64,15 +64,17 @@ class Bets(
 ) : BetBook, MechanicPart {
     private val log = Log.mechanics
     private val decisions get() = Decisions(services.trace, clock)
+    private val instructions = BetInstructions(services, store, ledger, clock)
 
     // ── /bet (ChallengeControl.bet) ──
 
     /**
      * [player] stakes the stack in their main hand on [on] in challenge or duel [ref] (M4 §5.6): a participant
-     * still in the running (by name, whatever the case) or [NOBODY]. Refused, with nothing taken, when [ref] is not
-     * in progress (`command.unknown_challenge`), its bets are closed or it has none (`bet.closed`), the player
-     * already bet on it (`bet.already`), [on] is not one of the options (`bet.unknown_option`), or the hand is empty
-     * or holds a joker (`bet.no_item`). Returns what the player reads. Server thread.
+     * still in the running (by name, whatever the case) or [NOBODY]; a participant stakes on themselves only. Refused,
+     * with nothing taken, when [ref] is not in progress (`command.unknown_challenge`), its bets are closed or it has
+     * none (`bet.closed`; for a participant already through or out too), the player already bet on it
+     * (`bet.already`), [on] is not one of their options (`bet.unknown_option`), or the hand is empty or holds a joker
+     * (`bet.no_item`). Returns what the player reads. Server thread.
      */
     fun bet(player: ServerPlayer, ref: Ref, on: String): Component {
         val texts = services.settings.get().ui
@@ -82,8 +84,10 @@ class Bets(
         if (!isOpen(challenge, now)) return refusal(player, ref, on, "closed", texts["bet.closed"])
         val bettor = player.uuid.toString()
         if (challenge.bets.any { it.uuid == bettor }) return refusal(player, ref, on, "already", texts["bet.already"])
-        val pick = BetSettlement.pick(challenge.participants, on)
-            ?: return refusal(player, ref, on, "not an option", texts.format("bet.unknown_option", "options" to BetSettlement.options(challenge.participants).joinToString()))
+        val options = BetSettlement.options(challenge.participants, bettor)
+        if (options.isEmpty()) return refusal(player, ref, on, "a participant through or out", texts["bet.closed"])
+        val pick = BetSettlement.pick(challenge.participants, on, bettor)
+            ?: return refusal(player, ref, on, "not an option", texts.format("bet.unknown_option", "options" to options.joinToString()))
         val stack = player.mainHandItem.copy()
         val onName = pick.on?.name ?: NOBODY
         val entry = ledger.hold(
@@ -134,22 +138,65 @@ class Bets(
     // ── The settlement (BetBook) ──
 
     override fun settle(state: MechanicsState, challenge: ChallengeState, ending: Ending, winners: List<String>): Pair<MechanicsState, String?> =
-        BetSettlement.settle(state, challenge, ending, winners)
+        BetSettlement.settle(state, challenge, ending, winners, at = clock.millis())
 
     // ── The engine's part: the instructions applied ──
 
-    override fun everyTick(server: MinecraftServer, now: Long) = applyOnline(server, now)
+    override fun everyTick(server: MinecraftServer, now: Long) = instructions.applyOnline(server, now)
 
-    override fun everySecond(server: MinecraftServer, now: Long) = applyOnline(server, now)
+    override fun everySecond(server: MinecraftServer, now: Long) = instructions.everySecond(server, now)
 
     /** A player joined: their instructions first, before the guards give anything back to them. */
-    override fun onJoin(player: ServerPlayer) {
-        val owner = player.uuid.toString()
-        store.get().settlements.filter { it.owner == owner }.forEach { apply(player, it, clock.millis()) }
+    override fun onJoin(player: ServerPlayer) = instructions.onJoin(player, clock.millis())
+
+    companion object {
+        /** What a player types to bet that nobody wins (`/bet C-50 nobody`). */
+        const val NOBODY = "nobody"
+
+        /** The decisions of the bets (M4 §19). */
+        const val BET = "bet"
+        const val SETTLED = "settled"
+
+        private const val MINUTE = 60_000L
+        private const val ITEMS = "{items}"
+
+        /** A refusal of `/bet`: gray italic, like the refusals of `/offer` and the replies of `/pray`. */
+        fun refused(text: String): Component = Component.literal(text).withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)
+
+        /** The challenge a player typed: `C-50`, `c50` or `50`; null for anything else. */
+        fun challengeRef(typed: String): Ref? {
+            val text = typed.trim()
+            text.toLongOrNull()?.let { return if (it > 0) Ref(RefKind.CANON, it) else null }
+            return Ref.parse(text)?.takeIf { it.kind == RefKind.CANON }
+        }
     }
+}
+
+/**
+ * The settlements of the bets ([MechanicsState.settlements], M4 §5.6), applied to their owners once they are online:
+ * each stake given back, or ceded to a winning bettor. The ledger does the rest: the hand-over to a winner once both
+ * are online, what does not fit, the fallback deadline, and what the players read (`bet.won`, `bet.lost`,
+ * `bet.returned`). An instruction applied twice does nothing more: the ledger knows the stake by its id.
+ *
+ * The engine's part [Bets] runs [applyOnline] each tick, [everySecond] each second and [onJoin] at each join, before
+ * the guards' own join. Without the engine (its guardian while the mechanics are off), the same three calls apply
+ * the instructions the world kept: they need the world's state, the guards' ledger and a clock, nothing else.
+ *
+ * Each second, an undated instruction is dated, and one written more than [MechanicsLimits.CEDED_RESCUE_DAYS] days
+ * ago is dropped: its owner never came back, and their stake goes back to them at its fallback deadline when they
+ * do. Decisions `mechanic settled`. Server thread.
+ */
+class BetInstructions(
+    private val services: NarratorServices,
+    private val store: StateStore,
+    private val ledger: ItemLedger = services.guards.items,
+    private val clock: Clock = services.clock,
+) {
+    private val log = Log.mechanics
+    private val decisions get() = Decisions(services.trace, clock)
 
     /** Applies the instructions whose owner is online. Server thread. */
-    private fun applyOnline(server: MinecraftServer, now: Long) {
+    fun applyOnline(server: MinecraftServer, now: Long) {
         val pending = store.get().settlements
         if (pending.isEmpty()) return
         for (settlement in pending) {
@@ -162,6 +209,20 @@ class Bets(
             }
             server.playerList.getPlayer(owner)?.let { apply(it, settlement, now) }
         }
+    }
+
+    /** Dates the undated instructions, drops those too old ([MechanicsLimits.CEDED_RESCUE_DAYS]), then [applyOnline]. Server thread. */
+    fun everySecond(server: MinecraftServer, now: Long) {
+        val pending = store.get().settlements
+        if (pending.any { it.at == null }) store.update { state -> state.copy(settlements = state.settlements.map { if (it.at == null) it.copy(at = now) else it }) }
+        store.get().settlements.filter { now - (it.at ?: now) > MechanicsLimits.CEDED_RESCUE_DAYS * DAY_MS }.forEach { abandon(it) }
+        applyOnline(server, now)
+    }
+
+    /** [player] joined: their instructions applied, before the guards give anything back to them. Server thread. */
+    fun onJoin(player: ServerPlayer, now: Long) {
+        val owner = player.uuid.toString()
+        store.get().settlements.filter { it.owner == owner }.forEach { apply(player, it, now) }
     }
 
     /**
@@ -190,7 +251,7 @@ class Bets(
         forget(settlement)
         val what = stake?.let { " (${Escrow.short(it.what)}${it.canon?.let { canon -> " on C-$canon" }.orEmpty()})" }.orEmpty()
         decisions.record(
-            log, DecisionRecord.Kind.MECHANIC, SETTLED, player.plainTextName,
+            log, DecisionRecord.Kind.MECHANIC, Bets.SETTLED, player.plainTextName,
             reason = "stake ${settlement.stake}$what: " + (outcome ?: "nothing more to do (already settled or back)"),
             detail = buildJsonObject {
                 put("stake", settlement.stake)
@@ -206,31 +267,30 @@ class Bets(
         )
     }
 
+    /** Drops [settlement], too old: its owner never came back; their stake goes back to them at its fallback deadline. */
+    private fun abandon(settlement: Settlement) {
+        forget(settlement)
+        decisions.record(
+            log, DecisionRecord.Kind.MECHANIC, Bets.SETTLED, settlement.owner,
+            reason = "stake ${settlement.stake}: dropped, its owner was not back within ${MechanicsLimits.CEDED_RESCUE_DAYS} days; " +
+                "the stake goes back to them at its fallback deadline",
+            detail = buildJsonObject {
+                put("stake", settlement.stake)
+                put("to", settlement.to)
+                put("applied", false)
+                put("dropped", true)
+            },
+            level = Log.Level.WARN,
+        )
+    }
+
     /** [settlement] out of the state. */
     private fun forget(settlement: Settlement) {
         store.update { state -> state.copy(settlements = state.settlements.filterNot { it == settlement }) }
     }
 
-    companion object {
-        /** What a player types to bet that nobody wins (`/bet C-50 nobody`). */
-        const val NOBODY = "nobody"
-
-        /** The decisions of the bets (M4 §19). */
-        const val BET = "bet"
-        const val SETTLED = "settled"
-
-        private const val MINUTE = 60_000L
-        private const val ITEMS = "{items}"
-
-        /** A refusal of `/bet`: gray italic, like the refusals of `/offer` and the replies of `/pray`. */
-        fun refused(text: String): Component = Component.literal(text).withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)
-
-        /** The challenge a player typed: `C-50`, `c50` or `50`; null for anything else. */
-        fun challengeRef(typed: String): Ref? {
-            val text = typed.trim()
-            text.toLongOrNull()?.let { return if (it > 0) Ref(RefKind.CANON, it) else null }
-            return Ref.parse(text)?.takeIf { it.kind == RefKind.CANON }
-        }
+    private companion object {
+        const val DAY_MS = 24 * 60 * 60_000L
     }
 }
 
@@ -252,15 +312,15 @@ object BetSettlement {
 
     /**
      * [state] with the instructions that settle the bets of [challenge], which ended [ending] with [winners] (UUIDs
-     * as text), and the `bets: …` segment of its line; [state] and null without bets. An instruction already in
-     * [state] for the same stake is not written twice.
+     * as text), dated [at], and the `bets: …` segment of its line; [state] and null without bets. An instruction
+     * already in [state] for the same stake is not written twice.
      */
-    fun settle(state: MechanicsState, challenge: ChallengeState, ending: Ending, winners: List<String>): Pair<MechanicsState, String?> {
+    fun settle(state: MechanicsState, challenge: ChallengeState, ending: Ending, winners: List<String>, at: Long? = null): Pair<MechanicsState, String?> {
         val bets = challenge.bets
         if (bets.isEmpty()) return state to null
         val winning = winning(bets, ending, winners)
         val shares = shares(bets, winning)
-        val instructions = bets.mapIndexed { i, bet -> Settlement(owner = bet.uuid, stake = bet.stake, to = shares[i]?.let { bets[it].uuid }) }
+        val instructions = bets.mapIndexed { i, bet -> Settlement(owner = bet.uuid, stake = bet.stake, to = shares[i]?.let { bets[it].uuid }, at = at) }
             .filter { new -> state.settlements.none { it.owner == new.owner && it.stake == new.stake } }
         return state.copy(settlements = state.settlements + instructions) to line(challenge, ending, winning)
     }
@@ -330,15 +390,29 @@ object BetSettlement {
         return ModelText.cut(head + "(+${parts.size} more)", LINE_MAX)
     }
 
-    /** What [typed] picks among [participants]: one still in the running (by name, whatever the case), or nobody; null otherwise. */
-    fun pick(participants: List<Participant>, typed: String): Pick? {
+    /**
+     * What [typed] picks among [participants] for [bettor] (UUID as text; null: anyone outside the challenge): one of
+     * their [options], by name whatever the case, or nobody; null otherwise.
+     */
+    fun pick(participants: List<Participant>, typed: String, bettor: String? = null): Pick? {
         val text = typed.trim()
-        running(participants).firstOrNull { it.name.equals(text, ignoreCase = true) }?.let { return Pick(it) }
-        return if (text.equals(Bets.NOBODY, ignoreCase = true)) Pick(null) else null
+        eligible(participants, bettor).firstOrNull { it.name.equals(text, ignoreCase = true) }?.let { return Pick(it) }
+        return if (!takesPart(participants, bettor) && text.equals(Bets.NOBODY, ignoreCase = true)) Pick(null) else null
     }
 
-    /** What a bettor may pick among [participants], as typed: those still in the running, then nobody. */
-    fun options(participants: List<Participant>): List<String> = running(participants).map { it.name } + Bets.NOBODY
+    /**
+     * What [bettor] (UUID as text; null: anyone outside the challenge) may pick among [participants], as typed: those
+     * still in the running, then nobody. A participant bets on themselves only, while they are in the running: on
+     * anyone else, or on nobody, they could lose on purpose to win their bet. Empty for a participant through or out.
+     */
+    fun options(participants: List<Participant>, bettor: String? = null): List<String> =
+        eligible(participants, bettor).map { it.name } + if (takesPart(participants, bettor)) emptyList() else listOf(Bets.NOBODY)
+
+    /** The participants [bettor] may bet on: themselves when they take part, else those still in the running. */
+    private fun eligible(participants: List<Participant>, bettor: String?): List<Participant> =
+        running(participants).filter { !takesPart(participants, bettor) || it.uuid == bettor }
+
+    private fun takesPart(participants: List<Participant>, bettor: String?): Boolean = bettor != null && participants.any { it.uuid == bettor }
 
     /** The participants a bet may still be placed on: neither through (a sure win) nor out (a sure loss). */
     private fun running(participants: List<Participant>): List<Participant> = participants.filter { it.doneAt == null && it.out == null }

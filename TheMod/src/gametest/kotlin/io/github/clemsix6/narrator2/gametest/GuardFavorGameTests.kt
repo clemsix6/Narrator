@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.guard.Confiscation
 import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.ExplosionGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
+import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.GuardsImpl
 import io.github.clemsix6.narrator2.guard.LedgerPurpose
 import io.github.clemsix6.narrator2.guard.Peril
@@ -213,14 +214,17 @@ class GuardFavorGameTests {
         elsewhere.discard()
     }
 
-    /** A pardon of a punishment that is only its episode (a teleport, a shuffle) still ends it; `isPunished` sees the episode alone. */
+    /**
+     * A pardon of a punishment that is only its episode (a teleport, a shuffle) still ends it; `isPunished` does not
+     * count the episode alone, which nothing lifts: a joker is not played for it (M4 review, finding 35).
+     */
     @GameTest
     fun aPardonEndsAPunishmentWithNothingLeftToLift(helper: GameTestHelper) = withPlayer(helper) { player ->
         val guards = serverGuards(helper)
         guards.hostile(player, turn(5051), System.currentTimeMillis() + 600_000, PunishmentCategory.TELEPORT)
-        helper.assertTrue(guards.isPunished(player), "the episode is a punishment")
+        helper.assertFalse(guards.isPunished(player), "an episode alone: nothing to lift")
         helper.assertEquals(listOf("punishment ended"), guards.pardon(player, turn(5052)), "what was lifted")
-        helper.assertFalse(guards.isPunished(player), "ended")
+        helper.assertEquals(null, GuardStates.read(player).episode, "ended")
     }
 
     /**
@@ -272,6 +276,14 @@ class GuardFavorGameTests {
             helper.assertEquals(deathsLeft, guards.deathsLeft(player.uuid), "the quota is untouched")
             helper.assertEquals(armed, GuardStates.read(player).let { it.armedUntil to it.perils }, "nothing armed")
             helper.assertFalse(DeathGuard.keepsInventory(player), "no mark")
+            // M4 review, finding 18: saved from a death, they are left alone 5 minutes, as after one.
+            val after = guards.hostile(player, turn(5252), System.currentTimeMillis() + 60_000, PunishmentCategory.LIGHTNING)
+            helper.assertTrue(
+                after is Verdict.Denied && after.rule == Rules.NO_PILE_ON && after.message.contains(" was saved from death ") &&
+                    after.message.contains(" ago (duel C-52: fell into the lava); hostile actions against them are refused until "),
+                "nothing hostile against a player just rescued: $after",
+            )
+            helper.assertTrue(guards.spares(player), "the Narrator's creatures and explosions spare them")
 
             var decisions: AtomicReference<Any>? = null
             helper.startSequence()
@@ -289,6 +301,55 @@ class GuardFavorGameTests {
                 }
                 .thenSucceed()
         }
+    }
+
+    /**
+     * The guards' shield (M4 review, finding 18, the contract a duel's spared loser uses): until it ends, every act
+     * is refused, even the one already punishing the player, and the Narrator's creatures and explosions spare them;
+     * a shorter shield never cuts a longer one; a `guard shielded` decision.
+     */
+    @GameTest
+    fun aShieldKeepsTheNarratorAwayUntilItEnds(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val (guards, clock, services) = ownGuards(helper)
+        helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(31), clock.millis() + 600_000, PunishmentCategory.SIZE), "a punishment runs")
+        guards.shield(player, clock.millis() + Guards.RESCUE_SHIELD_MS, "duel C-52: fatal blow stopped at 1 hp")
+        guards.shield(player, clock.millis() + 60_000, "shorter")
+        clock.advance(Duration.ofMinutes(2))
+        for (caller in listOf(turn(31), turn(32))) {
+            val refused = guards.hostile(player, caller, clock.millis() + 60_000, PunishmentCategory.HARM)
+            helper.assertTrue(
+                refused is Verdict.Denied && refused.rule == Rules.NO_PILE_ON &&
+                    refused.message.contains(" was saved from death 2m ago (duel C-52: fatal blow stopped at 1 hp); hostile actions against them are refused until ") &&
+                    refused.message.endsWith(" (in 3m)."),
+                "refused for act ${caller.act}: $refused",
+            )
+        }
+        helper.assertTrue(guards.spares(player), "spared by the Narrator's creatures and explosions")
+        helper.assertTrue(services.traces.decisions.any { it.decision == "shielded" && it.subject == player.plainTextName }, "a shielded decision")
+        clock.advance(Duration.ofMinutes(3))
+        helper.assertFalse(guards.spares(player), "the shield is over")
+        helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(31), clock.millis() + 60_000, PunishmentCategory.SIZE), "fair game again")
+    }
+
+    /**
+     * A duelist is out of the Narrator's reach while their duel runs (M4 review, finding 19): `hostile` refuses them,
+     * whatever the act, and its creatures and explosions spare them; the mechanics engine says who duels.
+     */
+    @GameTest
+    fun aDuelistIsOutOfReachWhileTheDuelRuns(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val (guards, clock, _) = ownGuards(helper)
+        helper.assertEquals(Verdict.Allowed, guards.vet(player, turn(41), PunishmentCategory.HARM), "no duel: fair game")
+        var dueling = true
+        guards.isDueling = { it == player.uuid && dueling }
+        val refused = guards.hostile(player, turn(41), clock.millis() + 60_000, PunishmentCategory.HARM)
+        helper.assertEquals(
+            Verdict.Denied(Rules.DUEL, "${player.plainTextName} is fighting a duel; nothing hostile against a duelist while the duel runs."),
+            refused, "a duelist",
+        )
+        helper.assertTrue(guards.spares(player), "spared by the Narrator's creatures and explosions")
+        helper.assertEquals(null, GuardStates.read(player).episode, "nothing opened")
+        dueling = false
+        helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(41), clock.millis() + 60_000, PunishmentCategory.HARM), "the duel is over")
     }
 
     /**

@@ -107,6 +107,42 @@ class WakeSchedulerTest {
         assertEquals(1.0, WakeScheduler.salience(listOf(joker)), "a mechanic's news is worth a heartbeat by itself")
     }
 
+    /** M4 review, finding 6: an offering is a player's own news; past the budget, it wakes the Director only within a sub-budget. */
+    @Test
+    fun `past the budget, an offering wakes the Director only while the players' news have wake-ups left`() {
+        val offering = Item.of(DirectorSignal.Mechanic(MechanicSignal.OFFERING, "O-812 Mimosa offers 1x dirt", 0, priority = true))
+        val back = Item.of(DirectorSignal.Mechanic(MechanicSignal.OFFERING, "O-811 went back to Bartok", 0, priority = false))
+        val won = Item.of(DirectorSignal.Mechanic(MechanicSignal.CHALLENGE, "C-50 won by Mimosa", 0, priority = true))
+        val due = Item.of(DirectorSignal.MemoryDue(Ref(RefKind.CANON, 45), "C-45 promise → Mimosa", 0))
+        assertEquals(listOf(true, false, false), listOf(offering, back, won).map { WakeScheduler.byPlayer(it.signal) })
+
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(offering), debounce, throttled = true, playerNewsSpent = false))
+        assertNull(WakeScheduler.wakeAt(listOf(offering), debounce, throttled = true, playerNewsSpent = true), "it waits for a turn to leave the hour")
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(offering), debounce, throttled = false, playerNewsSpent = true), "within the budget, it wakes like any news")
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(offering, won), debounce, throttled = true, playerNewsSpent = true), "it goes with a challenge's end")
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(offering, due), debounce, throttled = true, playerNewsSpent = true), "and with a due commitment")
+
+        assertTrue(WakeScheduler.wokenByPlayers(listOf(offering, back, death(0))), "the offering alone wakes it past the budget")
+        assertFalse(WakeScheduler.wokenByPlayers(listOf(offering, won)), "the challenge's end would have woken it anyway")
+        assertFalse(WakeScheduler.wokenByPlayers(listOf(offering, due)))
+        assertFalse(WakeScheduler.wokenByPlayers(listOf(offering, addressed(0))))
+        assertFalse(WakeScheduler.wokenByPlayers(listOf(back, death(0))), "no offering waits")
+        assertFalse(WakeScheduler.wokenByPlayers(listOf(offering.copy(failures = Item.DEMOTED))), "a demoted offering wakes nobody")
+    }
+
+    @Test
+    fun `the budget counts the wake-ups past it that the players' news alone caused, over a sliding hour`() {
+        val budget = TurnBudget { 30 }
+        repeat(WakeScheduler.PLAYER_NEWS_PER_HOUR - 1) { budget.started(it * 60_000L, byPlayers = true) }
+        budget.started(200_000)
+        assertEquals(WakeScheduler.PLAYER_NEWS_PER_HOUR - 1, budget.playerNewsUsed(300_000))
+        assertFalse(budget.playerNewsSpent(300_000))
+        budget.started(300_000, byPlayers = true)
+        assertTrue(budget.playerNewsSpent(300_000))
+        assertEquals(WakeScheduler.PLAYER_NEWS_PER_HOUR + 1, budget.used(300_000), "they are turns of the budget too")
+        assertFalse(budget.playerNewsSpent(3_600_000), "the first one left the hour")
+    }
+
     @Test
     fun `the memory's notes and cues never wake the Director, a cue is worth a heartbeat like a next event and a note nothing`() {
         val note = Item.of(DirectorSignal.MemoryNote(Ref(RefKind.NOTE, 9), NoteKind.COHERENCE, "le Narrateur a dit…", 0))

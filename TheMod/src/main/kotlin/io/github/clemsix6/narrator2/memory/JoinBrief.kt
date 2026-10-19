@@ -37,7 +37,8 @@ import java.util.UUID
  * - Beyond [MAX_FULL] players joining at once, the others get one line each: header and the sheet's line.
  *
  * "While away" is written by the code: the chronicle's sessions written since the player left, the
- * chapters not in a session yet, the open commitments about them. Every source is read on its own; one
+ * chapters not in a session yet, the open commitments about them, the plans that target them included
+ * (`C-61 plan: Un comité d'accueil attend Bartok…`). Every source is read on its own; one
  * that fails says so in its place. What is shown goes into the chapter ([ChapterMemory.shownRefs],
  * [ChapterMemory.sheetsShownAt]); its `recalls` rows (`join`) and its dream hints to mark `shown` wait in
  * [ChapterMemory.unrecorded] for the model to accept the request ([Memory.recordShown]). Built again after
@@ -173,7 +174,7 @@ class JoinBrief(
     private suspend fun whileAway(sheet: PlayerSheet, last: Session?, now: Instant, room: Int): Pair<String, List<Ref>> {
         val parts = buildList {
             if (last != null) addAll(chronicled(last.leftAt, now))
-            val open = sheet.openCanon.filter { it.kind.dueAllowed && it.status.open }.map { it.ref to commitment(it, now) }
+            val open = sheet.openCanon.filter(::isCommitment).map { it.ref to commitment(it, now) }
             if (open.isNotEmpty()) add(Part(open, { items, left -> "open about this player: " + (items + moreItems(left)).joinToString(" · ") }))
         }
         if (parts.isEmpty()) {
@@ -222,6 +223,12 @@ class JoinBrief(
 
     /** `H-89 10-02 « La nuit des slimes »`. */
     private fun entry(entry: ChronicleEntry, now: Instant): String = "${entry.ref} ${dates.day(entry.from, now)} ${BriefText.quote(entry.title, TITLE_MAX)}"
+
+    /**
+     * An open commitment about the player: a promise, a threat, a prophecy, a challenge or an arc, and a plan that
+     * targets them (M4 §3.3), which has no due time of its own: among the commitments, as in the briefing.
+     */
+    private fun isCommitment(entry: CanonEntry): Boolean = entry.status.open && (entry.kind.dueAllowed || entry.kind == CanonKind.PLAN)
 
     /** `C-45 promise, due in 1h « je te rends… »`, or `C-61 threat: Le Narrateur a menacé…`. */
     private fun commitment(entry: CanonEntry, now: Instant): String = buildString {

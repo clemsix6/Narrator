@@ -3,7 +3,9 @@
   "package": "io.github.clemsix6.narrator2.mixin.guard",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "CommandSourceStackAccessor",
     "PlayerKeepInventoryMixin",
+    "PlayerListAccessor",
     "ServerPlayerKeepInventoryMixin"
   ],
   "injectors": {

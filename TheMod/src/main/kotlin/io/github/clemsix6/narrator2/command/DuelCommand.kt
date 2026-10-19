@@ -47,11 +47,7 @@ object DuelCommand {
             .executes { answer(it.source, StringArgumentType.getString(it, "id"), accept, control) }
 
     private fun answer(source: CommandSourceStack, id: String, accept: Boolean, control: () -> ChallengeControl?): Int {
-        val player = source.player
-        if (player == null) {
-            source.sendFailure(errorLine("only a player can answer a duel."))
-            return 0
-        }
+        val player = ownPlayer(source, "answer a duel") ?: return 0
         val challenges = control()
         if (challenges == null) {
             source.sendFailure(errorLine("the Narrator is not running, or the server is stopping."))

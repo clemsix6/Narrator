@@ -101,23 +101,56 @@ class LedgerEscrowTest {
     @Test
     fun `the winnings keep the stake's id, so a hand-over replayed after a crash gives nothing twice`() {
         val handOver = now + 20 * minute
-        val ceded = Escrow.forfeit(state(stake), 812, mimosa, now + 15 * minute)!!.confiscations.single()
+        val ceded = Escrow.forfeit(state(stake.copy(dataVersion = 4_700)), 812, mimosa, now + 15 * minute)!!.confiscations.single()
         val winnings = Escrow.winnings(ceded, "Bartok", handOver)
         assertEquals(812L, winnings.id)
         assertEquals(LedgerPurpose.OWED, winnings.purpose)
         assertEquals(stake.items, winnings.items)
+        assertEquals(4_700, winnings.dataVersion, "the stacks keep the data version they were written at")
         assertEquals(handOver, winnings.returnAt, "due at once")
         assertEquals(50L, winnings.canon)
         assertNull(winnings.owedTo)
         assertEquals("won from Bartok on C-50", winnings.reason)
         assertEquals("bet.won", Escrow.arrivalKey(winnings))
 
-        val winner = assertNotNull(Escrow.add(GuardState.EMPTY, winnings))
+        val winner = assertNotNull(Escrow.receive(GuardState.EMPTY, winnings, handOver))
         assertEquals(listOf(winnings), winner.confiscations)
-        assertNull(Escrow.add(winner, winnings), "the winner's file already holds them: replayed, nothing more")
+        assertEquals(listOf(ReceivedStake(812, handOver)), winner.receivedStakes)
+        assertNull(Escrow.receive(winner, winnings, handOver), "the winner's file already holds them: replayed, nothing more")
         val owner = Escrow.without(state(ceded, offering), 812)
         assertEquals(listOf(offering), owner.confiscations)
         assertEquals(owner, Escrow.without(owner, 812), "already out of the owner's ledger")
+    }
+
+    @Test
+    fun `winnings delivered before the loser's file lost the stake are not received twice when the hand-over is replayed`() {
+        // A crash after the winner's file was written, before the loser's: at the restart the winner joins first and
+        // gets the winnings; then the loser joins, his file still holding the stake, and the hand-over is replayed.
+        val handOver = now + 20 * minute
+        val ceded = Escrow.forfeit(state(stake), 812, mimosa, now + 15 * minute)!!.confiscations.single()
+        val winnings = Escrow.winnings(ceded, "Bartok", handOver)
+        val delivered = Escrow.without(Escrow.receive(GuardState.EMPTY, winnings, handOver)!!, 812)
+        assertEquals(emptyList(), delivered.confiscations, "the winnings are in the winner's inventory")
+        assertNull(Escrow.receive(delivered, Escrow.winnings(ceded, "Bartok", handOver + day), handOver + day), "replayed a day later: nothing more")
+
+        // The receipts are kept as long as the loser's file may hold the stake, then forgotten.
+        val later = handOver + MechanicsLimits.CEDED_RESCUE_DAYS * day
+        val other = winnings.copy(id = 900)
+        assertEquals(listOf(ReceivedStake(812, handOver), ReceivedStake(900, later - 1)), Escrow.receive(delivered, other, later - 1)!!.receivedStakes)
+        assertEquals(listOf(ReceivedStake(900, later)), Escrow.receive(delivered, other, later)!!.receivedStakes, "a month later, forgotten")
+    }
+
+    @Test
+    fun `a stake whose settlement comes after its fallback deadline comes back for its settlement, not as a fallback`() {
+        // Its owner was away more than a week: the settlement that gives it back is applied at their join.
+        val late = stake.returnAt + day
+        val released = assertNotNull(Escrow.release(state(stake), 812, late), "released all the same")
+        val entry = released.confiscations.single()
+        assertEquals(listOf(entry), Escrow.due(released, late))
+        assertEquals(late, entry.settledAt)
+        assertFalse(Escrow.isFallback(entry), "its settlement came")
+        assertNull(Escrow.release(released, 812, late + 1), "released twice: nothing more")
+        assertTrue(Escrow.isFallback(stake), "without its settlement, it is the fallback")
     }
 
     @Test
