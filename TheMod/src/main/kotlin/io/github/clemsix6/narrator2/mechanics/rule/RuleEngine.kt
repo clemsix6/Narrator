@@ -220,7 +220,10 @@ class RuleEngine(
 
     // ── Matching ──
 
-    /** A fact of the bus: the rules of its trigger whose conditions hold and whose chance is drawn wait for the tick. Any thread. */
+    /**
+     * A fact of the bus: the rules of its trigger whose conditions hold and whose chance is drawn wait for the tick.
+     * Inline on the thread that published it.
+     */
     override fun onEvent(envelope: Envelope) {
         if (stopped) return
         val matchers = current().byTrigger[RuleFacts.triggerOf(envelope.event) ?: return] ?: return
