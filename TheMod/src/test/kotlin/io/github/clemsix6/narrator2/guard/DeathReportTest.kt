@@ -144,6 +144,36 @@ class DeathReportTest {
         assertEquals(report.copy(actions = actions), DeathReport.parse(report.copy(actions = actions).detail().toString()), "the engine's acts read back")
     }
 
+    /** M4-02: rows are stamped to the microsecond, the death to the millisecond; an action started in the death's millisecond counts. */
+    @Test
+    fun `an action that started in the very millisecond of the death counts, one a millisecond later does not`() = JournalFixture().use { fixture ->
+        val journal = fixture.journal
+        fun act(at: Instant): Long {
+            val id = journal.nextId(IdKind.DECISION)
+            val detail = buildJsonObject {
+                put("tool", "explosion")
+                put("status", "ok")
+                put("effect", "world")
+            }
+            journal.decision(DecisionRecord(id, at, DecisionRecord.Kind.MECHANIC, "action", "Bartok", "explosion ok", null, "mechanics:C-60", null, detail))
+            return id
+        }
+        val call = journal.nextId(IdKind.TOOL_CALL)
+        journal.toolCall(
+            ToolCallRecord(call, Instant.ofEpochMilli(died).plusNanos(700_000), "director-aaaa", 42, null, "toolu_$call", Role.DIRECTOR, "apply_effect", "{}", ToolStatus.OK, "ok", 40, listOf("Bartok"), ToolEffect.WORLD),
+        )
+        val within = act(Instant.ofEpochMilli(died).plusNanos(400_000))
+        act(Instant.ofEpochMilli(died + 1))
+        fixture.sync()
+
+        val actions = runBlocking { journal.read(10_000) { DeathReport.actionsOn(it, "Bartok", died - DeathReport.WINDOW_MS, died) } }
+
+        assertEquals(setOf("explosion", "apply_effect"), actions.map { it.tool }.toSet())
+        assertEquals(2, actions.size, "the act a millisecond after the death is left out")
+        assertEquals(within, actions.single { it.engine != null }.id)
+        assertEquals(call, actions.single { it.engine == null }.id)
+    }
+
     @Test
     fun `why player shows the last death, in red when the Narrator acted just before a death it was not blamed for`() = JournalFixture().use { fixture ->
         fixture.clock.now = Instant.ofEpochMilli(died + 2_000)
