@@ -10,6 +10,14 @@ import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.forge.Arsenal
+import io.github.clemsix6.narrator2.forge.ArsenalEntry
+import io.github.clemsix6.narrator2.forge.Forge
+import io.github.clemsix6.narrator2.forge.ForgeLimits
+import io.github.clemsix6.narrator2.forge.ModuleStatus
+import io.github.clemsix6.narrator2.forge.ParamSpec
+import io.github.clemsix6.narrator2.forge.api.ParamType
+import io.github.clemsix6.narrator2.forge.api.Sdk
 import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.guard.Confiscation
 import io.github.clemsix6.narrator2.guard.Guards
@@ -22,6 +30,7 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
+import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.BriefingSection
@@ -38,6 +47,8 @@ import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.oracle.Enclosure
 import io.github.clemsix6.narrator2.oracle.PlayerSnapshot
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
+import io.github.clemsix6.narrator2.testing.FakeArsenal
+import io.github.clemsix6.narrator2.testing.FakeForge
 import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
@@ -313,18 +324,26 @@ class BriefingTest {
         val reminders = (1..5).map { PendingReminder(it.toLong(), "x".repeat(600), now.toEpochMilli() + it * 60_000L) }
         val mechanics = fullMechanics(crowd.take(10))
         val text = render(
-            reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" }, services = services(memory = memory, mechanics = mechanics),
+            reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" },
+            services = services(memory = memory, mechanics = mechanics, forge = fullArsenal()),
         )
         val state = text.substringAfter("<engine_state>\n").substringBefore("</engine_state>").trimEnd('\n')
+        val arsenal = state.lines().single { it.startsWith("Arsenal") }
         println(
             "budget: ${text.length} characters of ${Briefing.MAX_CHARS}, memory sections ${Briefing.MEMORY_BUDGETS.values.sum()}, " +
-                "engine_state ${state.length} of ${MechanicsLimits.ENGINE_STATE}",
+                "engine_state ${state.length} of ${MechanicsLimits.ENGINE_STATE}, arsenal ${arsenal.length} of ${ForgeLimits.ARSENAL_CHARS}",
         )
 
         assertTrue(text.length <= Briefing.MAX_CHARS, "the briefing takes ${text.length} characters")
         assertTrue(state.length <= MechanicsLimits.ENGINE_STATE, "the engine state takes ${state.length} characters")
-        assertEquals(listOf("Challenges", "Rules", "Pacing", "Offerings"), state.lines().takeLast(4).map { it.substringBefore(':') })
-        assertEquals(71_200, Briefing.MAX_CHARS, "70 000 and the 1 200 of the mechanics' lines")
+        assertTrue(arsenal.length <= ForgeLimits.ARSENAL_CHARS, "the arsenal takes ${arsenal.length} characters")
+        assertTrue(arsenal.startsWith("Arsenal (${ForgeLimits.ARSENAL_NAMES}): ") && arsenal.endsWith(" more)"), arsenal)
+        assertEquals(
+            listOf("Arsenal", "Challenges", "Rules", "Modules", "Pacing", "Offerings"),
+            state.lines().takeLast(6).map { it.substringBefore(' ').substringBefore(':') },
+        )
+        assertEquals(72_400, Briefing.MAX_CHARS, "70 000, the 1 200 of the mechanics' lines and the 1 200 of the arsenal")
+        assertEquals(3_900, MechanicsLimits.ENGINE_STATE, "2 700 and the 1 200 of the arsenal (M5 §9.3)")
         assertFalse("(cut:" in text, "no memory section went over its budget")
         BriefingSection.TAGS.forEach { tag -> assertEquals(1, Regex("^<$tag[ >]", RegexOption.MULTILINE).findAll(text).count(), "one $tag section") }
         assertEquals(Briefing.PREVIOUS_CHAPTERS, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "two previous chapters")
@@ -353,7 +372,7 @@ class BriefingTest {
         assertContains(text, "<grimoire>\n(memory unavailable: memory.enabled is false)\n</grimoire>\n")
     }
 
-    /** The engine's two lines too long, and [online] all punished, every category resting, under grace, two offerings each. */
+    /** The engine's three lines too long, and [online] all punished, every category resting, under grace, two offerings each. */
     private fun fullMechanics(online: List<PlayerRef>): FakeMechanics {
         online.forEachIndexed { index, player ->
             guards.pacingOf[player.uuid] = PlayerPacing(
@@ -361,8 +380,116 @@ class BriefingTest {
                 listOf(900L + index, 1_900L + index).map { Confiscation(it, emptyList(), "64x minecraft:diamond_block", 0, now.toEpochMilli() + 600_000, null, null, LedgerPurpose.OFFERING) },
             )
         }
-        return FakeMechanics(clock).apply { lines = listOf("Challenges: " + "c".repeat(700), "Rules: " + "r".repeat(700)) }
+        return FakeMechanics(clock).apply { lines = listOf("Challenges: " + "c".repeat(700), "Rules: " + "r".repeat(700), "Modules: " + "m".repeat(700)) }
     }
+
+    /** A full arsenal: 64 forged modules, each with the longest name, the longest summary and eight parameters with long choices. */
+    private fun fullArsenal(): FakeForge = FakeForge(clock).apply {
+        repeat(ForgeLimits.ARSENAL_NAMES) { index ->
+            val params = (1..ForgeLimits.PARAMS).map { param("p$it", ParamType.TEXT, required = false, fallback = "a", choices = listOf("a", "b".repeat(30))) }
+            val name = "module_$index".padEnd(32, 'x')
+            arsenal.add(module(name, 1, ModuleStatus.READY, now.minusSeconds(index * 60L), "s".repeat(ForgeLimits.SUMMARY_CHARS), *params.toTypedArray()))
+        }
+    }
+
+    @Test
+    fun `when the arsenal does not fit, the newest modules stay whole and the others are named, then counted`() {
+        val entries = (1..20).map { index ->
+            module(
+                "game_$index", 1, ModuleStatus.READY, now.minusSeconds(index * 3_600L), "A game of the Narrator, number $index, ".repeat(4).take(ForgeLimits.SUMMARY_CHARS),
+                param("players", ParamType.PLAYERS, min = 2.0, max = 8.0), param("minutes", ParamType.INTEGER, false, "5", 2.0, 15.0),
+            )
+        }
+
+        val line = ArsenalLine.render(entries, now.toEpochMilli())
+
+        assertTrue(line.length <= ForgeLimits.ARSENAL_CHARS, "${line.length}: $line")
+        assertTrue(line.startsWith("Arsenal (20): game_1 v1 (new) — A game of the Narrator, number 1, "), line)
+        assertContains(line, "… (players 2-8; minutes 2-15 =5) · game_2 v1 (new) — ", message = "the summaries cut to ${ArsenalLine.SUMMARY_CUTS.last()}")
+        val named = line.substringAfter(" · also ").split(", ")
+        assertEquals((20 - named.size + 1..20).map { "game_$it" }, named, "the oldest are named, all of them")
+        assertTrue(named.size in 2..15, line)
+
+        val crowded = ArsenalLine.render(fullArsenal().arsenal.list(), now.toEpochMilli())
+        assertTrue(crowded.length <= ForgeLimits.ARSENAL_CHARS && Regex(" \\(\\+\\d+ more\\)$").containsMatchIn(crowded), crowded)
+    }
+
+    // ── Arsenal (M5 §9.3) ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `the arsenal lists the latest ready version of each module, newest first, with its summary and parameters`() {
+        val forge = FakeForge(clock).apply {
+            arsenal.add(
+                module(
+                    "orbiting_chickens", 0, ModuleStatus.READY, Instant.EPOCH, "Chickens circle a player at head height, then come down gently.",
+                    param("player", ParamType.PLAYER), param("chickens", ParamType.INTEGER, false, "6", 3.0, 8.0), param("seconds", ParamType.INTEGER, false, "30", 10.0, 120.0),
+                ),
+            )
+            arsenal.add(
+                module(
+                    "parade", 0, ModuleStatus.READY, Instant.EPOCH, "A line of <creatures> follows a player.",
+                    param("player", ParamType.PLAYER), param("creature", ParamType.TEXT, false, "chicken", choices = listOf("chicken", "pig", "sheep")),
+                ),
+            )
+            arsenal.add(module("hot_cold", 2, ModuleStatus.READY, now.minus(Duration.ofDays(3)), "Hot or cold: a hidden spot near a player.", *hotCold()))
+            arsenal.add(module("hot_cold", 3, ModuleStatus.BROKEN, now.minus(Duration.ofDays(2)), "Hot or cold, again."))
+            arsenal.add(module("pit_trap", 1, ModuleStatus.REJECTED, now.minus(Duration.ofHours(5)), "A pit opens."))
+            arsenal.add(
+                module("statues", 1, ModuleStatus.READY, now.minus(Duration.ofHours(1)), "Red light, green light: whoever moves when the Narrator looks is sent back.", param("players", ParamType.PLAYERS, min = 2.0, max = 8.0)),
+            )
+            arsenal.add(module("statues", 2, ModuleStatus.PENDING, now.minus(Duration.ofMinutes(30)), "Red light, green light, refereed."))
+        }
+
+        val state = render(services = services(forge = forge)).substringAfter("<engine_state>\n").substringBefore("</engine_state>").lines()
+
+        assertEquals(
+            "Arsenal (4): statues v1 (new) — Red light, green light: whoever moves when the Narrator looks is sent back. (players 2-8) · " +
+                "hot_cold v2 — Hot or cold: a hidden spot near a player. (players 1-8; radius 20-120 =60; center? place; loud true|false =false; " +
+                "message? text; speed 0.5-2.5 =1; count integer) · " +
+                "orbiting_chickens — Chickens circle a player at head height, then come down gently. (player; chickens 3-8 =6; seconds 10-120 =30) · " +
+                "parade — A line of ‹creatures› follows a player. (player; creature chicken|pig|sheep =chicken)",
+            state.single { it.startsWith("Arsenal") },
+        )
+        assertEquals("Reminders", state[state.indexOfFirst { it.startsWith("Arsenal") } - 1].substringBefore(':'), "after the engine's own lines")
+    }
+
+    @Test
+    fun `the arsenal is there only with the Forge's tools, says when it is empty, and when it cannot be read`() {
+        fun arsenal(services: TestServices): String? =
+            render(services = services).substringAfter("<engine_state>\n").substringBefore("</engine_state>").lines().singleOrNull { it.startsWith("Arsenal") }
+
+        assertEquals("Arsenal: none", arsenal(services()))
+        assertEquals(null, arsenal(services(forge = FakeForge(clock).apply { available = false })), "no Forge")
+        assertEquals(null, arsenal(services(mechanics = DisabledMechanics("not wired yet"))), "no engine")
+        val halted = FakeMechanics(clock).apply { modules.halted = ForgeHalt("trop de poules", "Clément", now.toEpochMilli()) }
+        assertEquals(null, arsenal(services(mechanics = halted)), "the Forge switched off by an operator")
+        val failing = object : Forge by FakeForge(clock) {
+            override val arsenal: Arsenal = object : Arsenal by FakeArsenal() {
+                override fun list(): List<ArsenalEntry> = throw IllegalStateException("the arsenal is being loaded")
+            }
+        }
+        assertEquals("Arsenal: (unavailable: the arsenal is being loaded)", arsenal(services(forge = failing)))
+    }
+
+    /** The parameters of every kind, for `hot_cold`. */
+    private fun hotCold() = arrayOf(
+        param("players", ParamType.PLAYERS, min = 1.0, max = 8.0),
+        param("radius", ParamType.INTEGER, false, "60", 20.0, 120.0),
+        param("center", ParamType.PLACE, required = false),
+        param("loud", ParamType.BOOLEAN, false, "false"),
+        param("message", ParamType.TEXT, required = false, max = 80.0),
+        param("speed", ParamType.NUMBER, false, "1", 0.5, 2.5),
+        param("count", ParamType.INTEGER),
+    )
+
+    private fun module(name: String, version: Int, status: ModuleStatus, savedAt: Instant, summary: String, vararg params: ParamSpec) = ArsenalEntry(
+        name, version, status, builtIn = version == 0, summary, params.toList(), listOf("itWorks"), savedAt, if (version == 0) "built-in" else "forger T-31",
+        null, "sha256:00", Sdk.VERSION, 0, 0, null,
+    )
+
+    private fun param(
+        name: String, type: ParamType, required: Boolean = true, fallback: String? = null, min: Double? = null, max: Double? = null, choices: List<String> = emptyList(),
+    ) = ParamSpec(name, type, "What it is.", required, fallback, min, max, choices)
 
     @Test
     fun `the engine state ends with the mechanics' lines of the situation (M4 §4-5)`() {
@@ -376,10 +503,11 @@ class BriefingTest {
         assertEquals(
             listOf(
                 "Reminders: R-3 at 21:10 \"check that Bartok kept his word\"",
+                "Arsenal: none",
                 "Challenges: C-50 obtain « Œuf de tortue » → all · Mimosa 0/1, Bartok 0/1 · ends in 12m",
                 "Rules: C-60 law block_break grief → punish (until 10-02 20:15)",
             ),
-            state.takeLast(5).take(3),
+            state.takeLast(6).take(4),
         )
         // Both players joined at 20:00: the order of arrival between them is not fixed.
         assertTrue(
@@ -387,7 +515,7 @@ class BriefingTest {
             state[state.size - 2],
         )
         val off = render(services = services(mechanics = DisabledMechanics("not wired yet"))).substringAfter("<engine_state>\n").substringBefore("</engine_state>")
-        assertFalse("Challenges:" in off || "Rules:" in off, "no engine, no line of its own")
+        assertFalse("Challenges:" in off || "Rules:" in off || "Arsenal" in off, "no engine, no line of its own, no arsenal")
         assertContains(off, "\nPacing: punished this hour ")
         assertContains(off, " · recent kinds Bartok size (again at 21:20)\n")
     }
@@ -570,8 +698,13 @@ class BriefingTest {
         return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, chapter, reduced) }
     }
 
-    private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards, memory: Memory = FakeMemory(clock), mechanics: Mechanics = FakeMechanics(clock)) =
-        TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory, mechanics = mechanics)
+    private fun services(
+        journal: Journal = fixture.journal,
+        guards: Guards = this.guards,
+        memory: Memory = FakeMemory(clock),
+        mechanics: Mechanics = FakeMechanics(clock),
+        forge: Forge = FakeForge(clock),
+    ) = TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory, mechanics = mechanics, forge = forge)
 
     private fun online(player: PlayerRef, idle: Boolean = false, activity: String? = null) {
         players.put(

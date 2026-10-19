@@ -144,6 +144,33 @@ class WakeSchedulerTest {
         assertFalse(budget.playerNewsSpent(3_600_000), "the first one left the hour")
     }
 
+    /** M5 §9.2: a module's news has no priority, and within the budget its wake-ups are capped; past the cap, it waits. */
+    @Test
+    fun `a module's news wakes the Director only within the budget and while the modules' news have wake-ups left`() {
+        val says = Item.of(DirectorSignal.Mechanic(MechanicSignal.MODULE, "C-73 simon_says says: « Bartok est éliminé »", 0, priority = false))
+        val joker = Item.of(DirectorSignal.Mechanic(MechanicSignal.JOKER, "Bartok played a joker", 0, priority = false))
+        assertEquals(listOf(true, false), listOf(says, joker).map { WakeScheduler.byModule(it.signal) })
+        assertFalse(WakeScheduler.pastBudget(says), "no priority")
+
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(says), debounce))
+        assertNull(WakeScheduler.wakeAt(listOf(says), debounce, throttled = true), "past the budget, it waits")
+        assertNull(WakeScheduler.wakeAt(listOf(says), debounce, moduleNewsSpent = true), "past the modules' wake-ups, it waits")
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(says, joker), debounce, moduleNewsSpent = true), "it goes with another news")
+
+        assertTrue(WakeScheduler.wokenByModules(listOf(says, between(0), teleport(0))), "the module's news alone wakes it")
+        assertFalse(WakeScheduler.wokenByModules(listOf(says, joker)), "the joker would have woken it anyway")
+        assertFalse(WakeScheduler.wokenByModules(listOf(says, death(0))))
+        assertFalse(WakeScheduler.wokenByModules(listOf(says, addressed(0))))
+        assertFalse(WakeScheduler.wokenByModules(listOf(says.copy(failures = Item.DEMOTED))), "a demoted news wakes nobody")
+        assertEquals(WakeScheduler.NEXT_WORTH, WakeScheduler.salience(listOf(says)), "to a heartbeat, a module's news is worth a next event")
+
+        val budget = TurnBudget { 30 }
+        repeat(WakeScheduler.MODULE_NEWS_PER_HOUR) { budget.started(it * 300_000L, byModules = true) }
+        assertTrue(budget.moduleNewsSpent(1_800_000))
+        assertEquals(WakeScheduler.MODULE_NEWS_PER_HOUR, budget.used(1_800_000), "they are turns of the budget")
+        assertFalse(budget.moduleNewsSpent(3_600_000), "the first one left the hour")
+    }
+
     @Test
     fun `the memory's notes and cues never wake the Director, a cue is worth a heartbeat like a next event and a note nothing`() {
         val note = Item.of(DirectorSignal.MemoryNote(Ref(RefKind.NOTE, 9), NoteKind.COHERENCE, "le Narrateur a dit…", 0))

@@ -23,6 +23,7 @@ import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolEnv
 import io.github.clemsix6.narrator2.tool.ToolExecutor
 import io.github.clemsix6.narrator2.tool.ToolSet
+import io.github.clemsix6.narrator2.tool.mechanics.forgeAvailable
 import io.github.clemsix6.narrator2.trace.CallStats
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord.EndReason
@@ -97,6 +98,9 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  * - **Mechanics** (M4 §12.1): the tools of the mechanics engine are there when it is available at the
  *   chapter's opening (`ToolEnv.mechanicsAvailable`); an engine that stops during the chapter leaves them
  *   declared, and they answer that it is unavailable.
+ * - **Forge** (M5 §9.1): its three tools are there when the engine and the Forge run and no operator switched the
+ *   Forge off at the chapter's opening (`ToolEnv.forgeAvailable`); a Forge that falls or is switched off during the
+ *   chapter leaves them declared, and they refuse to commission or deploy (`DENIED (forge_off)`).
  * - **Memory** (M3): the memory tools of a chapter are there when the memory is available at its
  *   opening (`ToolEnv.memoryAvailable`); each chapter keeps what the memory showed in it
  *   ([Chapter.memory]); every chapter that closes, with or without a summary, is told to the memory once
@@ -152,6 +156,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             workerRoles = services.workers.roles,
             memoryAvailable = services.memory.available,
             mechanicsAvailable = services.mechanics.available,
+            forgeAvailable = forgeAvailable(services),
         )
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)
