@@ -6,6 +6,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorStatus
+import io.github.clemsix6.narrator2.guard.BlockRestorer
 import io.github.clemsix6.narrator2.journal.JournalHealth
 import io.github.clemsix6.narrator2.llm.BudgetExceededException
 import io.github.clemsix6.narrator2.llm.Conversation
@@ -105,7 +106,7 @@ object AdminCommands {
 
     /**
      * What runs and how well (M1_M2 §14.4): phase, settings, gateway, key presence (never its value),
-     * Director, chapter, tasks, Journal, reflexes, guards, memory, folders, roles; then, read from the Journal
+     * Director, chapter, tasks, Journal, reflexes, guards, memory, mechanics, folders, roles; then, read from the Journal
      * off the server thread, the model calls of the last 24 hours.
      */
     private fun status(source: CommandSourceStack): Int {
@@ -148,6 +149,7 @@ object AdminCommands {
             add(detailLine(reflexesLine(settings)))
             add(detailLine(guardsLine(services)))
             add(detailLine(MemoryCommands.statusLine(services.memory, text)))
+            add(detailLine(MechanicsCommands.statusLine(services.mechanics, BlockRestorer.pending())))
             add(detailLine("Config: $configDir"))
             add(detailLine("Data: ${services.dataDir}"))
             add(detailLine("Transcripts (${if (services.transcripts.enabled) "on" else "off"}): ${services.transcripts.root}"))
