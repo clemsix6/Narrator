@@ -219,6 +219,8 @@ Hors de ma liste (signalé) :
   `runGameTest` relancé : **« All 315 required tests passed »**.
 - Après un quatrième `git merge main` (lot C, duels) : **`build` vert du premier coup, 1 513 tests unitaires,
   « All 330 required tests passed »**.
+- Après un cinquième `git merge main` (lot A, séquestre et paris) : **`build` vert du premier coup, 1 521 tests
+  unitaires, « All 338 required tests passed »**.
 - Signatures vérifiées avec `jp.ps1` : `TestInstanceBlockEntity.getTestBounds` (padding), `GameTest.padding`,
   `ServerLevel.setChunkForced`, `ServerChunkCache.getChunkNow`, `ChunkPos.containing`, `DefaultAttributes.getSupplier`
   / `hasSupplier`, `AttributeSupplier.hasAttribute`, `AttributeInstance.getModifiers`, `AttributeModifier.id` /
