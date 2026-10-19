@@ -225,13 +225,20 @@ class BetInstructions(services: NarratorServices, store: StateStore, ledger: Ite
     `LevelBasedPermissionSet.GAMEMASTER`.
 - **Lancements ciblés** (`-Dfabric-api.gametest.filter=narrator2-gametest:escrow_game_tests_*`, puis `bet_*`) :
   16 et 11 GameTests verts.
-- **`git merge main`**, deux fois (lot E et conception de M5, puis lot F) : sans conflit.
-- **Après la seconde fusion, `.\gradlew.bat build` : vert.**
-  - **1 502 tests unitaires**, 0 échec ;
-  - **« All 321 required tests passed »** ;
-  - un lancement précédent, sur le même état, avait échoué sur
-    `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued, alive, put out: 3.33 »).
-    C'est l'instabilité connue du constat 22, confiée au lot H ; ce lot n'y touche pas.
-- **Secondes lentes du moteur** dans le dernier lancement complet : au plus 15 ms (partie `Bets`, lors d'une
+- **`git merge main`**, quatre fois (lot E et conception de M5, lot F, lot G, lot C) : sans conflit.
+  - Le champ `SavedPosition.savedAt` du lot C, dans `MechanicsState.kt`, est gardé à côté de mes changements.
+  - `Guards.shield`, `withdraw`, `vet` et `jokerGiven` (lot F) ne touchent ni au registre ni aux champs ajoutés ici :
+    `jokerGiven` passe par `GuardStates.update { it.copy(…) }`, qui garde `receivedStakes`.
+- **Après la dernière fusion, `.\gradlew.bat build` : vert.**
+  - **1 515 tests unitaires**, 0 échec ;
+  - **« All 336 required tests passed »**.
+- **Lancements rouges entre deux fusions**, sur des tests de l'assemblage (lot H, constat 22), verts au lancement
+  suivant sans changement :
+  - après la fusion du lot F : `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody`
+    (« rescued, alive, put out: 3.33 ») ;
+  - après la fusion du lot G : `…a_challenge_started_by_the_real_tool_is_won_paid_and_its_bar_taken_down` (« the result
+    in Bob's history » : seule l'interaction `GIFT` était déjà écrite).
+  Ni l'un ni l'autre ne passe par les paris ni par le registre.
+- **Secondes lentes du moteur** dans le dernier lancement complet : au plus 14 ms (partie `Bets`, lors d'une
   remise).
 - Aucun appel réel à Claude ; pas de `runServer`.
