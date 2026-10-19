@@ -120,11 +120,10 @@ class DuelGameTests {
             }
             val ui = rig.ui
             for ((player, opponent) in listOf(bob to ann, ann to bob)) {
-                val invite = player.chat().map { it.content() }.single { "duel" in it.string }
-                check(ui.format("duel.invite", "opponent" to opponent.name, "title" to "Au soleil", "seconds" to 120, "where" to ui["duel.where.here"]) in invite.string) {
-                    "${player.name}'s invitation: ${invite.string}"
-                }
-                check(commands(invite) == listOf("/duel accept ${view.ref}", "/duel decline ${view.ref}")) { "its buttons: ${commands(invite)}" }
+                val text = ui.format("duel.invite", "opponent" to opponent.name, "title" to "Au soleil", "seconds" to 120, "where" to ui["duel.where.here"])
+                val invites = player.chat().map { it.content() }.filter { text in it.string }
+                check(invites.size == 1) { "${player.name}'s invitation, once: ${player.lines()}" }
+                check(commands(invites.single()) == listOf("/duel accept ${view.ref}", "/duel decline ${view.ref}")) { "its buttons: ${commands(invites.single())}" }
             }
 
             rig.onServer {
@@ -244,7 +243,8 @@ class DuelGameTests {
             check(rig.store.snapshot.challenges.isEmpty() && rig.decisions(Duels.INVITED).isEmpty()) { "no state, no decision" }
             val rows = rig.runtime.memory.store.canon(CanonFilter(open = null, player = bob.uuid)).filter { row -> row.players.any { it.uuid == bob.uuid } }
             check(rows.isEmpty()) { "no canon row names Bob: $rows" }
-            check(bob.lines().none { "duel" in it } && ann.lines().none { "duel" in it }) { "no invitation: ${bob.lines()}" }
+            val invitation = rig.ui["duel.invite"].substringBefore("{")
+            check(bob.lines().none { invitation in it } && ann.lines().none { invitation in it }) { "no invitation: ${bob.lines()}" }
         }
     }
 
