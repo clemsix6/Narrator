@@ -27,21 +27,29 @@ class TaskToolsTest {
         assertFalse(none.names.any { it == "delegate" || it == "tasks" }, "${none.names}")
         val analyst = ToolCatalog.toolSetFor(Role.ANALYST, ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST)), services)
         assertFalse("delegate" in analyst.names, "a worker never delegates")
+        val scout = ToolCatalog.toolSetFor(Role.SCOUT, ToolEnv(journalAvailable = true, workerRoles = setOf(Role.ANALYST, Role.SCOUT)), services)
+        assertFalse(scout.names.any { it == "delegate" || it == "tasks" }, "a worker never delegates: ${scout.names}")
     }
 
     @Test
-    fun `the role enum of delegate lists only the wired roles`() {
+    fun `the role enum of delegate lists the wired roles, the Analyst and the scout`() {
         val schema = ToolSchema.of(DelegateArgs.serializer().descriptor, "delegate").toString()
-        assertContains(schema, "\"enum\":[\"analyst\"]")
+        assertContains(schema, "\"enum\":[\"analyst\",\"scout\"]")
         assertContains(schema, "\"maxLength\":2000")
+        val scout = assertIs<ToolArgs.Decoded.Ok<DelegateArgs>>(
+            ToolArgs.decode(DelegateArgs.serializer(), """{"role": "scout", "brief": "Find a flat arena between Bartok and Mimosa, in the overworld."}"""),
+        )
+        assertEquals(WorkerRole.SCOUT, scout.args.role)
+        assertEquals(Role.SCOUT, scout.args.role.role)
+        assertContains(DelegateTool().description, "The scout finds exact places")
     }
 
     @Test
     fun `delegate wants a brief worth the name, tasks a task_id to cancel`() {
         val short = assertIs<ToolArgs.Decoded.Invalid>(ToolArgs.decode(DelegateArgs.serializer(), """{"role": "analyst", "brief": "Bartok?"}"""))
         assertEquals("brief is too short (at least 20 characters): say what to find out, about whom, over which period", short.problem)
-        val scout = assertIs<ToolArgs.Decoded.Invalid>(ToolArgs.decode(DelegateArgs.serializer(), """{"role": "scout", "brief": "Find an arena near Bartok, flat and lit."}"""))
-        assertContains(scout.problem, "role must be one of: analyst")
+        val forger = assertIs<ToolArgs.Decoded.Invalid>(ToolArgs.decode(DelegateArgs.serializer(), """{"role": "forger", "brief": "Write a module that turns chickens into rockets."}"""))
+        assertContains(forger.problem, "role must be one of: analyst, scout")
         val cancel = assertIs<ToolArgs.Decoded.Invalid>(ToolArgs.decode(TasksArgs.serializer(), """{"action": "cancel"}"""))
         assertEquals("task_id is required to cancel a task", cancel.problem)
         val ok = assertIs<ToolArgs.Decoded.Ok<TasksArgs>>(ToolArgs.decode(TasksArgs.serializer(), """{"action": "cancel", "task_id": 12}"""))
