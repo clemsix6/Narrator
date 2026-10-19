@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.memory.search.SearchIndex
 import io.github.clemsix6.narrator2.memory.stringArray
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -49,7 +50,10 @@ internal class MemoryToolFixture : AutoCloseable {
         override val sheets: PlayerSheets get() = this@MemoryToolFixture.sheets
     }
     val players = PlayerStates()
-    val services = TestServices(clock = clock, journal = base.journal, players = players, memory = memory)
+
+    /** The mechanics engine: available, unless a test turns it off. */
+    val mechanics = FakeMechanics(clock)
+    val services = TestServices(clock = clock, journal = base.journal, players = players, memory = memory, mechanics = mechanics)
 
     val director = Caller(Role.DIRECTOR, "director-c13", turnId = 42, taskId = null)
     val analyst = Caller(Role.ANALYST, "analyst-1a2b3c4d", turnId = null, taskId = 3)

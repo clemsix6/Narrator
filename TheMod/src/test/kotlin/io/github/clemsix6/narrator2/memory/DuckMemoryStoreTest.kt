@@ -84,8 +84,9 @@ class DuckMemoryStoreTest {
             store.addCanon(CanonDraft(CanonKind.PLACE, "Le Narrateur a nommé la falaise « le Plongeoir ».", players = emptyList()), f.director)
         }
         rejected("quote is longer than 200 characters") { store.addCanon(canonDraft.copy(quote = "a".repeat(201)), f.director) }
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED), f.dreamer)
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer)
         assertEquals(CanonStatus.PLANNED, arc.row.status)
+        assertEquals("proces_des_parieurs", arc.row.theme)
         val gag = store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, "Le Narrateur commente chaque chute de Bartok.", players = listOf(f.bartok.uuid)), f.director)
         assertEquals(GagState.FRESH, gag.row.freshness)
         val place = store.addCanon(
@@ -367,8 +368,10 @@ class DuckMemoryStoreTest {
         rejected("quote: the Dreamer never heard the Narrator, it quotes nobody: remove quote") {
             store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok.", "la falaise de Bartok"), f.dreamer)
         }
-        rejected("an arc the Dreamer prepares starts planned") { store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance le procès des parieurs."), f.dreamer) }
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED), f.dreamer).row
+        rejected("an arc the Dreamer prepares starts planned") {
+            store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance le procès des parieurs.", theme = "proces_des_parieurs"), f.dreamer)
+        }
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer).row
         assertIs<Added.New<CanonEntry>>(store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok."), f.dreamer))
 
         rejected("the Dreamer remembers observations only, not an episode") {
@@ -451,10 +454,11 @@ class DuckMemoryStoreTest {
         val won = store.resolveCanon(challenge.ref, CanonStatus.WON, "Mimosa a fini le pont la première.", listOf(f.mimosa.uuid), f.director)
         assertEquals(listOf(f.mimosa), won.winners)
 
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED), f.dreamer).row
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer).row
         val started = store.resolveCanon(arc.ref, CanonStatus.ACTIVE, "Le procès a commencé.", emptyList(), f.director)
         assertEquals(CanonStatus.ACTIVE, started.status)
         assertNull(started.resolvedAt)
+        assertEquals(f.clock.instant().plus(Duration.ofDays(7)), started.dueAt, "an arc started is due within 7 days")
         rejected("an arc cannot be active") { store.resolveCanon(arc.ref, CanonStatus.ACTIVE, "Encore.", emptyList(), f.director) }
     }
 
@@ -471,6 +475,186 @@ class DuckMemoryStoreTest {
         rejected("is retired: it cannot be used any more") { store.useCanon(gag.ref, evening, MemorySamples.chronicler) }
         val promise = store.addCanon(canonDraft, f.director).row
         rejected("is a promise, not a running gag") { store.setGag(promise.ref, GagState.WORN, "x", f.dreamer) }
+    }
+
+    // ── Mechanics (M4 §3.3) ─────────────────────────────────────────────────────────────────────────
+
+    private val engine = Author(Source.ENGINE)
+
+    /** A challenge as `start_challenge` writes it: the Director's tool, the engine's row. */
+    private val tracked = CanonDraft(
+        CanonKind.CHALLENGE, "Le Narrateur a défié Bartok et Mimosa de rapporter un œuf de tortue en quinze minutes.",
+        players = listOf(MemorySamples.bartok.uuid, MemorySamples.mimosa.uuid), stakes = "reward 1x golden_apple · penalty tiny (2) · bets",
+        mechanic = CanonMechanic.CHALLENGE,
+    )
+
+    /** A plan as `create_rule` writes it. */
+    private val plan = CanonDraft(
+        CanonKind.PLAN, "Le Narrateur prépare un comité d'accueil de piglins pour la prochaine entrée de Bartok dans le Nether.",
+        players = listOf(MemorySamples.bartok.uuid), mechanic = CanonMechanic.RULE,
+    )
+
+    @Test
+    fun `a row the engine tracks is written by the Director's engine tools only, and settled by the engine or an operator`() = runBlocking<Unit> {
+        val challenge = store.addCanon(tracked, f.director).row
+        assertEquals(CanonMechanic.CHALLENGE, challenge.mechanic)
+        assertNull(challenge.dueAt, "the engine holds its end")
+        assertEquals(challenge, store.canon(challenge.ref))
+        assertEquals(listOf(CanonMechanic.CHALLENGE), store.canon(CanonFilter()).map { it.mechanic })
+        assertEquals("challenge", store.log(challenge.ref).single().after!!["mechanic"].toString().trim('"'))
+
+        val chronicler = f.run(7, evening.minusSeconds(600), evening)
+        listOf(chronicler, f.dreamer, f.operator, engine).forEach { author ->
+            rejected("only the engine's tools (start_challenge, propose_duel, create_rule) write a row the engine tracks") { store.addCanon(tracked, author) }
+        }
+        rejected("mechanic rule goes with a law or a plan, not a challenge") { store.addCanon(tracked.copy(mechanic = CanonMechanic.RULE), f.director) }
+        rejected("mechanic duel goes with a challenge, not a law") { store.addCanon(tracked.copy(kind = CanonKind.LAW, stakes = null, mechanic = CanonMechanic.DUEL), f.director) }
+        rejected("a row the engine tracks has no due time: the engine holds its end") { store.addCanon(tracked.copy(dueAt = evening.plusSeconds(900)), f.director) }
+        rejected("a plan exists only as a rule the engine runs: create it with create_rule") { store.addCanon(plan.copy(mechanic = null), f.director) }
+        val secret = store.addCanon(plan, f.director).row
+        assertEquals(CanonKind.PLAN to CanonMechanic.RULE, secret.kind to secret.mechanic)
+        val law = store.addCanon(CanonDraft(CanonKind.LAW, "Quiconque casse la construction d'un autre joueur est rapetissé.", mechanic = CanonMechanic.RULE), f.director).row
+
+        // Neither the Director's resolve nor the Chronicler's settle it, nor may it be archived while open.
+        rejected("${challenge.ref} is a challenge the engine tracks: end it with end_challenge") {
+            store.resolveCanon(challenge.ref, CanonStatus.WON, "Mimosa a rapporté l'œuf la première.", listOf(f.mimosa.uuid), f.director)
+        }
+        rejected("${challenge.ref} is a challenge the engine tracks: end it with end_challenge") {
+            store.resolveCanon(challenge.ref, CanonStatus.CANCELLED, "Le défi de l'œuf est annulé.", emptyList(), chronicler)
+        }
+        rejected("${secret.ref} is a plan the engine tracks: end it with remove_rule") {
+            store.resolveCanon(secret.ref, CanonStatus.CANCELLED, "Le comité d'accueil est annulé.", emptyList(), f.director)
+        }
+        rejected("${law.ref} is a law the engine tracks: end it with remove_rule") {
+            store.resolveCanon(law.ref, CanonStatus.RETIRED, "La loi du grief est abolie.", emptyList(), f.director)
+        }
+        rejected("${challenge.ref} is a challenge the engine tracks, still active: end it first") { store.archive(challenge.ref, true, "trop long", f.operator) }
+        assertEquals(listOf(CanonStatus.ACTIVE), listOf(challenge, secret, law).map { store.canon(it.ref)!!.status }.distinct())
+
+        // The engine settles it, even when the Director asked (its name goes in the resolution); an operator may too.
+        val won = store.resolveCanon(challenge.ref, CanonStatus.WON, "won by Mimosa in 9m12s (turtle_egg 1/1)", listOf(f.mimosa.uuid), engine)
+        assertEquals(CanonStatus.WON to listOf(f.mimosa), won.status to won.winners)
+        assertEquals("engine", store.log(challenge.ref).last().actor)
+        assertEquals(CanonStatus.FULFILLED, store.resolveCanon(secret.ref, CanonStatus.FULFILLED, "fired once: Bartok entered the Nether", emptyList(), engine).status)
+        assertEquals(CanonStatus.RETIRED, store.resolveCanon(law.ref, CanonStatus.RETIRED, "removed by an operator", emptyList(), f.operator).status)
+        store.archive(challenge.ref, true, "trop long", f.operator)
+        assertTrue(store.canon(challenge.ref)!!.archived, "closed, it may be archived")
+    }
+
+    @Test
+    fun `the engine's rows are never duplicates, but what others remember of them is`() = runBlocking<Unit> {
+        val first = store.addCanon(tracked, f.director)
+        val second = store.addCanon(tracked, f.director)
+        assertIs<Added.New<CanonEntry>>(first)
+        assertIs<Added.New<CanonEntry>>(second, "two challenges alike are two challenges")
+        assertIs<Added.New<CanonEntry>>(store.addCanon(plan, f.director))
+        assertIs<Added.New<CanonEntry>>(store.addCanon(plan, f.director), "two plans alike are two plans")
+        assertEquals(0, decisions("duplicate").size)
+        val remembered = store.addCanon(tracked.copy(mechanic = null), f.director)
+        assertIs<Added.Duplicate<CanonEntry>>(remembered, "the Director's own entry of a challenge the engine tracks")
+        assertEquals(CanonMechanic.CHALLENGE, remembered.row.mechanic)
+        assertEquals(4L, f.count("canon"))
+    }
+
+    @Test
+    fun `the engine's interactions without evidence are the same only for the same canon entry`() = runBlocking<Unit> {
+        val c50 = store.addCanon(tracked, f.director).row.ref
+        val c51 = store.addCanon(tracked, f.director).row.ref
+        fun result(canon: Ref?) = InteractionDraft(f.mimosa.uuid, InteractionKind.CHALLENGE_RESULT, 1, "won the challenge ${canon ?: "of the operator"}", canon = canon)
+
+        val won50 = store.addInteraction(result(c50), engine)
+        f.clock.advance(Duration.ofMinutes(5))
+        val won51 = store.addInteraction(result(c51), engine)
+        assertIs<Added.New<Interaction>>(won50)
+        assertIs<Added.New<Interaction>>(won51, "two challenges won within ten minutes are two results")
+        assertEquals(Added.Duplicate(won51.row), store.addInteraction(result(c51), engine), "the same result written again")
+        assertIs<Added.New<Interaction>>(store.addInteraction(result(null), engine))
+        assertIs<Added.New<Interaction>>(store.addInteraction(result(null), engine), "without a canon entry, nothing says it is the same")
+
+        // A stake the engine paid swallows nothing else: not a punishment the code covers, not the Director's note.
+        val penalty = store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.PUNISHMENT, 0, "Bartok punished, tiny (severity 2)", canon = c50), engine)
+        assertIs<Added.New<Interaction>>(penalty)
+        f.toolCall(88, f.clock.instant(), "apply_effect")
+        val covered = store.addInteraction(
+            InteractionDraft(f.bartok.uuid, InteractionKind.PUNISHMENT, 0, "apply_effect « slowness II on Bartok for 1m »", toolCalls = listOf(88)),
+            Author(Source.ENGINE, runId = 3),
+        )
+        assertIs<Added.New<Interaction>>(covered, "the Director's own punishment, covered by the code")
+        val noted = store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.PUNISHMENT, 1, "a été ralenti pour une insulte"), f.director)
+        assertEquals(Added.Duplicate(covered.row), noted, "between the others, M3's rule stands: a note without evidence is the same")
+        assertEquals(6L, f.count("interactions"))
+    }
+
+    // ── Arcs (M4 §10) ───────────────────────────────────────────────────────────────────────────────
+
+    private fun arc(statement: String, theme: String, status: CanonStatus? = null, dueAt: Instant? = null) =
+        CanonDraft(CanonKind.ARC, statement, status = status, dueAt = dueAt, theme = theme)
+
+    private val warden = "La vengeance du Warden contre Bartok commence ce soir."
+    private val bridge = "Mimosa doit reconstruire le pont des Soupirs avant l'hiver."
+    private val sheep = "Les moutons du spawn complotent une révolte laineuse."
+    private val trial = "Le procès des parieurs se tiendra au sommet du volcan."
+
+    @Test
+    fun `two arcs at most are active, each due within seven days`() = runBlocking<Unit> {
+        val first = store.addCanon(arc(warden, "vengeance_du_warden"), f.director).row
+        assertEquals(evening.plus(Duration.ofDays(7)), first.dueAt, "without due_in_minutes, due in 7 days")
+        val second = store.addCanon(arc(bridge, "pont_des_soupirs", dueAt = evening.plus(Duration.ofDays(2))), f.director).row
+        assertEquals(evening.plus(Duration.ofDays(2)), second.dueAt)
+        val third = rejected("2 arcs are active (${first.ref}, ${second.ref}); resolve or abandon one first") {
+            store.addCanon(arc(sheep, "revolte_des_moutons"), f.director)
+        }
+        assertEquals(DuckMemoryStore.ARC_LIMIT, third.rule)
+
+        // Planned arcs do not count; one starts only with room.
+        val planned = store.addCanon(arc(trial, "proces_des_parieurs", CanonStatus.PLANNED), f.dreamer).row
+        assertNull(planned.dueAt)
+        val full = rejected("2 arcs are active") { store.resolveCanon(planned.ref, CanonStatus.ACTIVE, "Le procès des parieurs commence.", emptyList(), f.director) }
+        assertEquals(DuckMemoryStore.ARC_LIMIT, full.rule)
+        store.resolveCanon(second.ref, CanonStatus.RESOLVED, "Mimosa a reconstruit le pont des Soupirs.", emptyList(), f.director)
+        f.clock.advance(Duration.ofHours(1))
+        val started = store.resolveCanon(planned.ref, CanonStatus.ACTIVE, "Le procès des parieurs commence.", emptyList(), f.director)
+        assertEquals(f.clock.instant().plus(Duration.ofDays(7)), started.dueAt)
+
+        // An arc started is due within 7 days: a planned arc due sooner keeps its time, a due beyond is refused.
+        store.resolveCanon(planned.ref, CanonStatus.ABANDONED, "Personne n'est venu au procès.", emptyList(), f.director)
+        rejected("an active arc ends within 7 days: due_in_minutes 10080 at most") {
+            store.addCanon(arc(sheep, "revolte_des_moutons", dueAt = f.clock.instant().plus(Duration.ofDays(8))), f.director)
+        }
+        val soon = store.addCanon(arc(sheep, "revolte_des_moutons", CanonStatus.PLANNED, f.clock.instant().plus(Duration.ofDays(3))), f.dreamer).row
+        assertEquals(f.clock.instant().plus(Duration.ofDays(3)), store.resolveCanon(soon.ref, CanonStatus.ACTIVE, "La révolte commence.", emptyList(), f.director).dueAt)
+        assertEquals(2L, f.count("canon", "kind = 'arc' AND status = 'active'"))
+    }
+
+    @Test
+    fun `an arc has a theme, held while it is open and resting twenty hours of world play once it closed`() = runBlocking<Unit> {
+        rejected("an arc needs its theme: a slug that names what it is about, like vengeance_du_warden") {
+            store.addCanon(CanonDraft(CanonKind.ARC, warden), f.director)
+        }
+        rejected("theme must be a slug of 2 to 40 lowercase letters, digits and _, like vengeance_du_warden (got \"Vengeance du Warden\")") {
+            store.addCanon(arc(warden, "Vengeance du Warden"), f.director)
+        }
+        rejected("theme only goes with an arc: leave it out") { store.addCanon(canonDraft.copy(theme = "bottes_de_mimosa"), f.director) }
+
+        session(1, f.bartok.uuid, evening.minusSeconds(3_600), evening.plus(Duration.ofHours(5)))
+        val first = store.addCanon(arc(warden, "vengeance_du_warden"), f.director).row
+        val again = arc("Le Warden revient hanter les rêves de Mimosa.", "vengeance_du_warden", CanonStatus.PLANNED)
+        rejected("the theme « vengeance_du_warden » is ${first.ref}'s, an arc still active: pick another") { store.addCanon(again, f.dreamer) }
+        store.resolveCanon(first.ref, CanonStatus.RESOLVED, "Bartok a vaincu le Warden.", emptyList(), f.director)
+
+        f.clock.advance(Duration.ofHours(5)) // five hours played since the arc closed
+        rejected(
+            "the theme « vengeance_du_warden » rests until about 10-02 15:40 (15h00m of world play left: a theme rests 20h of play " +
+                "once its arc is closed, and ${first.ref} closed 10-01 19:40); pick another",
+        ) { store.addCanon(again, f.dreamer) }
+        assertIs<Added.New<CanonEntry>>(store.addCanon(arc(bridge, "pont_des_soupirs", CanonStatus.PLANNED), f.dreamer), "another theme is free")
+
+        f.clock.advance(Duration.ofHours(30)) // nobody played: it still rests
+        rejected("the theme « vengeance_du_warden » rests until about 10-03 21:40 (15h00m of world play left") { store.addCanon(again, f.dreamer) }
+        session(2, f.mimosa.uuid, f.clock.instant(), null)
+        f.clock.advance(Duration.ofHours(15)) // twenty hours played since it closed
+        assertIs<Added.New<CanonEntry>>(store.addCanon(again, f.dreamer))
+        assertEquals(listOf("vengeance_du_warden", "pont_des_soupirs", "vengeance_du_warden"), f.rows("SELECT theme FROM canon ORDER BY id") { getString(1) })
     }
 
     // ── Sheets ──────────────────────────────────────────────────────────────────────────────────────
