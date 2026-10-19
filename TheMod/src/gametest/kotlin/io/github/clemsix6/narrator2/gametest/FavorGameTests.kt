@@ -75,27 +75,29 @@ class FavorGameTests {
         val name = favored.name
         val now = favors.clock.millis()
 
-        helper.assertEquals("ok: nothing to pardon: you inflict nothing on $name", favors.favor("""{"player": "$name", "favor": "pardon"}""").text, "nothing to pardon")
+        val nothing = favors.favor("""{"player": "$name", "favor": "pardon"}""")
+        helper.assertEquals("ok: nothing to pardon: you inflict nothing on $name", nothing.text, "nothing to pardon")
+        helper.assertEquals(emptyList<Any>(), nothing.targets, "no favor, no target: the Chronicler sees no benefit")
         favors.punish(player, turn = 1)
-        helper.assertEquals("ok: $name pardoned: slowness II lifted, scale reset", favors.favor("""{"player": "$name", "favor": "pardon"}""").text, "pardoned")
+        val pardon = favors.favor("""{"player": "$name", "favor": "pardon"}""")
+        helper.assertEquals("ok: $name pardoned: slowness II lifted, scale reset", pardon.text, "pardoned")
+        helper.assertEquals(listOf(favored.ref), pardon.targets, "the player, a benefit for the Chronicler")
         helper.assertFalse(player.hasEffect(MobEffects.SLOWNESS), "the slowness is lifted")
         helper.assertValueEqual(1.0, player.getAttributeValue(Attributes.SCALE), "the scale is back")
 
         val until = now + Duration.ofMinutes(20).toMillis()
-        helper.assertEquals(
-            "ok: $name is under your grace until ${timeOf(until)} (in 20m)",
-            favors.favor("""{"player": "$name", "favor": "grace", "minutes": 20}""").text, "graced",
-        )
+        val grace = favors.favor("""{"player": "$name", "favor": "grace", "minutes": 20}""")
+        helper.assertEquals("ok: $name is under your grace until ${timeOf(until)} (in 20m)", grace.text, "graced")
+        helper.assertEquals(listOf(favored.ref), grace.targets, "the player")
         helper.assertEquals(until, GuardStates.read(player).graceUntil, "saved with the player")
         val hostile = favors.guards.hostile(player, turn(2), now + 60_000, PunishmentCategory.HARM)
         helper.assertTrue(hostile is Verdict.Denied && hostile.rule == Rules.GRACE, "nothing hostile now: $hostile")
         val again = favors.favor("""{"player": "$name", "favor": "grace", "minutes": 10}""")
         helper.assertTrue(again.status == ToolStatus.DENIED && again.text.startsWith("DENIED (favor_limit): $name is under your grace until"), "no second grace: ${again.text}")
 
-        helper.assertEquals(
-            "ok: $name got a joker; they can play it themselves to lift one of your punishments",
-            favors.favor("""{"player": "$name", "favor": "joker"}""").text, "a joker",
-        )
+        val given = favors.favor("""{"player": "$name", "favor": "joker"}""")
+        helper.assertEquals("ok: $name got a joker; they can play it themselves to lift one of your punishments", given.text, "a joker")
+        helper.assertEquals(listOf(favored.ref), given.targets, "the player")
         val joker = (0 until player.inventory.containerSize).map { player.inventory.getItem(it) }.single { ItemLedger.isJoker(it) }
         helper.assertEquals(UI["joker.name"], joker.hoverName.string, "its name")
         helper.assertEquals(listOf(UI["joker.lore"]), joker.get(DataComponents.LORE)?.lines()?.map { it.string }, "its lore")
@@ -236,6 +238,8 @@ class FavorGameTests {
         val pardoned = favors.decisions(DecisionRecord.Kind.GUARD).single { it.decision == "pardoned" }
         helper.assertEquals(-played.id, pardoned.detail?.get("act")?.jsonPrimitive?.long, "the pardon is the joker's own act")
         helper.assertEquals(Jokers.CONVERSATION, pardoned.conversationId, "named so")
+        helper.assertEquals(name, played.subject, "the joker's decision is about the player")
+        helper.assertEquals("$name played a joker: slowness II lifted, scale reset", played.reason, "a line that stands alone, for the Chronicler")
         helper.assertEquals(
             listOf(DirectorSignal.Mechanic(MechanicSignal.JOKER, "$name played a joker: slowness II lifted, scale reset", favors.clock.millis(), priority = false)),
             favors.director.signals.toList(), "the Director is told, without priority",

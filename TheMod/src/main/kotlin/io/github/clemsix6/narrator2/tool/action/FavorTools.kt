@@ -78,6 +78,9 @@ data class FavorArgs(
  * offering is taken for good (`ItemLedger.consume`), on the server thread in the same tick: a favor refused leaves it
  * in escrow, where it goes back by itself. The player's history then gets an `offering` interaction (valence +1,
  * [FavorArgs.note]). The Director calls it, and the engine for a challenge's reward (a grace or a joker).
+ *
+ * A favor granted names the player in [ToolResult.targets]: the audit, and the Chronicler's `Sanctions`, which keeps
+ * it in their history as a benefit (M4-08). Nothing to pardon grants nothing, and names nobody.
  */
 class FavorTool : MechanicsTool<FavorArgs>(
     name = "favor",
@@ -111,10 +114,10 @@ class FavorTool : MechanicsTool<FavorArgs>(
         val granted = ctx.onServer { server ->
             val player = server.live(ref)
             val offering = offeringId?.let { id -> ctx.guards.items.offering(player, id) ?: refuse(notWaiting(server, player, id, ctx.clock.millis())) }
-            val text = grant(ctx, player, args, offering)
+            val text = grant(ctx, player, args, offering) ?: return@onServer null
             // Granted: only now is the offering taken, in the same tick (the same save as the favor).
             Granted(text, offering, offering?.let { ctx.guards.items.consume(player, it.id, "favor ${args.favor.id}") })
-        }
+        } ?: return@answer ToolResult.ok("ok: nothing to pardon: you inflict nothing on ${ref.shownName}") // no favor: no target
         val offering = granted.offering ?: return@answer ToolResult.ok(granted.text, listOf(ref))
         val taken = granted.taken
             ?: return@answer ToolResult.ok("${granted.text}; ${Escrow.ref(offering.id)} could not be taken (no longer waiting): the favor is a gift", listOf(ref))
@@ -128,10 +131,10 @@ class FavorTool : MechanicsTool<FavorArgs>(
     private class Granted(val text: String, val offering: Confiscation?, val taken: Confiscation?)
 
     /**
-     * Grants [args]'s favor to [player], or refuses (a refusal with [offering] says that it stays in escrow). Server
-     * thread.
+     * Grants [args]'s favor to [player], or refuses (a refusal with [offering] says that it stays in escrow); null when
+     * there was nothing to pardon (and no offering). Server thread.
      */
-    private fun grant(ctx: ToolContext, player: ServerPlayer, args: FavorArgs, offering: Confiscation?): String {
+    private fun grant(ctx: ToolContext, player: ServerPlayer, args: FavorArgs, offering: Confiscation?): String? {
         val name = player.shownName
         val now = ctx.clock.millis()
         val untaken = offering?.let { "; their offering ${Escrow.ref(it.id)} is not taken: grant another favor, or let it go back" }.orEmpty()
@@ -142,7 +145,7 @@ class FavorTool : MechanicsTool<FavorArgs>(
                 when {
                     lifted.isNotEmpty() -> "ok: $name pardoned: ${Jokers.lifted(lifted)}"
                     offering != null -> refuse(ToolResult.invalid("nothing to pardon on $name$untaken"))
-                    else -> "ok: nothing to pardon: you inflict nothing on $name"
+                    else -> null
                 }
             }
             FavorKind.GRACE -> {

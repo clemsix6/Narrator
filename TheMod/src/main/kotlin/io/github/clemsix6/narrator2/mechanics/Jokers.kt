@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
+import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -16,6 +17,8 @@ import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.speech.Speech
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.ChatFormatting
@@ -132,10 +135,14 @@ object Jokers {
     /**
      * `UseItemCallback` (`registerMechanicsHooks`), server side only: [player] uses the stack in [hand].
      * [InteractionResult.PASS] lets the game go on as usual: not a joker, or nothing to lift (the player is told
-     * `joker.nothing`, and keeps it). A joker played pardons the player as an act of its own (decision
-     * `mechanic joker`, then the guards' `pardoned`), takes one joker from the stack, tells the player
-     * (`joker.played`) and the Director (`JOKER`, no priority), and answers a success, so that the game does
-     * nothing else with it. Server thread.
+     * `joker.nothing`, and keeps it). A joker played pardons the player as an act of its own, takes one joker from
+     * the stack, tells the player (`joker.played`) and the Director (`JOKER`, no priority), and answers a success, so
+     * that the game does nothing else with it. Server thread.
+     *
+     * The act is its decision `mechanic joker` (subject: the player), whose id the pardon carries as its
+     * `Caller.firingId` (the guards' `pardoned` decision of the act). Its reason is the `JOKER` line, which stands
+     * alone: the Chronicler reads it as it is in its exchange log (M4-08). It is written once the pardon said what it
+     * lifted, under the id taken before.
      */
     fun onUse(services: NarratorServices, player: ServerPlayer, hand: InteractionHand): InteractionResult {
         val stack = player.getItemInHand(hand)
@@ -146,12 +153,7 @@ object Jokers {
             return InteractionResult.PASS
         }
         val name = player.plainTextName
-        val act = Decisions(services.trace, services.clock).record(
-            log, DecisionRecord.Kind.MECHANIC, "joker", name,
-            reason = "plays a joker: the Narrator's punishment is lifted (the guards' pardoned decision of this act says what)",
-            conversationId = CONVERSATION,
-            detail = buildJsonObject { put("hand", hand.name.lowercase()) },
-        )
+        val act = services.trace.nextId(IdKind.DECISION)
         val lifted = services.guards.pardon(player, Caller(Role.DIRECTOR, CONVERSATION, turnId = null, taskId = null, firingId = act))
         if (lifted.isEmpty()) {
             player.sendSystemMessage(Speech.chatLine(ui, ui["joker.nothing"], private = true))
@@ -160,9 +162,20 @@ object Jokers {
         stack.shrink(1)
         player.containerMenu.broadcastChanges()
         player.sendSystemMessage(Speech.chatLine(ui, ui["joker.played"], private = true))
-        services.director.post(
-            DirectorSignal.Mechanic(MechanicSignal.JOKER, "${ModelText.name(name)} played a joker: ${lifted(lifted)}", services.clock.millis(), priority = false),
+        val line = "${ModelText.name(name)} played a joker: ${lifted(lifted)}"
+        services.trace.decision(
+            DecisionRecord(
+                act, services.clock.instant(), DecisionRecord.Kind.MECHANIC, "joker", name, line, eventId = null,
+                conversationId = CONVERSATION, turnId = null,
+                detail = buildJsonObject {
+                    put("hand", hand.name.lowercase())
+                    put("lifted", JsonArray(lifted.map(::JsonPrimitive)))
+                    put("left", stack.count)
+                },
+            ),
         )
+        log.info(Decisions.line("joker", name, line))
+        services.director.post(DirectorSignal.Mechanic(MechanicSignal.JOKER, line, services.clock.millis(), priority = false))
         return InteractionResult.SUCCESS
     }
 
