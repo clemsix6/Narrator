@@ -94,6 +94,8 @@ class GuardFavorGameTests {
         guards.states.update(player) { it.copy(confiscations = it.confiscations + offering) }
         val pacing = guards.pacing(listOf(player.uuid), clock.millis()).single()
         helper.assertEquals(listOf(offering), pacing.offerings, "the offerings waiting")
+        // M4-24, finding 2: the player's gift waiting for an answer is no effect of the Narrator's (no "until 18:18" to read as a deadline).
+        helper.assertTrue(guards.activeOn(player.uuid).none { it.kind == LedgerPurpose.OFFERING.id || "diamond" in it.what }, "not among the active effects: ${guards.activeOn(player.uuid)}")
         helper.assertEquals(null, pacing.graceUntil, "no grace")
         helper.assertEquals(2, pacing.punishedThisHour, "two punishments this hour")
         helper.assertEquals(listOf(PunishmentCategory.SIZE, PunishmentCategory.MOVEMENT, PunishmentCategory.AIR), pacing.resting.keys.toList(), "resting, soonest first")

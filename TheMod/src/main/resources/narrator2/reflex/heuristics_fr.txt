@@ -285,3 +285,39 @@ quels
 quelles
 c est quoi
 qu est ce
+
+[boredom]
+# Players saying they are bored: the next heartbeat is worth a wake-up whatever the reflex model says of the
+# activity (director/WakeScheduler.kt, M4-24 finding 5), the best moment for a challenge. "ça m'ennuie de…"
+# (it bothers me) and "tu m'ennuies" (you annoy me) are no boredom: only the first person, or "on".
+je m ennui*
+jm ennui*
+j m ennui*
+je mennui*
+on s ennui*
+on sennui*
+ennuyeux
+ennuyant
+on se fait chier
+je me fais chier
+jme fais chier
+on s emmerde
+je m emmerde
+on fait quoi
+on fait koi
+on peut faire quoi
+y a rien a faire
+ya rien a faire
+j ai rien a faire
+jai rien a faire
+sais pas quoi faire
+sait pas quoi faire
+jsp quoi faire
+c est mort ici
+cest mort ici
+c mort ici
+se passe rien
+se passe jamais rien
+trop calme
+bored
+boring

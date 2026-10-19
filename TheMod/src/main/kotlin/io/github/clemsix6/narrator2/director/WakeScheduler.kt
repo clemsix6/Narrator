@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.reflex.HeartbeatVerdict
 import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
+import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import java.util.Locale
 import kotlin.random.Random
 
@@ -34,6 +35,12 @@ object WakeScheduler {
 
     /** What a chat line between players waiting adds to a heartbeat's worth: 4 of them wake the Director. */
     const val CHAT_WORTH = 0.125
+
+    /**
+     * What a chat line between players saying they are bored adds to a heartbeat's worth: one wakes the Director
+     * (M4-24, finding 5: "je m'ennuie, on fait quoi ?" was worth a line of banter, and the heartbeat was skipped).
+     */
+    const val BORED_WORTH = ReflexThresholds.HEARTBEAT_WORTH
 
     /** What another [Urgency.NEXT] event waiting adds to a heartbeat's worth: 2 of them wake the Director. */
     const val NEXT_WORTH = 0.25
@@ -100,31 +107,36 @@ object WakeScheduler {
 
     /**
      * What the salient items waiting since the last turn are worth to a heartbeat, from 0 to 1: a chat
-     * line between players [CHAT_WORTH], another [Urgency.NEXT] event or a memory cue (a place return, an
-     * anniversary: M3 §10.5) [NEXT_WORTH], an item that wakes the Director by itself 1. Items demoted
-     * after failed requests count for nothing, and so do the memory's notes (an incoherence, an expired
-     * commitment): they go with the next wake-up, they are no reason for one.
+     * line between players [CHAT_WORTH] ([BORED_WORTH] when [bored] says its player is bored), another
+     * [Urgency.NEXT] event or a memory cue (a place return, an anniversary: M3 §10.5) [NEXT_WORTH], an item
+     * that wakes the Director by itself 1. Items demoted after failed requests count for nothing, and so do the
+     * memory's notes (an incoherence, an expired commitment): they go with the next wake-up, they are no reason
+     * for one.
      */
-    fun salience(items: List<Item>): Double = items.sumOf(::worth).coerceAtMost(1.0)
+    fun salience(items: List<Item>, bored: (String) -> Boolean = { false }): Double = items.sumOf { worth(it, bored) }.coerceAtMost(1.0)
 
-    private fun worth(item: Item): Double = when {
+    private fun worth(item: Item, bored: (String) -> Boolean): Double = when {
         item.failures >= Item.DEMOTED || item.urgency == Urgency.BATCH || item.signal is DirectorSignal.MemoryNote -> 0.0
-        item.isUnaddressedChat -> CHAT_WORTH
+        item.isUnaddressedChat -> if (isBored(item, bored)) BORED_WORTH else CHAT_WORTH
         item.urgency == Urgency.NEXT -> NEXT_WORTH
         else -> 1.0
     }
 
+    private fun isBored(item: Item, bored: (String) -> Boolean): Boolean = item.isUnaddressedChat && bored(item.chat!!.text)
+
     /**
      * What a heartbeat is worth, and why, for its decision (M2 review, finding 26). The heuristic judges
      * nothing (it always says 1.0): without a classifier, a heartbeat is worth the salient items waiting
-     * since the last turn ([salience]), so that a quiet world costs no turn. A classifier's [verdict]
-     * only reads the activity summary, not the chat: it counts, but never below what waits. Without a
-     * verdict (the activity summary is empty), what waits alone.
+     * since the last turn ([salience], with [bored] telling the chat lines of bored players), so that a quiet
+     * world costs no turn. A classifier's [verdict] only reads the activity summary, not the chat: it counts,
+     * but never below what waits. Without a verdict (the activity summary is empty), what waits alone.
      */
-    fun heartbeatWorth(verdict: HeartbeatVerdict?, waiting: List<Item>): HeartbeatWorth {
-        val salient = salience(waiting)
-        val counted = waiting.count { worth(it) > 0.0 }
-        val byWaiting = "worth ${p(salient)} by $counted salient ${if (counted == 1) "item" else "items"} waiting"
+    fun heartbeatWorth(verdict: HeartbeatVerdict?, waiting: List<Item>, bored: (String) -> Boolean = { false }): HeartbeatWorth {
+        val salient = salience(waiting, bored)
+        val counted = waiting.count { worth(it, bored) > 0.0 }
+        val boredLines = waiting.count { isBored(it, bored) }
+        val byWaiting = "worth ${p(salient)} by $counted salient ${if (counted == 1) "item" else "items"} waiting" +
+            if (boredLines > 0) " ($boredLines saying a player is bored)" else ""
         return when {
             verdict == null || verdict.source == HeuristicReflexes.SOURCE -> HeartbeatWorth(salient, byWaiting)
             verdict.worth >= salient -> HeartbeatWorth(verdict.worth, "worth ${p(verdict.worth)} by ${verdict.source}")
