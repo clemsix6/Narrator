@@ -111,7 +111,11 @@ class ModuleToolsTest {
         val mapper = jsonMapper()
         val sizes = set.names.associateWith { name -> mapper.writeValueAsString(ToolSchema.definition(set[name]!!)).length }
         val forge = listOf("forge_module", "deploy_module", "stop_module").associateWith { sizes.getValue(it) }
-        println("the Forge's three definitions: ${forge.values.sum()} characters $forge; the Director's 47: ${sizes.values.sum()} characters")
+        val seven = listOf("create_rule", "end_challenge", "favor", "propose_duel", "punish", "remove_rule", "start_challenge").sumOf { sizes.getValue(it) }
+        println(
+            "the Forge's three definitions: ${forge.values.sum()} characters $forge; the engine's seven: $seven; " +
+                "the Director's 47: ${sizes.values.sum()} characters",
+        )
         assertTrue(forge.values.sum() <= FORGE_DEFINITIONS_BUDGET, "the three definitions take ${forge.values.sum()} characters: $forge")
     }
 
