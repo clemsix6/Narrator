@@ -32,6 +32,8 @@ dependencies {
 
     bundled("com.anthropic:anthropic-java:${property("anthropic_java_version")}")
     bundled("org.duckdb:duckdb_jdbc:${property("duckdb_version")}")
+    // The Forge's compiler (M5 §5.1): nested with the fabric.mod.json Loom generates, without which Fabric never loads it.
+    bundled("org.eclipse.jdt:ecj:${property("ecj_version")}")
 
     testImplementation(kotlin("test"))
     testImplementation(platform("org.junit:junit-bom:${property("junit_version")}"))
