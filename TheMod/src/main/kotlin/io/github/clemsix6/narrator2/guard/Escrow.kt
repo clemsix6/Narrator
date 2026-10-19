@@ -19,15 +19,16 @@ sealed interface OfferRefusal {
  * functions of a [GuardState], unit-tested; [ItemLedger] applies them to the players, on the server thread.
  *
  * - A **stake** (`/bet`) is held until its challenge is settled: [release]d to its owner, or [forfeit]ed to a winner,
- *   to whom it goes once both are online ([ceded], then [winnings]). It always has a fallback deadline
+ *   to whom it goes once both are online ([ceded], then [winnings], [receive]). It always has a fallback deadline
  *   ([stakeDeadline], [cededDeadline]) that gives it back to its owner if its settlement is lost: nothing stays held
  *   for ever.
  * - An **offering** (`/offer`) waits for the Narrator's answer until its deadline ([offering], [pendingOffering]):
  *   taken for good only with a favor granted for it, otherwise given back.
- * - What is **owed** (winnings, a joker) and found no room waits, due at once ([add]).
+ * - What is **owed** (winnings, a joker) and found no room waits, due at once.
  *
  * Every entry is given back (or delivered) once [due]. Applying a change twice changes nothing more: [release],
- * [forfeit] and [add] answer null when there is nothing to do, so an instruction replayed after a crash is harmless.
+ * [forfeit] and [receive] answer null when there is nothing to do, so an instruction or a hand-over replayed after a
+ * crash is harmless: the winner's ledger remembers the stakes it received ([ReceivedStake]) after their delivery.
  */
 object Escrow {
     private const val MINUTE_MS = 60_000L
@@ -49,23 +50,24 @@ object Escrow {
     }
 
     /**
-     * [state] with stake [id] due at [now] for its owner, no longer ceded to anyone; null when nothing changes: no
-     * such stake (already given back), or already due to its owner.
+     * [state] with stake [id] settled at [now]: due for its owner, no longer ceded to anyone; null when nothing changes:
+     * no such stake (already given back), or already released. A stake past its fallback deadline whose settlement
+     * comes at last (its owner away a week) is released too: it comes back for its settlement, not as a fallback.
      */
     fun release(state: GuardState, id: Long, now: Long): GuardState? {
         val stake = stake(state, id) ?: return null
-        if (stake.returnAt <= now && stake.owedTo == null) return null
-        return replace(state, stake.copy(returnAt = minOf(stake.returnAt, now), owedTo = null))
+        if (stake.settledAt != null && stake.owedTo == null) return null
+        return replace(state, stake.copy(returnAt = minOf(stake.returnAt, now), owedTo = null, settledAt = now))
     }
 
     /**
-     * [state] with stake [id] ceded [to] a winner: it goes to them once both are online, or back to its owner at its
-     * new fallback deadline ([cededDeadline]); null when nothing changes: no such stake, or already ceded to them.
+     * [state] with stake [id] ceded [to] a winner at [now]: it goes to them once both are online, or back to its owner
+     * at its new fallback deadline ([cededDeadline]); null when nothing changes: no such stake, or already ceded to them.
      */
     fun forfeit(state: GuardState, id: Long, to: UUID, now: Long): GuardState? {
         val stake = stake(state, id) ?: return null
         if (stake.owedTo == to) return null
-        return replace(state, stake.copy(owedTo = to, returnAt = cededDeadline(now)))
+        return replace(state, stake.copy(owedTo = to, returnAt = cededDeadline(now), settledAt = now))
     }
 
     /** The stakes of [state] ceded to a winner and not yet past their fallback deadline at [now]: to hand over once both are online. */
@@ -74,7 +76,7 @@ object Escrow {
 
     /**
      * What a winner is owed for [stake], ceded by the player named [from]: the same stacks, due at [now], **under the
-     * stake's own id**, so that a hand-over replayed after a crash finds them already there ([add]).
+     * stake's own id**, so that a hand-over replayed after a crash finds them already there ([receive]).
      */
     fun winnings(stake: Confiscation, from: String, now: Long): Confiscation = Confiscation(
         id = stake.id,
@@ -86,11 +88,19 @@ object Escrow {
         turnId = null,
         purpose = LedgerPurpose.OWED,
         canon = stake.canon,
+        dataVersion = stake.dataVersion,
     )
 
-    /** [state] with [entry] added, unless it already holds an entry of that id (a hand-over replayed): null then. */
-    fun add(state: GuardState, entry: Confiscation): GuardState? =
-        if (state.confiscations.any { it.id == entry.id }) null else state.copy(confiscations = state.confiscations + entry)
+    /**
+     * [state], a winner's, with [winnings] received at [now] ([ReceivedStake]); null when they were received already
+     * (a hand-over replayed after a crash): still waiting in the ledger, or delivered within the last
+     * [MechanicsLimits.CEDED_RESCUE_DAYS] days. Older receipts are forgotten: the loser's file no longer holds the stake.
+     */
+    fun receive(state: GuardState, winnings: Confiscation, now: Long): GuardState? {
+        if (state.confiscations.any { it.id == winnings.id } || state.receivedStakes.any { it.stake == winnings.id }) return null
+        val recent = state.receivedStakes.filter { now - it.at < MechanicsLimits.CEDED_RESCUE_DAYS * DAY_MS }
+        return state.copy(confiscations = state.confiscations + winnings, receivedStakes = recent + ReceivedStake(winnings.id, now))
+    }
 
     /** [state] without entry [id]. */
     fun without(state: GuardState, id: Long): GuardState = state.copy(confiscations = state.confiscations.filterNot { it.id == id })
@@ -115,12 +125,10 @@ object Escrow {
 
     /**
      * Whether [entry], due, is a stake that comes back at its fallback deadline: its settlement never came (a crash, a
-     * lost instruction) or its winner never came back. A released stake is due at its challenge's end, hours at most
-     * after it was placed; a fallback deadline is days after.
+     * lost instruction), or it was ceded to a winner who never came back while its owner was online.
      */
     fun isFallback(entry: Confiscation): Boolean =
-        entry.purpose == LedgerPurpose.STAKE &&
-            (entry.owedTo != null || entry.returnAt - entry.takenAt >= MechanicsLimits.STAKE_RESCUE_DAYS * DAY_MS)
+        entry.purpose == LedgerPurpose.STAKE && (entry.owedTo != null || entry.settledAt == null)
 
     /** The UI text that tells the player [entry]'s items came into their inventory. */
     fun arrivalKey(entry: Confiscation): String = when (entry.purpose) {

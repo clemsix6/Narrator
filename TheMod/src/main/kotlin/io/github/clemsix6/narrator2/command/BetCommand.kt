@@ -17,8 +17,9 @@ import net.minecraft.server.level.ServerPlayer
 /**
  * `/bet <id> <player|nobody>`, for every player (M4 §5.6, §18.2): bets the stack held in the main hand on a
  * participant of a challenge or a duel, or on nobody (`ChallengeControl.bet`), suggesting the challenges open
- * to bets and their participants. English literals, no alias (decision F); forbidden to `run_command`. What
- * the player reads comes from `UiTexts`.
+ * to bets and what the player may bet on (a participant, on themselves only). Only the player who sends it bets
+ * ([ownPlayer]: never through `execute as` nor a command block). English literals, no alias (decision F);
+ * forbidden to `run_command`. What the player reads comes from `UiTexts`.
  */
 object BetCommand {
     /** Registers `/bet` (its own root: every player may use it). */
@@ -35,11 +36,7 @@ object BetCommand {
     }
 
     private fun bet(source: CommandSourceStack, id: String, on: String): Int {
-        val player = source.player
-        if (player == null) {
-            source.sendFailure(errorLine("only a player can bet."))
-            return 0
-        }
+        val player = ownPlayer(source, "bet") ?: return 0
         val runtime = runningNarrator(source) ?: return 0
         val reply = bet(runtime, player, id, on)
         source.sendSuccess({ reply }, false)
@@ -66,10 +63,10 @@ object BetCommand {
         SharedSuggestionProvider.suggest(open.map { it.ref.toString() }, builder)
     }
 
-    /** The participants of the challenge typed, then nobody. */
+    /** What the player may bet on in the challenge typed: its participants then nobody, or themselves when they take part. */
     private val OPTIONS = SuggestionProvider<CommandSourceStack> { context, builder ->
         val ref = Bets.challengeRef(StringArgumentType.getString(context, "id"))
         val view = ref?.let { r -> NarratorRuntime.current?.mechanics?.challenges?.list()?.firstOrNull { it.ref == r } }
-        SharedSuggestionProvider.suggest(BetSettlement.options(view?.participants.orEmpty()), builder)
+        SharedSuggestionProvider.suggest(BetSettlement.options(view?.participants.orEmpty(), context.source.player?.uuid?.toString()), builder)
     }
 }
