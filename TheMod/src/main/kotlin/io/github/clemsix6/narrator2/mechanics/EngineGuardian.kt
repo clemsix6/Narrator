@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.mechanics.challenge.BetInstructions
 import io.github.clemsix6.narrator2.mechanics.challenge.DuelReturns
@@ -31,7 +32,8 @@ import java.util.UUID
  *   each second, at a join before the guards'); the bets of a challenge whose end passed go back to their owners at
  *   that end ([release]), not a week later. The challenge stays in the state for the engine to close.
  * - **Rules**: each creature loaded at its first tick, and each one that loads, loses the marks of the rules
- *   ([RuleEngine.unmark]): a law nobody enforces leaves no creature three times faster nor the Narrator's.
+ *   ([RuleEngine.unmark]): a law nobody enforces leaves no creature three times faster nor the Narrator's. The
+ *   creatures of a module's deployment are given back the same way (`ModuleCreatures.onMobLoad`, M5 §4.5).
  *
  * The rules themselves, the challenges and the canon wait for the engine: its start and its reconciliation (M4 §4.6)
  * close what ended meanwhile. Each duel or challenge released is a decision `mechanic released`.
@@ -139,13 +141,18 @@ class EngineGuardian(
         return duels
     }
 
-    /** Takes the rules' marks off [entity], if it is a creature with some; whether it had any. */
+    /**
+     * Takes the rules' marks off [entity], if it is a creature with some, and gives it back from its module's deployment
+     * if it is one's (M5 §4.5, `ModuleCreatures.onMobLoad`: a summoned one goes, a claimed one gets back to normal, at
+     * the next task of the server); whether it had any.
+     */
     private fun unmark(entity: Entity): Boolean {
         if (entity !is Mob) return false
+        val module = ModuleCreatures.ownerOf(entity)?.also { ModuleCreatures.onMobLoad(entity, { null }, services.guards, clock.millis()) }
         val marks = RuleEngine.marksOn(entity)
-        if (marks.isEmpty()) return false
-        RuleEngine.unmark(entity, marks)
-        log.debug { "${entity.typeId} ${entity.uuid} freed of the marks of ${marks.joinToString { "C-$it" }}: the mechanics are off" }
+        if (marks.isNotEmpty()) RuleEngine.unmark(entity, marks)
+        if (marks.isEmpty() && module == null) return false
+        log.debug { "${entity.typeId} ${entity.uuid} freed of the marks of ${(marks + listOfNotNull(module)).joinToString { "C-$it" }}: the mechanics are off" }
         return true
     }
 

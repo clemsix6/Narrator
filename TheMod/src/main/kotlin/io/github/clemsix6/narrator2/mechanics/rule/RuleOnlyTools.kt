@@ -63,30 +63,66 @@ import java.util.concurrent.ConcurrentHashMap
 fun ruleOnlyTools(): List<NarratorTool<*>> = listOf(MobEffectTool(), MobAttributeTool(), NotifyTool())
 
 /**
+ * Who changes a creature and marks it (M4 §8.6, M5 §4.5): a rule, or the deployment of a module (its canon row, `C-70`).
+ * Each leaves its own tag ([tag]: `narrator2_rule_60`, `narrator2_module_70`) and its own attribute modifiers
+ * ([modifier]: `narrator2:rule/60/scale`, `narrator2:module/70/fall_damage_multiplier`), and takes them off when it
+ * ends; the Narrator's tag ([NarratorMobs.TAG]) stays while any owner's tag is left (`RuleEngine.unmark`).
+ */
+data class MarkOwner(val kind: Kind, val id: Long) {
+    enum class Kind(val word: String) {
+        RULE("rule"),
+        MODULE("module"),
+        ;
+
+        /** The start of the tags of this kind of owner: `narrator2_rule_`, `narrator2_module_`. */
+        val tagPrefix: String get() = "${NarratorMobs.TAG}_${word}_"
+    }
+
+    /** Its tag: `narrator2_rule_60`. */
+    val tag: String get() = kind.tagPrefix + id
+
+    /** Its modifier on the attribute [path] (`movement_speed`, `fall_damage_multiplier`): `narrator2:module/70/movement_speed`. */
+    fun modifier(path: String): Identifier = Identifier.fromNamespaceAndPath("narrator2", "${kind.word}/$id/$path")
+
+    companion object {
+        fun rule(id: Long) = MarkOwner(Kind.RULE, id)
+
+        fun module(id: Long) = MarkOwner(Kind.MODULE, id)
+
+        /** Whether [modifier] is any rule's or module's on the attribute [path]: their factors count together. */
+        fun isOwners(modifier: Identifier, path: String): Boolean =
+            modifier.namespace == "narrator2" && Kind.entries.any { modifier.path.startsWith("${it.word}/") } && modifier.path.endsWith("/$path")
+
+        /** The owners of [kind] whose tags [entity] bears. */
+        fun on(entity: Entity, kind: Kind): List<MarkOwner> =
+            entity.entityTags().mapNotNull { tag -> tag.takeIf { it.startsWith(kind.tagPrefix) }?.removePrefix(kind.tagPrefix)?.toLongOrNull()?.let { MarkOwner(kind, it) } }
+    }
+}
+
+/**
  * The marks a rule leaves on a creature it changed (M4 §8.6): the Narrator's tag ([NarratorMobs.TAG]), so that
  * the creature is the Narrator's while the rule lives (its explosions break nothing, the death guard counts
- * its kills), the rule's own tag, and its attribute modifiers. The rule engine (M4-18) takes them off when the
- * rule ends, and [NarratorMobs.TAG] when no rule's tag is left on a creature that is not one the Narrator
- * summoned.
+ * its kills), the rule's own tag, and its attribute modifiers ([MarkOwner.rule]). The rule engine (M4-18) takes
+ * them off when the rule ends, and [NarratorMobs.TAG] when no rule's nor module's tag is left on a creature that
+ * is not one the Narrator summoned.
  */
 object RuleMarks {
     /** The start of every rule's tag: `narrator2_rule_`. */
-    const val TAG_PREFIX = "${NarratorMobs.TAG}_rule_"
+    val TAG_PREFIX: String = MarkOwner.Kind.RULE.tagPrefix
 
     /** The tag of rule [id]'s creatures: `narrator2_rule_60`. */
-    fun tag(id: Long): String = TAG_PREFIX + id
+    fun tag(id: Long): String = MarkOwner.rule(id).tag
 
     /** The modifier of rule [id] on [attribute]: `narrator2:rule/60/movement_speed`. */
-    fun modifier(id: Long, attribute: MobAttributeKey): Identifier = Identifier.fromNamespaceAndPath("narrator2", "rule/$id/${attribute.id}")
-
-    /** Whether [id] is the modifier of a rule, any rule, on [attribute]. */
-    fun isRules(id: Identifier, attribute: MobAttributeKey): Boolean =
-        id.namespace == "narrator2" && id.path.startsWith("rule/") && id.path.endsWith("/${attribute.id}")
+    fun modifier(id: Long, attribute: MobAttributeKey): Identifier = MarkOwner.rule(id).modifier(attribute.id)
 
     /** Marks [entity] as changed by rule [id]: the Narrator's creature while the rule lives. Server thread. */
-    fun mark(entity: Entity, id: Long) {
+    fun mark(entity: Entity, id: Long) = mark(entity, MarkOwner.rule(id))
+
+    /** Marks [entity] as changed by [owner], a rule or a module: the Narrator's creature while the owner lives. Server thread. */
+    fun mark(entity: Entity, owner: MarkOwner) {
         entity.addTag(NarratorMobs.TAG)
-        entity.addTag(tag(id))
+        entity.addTag(owner.tag)
     }
 }
 
@@ -156,7 +192,7 @@ class MobEffectTool : NarratorTool<MobEffectArgs>(
     override suspend fun run(ctx: ToolContext, args: MobEffectArgs): ToolResult = answer {
         check(ctx, args)?.let { return@answer it }
         val rule = ctx.rule(name)
-        ctx.onServer { server -> answer { apply(creature(server, args.creature, name), rule.id, args) } }
+        ctx.onServer { server -> answer { apply(creature(server, args.creature, name), MarkOwner.rule(rule.id), args) } }
     }
 
     companion object {
@@ -186,19 +222,20 @@ class MobEffectTool : NarratorTool<MobEffectArgs>(
             FORBIDDEN[effect.registeredName] ?: if (effect.registeredName in forbiddenEffectIds) "it acts on the world" else null
 
         /** The effect called [raw]; refuses with the closest ids otherwise. Any thread. */
-        private fun lookup(raw: String): Holder.Reference<MobEffect> =
+        internal fun lookup(raw: String): Holder.Reference<MobEffect> =
             parseId(raw)?.let { BuiltInRegistries.MOB_EFFECT.get(it).orElse(null) }
                 ?: refuse(ToolResult.invalid("unknown effect \"$raw\"; closest ids: ${closestIds(raw, BuiltInRegistries.MOB_EFFECT.keySet().map(::shortId)).joinToString()}"))
 
         /**
-         * Puts [args]'s effect on [mob] for rule [rule], and marks it ([RuleMarks]): the checks passed. The rule
-         * engine may call it directly on the server thread (M4 §8.6). Server thread.
+         * Puts [args]'s effect on [mob] for [owner], a rule or a module, and marks it ([RuleMarks.mark]): the checks
+         * passed. The rule engine may call it directly on the server thread (M4 §8.6), and a module's creature
+         * (M5 §4.5). Server thread.
          */
-        fun apply(mob: Mob, rule: Long, args: MobEffectArgs): ToolResult {
+        fun apply(mob: Mob, owner: MarkOwner, args: MobEffectArgs): ToolResult {
             val effect = lookup(args.effect)
             val instant = effect.value().isInstantaneous
             mob.addEffect(MobEffectInstance(effect, if (instant) 1 else args.seconds * TICKS_PER_SECOND, args.level - 1, false, true))
-            RuleMarks.mark(mob, rule)
+            RuleMarks.mark(mob, owner)
             val shown = "${shortId(effect)} ${ToolText.roman(args.level)}"
             return ToolResult.ok("ok: ${mob.typeId} gets $shown" + if (instant) "" else " for ${ToolText.duration(args.seconds * 1_000L)}")
         }
@@ -240,7 +277,7 @@ class MobAttributeTool : NarratorTool<MobAttributeArgs>(
     override suspend fun run(ctx: ToolContext, args: MobAttributeArgs): ToolResult = answer {
         check(ctx, args)?.let { return@answer it }
         val rule = ctx.rule(name)
-        ctx.onServer { server -> answer { apply(creature(server, args.creature, name), rule.id, args) } }
+        ctx.onServer { server -> answer { apply(creature(server, args.creature, name), MarkOwner.rule(rule.id), args) } }
     }
 
     companion object {
@@ -270,25 +307,26 @@ class MobAttributeTool : NarratorTool<MobAttributeArgs>(
         }
 
         /**
-         * Changes [mob]'s attribute for rule [rule] and marks it ([RuleMarks]): the checks passed. A raised
-         * maximum health raises the health by the same factor, once. The other rules' factors on the creature count:
-         * together they stay within [bounds], or nothing changes (`FAILED`, a firing skipped). The rule engine may
-         * call it directly on the server thread (M4 §8.6). Server thread.
+         * Changes [mob]'s attribute for [owner], a rule or a module, and marks it ([RuleMarks.mark]): the checks
+         * passed. A raised maximum health raises the health by the same factor, once. The other owners' factors on
+         * the creature count, rules and modules alike: together they stay within [bounds], or nothing changes
+         * (`FAILED`, a firing skipped). The rule engine may call it directly on the server thread (M4 §8.6), and a
+         * module's creature (M5 §4.5). Server thread.
          */
-        fun apply(mob: Mob, rule: Long, args: MobAttributeArgs): ToolResult {
+        fun apply(mob: Mob, owner: MarkOwner, args: MobAttributeArgs): ToolResult {
             val key = args.attribute
             val holder = BuiltInRegistries.ATTRIBUTE.get(Identifier.withDefaultNamespace(key.id)).orElseThrow { IllegalStateException("no attribute minecraft:${key.id}") }
             val instance = mob.getAttribute(holder) ?: refuse(ToolResult.failed("${mob.typeId} has no ${key.id}"))
-            val id = RuleMarks.modifier(rule, key)
-            val others = instance.modifiers.filter { RuleMarks.isRules(it.id(), key) && it.id() != id }.fold(1.0) { factor, other -> factor * (1 + other.amount()) }
+            val id = owner.modifier(key.id)
+            val others = instance.modifiers.filter { MarkOwner.isOwners(it.id(), key.id) && it.id() != id }.fold(1.0) { factor, other -> factor * (1 + other.amount()) }
             if (others * args.multiply !in bounds(key)) {
                 refuse(ToolResult.failed("${mob.typeId} already has ${key.id} ×${ToolText.number(others)} from other rules, and ${within(key)}, all rules together"))
             }
             val had = instance.getModifier(id)
             instance.addOrReplacePermanentModifier(AttributeModifier(id, args.multiply - 1, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL))
             if (key == MobAttributeKey.MAX_HEALTH && had == null) mob.health = (mob.health * args.multiply).toFloat().coerceAtMost(mob.maxHealth)
-            RuleMarks.mark(mob, rule)
-            return ToolResult.ok("ok: ${mob.typeId} ${key.id} ×${ToolText.number(args.multiply)} while C-$rule lasts")
+            RuleMarks.mark(mob, owner)
+            return ToolResult.ok("ok: ${mob.typeId} ${key.id} ×${ToolText.number(args.multiply)} while C-${owner.id} lasts")
         }
     }
 }

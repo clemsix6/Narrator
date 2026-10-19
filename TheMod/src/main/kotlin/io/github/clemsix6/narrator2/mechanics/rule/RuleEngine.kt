@@ -518,8 +518,8 @@ class RuleEngine(
         dryChecks(effect.tool, args, firing.caller)?.let { return EffectRun(effect.tool, outcomeOf(it.status), firstLine(it)) }
         val result = answer {
             when (effect.tool) {
-                MOB_EFFECT -> MobEffectTool.apply(mob, firing.rule.id, decoded(MobEffectArgs.serializer(), args))
-                MOB_ATTRIBUTE -> MobAttributeTool.apply(mob, firing.rule.id, decoded(MobAttributeArgs.serializer(), args))
+                MOB_EFFECT -> MobEffectTool.apply(mob, MarkOwner.rule(firing.rule.id), decoded(MobEffectArgs.serializer(), args))
+                MOB_ATTRIBUTE -> MobAttributeTool.apply(mob, MarkOwner.rule(firing.rule.id), decoded(MobAttributeArgs.serializer(), args))
                 else -> ToolResult.invalid("${effect.tool} does not change a creature that appears")
             }
         }
@@ -890,7 +890,8 @@ class RuleEngine(
 
         /**
          * Takes the marks of rules [ids] off [entity] (M4 §8.6): their tags and attribute modifiers; then the
-         * Narrator's tag, once no rule's is left on a creature the Narrator did not summon. A health above the
+         * Narrator's tag, once no rule's nor module's tag is left on a creature the Narrator did not summon (a
+         * module's creature stays the Narrator's while its deployment holds it, M5 §4.5). A health above the
          * maximum left falls back to it. Server thread.
          */
         fun unmark(entity: Entity, ids: Collection<Long>) {
@@ -899,7 +900,8 @@ class RuleEngine(
                 if (entity is LivingEntity) for ((key, holder) in ATTRIBUTES) entity.getAttribute(holder)?.removeModifier(RuleMarks.modifier(id, key))
             }
             if (entity is LivingEntity && entity.health > entity.maxHealth) entity.health = entity.maxHealth
-            if (marksOn(entity).isEmpty() && !entity.hasAttached(NarratorMob.TYPE)) entity.removeTag(NarratorMobs.TAG)
+            val marked = marksOn(entity).isNotEmpty() || MarkOwner.on(entity, MarkOwner.Kind.MODULE).isNotEmpty()
+            if (!marked && !entity.hasAttached(NarratorMob.TYPE)) entity.removeTag(NarratorMobs.TAG)
         }
 
         /**
