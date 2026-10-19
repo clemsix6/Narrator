@@ -134,6 +134,7 @@ object FabricObserver {
         val serverLevel = level as? ServerLevel ?: return
         val breaker = player as? ServerPlayer ?: return
         // The index forgets the block whoever broke it: it is gone, even when a mod's fake player broke it.
+        // The world already holds air here (AFTER): the entry is checked against the broken state.
         val placedBy = PlacedBlocks.unmark(serverLevel, pos, state)
         if (breaker is FakePlayer) return
         parts.state.publish(
