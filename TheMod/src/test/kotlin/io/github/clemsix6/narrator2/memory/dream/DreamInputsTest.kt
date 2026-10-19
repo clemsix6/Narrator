@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonKind
+import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleDraft
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
@@ -140,6 +141,10 @@ class DreamInputsTest {
         others.take(10).forEachIndexed { i, other ->
             store.addCanon(CanonDraft(CanonKind.ARC, text(300, 3), players = listOf(other.uuid), status = CanonStatus.PLANNED, theme = "arc_$i"), dreamer)
         }
+        repeat(DreamInputs.RESTING_COUNT + 2) { i -> // more themes at rest than the block names, each of the longest
+            val closed = store.addCanon(CanonDraft(CanonKind.ARC, text(300, 4), status = CanonStatus.PLANNED, theme = "theme_au_repos_$i".padEnd(40, 'x')), dreamer).row.ref
+            store.resolveCanon(closed, CanonStatus.ABANDONED, text(100, i), emptyList(), director)
+        }
         repeat(30) { store.addNote(NoteDraft(NoteKind.COHERENCE, text(300, it), listOf(bartok)), director) }
 
         val now = at("22:10")
@@ -180,12 +185,68 @@ class DreamInputsTest {
                 "canon" to DreamInputs.CANON_MAX, "arcs" to DreamInputs.ARCS_MAX, "notes" to DreamInputs.NOTES_MAX,
             ),
         )
+        val resting = grimoire.substringAfter("<arcs count=\"10\">\n").lines().first()
+        assertTrue(resting.startsWith("Themes at rest (20h of world play once their arc closed): theme_au_repos_"), resting)
+        assertEquals(DreamInputs.RESTING_COUNT, resting.split(" · ").size, resting)
 
         val pairs = memories.take(40).chunked(2).map { (a, b) -> MergeCandidate(a, b, 0.9) }
         val merges = f.inputs.merges(12, pairs)!!
         assertWithin(merges, 5, mapOf("candidates" to DreamInputs.CANDIDATES_MAX))
         assertNull(f.inputs.merges(12, emptyList()))
         println("Openings at their maximum, in characters: step 1 ${player.length}, step 2 ${review.length}, step 3 ${chronicle.length}, step 4 ${grimoire.length}, step 5 ${merges.length}")
+    }
+
+    /**
+     * M4 §10: step 4 shows each open arc's theme, which it holds, and the themes at rest (twenty hours of world
+     * play once their arc closed, counted as the store counts them), so that the Dreamer plans no arc the store
+     * refuses; the engine's rows of the canon are marked.
+     */
+    @Test
+    fun `step 4 shows the themes the arcs hold and those at rest, and the engine's rows`() = runBlocking<Unit> {
+        val store = f.store
+        /** A session of Bartok's, closed, from [from] to [to] (`yyyy-MM-dd HH:mm`, UTC). */
+        suspend fun session(id: Int, from: String, to: String) = f.journal.journal.write(5_000) { connection ->
+            val seconds = Duration.between(Instant.parse("${from.replace(' ', 'T')}:00Z"), Instant.parse("${to.replace(' ', 'T')}:00Z")).seconds
+            connection.createStatement().use {
+                it.execute(
+                    "INSERT INTO sessions (session_id, player_uuid, player, joined_at, left_at, duration_s, end_reason) VALUES " +
+                        "($id, '${f.bartok.uuid}', 'Bartok', TIMESTAMPTZ '$from:00+00', TIMESTAMPTZ '$to:00+00', $seconds, 'leave')",
+                )
+            }
+        }
+        session(1, "2026-10-01 10:00", "2026-10-02 08:00") // 22 hours of world play
+        suspend fun arc(theme: String, statement: String) = store.addCanon(CanonDraft(CanonKind.ARC, statement, status = CanonStatus.PLANNED, theme = theme), dreamer).row.ref
+
+        f.clock.now = Instant.parse("2026-10-01T10:00:00Z")
+        val old = arc("vieille_rancune", "Le Narrateur prépare la vieille rancune de Bartok.")
+        store.resolveCanon(old, CanonStatus.RESOLVED, "Bartok a payé sa dette.", emptyList(), director) // 22 hours played since: it rests no more
+        f.clock.now = Instant.parse("2026-10-02T03:00:00Z")
+        val warden = arc("vengeance_du_warden", "Le Narrateur prépare la vengeance du Warden contre Bartok.")
+        store.resolveCanon(warden, CanonStatus.ABANDONED, "Bartok a quitté les cités antiques.", emptyList(), director) // 5 hours played since
+        val forgotten = arc("pont_maudit", "Le Narrateur prépare la chute du pont de Mimosa.")
+        store.resolveCanon(forgotten, CanonStatus.RESOLVED, "Le pont est tombé.", emptyList(), director)
+        store.archive(forgotten, true, "oublié par l'opérateur", Author(Source.OPERATOR, operator = "Clement"))
+        f.clock.now = Instant.parse("2026-10-02T12:00:00Z")
+        val trial = arc("proces_des_parieurs", "Le Narrateur prépare le procès des parieurs.")
+        val law = store.addCanon(CanonDraft(CanonKind.LAW, "Quiconque casse la construction d'un autre est rapetissé.", mechanic = CanonMechanic.RULE), director).row.ref
+        f.journal.sync()
+
+        val opening = f.inputs.grimoire(12, Instant.parse("2026-10-02T12:00:00Z"))
+        val arcs = opening.substringAfter("<arcs ").substringBefore("</arcs>")
+        assertEquals(
+            listOf(
+                "count=\"1\">",
+                "Themes at rest (20h of world play once their arc closed): vengeance_du_warden until about 10-03 03:00 ($warden closed 10-02 03:00)",
+                "- $trial arc (planned, theme proces_des_parieurs, since 10-02): Le Narrateur prépare le procès des parieurs.",
+            ),
+            arcs.trimEnd().lines(),
+        )
+        assertTrue("- $law law (enforced, since 10-02): Quiconque casse la construction d'un autre est rapetissé." in opening, opening)
+
+        // Nothing at rest any more once Bartok played fifteen hours more: the arcs' block says only what is open.
+        session(2, "2026-10-02 13:00", "2026-10-03 04:00")
+        val later = f.inputs.grimoire(12, Instant.parse("2026-10-03T05:00:00Z")).substringAfter("<arcs ").substringBefore("</arcs>")
+        assertEquals(listOf("count=\"1\">", "- $trial arc (planned, theme proces_des_parieurs, since 10-02): Le Narrateur prépare le procès des parieurs."), later.trimEnd().lines())
     }
 
     @Test

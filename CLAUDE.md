@@ -62,6 +62,7 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
 - **Threads** : tout accès au monde passe par le thread serveur (`server.onServerThread { }`). Le thread serveur ne doit jamais attendre le réseau ni la base de données.
 - **Claude** : SDK Java officiel d'Anthropic, pointé sur LLMGW. Les conversations sont en ajout seul : on ne modifie jamais les tours précédents, le prompt système ni la liste d'outils. `tool_choice` n'est jamais forcé (Opus 5.5 renvoie une erreur 400).
 - Le modèle ne doit voir **que des outils réellement branchés**. Toute action est validée côté serveur avant d'être exécutée.
+- **Pièces jointes Fabric persistantes** : un type déclaré `by lazy` doit être touché à l'initialisation du mod, hors d'un `log.debug { }` qui n'est jamais évalué, par exemple dans la liste loguée de `registerGuardHooks` ou de `registerMechanicsHooks`. Sinon, au redémarrage, Fabric jette la pièce jointe (« unknown attachment type »), et seul un `runServer` lancé deux fois le montre.
 - Pas de datapacks, pas de JavaScript.
 - Du code simple et lisible : pas d'abstraction spéculative ni de code mort.
 

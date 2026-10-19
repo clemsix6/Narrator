@@ -307,19 +307,62 @@ class SqlViewsTest {
         assertEquals(
             listOf(
                 listOf<Any?>(
-                    "C-10", "promise", "active", "Le Narrateur a promis à Mimosa de lui rendre ses planches.", "tu auras tes planches",
+                    "C-10", "promise", null, "active", "Le Narrateur a promis à Mimosa de lui rendre ses planches.", "tu auras tes planches",
                     listOf("Mimosa"), true, null, null,
                 ),
                 listOf<Any?>(
-                    "C-11", "nickname", "retired", "Bartok est surnommé « le Pleureur ».", "le Pleureur", listOf("Bartok"), null, true,
+                    "C-11", "nickname", null, "retired", "Bartok est surnommé « le Pleureur ».", "le Pleureur", listOf("Bartok"), null, true,
                     "remplacé par un autre surnom",
                 ),
             ),
             values(
-                "SELECT ref, kind, status, statement, quote, players, due_at > now(), resolved_at < now(), resolution FROM mem_canon ORDER BY ref",
+                "SELECT ref, kind, mechanic, status, statement, quote, players, due_at > now(), resolved_at < now(), resolution FROM mem_canon ORDER BY ref",
             ),
         )
         assertEquals(1L, values("SELECT count(*) FROM mem_canon WHERE created_at > now() - INTERVAL 25 MINUTE").single().single())
+    }
+
+    /** M4 §3.3, §19: a row the mechanics engine tracks says what it is (challenge, duel or rule); a plan is a kind of its own. */
+    @Test
+    fun `mem_canon says what the mechanics engine tracks`() {
+        JournalFixture(clock = TestClock(Instant.now())).use { journal ->
+            runBlocking {
+                journal.journal.write(10_000) { connection ->
+                    connection.createStatement().use {
+                        it.execute(
+                            """
+                            INSERT INTO canon (id, kind, mechanic, created_at, statement, players, importance, status, resolved_at, resolution, source,
+                                               evidence_events, evidence_tools) VALUES
+                                (50, 'challenge', 'challenge', now(), 'Le Narrateur a défié tous les joueurs de rapporter un œuf de tortue.', [], 6,
+                                 'active', NULL, NULL, 'director', [], []),
+                                (52, 'challenge', 'duel', now(), 'Le Narrateur a fait s''affronter Bartok et Mimosa en duel.', [], 6, 'won', now(),
+                                 'won by Mimosa', 'engine', [], []),
+                                (60, 'law', 'rule', now(), 'Quiconque casse la construction d''un autre est rapetissé.', [], 7, 'active', NULL, NULL,
+                                 'director', [], []),
+                                (61, 'plan', 'rule', now(), 'Un comité d''accueil attend Bartok à sa prochaine entrée dans le Nether.', [], 5, 'active',
+                                 NULL, NULL, 'director', [], []),
+                                (62, 'law', NULL, now(), 'Nul ne creuse sous le village.', [], 5, 'active', NULL, NULL, 'director', [], []);
+                            """.trimIndent(),
+                        )
+                    }
+                }
+            }
+            assertEquals(
+                listOf(
+                    listOf<Any?>("C-50", "challenge", "challenge", "active"),
+                    listOf<Any?>("C-52", "challenge", "duel", "won"),
+                    listOf<Any?>("C-60", "law", "rule", "active"),
+                    listOf<Any?>("C-61", "plan", "rule", "active"),
+                    listOf<Any?>("C-62", "law", null, "active"),
+                ),
+                journal.values("SELECT ref, kind, mechanic, status FROM mem_canon ORDER BY ref"),
+            )
+            assertEquals(
+                listOf(listOf<Any?>("C-62")),
+                journal.values("SELECT ref FROM mem_canon WHERE kind = 'law' AND mechanic IS NULL AND status = 'active'"),
+                "a law the Director keeps himself, the engine does not enforce it",
+            )
+        }
     }
 
     @Test

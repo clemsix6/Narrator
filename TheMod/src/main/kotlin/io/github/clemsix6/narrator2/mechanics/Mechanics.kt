@@ -188,11 +188,12 @@ data class Firing(val id: Long, val ref: Ref?, val caller: Caller)
 
 /**
  * One part of the engine (challenges, duels, bets, rules, boss bars), driven on the server thread by the
- * engine's host (M4-02), which knows nothing of what each part does. The parts do not know each other
- * either: that is what lets them be written in parallel and assembled by `MechanicsService` (M4-23).
- * Every method has a default that does nothing.
+ * engine's host ([Engine], M4-02), which knows nothing of what each part does. The parts do not know each
+ * other either: that is what lets them be written in parallel and assembled by `MechanicsService` (M4-23).
+ * Every method has a default that does nothing. Public, so that the GameTests (another compilation) can
+ * build parts on their own store (M4 §21.2).
  */
-internal interface MechanicPart {
+interface MechanicPart {
     /** The facts of the bus this part wants; the engine's subscriber lets only these through ([onEvent]). */
     val listensTo: Set<KClass<out GameEvent>> get() = emptySet()
 
@@ -210,6 +211,15 @@ internal interface MechanicPart {
 
     /** The server runs: rebuilt from the state (bars, edges, the creatures already loaded), after the stale entries are dropped (M4 §4.6). */
     fun started(server: MinecraftServer, now: Long) {}
+
+    /**
+     * The engine took the challenges, duels or rules [ids] out of the state, without them ending through
+     * their part: the reconciliation found their canon row missing, or closed before the server started
+     * (M4 §4.6). Their bets are already turned into settlements and their duelists into returns
+     * (`Reconcile.drop`); take down what the part shows or changed for them (bars, creature marks). Server
+     * thread.
+     */
+    fun dropped(ids: Set<Long>) {}
 
     fun onJoin(player: ServerPlayer) {}
 

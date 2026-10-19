@@ -11,12 +11,19 @@ import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.ActiveEffect
+import io.github.clemsix6.narrator2.guard.Confiscation
 import io.github.clemsix6.narrator2.guard.Guards
+import io.github.clemsix6.narrator2.guard.LedgerPurpose
+import io.github.clemsix6.narrator2.guard.PlayerPacing
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.journal.DisabledJournal
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
+import io.github.clemsix6.narrator2.mechanics.Mechanics
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.BriefingSection
 import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.memory.DisabledMemory
@@ -32,6 +39,7 @@ import io.github.clemsix6.narrator2.oracle.Enclosure
 import io.github.clemsix6.narrator2.oracle.PlayerSnapshot
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -303,10 +311,20 @@ class BriefingTest {
         val crowd = longHistory()
         val memory = FakeMemory(clock).apply { briefingSections = BriefingSection.TAGS.map { full(it, Briefing.MEMORY_BUDGETS.getValue(it)) } }
         val reminders = (1..5).map { PendingReminder(it.toLong(), "x".repeat(600), now.toEpochMilli() + it * 60_000L) }
-        val text = render(reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" }, services = services(memory = memory))
-        println("budget: ${text.length} characters of ${Briefing.MAX_CHARS}, memory sections ${Briefing.MEMORY_BUDGETS.values.sum()}")
+        val mechanics = fullMechanics(crowd.take(10))
+        val text = render(
+            reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" }, services = services(memory = memory, mechanics = mechanics),
+        )
+        val state = text.substringAfter("<engine_state>\n").substringBefore("</engine_state>").trimEnd('\n')
+        println(
+            "budget: ${text.length} characters of ${Briefing.MAX_CHARS}, memory sections ${Briefing.MEMORY_BUDGETS.values.sum()}, " +
+                "engine_state ${state.length} of ${MechanicsLimits.ENGINE_STATE}",
+        )
 
         assertTrue(text.length <= Briefing.MAX_CHARS, "the briefing takes ${text.length} characters")
+        assertTrue(state.length <= MechanicsLimits.ENGINE_STATE, "the engine state takes ${state.length} characters")
+        assertEquals(listOf("Challenges", "Rules", "Pacing", "Offerings"), state.lines().takeLast(4).map { it.substringBefore(':') })
+        assertEquals(71_200, Briefing.MAX_CHARS, "70 000 and the 1 200 of the mechanics' lines")
         assertFalse("(cut:" in text, "no memory section went over its budget")
         BriefingSection.TAGS.forEach { tag -> assertEquals(1, Regex("^<$tag[ >]", RegexOption.MULTILINE).findAll(text).count(), "one $tag section") }
         assertEquals(Briefing.PREVIOUS_CHAPTERS, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "two previous chapters")
@@ -333,6 +351,45 @@ class BriefingTest {
         assertEquals(3, Regex("^#\\d+ ", RegexOption.MULTILINE).findAll(text).count(), "three previous chapters")
         assertContains(text, "NARRATOR→${crowd[0].name},${crowd[1].name} +6: ")
         assertContains(text, "<grimoire>\n(memory unavailable: memory.enabled is false)\n</grimoire>\n")
+    }
+
+    /** The engine's two lines too long, and [online] all punished, every category resting, under grace, two offerings each. */
+    private fun fullMechanics(online: List<PlayerRef>): FakeMechanics {
+        online.forEachIndexed { index, player ->
+            guards.pacingOf[player.uuid] = PlayerPacing(
+                player.uuid, 4, 4, PunishmentCategory.entries.filter { it.rests }.associateWith { now.toEpochMilli() + 600_000 }, now.toEpochMilli() + 900_000,
+                listOf(900L + index, 1_900L + index).map { Confiscation(it, emptyList(), "64x minecraft:diamond_block", 0, now.toEpochMilli() + 600_000, null, null, LedgerPurpose.OFFERING) },
+            )
+        }
+        return FakeMechanics(clock).apply { lines = listOf("Challenges: " + "c".repeat(700), "Rules: " + "r".repeat(700)) }
+    }
+
+    @Test
+    fun `the engine state ends with the mechanics' lines of the situation (M4 §4-5)`() {
+        history()
+        guards.pacingOf[bartok.uuid] = PlayerPacing(bartok.uuid, 1, 4, mapOf(PunishmentCategory.SIZE to now.toEpochMilli() + 20 * 60_000L), null, emptyList())
+        val mechanics = FakeMechanics(clock).apply {
+            lines = listOf("Challenges: C-50 obtain « Œuf de tortue » → all · Mimosa 0/1, Bartok 0/1 · ends in 12m", "Rules: C-60 law block_break grief → punish (until 10-02 20:15)")
+        }
+        val state = render(services = services(mechanics = mechanics)).substringAfter("<engine_state>\n").substringBefore("</engine_state>").lines()
+
+        assertEquals(
+            listOf(
+                "Reminders: R-3 at 21:10 \"check that Bartok kept his word\"",
+                "Challenges: C-50 obtain « Œuf de tortue » → all · Mimosa 0/1, Bartok 0/1 · ends in 12m",
+                "Rules: C-60 law block_break grief → punish (until 10-02 20:15)",
+            ),
+            state.takeLast(5).take(3),
+        )
+        // Both players joined at 20:00: the order of arrival between them is not fixed.
+        assertTrue(
+            Regex("^Pacing: punished this hour (Bartok 1/4, Mimosa 0/4|Mimosa 0/4, Bartok 1/4) · recent kinds Bartok size \\(again at 21:20\\)$").matches(state[state.size - 2]),
+            state[state.size - 2],
+        )
+        val off = render(services = services(mechanics = DisabledMechanics("not wired yet"))).substringAfter("<engine_state>\n").substringBefore("</engine_state>")
+        assertFalse("Challenges:" in off || "Rules:" in off, "no engine, no line of its own")
+        assertContains(off, "\nPacing: punished this hour ")
+        assertContains(off, " · recent kinds Bartok size (again at 21:20)\n")
     }
 
     /** Five long chapters, 20 players (10 online, with long effects), an hour of long chat and 30 long actions; returns the players. */
@@ -513,8 +570,8 @@ class BriefingTest {
         return runBlocking { briefing.render(13, CURRENT, now.toEpochMilli(), at(20, 50).toEpochMilli(), reminders, closed, chapter, reduced) }
     }
 
-    private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards, memory: Memory = FakeMemory(clock)) =
-        TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory)
+    private fun services(journal: Journal = fixture.journal, guards: Guards = this.guards, memory: Memory = FakeMemory(clock), mechanics: Mechanics = FakeMechanics(clock)) =
+        TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory, mechanics = mechanics)
 
     private fun online(player: PlayerRef, idle: Boolean = false, activity: String? = null) {
         players.put(

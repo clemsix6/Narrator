@@ -38,6 +38,9 @@ import java.time.Clock
  *
  * When the caller is cancelled (the server stops) during a call, that call is recorded as `UNKNOWN`
  * (or `FAILED` for a read) and the cancellation goes on: the calls after it do not run.
+ *
+ * Decoding, time limit and failures are [invoke], the run of one call without audit, which the mechanics
+ * engine's acts share (`EngineActions`, M4 §4.3): one way to run a tool, whoever calls it.
  */
 class ToolRunner(private val services: NarratorServices, private val clock: Clock = services.clock) : ToolExecutor {
     private val log = Log.tool
@@ -53,7 +56,7 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
             tool == null -> ToolResult.invalid("unknown tool \"${call.name()}\"; your tools are: ${tools.names.joinToString()}")
             services.phase != Phase.RUNNING -> ToolResult.failed("server is stopping")
             else -> try {
-                execute(tool, audit.input, caller)
+                invoke(tool, caller, audit.input)
             } catch (e: CancellationException) {
                 audit.record(tool.effect, interrupted(tool))
                 throw e
@@ -63,7 +66,22 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
         return result
     }
 
-    private suspend fun <A : Any> execute(tool: NarratorTool<A>, input: String, caller: Caller): ToolResult = try {
+    /**
+     * Runs one call of [tool] for [caller], [input] being its arguments as JSON text, without any audit (no
+     * `tool_calls` row, no log line of the call): the one way to run a tool, shared by [runAll] and by the
+     * mechanics engine's acts (`EngineActions`, M4 §4.3), so that both get the same answers.
+     *
+     * - The arguments are decoded and checked first ([ToolArgs]): `INVALID` with every problem, and the tool
+     *   does not run. Arguments written as JSON text and read as the value they hold are a
+     *   `tool args_coerced` decision (`DEBUG`).
+     * - The run is bounded by the tool's `timeoutMs`: past it, a read answers `TIMEOUT`, any other tool
+     *   `UNKNOWN`.
+     * - An exception, or a cancellation from inside the tool, answers `FAILED` with its message.
+     * - A cancellation of the caller goes through: [interrupted] says what to record for the call.
+     *
+     * It does not check that the server runs: the caller does.
+     */
+    suspend fun <A : Any> invoke(tool: NarratorTool<A>, caller: Caller, input: String): ToolResult = try {
         when (val decoded = ToolArgs.decode(tool.args, input)) {
             is ToolArgs.Decoded.Invalid -> ToolResult.invalid(decoded.problem)
             is ToolArgs.Decoded.Ok -> {
@@ -82,12 +100,13 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
 
     /** A `tool args_coerced` decision: arguments written as JSON text were read as the values they hold ([ToolArgs]). */
     private fun coerced(tool: NarratorTool<*>, caller: Caller, paths: List<String>) {
+        val who = caller.firingId?.let { "the engine's act #$it" } ?: caller.role.id
         Decisions(services.trace, clock).record(
             log,
             DecisionRecord.Kind.TOOL,
             "args_coerced",
             subject = tool.name,
-            reason = "${paths.joinToString()} written as JSON text, read as the value it holds (${caller.role.id})",
+            reason = "${paths.joinToString()} written as JSON text, read as the value it holds ($who)",
             conversationId = caller.conversationId,
             turnId = caller.turnId,
             level = Log.Level.DEBUG,
@@ -98,13 +117,6 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
         val what = "${tool.name} did not finish within ${ToolText.wait(tool.timeoutMs)}"
         return if (tool.effect == ToolEffect.READ) ToolResult.timeout(what) else ToolResult.unknown("$what; the action may or may not have happened")
     }
-
-    private fun interrupted(tool: NarratorTool<*>): ToolResult =
-        if (tool.effect == ToolEffect.READ) {
-            ToolResult.failed("cancelled: the server is stopping")
-        } else {
-            ToolResult.unknown("cancelled while running, the server is stopping; the action may or may not have happened")
-        }
 
     private fun failure(tool: NarratorTool<*>, e: Throwable): ToolResult {
         val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
@@ -165,6 +177,17 @@ class ToolRunner(private val services: NarratorServices, private val clock: Cloc
 
         /** Statuses logged as warnings: the call did not do what was asked, and it is not the model's fault. */
         private val TROUBLE = setOf(ToolStatus.FAILED, ToolStatus.TIMEOUT, ToolStatus.UNKNOWN)
+
+        /**
+         * What a call of [tool] cut short by the cancellation of its caller (the server stops) is recorded
+         * as: a read `FAILED`, any other tool `UNKNOWN`, as its action may still happen.
+         */
+        fun interrupted(tool: NarratorTool<*>): ToolResult =
+            if (tool.effect == ToolEffect.READ) {
+                ToolResult.failed("cancelled: the server is stopping")
+            } else {
+                ToolResult.unknown("cancelled while running, the server is stopping; the action may or may not have happened")
+            }
 
         /** [text] cut to [max] characters, ending with `… (truncated, N chars)` when cut (N = the full length). */
         fun truncate(text: String, max: Int): String {

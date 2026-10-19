@@ -94,6 +94,9 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  *   exchanged has nothing to summarize: it closes without a request.
  * - **Closing without a summary** ([close]): after the errors that leave the conversation unusable
  *   (refusals, a malformed request, a full context, an engine failure) and when the server stops.
+ * - **Mechanics** (M4 §12.1): the tools of the mechanics engine are there when it is available at the
+ *   chapter's opening (`ToolEnv.mechanicsAvailable`); an engine that stops during the chapter leaves them
+ *   declared, and they answer that it is unavailable.
  * - **Memory** (M3): the memory tools of a chapter are there when the memory is available at its
  *   opening (`ToolEnv.memoryAvailable`); each chapter keeps what the memory showed in it
  *   ([Chapter.memory]); every chapter that closes, with or without a summary, is told to the memory once
@@ -144,7 +147,12 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             }
         }
         val number = ++lastNumber
-        val env = ToolEnv(journalAvailable = services.journal.available, workerRoles = services.workers.roles, memoryAvailable = services.memory.available)
+        val env = ToolEnv(
+            journalAvailable = services.journal.available,
+            workerRoles = services.workers.roles,
+            memoryAvailable = services.memory.available,
+            mechanicsAvailable = services.mechanics.available,
+        )
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)
         val conversation = Conversation(

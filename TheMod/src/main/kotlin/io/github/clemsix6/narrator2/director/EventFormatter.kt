@@ -88,11 +88,11 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         val body = when (val signal = item.signal) {
             is DirectorSignal.Event -> event(signal.envelope, signal.annotation)
             is DirectorSignal.TaskDone -> task(signal)
-            is DirectorSignal.ReminderDue -> "REMINDER R-${signal.id} set ${duration(signal.at - signal.setAt)} ago: ${quote(signal.note)}"
+            is DirectorSignal.ReminderDue -> reminder(signal)
             is DirectorSignal.MemoryDue -> "DUE ${memory(signal.line)}"
             is DirectorSignal.MemoryNote -> "NOTE ${signal.ref} ${signal.kind.id}: ${memory(signal.text)}"
             is DirectorSignal.MemoryCue -> "${signal.kind.name} ${memory(signal.line)}"
-            is DirectorSignal.Mechanic -> "${signal.kind.name} ${mechanic(signal.line)}"
+            is DirectorSignal.Mechanic -> "${signal.kind.name} ${mechanic(signal)}"
             else -> return null
         }
         return "[-${duration(now - item.at)}] $body"
@@ -104,8 +104,23 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
      */
     private fun memory(text: String): String = ModelText.escape(ModelText.cut(text, MEMORY_LINE_MAX))
 
-    /** A line written by the mechanics engine (M4 §4.4): like [memory], cut to [MECHANIC_LINE_MAX] characters. */
-    private fun mechanic(text: String): String = ModelText.escape(ModelText.cut(text, MECHANIC_LINE_MAX))
+    /**
+     * A line written by the mechanics engine (M4 §4.4): like [memory], cut to [MECHANIC_LINE_MAX] characters,
+     * [RULE_LINE_MAX] for a rule's (its `notify` note and the fact that fired it).
+     */
+    private fun mechanic(signal: DirectorSignal.Mechanic): String {
+        val max = if (signal.kind == MechanicSignal.RULE) RULE_LINE_MAX else MECHANIC_LINE_MAX
+        return ModelText.escape(ModelText.cut(signal.line, max))
+    }
+
+    /**
+     * `REMINDER R-3 set 10m ago: "…"`; a reminder that came due while the server was down says so (M4 §15.1):
+     * `REMINDER R-3 set 3h30m ago, due 3h00m ago (late: the server was down): "…"`.
+     */
+    private fun reminder(signal: DirectorSignal.ReminderDue): String {
+        val late = signal.dueAt?.let { ", due ${duration(signal.at - it)} ago (late: the server was down)" }.orEmpty()
+        return "REMINDER R-${signal.id} set ${duration(signal.at - signal.setAt)} ago$late: ${quote(signal.note)}"
+    }
 
     /** One event, without its date. [annotation] comes from the salience: the chat triage, or a grief's count. */
     fun event(envelope: Envelope, annotation: String?): String = when (val event = envelope.event) {
@@ -219,6 +234,9 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
 
         /** Longest line of the mechanics engine after its keyword (`CHALLENGE`, `DUEL`…): a challenge's end, its stakes and bets. */
         const val MECHANIC_LINE_MAX = MechanicsLimits.EVENT_LINE
+
+        /** Longest `RULE` line after its keyword: a rule's `notify` note (200 at most) and the fact that fired it. */
+        const val RULE_LINE_MAX = MechanicsLimits.RULE_LINE
 
         /** Longest task result given to the Director (a worker's report is at most 3 000 characters). */
         const val TASK_RESULT_MAX = 3_000
