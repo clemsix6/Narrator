@@ -75,12 +75,19 @@ class NarratorExplosionDamage private constructor(private val hurts: Boolean) : 
 
         /**
          * Checks a hurting explosion against each of [bystanders], for [caller] until [until] (epoch
-         * milliseconds): the first refusal is returned (the whole explosion must then be refused or made
-         * harmless, else a player who just died, standing next to the target, would be hit). When all are
-         * allowed, arms their death guard and returns [Verdict.Allowed]. [category]: the kind of punishment
-         * (M4 §6.1), `explosion` for an explosion that hurts. Server thread.
+         * milliseconds), in two passes (M4 review, finding 11). First every bystander is vetted, changing
+         * nothing: the first refusal is returned (the whole explosion must then be refused or made harmless,
+         * else a player who just died, standing next to the target, would be hit), and nobody counts as
+         * punished by an explosion that never hurt them. Then, all allowed, each one's punishment opens and
+         * their death guard is armed, and [Verdict.Allowed] is returned. Nothing between the two passes can
+         * refuse a bystander the first allowed: time only lifts the guards' rules. [category]: the kind of
+         * punishment (M4 §6.1), `explosion` for an explosion that hurts. Server thread.
          */
         fun allow(bystanders: List<ServerPlayer>, guards: Guards, caller: Caller, until: Long, category: PunishmentCategory? = null): Verdict {
+            for (player in bystanders) {
+                val verdict = guards.vet(player, caller, category)
+                if (verdict is Verdict.Denied) return verdict
+            }
             for (player in bystanders) {
                 val verdict = guards.hostile(player, caller, until, category)
                 if (verdict is Verdict.Denied) return verdict

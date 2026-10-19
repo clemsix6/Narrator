@@ -25,12 +25,13 @@ class EffectLedger(private val states: GuardStates, private val clock: Clock) {
     /**
      * Puts [effect] at [level] (1 for its first level) on [player] for [seconds], replacing the effect of
      * that kind they have now (`addEffect` alone keeps a stronger or longer one), and records it. An
-     * effect of the `HARMFUL` category is recorded as part of a punishment.
+     * effect that is not `BENEFICIAL` is recorded as part of a punishment (a `NEUTRAL` one too: `glowing`,
+     * M4 review, finding 33), so that a pardon lifts it.
      */
     fun apply(player: ServerPlayer, effect: Holder<MobEffect>, level: Int, seconds: Int, particles: Boolean, turnId: Long?): LedgerEffect {
         val entry = LedgerEffect(
             effect.registeredName, level, clock.millis() + seconds * 1_000L,
-            harmful = effect.value().category == MobEffectCategory.HARMFUL, turnId = turnId,
+            harmful = effect.value().category != MobEffectCategory.BENEFICIAL, turnId = turnId,
         )
         // Forgotten before the removal: the effect replaced does not end as the Narrator's (a levitation
         // replaced by a new one leaves nobody falling, so its end is not cushioned).

@@ -12,9 +12,10 @@ import net.minecraft.world.entity.player.Player
 
 /**
  * The Narrator's creatures never hurt a player the Narrator may not act against (ARCHITECTURE §17: the
- * protected players, and no piling on a player who is dead or died less than 5 minutes ago), whatever
- * they do: blows, arrows, potions, fangs, spit, thorns, explosions, and the effects that come with them.
- * [GuardsImpl.spares] says who is spared.
+ * protected players, and no piling on a player who is dead or died less than 5 minutes ago; from M4 also the
+ * player's grace, a rescue's shield and a duel), whatever they do: blows, arrows, potions, fangs, spit, thorns,
+ * explosions, and the effects that come with them. [GuardsImpl.spares] says who is spared. And the creatures it
+ * summons go for players only, never a villager, a golem or an animal (M4 review, finding 17).
  *
  * - **Damage** (`ServerLivingEntityEvents.ALLOW_DAMAGE`, early in `LivingEntity.hurtServer`, before any
  *   knockback): refused when the source or the direct entity is the Narrator's doing. A blow refused
@@ -24,7 +25,9 @@ import net.minecraft.world.entity.player.Player
  *   go through a blow, a witch's splash or lingering potion; beneficial effects still go through.
  * - **Targeting** (`mixin.policy.MobTargetGuardMixin`, `TargetingConditionsGuardMixin`): a spared player
  *   is no valid target for the Narrator's creatures, as a creative player is for any mob, so that they
- *   go for someone else instead of pressing on a player they cannot hurt.
+ *   go for someone else instead of pressing on a player they cannot hurt. Nor is anything but a player for
+ *   the creatures it summoned ([isSummoned]): the guests set on a player in his village leave the villagers
+ *   alone. A creature a rule only marked keeps its own targets (a golem still fights zombies).
  * - **Explosions**: [ExplosionGuard.spares] spares the same players.
  *
  * "The Narrator's doing": a creature carrying the `narrator2` tag, or what one of them owns (an arrow, a
@@ -37,6 +40,15 @@ object CreatureShield {
     /** Whether [entity] is one of the Narrator's creatures, or something one of them owns. */
     fun isNarratorsDoing(entity: Entity?): Boolean =
         NarratorMobs.isNarrators(entity) || (entity is TraceableEntity && NarratorMobs.isNarrators(entity.owner))
+
+    /**
+     * Whether [entity] is a creature the Narrator summoned (`spawn`, `punish`: it carries [NarratorMob]), or
+     * something one of them owns (the vex of its evoker). A creature a rule only marked is not: it carries the
+     * tag, not the mark of a summoned creature.
+     */
+    fun isSummoned(entity: Entity?): Boolean = summoned(entity) || (entity is TraceableEntity && summoned(entity.owner))
+
+    private fun summoned(entity: Entity?): Boolean = entity != null && entity.hasAttached(NarratorMob.TYPE)
 
     /** Whether [player] is out of the Narrator's creatures' reach now. */
     @JvmStatic
@@ -60,8 +72,14 @@ object CreatureShield {
         return true
     }
 
-    /** Whether [attacker], one of the Narrator's creatures, must leave [target] alone: a spared player. */
+    /**
+     * Whether [attacker] must leave [target] alone: one of the Narrator's creatures and a spared player, or a
+     * creature it summoned and anything but a player (M4 review, finding 17: never a villager nor an animal).
+     */
     @JvmStatic
-    fun keepsAway(attacker: LivingEntity?, target: LivingEntity?): Boolean =
-        target is Player && isNarratorsDoing(attacker) && spares(target)
+    fun keepsAway(attacker: LivingEntity?, target: LivingEntity?): Boolean = when (target) {
+        null -> false
+        is Player -> isNarratorsDoing(attacker) && spares(target)
+        else -> isSummoned(attacker)
+    }
 }

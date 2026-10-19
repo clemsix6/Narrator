@@ -18,6 +18,7 @@ import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.TargetingPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.Decisions
 import net.minecraft.server.level.ServerPlayer
@@ -33,10 +34,11 @@ import java.util.concurrent.CopyOnWriteArrayList
  * ledgers and policies are the real ones (their decisions go to [traces]); they need a live player,
  * so unit tests without Minecraft never call them.
  *
- * M4: every call to `hostile` is recorded in [hostiles], with its caller and its category; `pardon` answers
- * [pardoned] and records the player, `grace` answers [graceVerdict], `isPunished` says whether the player is in
- * [punished], `rescue` is recorded in [rescues], and `pacing` answers [pacingOf] for each player (by default:
- * nothing punished, no rest, no grace, no offering).
+ * M4: every call to `hostile` is recorded in [hostiles], with its caller, its category and its punishment, and
+ * every `vet` in [vetted] (it answers [verdict] too); `pardon` answers [pardoned] and records the player, `grace`
+ * answers [graceVerdict], `isPunished` says whether the player is in [punished], `rescue` is recorded in
+ * [rescues], `withdraw` in [withdrawn], `shield` in [shields], and `pacing` answers [pacingOf] for each player (by
+ * default: nothing punished, no rest, no grace, no offering). `jokerGiven` writes the player's real attachment.
  */
 class FakeGuards(
     @Volatile var verdict: Verdict = Verdict.Allowed,
@@ -44,8 +46,8 @@ class FakeGuards(
     clock: Clock = TestClock(),
     val traces: MemoryTraceSink = MemoryTraceSink(),
 ) : Guards {
-    /** One call to `hostile`. */
-    data class Hostile(val target: UUID, val caller: Caller, val until: Long, val category: PunishmentCategory?)
+    /** One call to `hostile` (or to `vet`, without [until] nor [punishment]). */
+    data class Hostile(val target: UUID, val caller: Caller, val until: Long, val category: PunishmentCategory?, val punishment: PunishmentId? = null)
 
     /** One death guard armed with its peril. */
     data class Armed(val target: UUID, val seconds: Int, val peril: Peril)
@@ -72,6 +74,18 @@ class FakeGuards(
     /** The rescues asked: the player and why. */
     val rescues = CopyOnWriteArrayList<Pair<UUID, String>>()
 
+    /** The calls to `vet` (their `until` is 0). */
+    val vetted = CopyOnWriteArrayList<Hostile>()
+
+    /** The punishments withdrawn: the player and the caller of the act. */
+    val withdrawn = CopyOnWriteArrayList<Pair<UUID, Caller>>()
+
+    /** The shields asked: the player, until when, and why. */
+    val shields = CopyOnWriteArrayList<Triple<UUID, Long, String>>()
+
+    @Volatile
+    override var isDueling: (UUID) -> Boolean = { false }
+
     /** What `pacing` answers for a player; nothing punished, no rest, no grace and no offering for the others. */
     val pacingOf = ConcurrentHashMap<UUID, PlayerPacing>()
 
@@ -92,9 +106,26 @@ class FakeGuards(
 
     override fun isProtected(uuid: UUID): Boolean = uuid in protectedPlayers
 
-    override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?): Verdict {
-        hostiles += Hostile(target.uuid, caller, until, category)
+    override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?, punishment: PunishmentId?): Verdict {
+        hostiles += Hostile(target.uuid, caller, until, category, punishment)
         return verdict
+    }
+
+    override fun vet(target: ServerPlayer, caller: Caller, category: PunishmentCategory?): Verdict {
+        vetted += Hostile(target.uuid, caller, 0, category)
+        return verdict
+    }
+
+    override fun withdraw(player: ServerPlayer, caller: Caller) {
+        withdrawn += player.uuid to caller
+    }
+
+    override fun shield(player: ServerPlayer, until: Long, reason: String) {
+        shields += Triple(player.uuid, until, reason)
+    }
+
+    override fun jokerGiven(player: ServerPlayer, at: Long) {
+        states.update(player) { it.copy(jokersGivenAt = it.jokersGivenAt + at) }
     }
 
     override fun armDeathGuard(target: UUID, seconds: Int) = armDeathGuard(target, seconds, Peril.ANY)
