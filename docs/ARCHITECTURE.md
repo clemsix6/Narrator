@@ -302,7 +302,9 @@ créatures ne touchent le joueur) et le **joker** (un objet que le joueur joue l
 **coût** : un rationnement par joueur (objets précieux, une grâce par heure, un joker par jour), et les
 **offrandes** : un joueur offre de lui-même la pile qu'il tient (`/offer`, une fois par 10 min au plus) ; le
 Narrateur ne la prend qu'en accordant une faveur dans le même appel (`favor` avec l'offrande), et c'est tracé ;
-sinon elle revient d'elle-même. Le Narrateur ne réclame jamais d'offrande.
+sinon elle revient d'elle-même. Le Narrateur ne réclame jamais d'offrande. Une offrande réveille le Narrateur même
+quand son budget de tours de l'heure est épuisé, mais quatre fois par heure au plus, tous joueurs confondus : au-delà,
+elle attend le réveil suivant ([relecture de M4](design/reviews/M4_REVIEW.md), constat 6).
 
 ### 9.4 Pièges et intentions
 Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur —
