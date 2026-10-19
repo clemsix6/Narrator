@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.count
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.homeAt
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.isAt
 import io.github.clemsix6.narrator2.guard.GuardStates
+import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.ArenaSpec
 import io.github.clemsix6.narrator2.mechanics.Bossbars
@@ -24,6 +25,7 @@ import io.github.clemsix6.narrator2.mechanics.Engine
 import io.github.clemsix6.narrator2.mechanics.MechanicPart
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.StateStore
+import io.github.clemsix6.narrator2.mechanics.challenge.Bets
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
 import io.github.clemsix6.narrator2.mechanics.challenge.Duels
 import io.github.clemsix6.narrator2.memory.CanonEntry
@@ -39,6 +41,7 @@ import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents
@@ -57,6 +60,7 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.BossEvent.BossBarColor
 import net.minecraft.world.BossEvent.BossBarOverlay
+import net.minecraft.world.InteractionHand
 import net.minecraft.world.effect.MobEffectInstance
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.EntitySpawnReason
@@ -79,8 +83,9 @@ import kotlin.math.abs
  * fall, a creature (each a rescue, out of the danger), and what is left once the duel is over (a fire, a wither, a
  * last blow). Each time the duelist is alive ticks later, with what they carried, and nothing is counted against the
  * Narrator's quota. An arena takes the duelists face to face and puts them back afterwards, even across a restart.
+ * The bets open only once the duel starts, and a won duel pays them.
  *
- * Each test builds its own engine (the challenges' part, the duels' part and the bars) on a store in memory, driven
+ * Each test builds its own engine (the challenges', duels' and bets' parts, a ledger, the bars) on a store in memory, driven
  * by a clock of its own, with a fake Director; the canon, the interactions and the guards are the running
  * Narrator's. `/duel` runs on a dispatcher of the test's own, wired to its engine. The server's `ALLOW_DEATH` reaches
  * the tests' engines through [DeathHook], in the engine's own phase (before the guards'), as `MechanicsHooks` does
@@ -381,6 +386,49 @@ class DuelGameTests {
         }
     }
 
+    // ── Bets ──
+
+    /**
+     * A duel with bets (M4 §5.6): no bet while it is only an invitation (`bet.closed`, nothing taken); once both
+     * accepted, the bets open. Ann's fatal blow wins it: Cid, who bet on her, gets his stake back with Dan's, who bet
+     * on Bob; nothing goes to the Narrator.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aBetOnAWonDuelIsPaidWithTheLosingStake(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 4) { rig, (bob, ann, cid, dan) ->
+            val view = rig.propose(spec(bob, ann, "Les paris sont ouverts").copy(bets = true))
+            rig.onServer {
+                bob.makeVulnerable()
+                cid.hold(ItemStack(Items.IRON_INGOT, 12))
+                check(rig.bets.bet(cid.live, view.ref, ann.name).string == rig.ui["bet.closed"]) { "no bet on an invitation" }
+                check(count(cid.live, Items.IRON_INGOT) == 12) { "a refusal takes nothing" }
+                rig.command(bob, "duel accept ${view.ref}")
+                rig.command(ann, "duel accept ${view.ref}")
+                val running = rig.duel(view.ref)!!
+                check(running.status == ChallengeStatus.RUNNING && running.betsCloseAt == running.startedAt!! + 100_000) {
+                    "the bets open when it starts, for a third of its 5 minutes: $running"
+                }
+                rig.bets.bet(cid.live, view.ref, ann.name)
+                dan.hold(ItemStack(Items.GOLD_INGOT, 5))
+                rig.bets.bet(dan.live, view.ref, bob.name)
+                check(rig.duel(view.ref)!!.bets.map { it.name to it.what } == listOf(cid.name to "12x iron_ingot", dan.name to "5x gold_ingot")) { "two bets" }
+
+                bob.live.hurtServer(helper.level, helper.level.damageSources().playerAttack(ann.live), 1_000f)
+                check(!bob.live.isDeadOrDying && rig.store.get().challenges.isEmpty()) { "Ann won, Bob lives" }
+                rig.tick()
+                check(rig.store.get().settlements.isEmpty()) { "settled at the next tick" }
+                check(count(cid.live, Items.IRON_INGOT) == 12 && count(cid.live, Items.GOLD_INGOT) == 5) { "Cid gets his stake back with Dan's" }
+                check(count(dan.live, Items.GOLD_INGOT) == 0) { "Dan's stake went to Cid" }
+                check(rig.ledger.held(cid.live).isEmpty() && rig.ledger.held(dan.live).isEmpty()) { "nothing left in escrow" }
+            }
+            val end = rig.awaitEnd(view.ref)
+            val bets = " · bets: ${cid.name} bet 12x iron_ingot on ${ann.name}, got it back with ${dan.name}'s 5x gold_ingot; " +
+                "${dan.name} bet 5x gold_ingot on ${bob.name}, lost it to ${cid.name}"
+            check(end.startsWith("${view.ref} won by ${ann.name} in ") && end.endsWith(bets)) { "the end: $end" }
+            rig.checkClosed(view.ref, CanonStatus.WON, listOf(ann), listOf(bob), end)
+        }
+    }
+
     // ── The arena ──
 
     /**
@@ -484,9 +532,13 @@ class DuelGameTests {
         }
         val ui: UiTexts get() = runtime.settings.get().ui
         val bars = Bossbars()
-        val challenges = Challenges(services, store, bars, clock = clock)
+
+        /** A ledger of the rig's own: it reads the same player attachments as the server's guards. */
+        val ledger = ItemLedger(GuardStates(), Decisions(sink, clock), clock, tell = { _, _ -> }) { runtime.settings.get().ui }
+        val bets = Bets(services, store, ledger, clock)
+        val challenges = Challenges(services, store, bars, bets = bets, clock = clock)
         val duels = Duels(services, store, challenges, clock = clock)
-        val engine = Engine(services, store, listOf(challenges, duels, DrawnBars(bars, store, runtime.settings.get().ui)), clock)
+        val engine = Engine(services, store, listOf(challenges, duels, bets, DrawnBars(bars, store, runtime.settings.get().ui)), clock)
 
         /** What `/duel` answers to: this engine's duels. */
         private val control: ChallengeControl = object : ChallengeControl by FakeChallenges(clock, AtomicLong(1)) {
@@ -720,6 +772,9 @@ class DuelGameTests {
 
         /** A private line of the Narrator, as the player reads it. */
         fun line(ui: UiTexts, text: String): String = ui["narrator.whisper_prefix"] + " " + text
+
+        /** [this] holds [stack] in the main hand. */
+        fun TestPlayer.hold(stack: ItemStack) = live.setItemInHand(InteractionHand.MAIN_HAND, stack)
 
         /** Whether [this] read [text] in the chat. */
         fun TestPlayer.read(text: String): Boolean = chat().any { it.content().string == text }
