@@ -17,6 +17,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.memory.WakeAttachments
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
+import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
 import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -562,7 +563,9 @@ class Director(
         val window = now - windowStart
         val online = services.players.online.map { it.ref.name }
         val verdict = if (summary.isEmpty()) null else services.reflexes.heartbeat(((window + 30_000) / 60_000).toInt().coerceAtLeast(1), summary, online)
-        val worth = WakeScheduler.heartbeatWorth(verdict, waiting)
+        // Boredom is read in the chat waiting, which the reflexes' activity summary does not hold (M4-24, finding 5).
+        val words = HeuristicReflexes.forLanguage(services.settings.get().config.language)
+        val worth = WakeScheduler.heartbeatWorth(verdict, waiting, words::bored)
         if (worth.value < ReflexThresholds.HEARTBEAT_WORTH) {
             decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "skipped", HEARTBEAT, "${worth.why} < ${p(ReflexThresholds.HEARTBEAT_WORTH)}")
             return

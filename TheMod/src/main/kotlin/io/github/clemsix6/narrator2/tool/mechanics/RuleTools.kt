@@ -61,7 +61,8 @@ class CreateRuleTool : MechanicsTool<RuleSpec>(
         "happened) or everyone; the engine fills the tool's target with it. Tools: say, actionbar, show_title, play_sound, " +
         "particles, fireworks, lightning, explosion, apply_effect, set_attribute, launch, teleport, spawn, punish (traps: " +
         "punish cage or web); and for rules only: mob_effect {effect, seconds, level} and mob_attribute {attribute, multiply} " +
-        "on the creature of the trigger (at subject), and notify {note} (wakes you with your note). Effects obey the engine's " +
+        "on the creature of the trigger (at subject; never levitation, jump_boost nor a lighter gravity: a creature never " +
+        "falls), and notify {note} (wakes you with your note). Effects obey the engine's " +
         "rules like your own calls. Recorded in your canon (C-…).",
     args = RuleSpec.serializer(),
     effect = ToolEffect.ENGINE,
