@@ -276,7 +276,9 @@ class GuardGapGameTests {
         helper.runAfterDelay(99) { close() }
         val at = helper.absoluteVec(Vec3(4.5, 1.5, 4.5))
         ExplosionGuard.narrators { helper.level.explode(null, at.x, at.y, at.z, 1f, Level.ExplosionInteraction.NONE) }
-        fun mine() = recorded.filter { e -> e.nearby.any { it.uuid == player.uuid } }
+        // Its own blast, at its own block: another test's explosion within 32 blocks has the player nearby too.
+        val block = BlockPos.containing(at)
+        fun mine() = recorded.filter { e -> e.nearby.any { it.uuid == player.uuid } && e.pos.x == block.x && e.pos.y == block.y && e.pos.z == block.z }
         helper.startSequence()
             .thenWaitUntil { helper.assertTrue(mine().isNotEmpty(), "published at the end of the tick") }
             .thenExecute {
