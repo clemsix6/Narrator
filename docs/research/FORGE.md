@@ -5,6 +5,11 @@
 > `.research/spikes/forge/` (non versionné) et sur des **chiffres mesurés** sur cette machine
 > (Windows 11, JDK 25 `C:\Program Files\Java\jdk-25`). Il ne modifie aucun code de `TheMod`.
 > Rédigé le 25/09/2026.
+>
+> **Mise à jour du 19/10/2026** : le design de M5 ([design/M5.md](../design/M5.md)) ne retient pas l'accès des modules
+> aux classes du jeu (le §17 ne pourrait pas être garanti) : un module ne voit que le SDK du Narrateur et une liste
+> blanche du JDK. Il retient **ECJ seul** : imbriqué sans `fabric.mod.json`, ECJ n'était en fait jamais chargé dans le
+> serveur (essai de `.research/spikes/m5/`), ce que ce prototype, qui compilait avec `javac`, n'avait pas vu.
 
 ## 0. Verdict
 
