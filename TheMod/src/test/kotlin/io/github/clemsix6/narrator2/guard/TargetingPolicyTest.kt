@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.guard
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.testing.TestClock
@@ -245,6 +246,66 @@ class TargetingPolicyTest {
         assertEquals(Verdict.Allowed, punish(bartok, turn(null), seconds = 1, category = PunishmentCategory.FOOD))
         advance(1)
         denied(punish(bartok, turn(null), category = PunishmentCategory.FOOD), Rules.SAME_PUNISHMENT)
+    }
+
+    /** M4 review, finding 16: one act composes one punishment of the catalogue per player, never a pile of them. */
+    @Test
+    fun `an act uses punish once per player`() {
+        online(bartok)
+        fun punishWith(caller: Caller, id: PunishmentId, category: PunishmentCategory): Verdict {
+            val verdict = policy.check(bartok, caller, episodes, category = category, punishment = id)
+            if (verdict == Verdict.Allowed) episodes.open(bartok.uuid, caller.act, now() + 60_000, category, id)
+            return verdict
+        }
+        assertEquals(Verdict.Allowed, punishWith(turn(1), PunishmentId.HUNGER, PunishmentCategory.FOOD))
+        val refused = denied(punishWith(turn(1), PunishmentId.SMITE, PunishmentCategory.LIGHTNING), Rules.ALREADY_PUNISHED)
+        assertEquals("this act already punished Bartok (hunger); one punish per act and player: compose it with the other tools, or let it run.", refused.message)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.MOVEMENT), "the act's other tools still compose the punishment")
+
+        advance(2)
+        assertNull(episodes.active(bartok.uuid), "the punishment is over")
+        denied(punishWith(turn(1), PunishmentId.TINY, PunishmentCategory.SIZE), Rules.ALREADY_PUNISHED)
+        assertEquals(Verdict.Allowed, punishWith(turn(2), PunishmentId.TINY, PunishmentCategory.SIZE), "another act may")
+        assertEquals(Verdict.Allowed, policy.check(mimosa, turn(1), episodes, punishment = PunishmentId.HUNGER), "another player is not concerned")
+    }
+
+    /** M4 review, finding 39: a punish that did nothing at all is withdrawn, as if never asked; the act may punish again. */
+    @Test
+    fun `a withdrawn punish counts nowhere`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.FOOD))
+        advance(2)
+        val before = episodes.recentPunishments(bartok.uuid)
+        assertEquals(Verdict.Allowed, policy.check(bartok, turn(2), episodes, category = PunishmentCategory.LIGHTNING, punishment = PunishmentId.SMITE))
+        episodes.open(bartok.uuid, turn(2).act, now() + 30_000, PunishmentCategory.LIGHTNING, PunishmentId.SMITE)
+        episodes.open(bartok.uuid, turn(2).act, now() + 30_000, PunishmentCategory.HARM)
+        assertEquals(2, episodes.recentPunishments(bartok.uuid).size)
+
+        assertTrue(episodes.withdraw(bartok.uuid, turn(2).act))
+        assertNull(episodes.active(bartok.uuid), "no episode")
+        assertEquals(before, episodes.recentPunishments(bartok.uuid), "not counted")
+        assertNull(episodes.lastStrike(bartok.uuid, PunishmentCategory.LIGHTNING), "lightning does not rest")
+        assertNull(episodes.lastStrike(bartok.uuid, PunishmentCategory.HARM), "nor what its steps struck")
+        assertEquals(PunishmentCategory.FOOD, episodes.resting(bartok.uuid, 30 * 60_000L).keys.single(), "the earlier act's strike stays")
+        assertEquals(Verdict.Allowed, policy.check(bartok, turn(2), episodes, category = PunishmentCategory.LIGHTNING, punishment = PunishmentId.SMITE), "the act may punish again")
+        assertEquals(false, episodes.withdraw(bartok.uuid, turn(2).act), "nothing left to withdraw")
+    }
+
+    /** M4 review, finding 18: a player saved from a death (a rescue, a duel's fatal blow stopped) is left alone, by every act. */
+    @Test
+    fun `a shielded player is not a target`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1)))
+        val shield = Shield(now(), now() + TargetingPolicy.NO_PILE_ON_MS, "duel C-52: fatal blow stopped at 1 hp")
+        advance(1)
+        val refused = denied(policy.check(bartok, turn(1), episodes, shield = shield), Rules.NO_PILE_ON)
+        assertEquals(
+            "Bartok was saved from death 1m ago (duel C-52: fatal blow stopped at 1 hp); hostile actions against them are refused until 19:35:00 (in 4m).",
+            refused.message,
+        )
+        denied(policy.check(bartok, firing(9), episodes, shield = shield), Rules.NO_PILE_ON)
+        advance(4)
+        assertEquals(Verdict.Allowed, policy.check(bartok, turn(2), episodes, shield = shield), "once the shield is over")
     }
 
     @Test

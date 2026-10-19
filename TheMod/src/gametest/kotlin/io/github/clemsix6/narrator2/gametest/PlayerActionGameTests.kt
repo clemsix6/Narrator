@@ -542,6 +542,33 @@ class PlayerActionGameTests {
         }
     }
 
+    /**
+     * A far teleport the guards refuse is refused before its destination loads, or is generated (M4 review, finding
+     * 33): the guards are vetted first, and nothing is opened nor counted. Guards of their own ([FakeGuards]) refuse.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aRefusedFarTeleportLoadsNothing(helper: GameTestHelper) {
+        val fake = FakeGuards(verdict = Verdict.Denied(Rules.ALREADY_PUNISHED, "punished by another act"), clock = Clock.systemUTC())
+        val services = TestServices(minecraft = helper.level.server, clock = Clock.systemUTC(), players = helper.narrator().players, guards = fake)
+        val bob = TestPlayer(helper)
+        helper.closingOnFailure(bob, ASYNC_MAX_TICKS) {
+            bob.standAt(BlockPos(1, 1, 1))
+            val result = AtomicReference<ToolResult?>()
+            CoroutineScope(Dispatchers.IO).launch {
+                result.set(TeleportTool().run(ToolContext(services, CALLER, services.clock, 12_000), TeleportArgs(bob.name, randomRadius = 500)))
+            }
+            helper.startSequence()
+                .thenAwait { helper.assertTrue(result.get() != null, "the teleport answers") }
+                .thenExecute {
+                    helper.assertEquals("DENIED (${Rules.ALREADY_PUNISHED}): punished by another act", result.get()!!.text, "refused")
+                    helper.assertEquals(listOf(PunishmentCategory.TELEPORT), fake.vetted.map { it.category }, "the guards vetted it first")
+                    helper.assertTrue(fake.hostiles.isEmpty(), "refused before its destination loaded: no landing looked for, no punishment opened")
+                    bob.close()
+                }
+                .thenSucceed()
+        }
+    }
+
     // ── Launch ──────────────────────────────────────────────────────────────────────────────────
 
     @GameTest(maxTicks = 100)
@@ -784,6 +811,9 @@ class PlayerActionGameTests {
             act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "slowness", seconds = 10))
             act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "poison", seconds = 5))
             act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "blindness", seconds = 5))
+            // Neutral in the game, a punishment all the same (M4 review, finding 33): seen through every wall.
+            act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "glowing", seconds = 5))
+            helper.assertTrue(GuardStates.read(bob.live).effects.single { it.effect == "minecraft:glowing" }.harmful, "glowing is harmful in the ledger: a pardon lifts it")
             act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.SCALE, multiply = 0.5, seconds = 10))
             act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.BLOCK_BREAK_SPEED, multiply = 0.5, seconds = 10))
             act(LaunchTool(), LaunchArgs(bob.name, LaunchDirection.UP, 0.5))
@@ -795,8 +825,8 @@ class PlayerActionGameTests {
             act(ResetAttributeTool(), ResetAttributeArgs(bob.name, AttributeKey.FALL_DAMAGE_MULTIPLIER))
             helper.assertEquals(
                 listOf(
-                    PunishmentCategory.MOVEMENT, PunishmentCategory.HARM, PunishmentCategory.SENSES, PunishmentCategory.SIZE, PunishmentCategory.MINING,
-                    PunishmentCategory.AIR, PunishmentCategory.INVENTORY, PunishmentCategory.OTHER, PunishmentCategory.OTHER,
+                    PunishmentCategory.MOVEMENT, PunishmentCategory.HARM, PunishmentCategory.SENSES, PunishmentCategory.SENSES, PunishmentCategory.SIZE,
+                    PunishmentCategory.MINING, PunishmentCategory.AIR, PunishmentCategory.INVENTORY, PunishmentCategory.OTHER, PunishmentCategory.OTHER,
                 ),
                 fake.hostiles.map { it.category },
                 "the categories, in order",

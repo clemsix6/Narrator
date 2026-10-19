@@ -25,6 +25,9 @@ import java.util.UUID
 fun interface Prepared {
     /** Does it now, for the act [act]: what was done, for the result, or why it could not be. Server thread. */
     fun apply(act: Long?): Result<String>
+
+    /** How long a fall is the Narrator's once it is done, in seconds (the climb down from a tree top); 0 for none. */
+    val fallSeconds: Int get() = 0
 }
 
 /**
@@ -42,6 +45,12 @@ object Primitives {
 
     /** A tree top is at least this many blocks above the player's feet. */
     const val TREE_TOP_MIN_RISE = 6
+
+    /**
+     * And at most this many (M4 review, finding 10): a tree, a roof, a cliff nearby, never the surface high above
+     * a miner in a cave (the heightmap sees only the top of each column).
+     */
+    const val TREE_TOP_MAX_RISE = 32
 
     /** The main inventory (27 slots) after the hotbar (9): `Inventory` slots 9 to 35. */
     private val MAIN = Inventory.SELECTION_SIZE until Inventory.INVENTORY_SIZE
@@ -110,9 +119,11 @@ object Primitives {
 
     /**
      * The top to put [player] on: among the columns within [TREE_TOP_RADIUS] blocks whose highest block (leaves
-     * included, `Heightmap.Types.MOTION_BLOCKING`) is at least [TREE_TOP_MIN_RISE] blocks above their feet and
-     * no farther than a teleport may go at the chaos level, a tree's leaves first, then the highest, then the
-     * nearest; and only where they can stand ([standable]). Never in a dimension with a ceiling (the Nether's roof).
+     * included, `Heightmap.Types.MOTION_BLOCKING`) is [TREE_TOP_MIN_RISE] to [TREE_TOP_MAX_RISE] blocks above
+     * their feet and no farther than a teleport may go at the chaos level, a tree's leaves first, then the
+     * highest, then the nearest; and only where they can stand ([standable]). Never in a dimension with a ceiling
+     * (the Nether's roof). Its [Prepared.fallSeconds]: the tree top's episode, and
+     * `PunishmentCatalog.TREE_TOP_FALL_SECONDS_PER_BLOCK` more per block of the climb.
      *
      * `teleport` cannot do it: its landing wants a sturdy floor, and leaves have none (`LeavesBlock` overrides
      * `getBlockSupportShape`, javap); they have a full block of collision, which is what holds a player.
@@ -134,7 +145,7 @@ object Primitives {
                 // Never loads a chunk: a column not loaded is no candidate.
                 val chunk = level.chunkSource.getChunkNow(x shr 4, z shr 4) ?: continue
                 val top = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, x and 15, z and 15)
-                if (top + 1 - feet < TREE_TOP_MIN_RISE) continue
+                if (top + 1 - feet !in TREE_TOP_MIN_RISE..TREE_TOP_MAX_RISE) continue
                 columns += Column(x, top, z, chunk.getBlockState(BlockPos(x, top, z)).`is`(BlockTags.LEAVES), distance)
             }
         }
@@ -142,16 +153,22 @@ object Primitives {
         val spot = columns.sortedWith(order).asSequence()
             .map { BlockPos(it.x, it.top + 1, it.z) }
             .firstOrNull { standable(level, player, it) && player.position().distanceTo(Vec3.atBottomCenterOf(it)) <= caps.teleportBlocks }
-            ?: return refused("nothing $TREE_TOP_MIN_RISE blocks higher than $name within $TREE_TOP_RADIUS blocks to put them on top of (no tree, no roof, no cliff)")
+            ?: return refused(
+                "nothing $TREE_TOP_MIN_RISE to $TREE_TOP_MAX_RISE blocks higher than $name within $TREE_TOP_RADIUS blocks to put them on top of " +
+                    "(no tree, no roof, no cliff)",
+            )
         val floor = level.getBlockState(spot.below()).block.id.removePrefix("minecraft:")
+        val rise = spot.y - feet
         return Result.success(
-            Prepared {
-                val rise = spot.y - feet
-                if (!Teleports.move(player, Vec3.atBottomCenterOf(spot))) {
-                    Result.failure(IllegalStateException("the game refused to move $name"))
-                } else {
-                    Result.success("put on top of $floor at x ${spot.x}, y ${spot.y}, z ${spot.z}, $rise blocks above where they stood, to climb down by themselves")
-                }
+            object : Prepared {
+                override val fallSeconds = PunishmentCatalog.TREE_TOP_SECONDS + rise * PunishmentCatalog.TREE_TOP_FALL_SECONDS_PER_BLOCK
+
+                override fun apply(act: Long?): Result<String> =
+                    if (!Teleports.move(player, Vec3.atBottomCenterOf(spot))) {
+                        Result.failure(IllegalStateException("the game refused to move $name"))
+                    } else {
+                        Result.success("put on top of $floor at x ${spot.x}, y ${spot.y}, z ${spot.z}, $rise blocks above where they stood, to climb down by themselves")
+                    }
             },
         )
     }

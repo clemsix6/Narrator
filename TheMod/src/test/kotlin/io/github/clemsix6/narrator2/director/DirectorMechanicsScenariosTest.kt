@@ -255,6 +255,57 @@ class DirectorMechanicsScenariosTest {
         }
     }
 
+    /** M4 review, finding 5: a reminder that came due is in the world until a request that carries it is answered. */
+    @Test
+    fun `a reminder due during a pause stays in the world, and the Director of the next run tells it`() {
+        val world = InMemoryReminderStore()
+        DirectorHarness(dir.resolve("first").also(Files::createDirectories), reminders = world).use { h ->
+            h.online("Bartok")
+            h.director.scheduleReminder(60, "le coffre de Bartok", caller).getOrThrow()
+            h.director.post(DirectorSignal.Pause)
+            h.runCurrent()
+            assertEquals(DirectorState.PAUSED, h.director.status().state)
+
+            h.advance(120_000)
+            assertEquals(0, h.fake.requests.size, "paused: nobody hears it")
+            assertEquals(listOf(1L), world.state.reminders.map { it.id }, "due and waiting among the events, it is still in the world")
+            assertTrue(h.director.status().reminders.isEmpty(), "no longer to come")
+        }
+        // The server stops before the pause ends: the next run finds it and tells it.
+        DirectorHarness(dir.resolve("second").also(Files::createDirectories), reminders = world).use { h ->
+            h.online("Bartok")
+            h.fake.enqueue(reply { text("…") })
+            h.advance(63_000)
+            h.awaitTurns(1)
+            assertContains(h.wakeText(0), "[-3s] REMINDER R-1 set 1m ago: \"le coffre de Bartok\"")
+            assertEquals(ReminderState(2, emptyList()), world.state, "told: it leaves the world")
+            h.assertInvariants()
+        }
+    }
+
+    /** M4 review, finding 5: past the budget of turns, a reminder waits in the inbox, and in the world, for the next wake-up. */
+    @Test
+    fun `a reminder due while the budget of turns is spent stays in the world until a wake-up tells it`() =
+        DirectorHarness(dir, turnsPerHour = 1).use { h ->
+            h.online("Bartok")
+            h.fake.enqueue(reply { text("…") }, reply { text("…") })
+            h.chat("Bartok", "narrateur ?")
+            h.advance(1_500)
+            h.awaitTurns(1)
+            h.director.scheduleReminder(60, "le coffre de Bartok", caller).getOrThrow()
+
+            h.advance(600_000)
+            assertEquals(1, h.endedTurns().size, "the budget is spent: the reminder waits")
+            assertEquals(listOf(1L), h.game.reminders.state.reminders.map { it.id }, "and the world keeps it meanwhile")
+
+            h.chat("Bartok", "tu dors ?")
+            h.advance(1_500)
+            h.awaitTurns(2)
+            assertContains(h.wakeText(1), "REMINDER R-1 set 1m ago: \"le coffre de Bartok\"")
+            assertTrue(h.game.reminders.state.reminders.isEmpty(), "told: it leaves the world")
+            h.assertInvariants()
+        }
+
     @Test
     fun `a disabled Director keeps its reminders in the world, and tells them once it runs again`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")

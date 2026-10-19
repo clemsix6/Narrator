@@ -11,7 +11,7 @@
 - **Oracle** : des outils instantanés pour savoir où est un joueur, s'il est dans une grotte, dans quel biome, quels minerais et quelles structures sont proches…
 - **Mémoire en couches** avec une **fiche joueur** structurée et des **rêves** de consolidation : voir [MEMOIRE.md](MEMOIRE.md).
 - **Mécaniques de jeu de première classe** : défis, châtiments, faveurs, pièges et récits sont suivis, minutés et résolus par le moteur, pas seulement racontés.
-- **La Forge** : le Narrateur crée de nouvelles mécaniques (squelettes à flèches explosives, vaches qui s'envolent…) en code compilé à chaud contre les vraies classes du jeu, avec retour du compilateur, recherche dans l'API réelle de 26.3 et déchargement propre.
+- **La Forge** : le Narrateur crée de nouvelles mécaniques (poules en orbite, mini-jeux arbitrés…) en Java compilé à chaud contre son propre SDK, une API bornée qui passe par ses outils et ses garde-fous, dans un bac à sable ; chaque module est testé dans un monde simulé avant d'être déployé, et se décharge proprement.
 - **Ton et renouvellement garantis par des mécanismes** (historique des interventions, tics détectés, registres comiques, arcs à fin programmée, cooldowns), pas seulement par le prompt.
 
 ## 1. Ce qu'on retient de la v1
@@ -23,7 +23,7 @@ Les idées de la v1 étaient bonnes ; l'exécution était du bricolage. L'analys
 | Récits qui tournent en rond | Briefing construit avec des entrées vides : fiches joueurs, chat et état du monde n'arrivaient jamais au modèle, seuls ses propres arcs passés y étaient. Consolidation aveugle (elle ne voyait pas ce que le Narrateur disait) : les punchlines « à ne pas répéter » étaient inventées. Anciens événements rejoués comme neufs. Intentions et assistants inopérants présentés comme actifs. Arcs impossibles à clore. Cadence imposée (« au moins une action », relances quand il se taisait). | Briefing couvert par un test qui vérifie que fiches, chat et état y sont. Consolidation sur la transcription complète. Tics calculés mécaniquement à partir de ce qui a vraiment été dit. Curseur d'événements par conversation et horodatage relatif. Le modèle ne voit que des outils réellement branchés (doc générée depuis le registre d'outils). Arcs avec identifiant, fin programmée et jachère. Aucun quota : ne rien faire est une décision valable. |
 | Ton qui devient glauque | Charte de surveillant : quota de 70 % de sabotage, destruction d'une partie « régulière », jamais de prévenance, tribut exigé et colère s'il est ignoré, exemples gothiques. Autoportrait et réflexions rédigés dans la voix du personnage puis réinjectés à chaque réveil : le Narrateur se mythifiait lui-même. | Voix comique d'abord, avec exemples et contre-exemples. Registres comiques qui tournent. « Méchant de dessin animé ». La persona est figée dans le prompt : la mémoire est **factuelle, à la troisième personne**, et ne réécrit jamais la voix. Carotte et bâton, lisibilité (« le joueur peut raconter en une phrase ce qui lui est arrivé »). |
 | Commandes de datapack invalides | Le modèle écrivait de mémoire une syntaxe qui avait changé, et la documentation censée l'aider était fausse : filtrée au mauvais seuil de version, tirée de la dernière snapshot au lieu de 26.1.2, tronquée par la fin. | Plus de datapacks. Actions **typées** validées côté serveur. Commandes brutes analysées par le vrai parseur du serveur *avant* exécution, avec l'usage exact de la commande en cas d'erreur. Toute connaissance de version vient du serveur en cours d'exécution (arbre des commandes, registres), jamais d'Internet. |
-| Plugins JS mal maîtrisés | API maison, erreurs découvertes seulement à l'exécution, crochets manquants (mort, dégâts, connexion…), assistants lancés sans aucun outil qui annonçaient « plugin écrit » sans rien faire. | Règles déclaratives validées (§10.1) et modules Java compilés contre les vraies classes (§10.2), avec erreurs immédiates, recherche d'API dans le jeu en cours d'exécution et un bus d'événements riche. Assistants avec de vrais outils. |
+| Plugins JS mal maîtrisés | API maison, erreurs découvertes seulement à l'exécution, crochets manquants (mort, dégâts, connexion…), assistants lancés sans aucun outil qui annonçaient « plugin écrit » sans rien faire. | Règles déclaratives validées (§10.1) et modules Java compilés contre un SDK documenté (§10.2), dans un bac à sable, avec erreurs immédiates, tests dans un monde simulé avant sauvegarde et un bus d'événements riche. Assistants avec de vrais outils. |
 | Lenteur | 25 à 180 s par tour ; prompt de ~40k tokens sans cache (une horloge placée en tête du prompt l'invalidait à chaque appel) ; attentes bloquantes dans la boucle. | Préfixe stable mis en cache, informations variables à la fin ; boucle événementielle sans attente ; effort `medium` ; tâches longues déléguées. |
 | Outils mal typés | Le convertisseur de schémas déclarait tableaux et booléens comme des chaînes. | SDK officiel d'Anthropic, schémas JSON stricts. |
 | Mémoire en fichiers libres | Fiches en markdown réécrites par le modèle, jamais relues dans le prompt. | Fiches structurées (stats calculées par le code, personnalité avec preuves, historique noté), canon, souvenirs, chronique hiérarchique. |
@@ -70,11 +70,11 @@ L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouvea
 |---|---|---|
 | Plateforme | Fabric (Loader + Fabric API), **côté serveur uniquement** | Léger, à jour rapidement, idéal pour un mod serveur. Aucun ajout requis chez les joueurs. |
 | Langage du mod | Kotlin (via Fabric Language Kotlin), mixins en Java | Coroutines pour l'orchestration asynchrone ; DSL agréable pour le SDK de la Forge |
-| Noms du jeu | Noms officiels de Mojang (le jeu n'est plus obfusqué depuis 26.1) | Le code compilé à chaud voit exactement les mêmes noms que le jeu en cours d'exécution |
+| Noms du jeu | Noms officiels de Mojang (le jeu n'est plus obfusqué depuis 26.1) | Le mod se compile et s'exécute avec les noms du jeu, sans remapping |
 | Claude | SDK Java officiel d'Anthropic, pointé sur **LLMGW** | Protocole Anthropic Messages standard ; LLMGW gère clés projet, budgets et comptes |
 | Journal et mémoire | **DuckDB** embarqué (JDBC) | Base analytique en colonnes : agrégations rapides sur des millions de lignes, SQL riche (fenêtres, `QUALIFY`, JSON, listes), aucun serveur à gérer |
 | Recherche plein texte | BM25 calculé en SQL dans DuckDB, analyseur français en Kotlin | Rien de plus dans le jar ; l’extension `fts` de DuckDB n’est pas embarquable et Lucene ajouterait 6,5 Mo et un second stockage (mesures dans `design/M3.md`) |
-| Code à chaud | **Java 25** compilé en mémoire : javac si le serveur tourne sur un JDK, sinon ECJ embarqué (3,4 Mo) | ~50 ms par compilation une fois chaud, API standard, et c'est en Java que Claude écrit le mieux contre les classes de Minecraft (voir §10) |
+| Code à chaud | **Java 25** compilé en mémoire par **ECJ**, embarqué (3,2 Mo), sur JDK comme sur JRE | ~7 ms par compilation une fois chaud dans le serveur (mesuré), un seul compilateur, et c'est en Java que Claude écrit le mieux (voir §10.2) |
 
 Versions vérifiées (fixées dans `TheMod/gradle.properties`) :
 
@@ -86,7 +86,7 @@ Versions vérifiées (fixées dans `TheMod/gradle.properties`) :
 | Fabric Language Kotlin | 1.14.1 (Kotlin 2.4.20, coroutines 1.11) |
 | SDK Anthropic Java | 2.65.0 |
 
-Depuis 26.1, Minecraft n'est plus obfusqué : plus d'Intermediary ni de Yarn, les mods sont compilés et s'exécutent directement avec les noms de Mojang. C'est ce qui rend la Forge possible sans remapping.
+Depuis 26.1, Minecraft n'est plus obfusqué : plus d'Intermediary ni de Yarn, les mods sont compilés et s'exécutent directement avec les noms de Mojang. Les modules de la Forge, eux, ne voient pas les classes du jeu : seulement le SDK du Narrateur (§10.2).
 
 ## 4. L'Observateur et le Journal
 
@@ -216,12 +216,12 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 |---|---|---|
 | **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
 | **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, `survey` (terrains plats et dégagés), SQL (positions), `recall` |
-| **Forgeron** | Écrire, compiler et tester un module de la Forge | Outils de la Forge (§10) |
+| **Forgeron** | Écrire, tester et sauver un module de la Forge, commandé par `forge_module` | `module_list`, `module_read`, `game_ids`, `forge_test`, `forge_save` (§10.2) |
 | **Scénariste** | Proposer trois idées originales (défi, châtiment, rebondissement) notées sur la nouveauté, le fun et l'équité, en évitant ce qui a déjà été fait | Mémoire, historique des interventions, `inspire` |
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
-Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
+Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), le **Forgeron** en M5 (une tâche à la fois, 40 requêtes et 20 minutes au plus, commandé par son propre outil), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
 
 ### 7.4 Chapitres et contexte
 - La conversation du Directeur est **append-only** : on n'édite jamais un tour passé, on ne change pas le prompt système ni la liste d'outils en cours de chapitre. C'est indispensable avec Opus 5.5 (sa réflexion est liée au préfixe exact de la conversation) et c'est ce qui rend le cache de prompt efficace.
@@ -281,7 +281,7 @@ le canon et prévient le Directeur (`CHALLENGE`).
 | Construction jugée (`judged`) | « La plus belle statue en 15 minutes » | le Narrateur nomme les gagnants à l'échéance (`JUDGE`) |
 | Duel (`propose_duel`) | PvP consenti, dans une arène de leur dimension ou sur place, positions restaurées | coup fatal de l'adversaire **arrêté à 1 PV**, toute autre mort refusée avec un sauvetage : personne ne meurt d'un duel |
 | Pari (`/bet`) | Les joueurs misent la pile qu'ils tiennent sur l'issue d'un défi ou d'un duel | l'issue ; les mises perdues vont aux parieurs gagnants, **rien au Narrateur** |
-| Personnalisé | Condition implémentée par un module de la Forge | M5 |
+| Arbitré par un module | Un module de la Forge arbitre un défi jugé (« 1, 2, 3, soleil », le loup) et nomme lui-même les gagnants | `deploy_module` avec `challenge` (M5) |
 
 ### 9.2 Châtiments
 Un **catalogue** (`punish`) de treize punitions composées, avec une **sévérité de 1 à 5** plafonnée par le niveau de
@@ -292,7 +292,8 @@ perdu est une punition légère (sévérité 1 ou 2), jamais pour un joueur arri
 quel outil, d'une règle ou d'un enjeu, porte une **catégorie** (taille, gravité, mouvement, foudre…) : une même
 catégorie ne frappe pas deux fois le même joueur avant un délai qui dépend du chaos (30 min au chaos 3). Chaque
 châtiment a une raison, gardée dans l'historique du joueur, et une durée ; il passe par les garde-fous comme tout
-(protégé, mort récente, déjà puni, quatre par heure au plus). Les « poules en orbite » attendent la Forge.
+(protégé, mort récente, déjà puni, quatre par heure au plus). Les « poules en orbite » sont un module de l'arsenal de
+départ de la Forge (M5).
 
 ### 9.3 Faveurs
 La carotte : objets nommés avec une histoire (« La Pioche du Pardon »), effets bénéfiques, titres honorifiques,
@@ -302,7 +303,9 @@ créatures ne touchent le joueur) et le **joker** (un objet que le joueur joue l
 **coût** : un rationnement par joueur (objets précieux, une grâce par heure, un joker par jour), et les
 **offrandes** : un joueur offre de lui-même la pile qu'il tient (`/offer`, une fois par 10 min au plus) ; le
 Narrateur ne la prend qu'en accordant une faveur dans le même appel (`favor` avec l'offrande), et c'est tracé ;
-sinon elle revient d'elle-même. Le Narrateur ne réclame jamais d'offrande.
+sinon elle revient d'elle-même. Le Narrateur ne réclame jamais d'offrande. Une offrande réveille le Narrateur même
+quand son budget de tours de l'heure est épuisé, mais quatre fois par heure au plus, tous joueurs confondus : au-delà,
+elle attend le réveil suivant ([relecture de M4](design/reviews/M4_REVIEW.md), constat 6).
 
 ### 9.4 Pièges et intentions
 Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur —
@@ -312,7 +315,9 @@ unique, gardée au canon pour qu'il s'en souvienne d'un chapitre à l'autre. Les
 toiles) sont deux punitions du catalogue : posés **seulement dans l'air** autour du joueur, pour quelques secondes,
 puis retirés tout seuls par le `BlockRestorer`, seul chemin d'écriture de blocs. Ils ne remplacent jamais un bloc,
 naturel ou construit : rien de ce que les joueurs ont construit n'est touché, même s'il date d'avant le mod. Fosses et
-sols piégés attendent la Forge.
+sols piégés ne viennent qu'avec la Forge, par des modules, sur du terrain naturel reconnu par une heuristique (aucun
+bloc construit ni entité de bloc à 6 blocs, ciel visible, terrain plat, hors des structures), si le propriétaire rouvre
+la décision G de M4 ([design M5](design/M5.md) §19.2, Q4).
 
 ### 9.5 Récits
 Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée
@@ -368,21 +373,23 @@ Narrateur » : ses explosions ne cassent aucun bloc. Une règle a une durée, de
 désactive après cinq échecs et se retire proprement ([design M4](design/M4.md) §8).
 
 ### 10.2 Les Modules : du Java compilé à chaud
-Pour les mécaniques vraiment nouvelles (IA de mobs, mini-jeux, machines à états), le Forgeron écrit un module Java.
+Pour les mécaniques vraiment nouvelles (mini-jeux, machines à états, créatures pilotées à chaque tick, défis arbitrés),
+le Forgeron écrit un module Java. Le design exécutable est dans [design/M5.md](design/M5.md) ; l'étude de faisabilité
+dans [research/FORGE.md](research/FORGE.md).
 
-**Pourquoi Java plutôt que Kotlin ?** Nous avons évalué les deux ; des mods Kotlin compilés à chaud existent en 26.3 (Kursive, Katton). Mais Kotlin impose d'embarquer ~61 Mo de compilateur, lent au premier démarrage (plus de 5 s) et à garder synchronisé avec Fabric Language Kotlin. javac compile un module en ~50 ms une fois chaud (mesuré sur cette machine), l'API `javax.tools` est standard, et ECJ (3,4 Mo) prend le relais si le serveur tourne sur un simple JRE. Surtout, l'immense majorité du code de mods Minecraft est en Java : c'est dans ce langage que Claude écrit le mieux contre les classes du jeu. Le mod lui-même reste en Kotlin.
+**Pourquoi Java plutôt que Kotlin ?** Nous avons évalué les deux ; des mods Kotlin compilés à chaud existent en 26.3 (Kursive, Katton). Mais Kotlin impose d'embarquer ~61 Mo de compilateur, lent au premier démarrage (plus de 5 s) et à garder synchronisé avec Fabric Language Kotlin. ECJ (3,2 Mo, embarqué) compile un module en ~7 ms une fois chaud dans le serveur (mesuré), sur un JDK comme sur un JRE. Surtout, c'est en Java que Claude écrit le mieux. Le mod lui-même reste en Kotlin ; seuls le SDK vu par les modules et ce qu'appelle leur bytecode réécrit sont en Java.
 
 Principes :
 
-1. **Compilé contre le vrai jeu.** Le classpath de compilation est construit à partir des jars réellement chargés (le jeu, Fabric API, le SDK du Narrateur). Depuis 26.1, les noms du jeu à l'exécution sont ceux de Mojang : pas de remapping, pas d'API inventée, erreurs de compilation immédiates avec ligne, colonne et message.
-2. **Un SDK court et stable** au-dessus de Minecraft pour l'essentiel des besoins (réagir à un coup, à une mort, à un bloc cassé, à un projectile qui touche, à l'apparition ou au tick d'un mob ; exploser, lancer, téléporter, invoquer ; planifier ; stocker un état), avec accès complet aux classes du jeu pour le reste. Les règles du §10.1 et les modules partagent ce moteur.
-3. **Nos propres crochets.** Les événements de Fabric API ne se désinscrivent pas, et il en manque (projectile qui touche, explosion, tick d'entité). Le mod a donc son propre bus d'événements, alimenté par Fabric API et des mixins, où chaque abonnement appartient à un module.
-4. **Le Forgeron ne devine pas.** Il cherche les vraies signatures dans le jeu en cours d'exécution (`api_search`, `api_class`), liste les registres (entités, objets, blocs, particules, sons, effets), consulte la doc du SDK et les modules existants, compile, lit les erreurs, corrige.
-5. **Cycle de vie propre.** Compiler → charger (inactif) → déployer (durée, cibles) → décharger. Un chargeur de classes par module ; tout ce qu'il enregistre passe par le SDK et lui appartient. Au déchargement, tout est retiré (abonnements, tâches, modificateurs d'attributs, buts d'IA, entités marquées) puis le chargeur est abandonné.
-6. **Garde-fous.** Java n'a plus de bac à sable intégré : on filtre à la compilation (pas de fichiers, réseau, processus, threads ni réflexion), on chronomètre chaque gestionnaire, on désactive automatiquement un module qui plante ou ralentit le serveur, et tout expire par défaut.
-7. **Un arsenal qui grandit.** Les règles et modules réussis sont conservés, réutilisables et paramétrables. Le mod en livre une quinzaine écrits à la main, qui servent aussi d'exemples au Forgeron.
+1. **Le SDK, et rien d'autre.** Un module est compilé contre le SDK du Narrateur, une API Java bornée (faits, minuteurs, lectures du monde, actes, créatures pilotées, blocs temporaires, petit état, arbitrage d'un défi jugé), et contre une liste blanche du JDK. Il ne voit **aucune classe du jeu**, de Fabric ni du mod : avec elles, aucun interdit du §17 ne pourrait être garanti (des milliers de méthodes du jeu écrivent le monde ou un joueur, une liste noire ne serait jamais complète). Tout ce qu'il fait au monde passe par les vrais outils et les garde-fous ; chaque invocation qui agit est un acte du moteur, comme une règle qui se déclenche. Les règles du §10.1 et les modules partagent ce moteur.
+2. **Cinq barrières.** Un compilateur aveugle (ECJ ne voit que `java.base` et le SDK) ; une garde par liste blanche sur le bytecode (types, membres, appels dynamiques, `catch`, structure) ; une réécriture du bytecode qui mesure le temps (20 ms par appel), l'allocation et la profondeur, et borne tableaux, collections et textes ; un chargeur de classes par module qui refuse au lien tout nom hors liste ; un hôte qui désactive un module fautif, mesure la mémoire qu'il retient et surveille son déchargement. Un coupe-circuit (`/narrator forge off`) arrête tout. Une batterie de modules malveillants vérifie chaque barrière.
+3. **Nos propres crochets.** Les événements de Fabric API ne se désinscrivent pas, et il en manque (projectile qui touche, explosion, tick d'entité). Le mod a donc son propre bus d'événements, alimenté par Fabric API et des mixins ; le moteur des mécaniques en livre les faits aux modules, sur le thread serveur.
+4. **Le Forgeron ne devine pas.** Il a la référence du SDK dans son prompt, les identifiants des registres du jeu (`game_ids`), l'arsenal et ses sources (`module_list`, `module_read`), des diagnostics qui pointent vers le SDK, et un banc d'essai (`forge_test`) qui fait tourner le module dans un monde simulé, avec ses scénarios, avant toute sauvegarde (`forge_save`).
+5. **Cycle de vie propre.** Écrit → compilé → gardé → réécrit → testé → sauvé (une version immuable de l'arsenal, dans le dossier du monde) → déployé (une ligne du canon, loi ou plan, une durée) → suivi → retiré (abonnements, minuteurs, créatures rendues, chargeur abandonné). Un déploiement survit au redémarrage : recompilé, redémarré avec son petit état.
+6. **Tout expire** : un déploiement dure de 5 minutes à 7 jours ; un module qui plante ou ralentit le serveur est désactivé et le Directeur le sait.
+7. **Un arsenal qui grandit.** Le mod livre sept modules écrits à la main (poules en orbite, parade, loup, Jacques a dit, chaud ou froid, le sol est de lave, tempête de gravité), qui servent aussi d'exemples au Forgeron ; chaque module forgé s'y ajoute, versionné.
 
-Le Directeur n'écrit pas de code Java : il crée des règles lui-même, et commande les modules au Forgeron (« un mini-jeu de chaises musicales avec des minecarts autour de Bartok »), continue à jouer, puis déploie au moment le plus dramatique.
+Le Directeur n'écrit pas de code Java : il crée des règles lui-même, commande les modules au Forgeron (`forge_module` : « un 1, 2, 3, soleil qui arbitre le défi »), continue à jouer, puis les déploie (`deploy_module`) au moment le plus dramatique.
 
 ## 11. Le ton et le renouvellement
 
@@ -445,7 +452,8 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator chapter close          # clore le chapitre au prochain moment calme
 /narrator sql <requête>          # lecture seule
 /narrator rule list | remove <id>
-/narrator module list | unload <id> | unload-all
+/narrator forge status | list | show <nom> | approve <nom> | reject <nom> | off | on
+/narrator module list | stop <id>
 /narrator challenge list | cancel <id>
 /narrator traps [restore]        # pièges en cours ; tout remettre maintenant
 /narrator sheet <joueur>
@@ -513,7 +521,7 @@ Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, dur
 | **M2 — Directeur v1** | Boucle événementielle, saillance, parole, Oracle, actions typées, validation des commandes, prompt de voix, transcriptions | Le Narrateur réagit au chat et au jeu. **Terminé le 25/09/2026** : recette en jeu contre le vrai LLMGW (voir `design/handoff/T22.md`), puis correctifs de la relecture fusionnés et vérifiés sur `main` (voir `design/reviews/M2_REVIEW.md`) |
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures. **Terminé le 18/10/2026** : correctifs de la relecture fusionnés (voir `design/reviews/M3_REVIEW.md`), puis évals E1 à E6 et recette E7 contre le vrai LLMGW (voir `design/handoff/M3-19.md`) |
 | **M4 — Mécaniques** | Moteur des mécaniques (abonné du bus, état dans le monde, actes par les vrais outils) ; défis suivis (objectifs détectés, barres de boss, enjeux payés sous les garde-fous), duels consentis, paris ; catalogue de châtiments, catégories et sévérité ; faveurs (pardon, grâce, joker) et offrandes ; pièges de blocs temporaires (`BlockRestorer`) et index des blocs posés fiable ; Règles (§10.1), lois et plans ; récits bornés ; rythme ; Éclaireur ; rappels persistants. Design : [design/M4.md](design/M4.md) | Des parties rythmées, des règles du monde folles |
-| **M5 — Forge** | SDK, compilation Java à chaud, outils d'introspection, Forgeron, arsenal de départ | Il invente de nouvelles mécaniques |
+| **M5 — Forge** | SDK Java des modules, compilation à chaud (ECJ), bac à sable (liste blanche, réécriture, chargeur filtrant, hôte), banc d'essai, outils d'introspection (référence du SDK, identifiants du jeu, arsenal), Forgeron, déploiements suivis par le moteur, arsenal de départ. Design : [design/M5.md](design/M5.md) | Il invente de nouvelles mécaniques |
 | **M6 — Finitions** | Scénariste, `inspire`, tics, évaluation du ton, tableau de bord web des traces | Il se renouvelle, et on voit tout |
 
 Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats, outils, garde-fous, tâches pour les agents) est dans [docs/design/M1_M2.md](design/M1_M2.md). Il tranche en outre, le 25/09/2026 :
@@ -534,6 +542,19 @@ Le design exécutable de M4 est dans [docs/design/M4.md](design/M4.md). Il tranc
 - **Duels** : personne n'y meurt ; toute mort d'un duelliste est refusée, avec un sauvetage quand l'adversaire n'en est pas la cause.
 - **L'Éclaireur** entre avec `survey` ; les rappels deviennent persistants ; `/narrator restart` est rangé en M6, et les nouvelles tentatives d'ouverture du Journal au démarrage sont faites hors de M4.
 - **Relecture du 18/10/2026** ([relecture](design/reviews/M4_DESIGN_REVIEW.md)) : décisions A à F du superviseur intégrées, pièges limités à l'air, offrandes compensées par le code, duels sans aucune mort, découpage corrigé (44 outils pour le Directeur, tous dépendants du moteur).
+
+Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md). Il propose, le 19/10/2026 (sous réserve des
+questions Q1 à Q8 de son §19.2, à trancher par le propriétaire) :
+- **Un module ne voit que le SDK du Narrateur** et une liste blanche du JDK, jamais les classes du jeu ; tout ce qu'il
+  fait au monde passe par les vrais outils et les garde-fous, chaque invocation étant un acte du moteur.
+- **Cinq barrières** : compilateur aveugle, garde par liste blanche, réécriture (temps, allocation, profondeur, tailles),
+  chargeur filtrant, hôte (fautes, mémoire retenue, déchargement) ; coupe-circuit ; batterie d'attaque dans le build.
+- **ECJ seul**, embarqué ; mesuré dans le vrai serveur Fabric (7 ms à chaud).
+- **Un déploiement est une ligne du canon** (loi ou plan, `mechanic = module`) et une entrée de l'état du monde ; il
+  survit au redémarrage. L'arsenal est fait de sources versionnées dans le dossier du monde.
+- **Pas de module sans tests** au banc d'essai (un monde simulé) ; revue par un opérateur en option.
+- **Le Forgeron** a cinq outils et le SDK dans son prompt ; **le Directeur** commande (`forge_module`), déploie
+  (`deploy_module`) et arrête (`stop_module`) : 47 outils.
 
 ## 17. Décisions prises
 

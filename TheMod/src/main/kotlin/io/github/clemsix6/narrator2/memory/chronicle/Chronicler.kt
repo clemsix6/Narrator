@@ -40,7 +40,9 @@ import java.util.Locale
  *   cut into blocks of 24 000 characters, one conversation each) with what the memory already knows
  *   (`<known>`). The model records the commitments the Director forgot, settles what was settled, notes
  *   the interactions that matter and the incoherences; then the code covers the punishments and benefits
- *   left unnoted ([Sanctions]). A window with no line of chat and no tool call is skipped.
+ *   left unnoted ([Sanctions]). A window with no line of chat, no line of the Narrator, no tool call and no
+ *   news of a mechanic ([ExchangeLog.Line.worthABatch]) is skipped: its facts and the ledger's news (an M2
+ *   confiscation given back, a stake held) are no reason for a batch, only the context of one.
  * - **A nap** ([nap]) when a chapter closed, with or without a summary: the code turns the summary into the
  *   chapter's chronicle entry (`H-`, source `director`); a last batch covers the rest of the window; then
  *   one conversation consolidates the whole chapter (episodes, statuses, `write_chapter` when there is no
@@ -71,7 +73,7 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val context = RunContext(runId, RunKind.BATCH, from, to, chapter)
         log.info("batch run $runId of chapter $name: ${exchange.time(from)}–${exchange.time(to)}")
         val step = chronicle(work, context, name, from, to, last = false)
-        if (step == Step.NOTHING) return work.outcome(RunStatus.SKIPPED, "nothing to note: no line of chat nor tool call in the window")
+        if (step == Step.NOTHING) return work.outcome(RunStatus.SKIPPED, "nothing to note: no chat, no line of the Narrator, no tool call and no news of a mechanic in the window")
         sanctions.cover(chapter, from, to, runId)
         return work.outcome(if (step == Step.DONE) RunStatus.DONE else RunStatus.FAILED)
     }
@@ -121,7 +123,7 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val chapter = checkNotNull(context.chapter)
         services.journal.barrier()
         val lines = exchange.lines(chapter, from, to)
-        if (lines.none { it.kind != ExchangeLog.Kind.FACT }) return Step.NOTHING
+        if (lines.none { it.worthABatch }) return Step.NOTHING
         val blocks = exchange.blocks(lines, name, from, to, clock.instant())
         var step = Step.DONE
         for ((index, block) in blocks.withIndex()) {
