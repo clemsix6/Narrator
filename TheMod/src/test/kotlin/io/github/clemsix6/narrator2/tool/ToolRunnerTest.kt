@@ -268,4 +268,94 @@ class ToolRunnerTest {
         assertEquals("ok", runOne(silent).text)
         assertEquals("", services.traces.toolCalls.single().result)
     }
+
+    // ── invoke: one call without audit, shared with the mechanics engine (M4 §4.3) ──────────────────
+
+    /** An act of the mechanics engine (M4 §4.3). */
+    private val act = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = 812)
+
+    @Test
+    fun `invoke runs one call with the caller it is given, without any audit`() = runTest {
+        val seen = CopyOnWriteArrayList<Caller>()
+        val tool = TestTool("note", NoteArgs.serializer(), ToolEffect.WORLD) { ctx, args ->
+            seen += ctx.caller
+            ToolResult.ok("ok: ${args.note}")
+        }
+
+        val result = LogCapture().use { logs ->
+            runner.invoke(tool, act, """{"note":"boom"}""").also { assertFalse("note ok" in logs.text, "no log line of the call: ${logs.text}") }
+        }
+
+        assertEquals(ToolResult.ok("ok: boom"), result)
+        assertEquals(listOf(act), seen)
+        assertTrue(services.traces.toolCalls.isEmpty(), "no tool_calls row")
+        assertTrue(services.traces.decisions.isEmpty())
+    }
+
+    @Test
+    fun `invoke decodes and bounds the arguments as runAll does, and the tool does not run on bad ones`() = runTest {
+        val input = """{"note":"${"x".repeat(21)}","loud":true}"""
+
+        val invoked = runner.invoke(noteTool("say"), act, input)
+        val audited = runOne(noteTool("say"), input)
+
+        assertEquals(ToolStatus.INVALID, invoked.status)
+        assertEquals(audited.text, invoked.text, "one answer, whoever calls")
+        assertTrue(ran.isEmpty())
+    }
+
+    @Test
+    fun `invoke records a coercion as the engine's act`() = runTest {
+        val tool = TestTool("every_type", EveryTypeArgs.serializer(), ToolEffect.WORLD) { _, args -> ToolResult.ok("ok: ${args.seconds}s") }
+
+        assertEquals("ok: 30s", runner.invoke(tool, act, """{"text":"hi","seconds":"30"}""").text)
+
+        val decision = services.traces.decisions.single()
+        assertEquals(DecisionRecord.Kind.TOOL to "args_coerced", decision.kind to decision.decision)
+        assertEquals("seconds written as JSON text, read as the value it holds (the engine's act #812)", decision.reason)
+        assertEquals("mechanics:C-60" to null, decision.conversationId to decision.turnId)
+    }
+
+    @Test
+    fun `invoke bounds the run and turns a failure into FAILED`() = runTest {
+        val slow = TestTool("slow_world", NoArgs.serializer(), ToolEffect.WORLD, timeoutMs = 100) { _, _ -> awaitCancellation() }
+        val broken = TestTool("broken", NoArgs.serializer()) { _, _ -> error("the ledger is corrupt") }
+
+        assertEquals(
+            "UNKNOWN: slow_world did not finish within 1s; the action may or may not have happened",
+            runner.invoke(slow, act, "{}").text,
+        )
+        assertEquals("FAILED: the ledger is corrupt", runner.invoke(broken, act, "{}").text)
+        assertTrue(services.traces.toolCalls.isEmpty())
+    }
+
+    @Test
+    fun `invoke lets the cancellation of its caller through`() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val stuck = TestTool("stuck", NoArgs.serializer(), ToolEffect.WORLD, timeoutMs = 60_000) { _, _ ->
+            started.complete(Unit)
+            awaitCancellation()
+        }
+        var outcome: String? = null
+        val job = launch {
+            try {
+                runner.invoke(stuck, act, "{}")
+                outcome = "returned"
+            } catch (e: CancellationException) {
+                outcome = "cancelled"
+                throw e
+            }
+        }
+        runCurrent()
+        assertTrue(started.isCompleted)
+
+        job.cancelAndJoin()
+
+        assertEquals("cancelled", outcome)
+        assertEquals(
+            "UNKNOWN: cancelled while running, the server is stopping; the action may or may not have happened",
+            ToolRunner.interrupted(stuck).text,
+        )
+        assertEquals("FAILED: cancelled: the server is stopping", ToolRunner.interrupted(noArgsTool("read")).text)
+    }
 }
