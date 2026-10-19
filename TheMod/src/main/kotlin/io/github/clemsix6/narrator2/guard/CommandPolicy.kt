@@ -89,6 +89,7 @@ class CommandPolicy(
         ENTITIES("it acts on players or creatures outside the guarded tools"),
         SPEECH("the Narrator speaks through its speech tools (say, show_title, actionbar, give_book), which are recorded"),
         TOOL("a tool with its own limits does it"),
+        PLAYER("a player's own command, typed by the player alone: nobody is made to pray, fight, bet or give"),
     }
 
     /**
@@ -112,7 +113,7 @@ class CommandPolicy(
             // transfers to another server, profilers, the idle timeout, LAN publishing, datapack
             // reloads, lookups of player profiles at Mojang, the world seed (a map of every
             // structure). `narrator` is the operators' control of the Narrator itself (chaos,
-            // protections, whispers to the Director); `pray` is the players' channel to it.
+            // protections, whispers to the Director).
             forbid(
                 Reason.ADMIN,
                 "stop", "save-all", "save-off", "save-on", "op", "deop", "ban", "ban-ip", "banlist", "pardon",
@@ -159,7 +160,11 @@ class CommandPolicy(
             forbid(Reason.ENTITIES, "attribute", instead = "use set_attribute or reset_attribute")
             // Speech and displays outside the speech tools; `tellraw` and `dialog` can also make a click
             // run a command. Boss bars come with challenges (M4).
-            forbid(Reason.SPEECH, "say", "tellraw", "tell", "msg", "w", "me", "teammsg", "tm", "title", "dialog", "bossbar", "pray")
+            forbid(Reason.SPEECH, "say", "tellraw", "tell", "msg", "w", "me", "teammsg", "tm", "title", "dialog", "bossbar")
+            // The players' own commands (M4 §18.2): `pray`, their channel to the Narrator; `duel`, `bet` and
+            // `offer`, which only the player may decide. Behind `execute as <player> run`, the Narrator would
+            // force a duel on them (PvP is never forced), bet or offer their items for them.
+            forbid(Reason.PLAYER, "pray", "duel", "bet", "offer")
             // What a tool with its own limits already does. Particles and sounds would go without the
             // tools' caps: `particle … 2000000000 … force` brings down every client in sight.
             forbid(Reason.TOOL, "weather", instead = "use the set_weather tool")

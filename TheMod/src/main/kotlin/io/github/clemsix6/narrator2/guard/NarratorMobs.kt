@@ -150,6 +150,19 @@ class NarratorMobs(private val items: ItemLedger? = null) {
     }
 
     /**
+     * Sends away now the harmful creatures loaded that were summoned for [player] (a pardon, M4 §7.1), as when
+     * their time is up ([retire]): riders set down, what players entrusted to them given back. What went, by
+     * type (`2 minecraft:zombie`); those in unloaded chunks go at their own time. Server thread.
+     */
+    fun retireFor(player: UUID, now: Long): List<String> {
+        val mine = loaded.values.filter { it.mob.player == player && it.mob.harmful && !it.entity.isRemoved }
+        mine.forEach { retire(it.entity, now) }
+        val gone = mine.groupBy { it.type }.map { (type, mobs) -> "${mobs.size} $type" }
+        if (gone.isNotEmpty()) log.info("the Narrator's creatures sent away from $player: ${gone.joinToString()}")
+        return gone
+    }
+
+    /**
      * Takes [entity], one of the Narrator's creatures, out of the world at [now] (epoch milliseconds): its
      * time is up, or it went off in its explosion. The players riding it are set down on safe ground
      * first, or at least protected when there is none ([land]); then what players entrusted to it is given
