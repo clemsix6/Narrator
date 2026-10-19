@@ -8,6 +8,7 @@ import net.minecraft.core.SectionPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.level.TicketType
+import net.minecraft.util.RandomSource
 import net.minecraft.world.entity.Pose
 import net.minecraft.world.entity.Relative
 import net.minecraft.world.level.ChunkPos
@@ -15,6 +16,10 @@ import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.phys.Vec3
 import java.util.concurrent.CompletableFuture
+import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Safe teleports within the player's own dimension (M1_M2 §9.3, `ORACLE_ACTIONS_API.md` §4.6).
@@ -24,13 +29,54 @@ import java.util.concurrent.CompletableFuture
  * the tool waits off the server thread ([awaitLoaded]). The safe spot is then looked for in the loaded
  * column only ([landing]): a column that is not loaded has no safe spot. The ticket lapses by itself
  * (300 ticks); by then the player keeps the chunks loaded.
+ *
+ * A random teleport (`random_radius`, M4-03) draws one column ([randomColumn]) and loads its chunk once; it
+ * then tries up to [RANDOM_COLUMNS] columns of that chunk ([columnsAround]): eight draws, each in a chunk of
+ * its own to load, would not fit in the tool's time (M4 review, finding 21).
  */
 object Teleports {
     /** How long the destination may take to load; past it the teleport gives up, and nothing happened. */
     const val LOAD_TIMEOUT_MS = 8_000L
 
+    /** Columns a random teleport tries for a safe landing, all in one chunk. */
+    const val RANDOM_COLUMNS = 8
+
     /** Radius, in chunks, loaded around the destination: the player's box may reach a neighbor. */
     private const val LOAD_RADIUS = 1
+
+    /** Blocks along a chunk's side. */
+    private const val CHUNK_SIDE = 16
+
+    /** A column of blocks, by its block coordinates. */
+    data class Column(val x: Int, val z: Int)
+
+    /**
+     * A column drawn at random between half [radius] and [radius] blocks from ([fromX], [fromZ]), horizontally,
+     * in any direction. [random] is the level's: server thread.
+     */
+    fun randomColumn(random: RandomSource, fromX: Double, fromZ: Double, radius: Int): Column {
+        val angle = random.nextDouble() * 2 * Math.PI
+        val distance = radius * (0.5 + 0.5 * random.nextDouble())
+        return Column(floor(fromX + cos(angle) * distance).toInt(), floor(fromZ + sin(angle) * distance).toInt())
+    }
+
+    /**
+     * The columns a random teleport tries, in order: [first], then up to [RANDOM_COLUMNS] - 1 other columns of
+     * its chunk, drawn at random among those whose center is at most [radius] blocks from ([fromX], [fromZ]).
+     * The chunk is loaded with its neighbors ([requestLoad]): each column can be searched. [random] is the
+     * level's: server thread.
+     */
+    fun columnsAround(random: RandomSource, first: Column, fromX: Double, fromZ: Double, radius: Int): List<Column> {
+        val minX = SectionPos.blockToSectionCoord(first.x) * CHUNK_SIDE
+        val minZ = SectionPos.blockToSectionCoord(first.z) * CHUNK_SIDE
+        val others = (0 until CHUNK_SIDE * CHUNK_SIDE)
+            .map { Column(minX + it % CHUNK_SIDE, minZ + it / CHUNK_SIDE) }
+            .filter { it != first && hypot(it.x + 0.5 - fromX, it.z + 0.5 - fromZ) <= radius }
+            .toMutableList()
+        val columns = mutableListOf(first)
+        while (columns.size < RANDOM_COLUMNS && others.isNotEmpty()) columns += others.removeAt(random.nextInt(others.size))
+        return columns
+    }
 
     /**
      * Asks [level] to load the chunks around column ([x], [z]); the future completes once they are loaded
