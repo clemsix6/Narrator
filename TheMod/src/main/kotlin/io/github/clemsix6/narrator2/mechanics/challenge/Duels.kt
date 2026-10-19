@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.guard.CreatureShield
+import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.mechanics.ArenaSpec
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeState
@@ -537,7 +538,8 @@ class Duels(
     /**
      * `ALLOW_DEATH` of [player] (M4 §5.5, before the guards'): a duelist's death is refused, health given back first.
      * The opponent's blow leaves them at 1 health where they stand ([spare]), unless that place would go on hurting
-     * them; then, as for any other cause, they are rescued. They lose the duel, unless the death was decided from
+     * them; then, as for any other cause, they are rescued. Either way the Narrator leaves them alone for
+     * [Guards.RESCUE_SHIELD_MS] (the guards' shield, M4 review, finding 18). They lose the duel, unless the death was decided from
      * outside it ([outsider]): then it is cancelled, the bets going back (M4 review, finding 19). Under the protection
      * after a duel ([protect]), a death of either duelist is refused the same way, without ending anything. An
      * operator's `/kill` (`generic_kill`) is allowed: a duel in progress is then cancelled. Server thread.
@@ -556,7 +558,13 @@ class Duels(
         val cause = DuelLines.cause(source, player)
         val outsider = if (loser != null) outsider(player, source, opponent) else null
         val spared = source.entity?.uuid == opponent && hazard(player)?.spot != true
-        if (spared) spare(player) else services.guards.rescue(player, "duel $ref: $cause")
+        if (spared) {
+            spare(player)
+            // Saved from a death, like a rescue (which shields by itself): the Narrator leaves them alone a while (M4 review, finding 18).
+            services.guards.shield(player, services.clock.millis() + Guards.RESCUE_SHIELD_MS, "duel $ref: fatal blow stopped at 1 hp")
+        } else {
+            services.guards.rescue(player, "duel $ref: $cause")
+        }
         log.info("$ref: the death of ${player.plainTextName} ($cause) is refused${if (duel == null) " (after the duel)" else ""}")
         if (duel == null || loser == null) return false
         if (outsider != null) {
@@ -698,7 +706,7 @@ class Duels(
 
     /**
      * Whether [player] fights a duel now, from its start to its end (not while invited): what `Guards.isDueling` asks,
-     * once the engine wires it (M4 review, finding 19: nothing hostile of the Narrator's targets a duelist). A lookup,
+     * wired by `MechanicsService` while the engine runs (M4 review, finding 19: nothing hostile of the Narrator's targets a duelist). A lookup,
      * at every target a creature of the Narrator picks. Server thread.
      */
     fun isDueling(player: UUID): Boolean = fighting[player]?.let { it.over == null } == true

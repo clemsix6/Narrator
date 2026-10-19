@@ -45,7 +45,7 @@ class MechanicsStateTest {
         assertEquals(MechanicsState.EMPTY, MechanicsState.decode(MechanicsState.encode(MechanicsState.EMPTY)))
         assertEquals(MechanicsState.EMPTY, MechanicsState.decode("{}"))
         val written = json(sample)
-        assertEquals(setOf("challenges", "rules", "last_challenge_at", "returns", "settlements"), written.keys)
+        assertEquals(setOf("challenges", "rules", "last_challenge_at", "returns", "settlements", "rewards"), written.keys)
         val challenge = written.getValue("challenges").jsonArray[0].jsonObject
         assertEquals(JsonPrimitive(1), challenge.getValue("spec").jsonObject["count"], "a default value is saved: a later default never changes it")
         assertEquals(JsonPrimitive("obtain"), challenge.getValue("spec").jsonObject["goal"], "snake_case on the wire")
@@ -96,6 +96,26 @@ class MechanicsStateTest {
         assertEquals(listOf(Settlement(josiane, 790), Settlement(josiane, 812)), read.settlements.sortedBy { it.stake }, "both given back")
         assertEquals(listOf("challenge" to 50L, "settlement" to null, "settlement" to null), read.unreadable.map { it.what to it.id })
         assertEquals(listOf(812L), sample.challenge(50)!!.bets.map { it.stake }, "the sample's bet")
+    }
+
+    @Test
+    fun `a reward owed goes to the world's file and back, and one unreadable is dropped alone, its canon left alone`() {
+        val mimosa = MechanicsSamples.runningChallenge.participants[1]
+        val owed = OwedReward(MechanicsSamples.runningChallenge.copy(bets = emptyList()), mimosa, at = 1_000)
+        val state = sample.copy(rewards = listOf(owed))
+        assertEquals(state, MechanicsState.decode(MechanicsState.encode(state)))
+        val tag = CompoundTag()
+        tag.put("mechanics", MechanicsState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow())
+        val bytes = ByteArrayOutputStream().also { NbtIo.write(tag, DataOutputStream(it)) }.toByteArray()
+        val read = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))).get("mechanics")!!
+        assertEquals(listOf(owed), MechanicsState.CODEC.parse(NbtOps.INSTANCE, read).getOrThrow().rewards, "through the world's file")
+
+        val written = json(state).toMutableMap()
+        val reward = written.getValue("rewards").jsonArray[0].jsonObject
+        written["rewards"] = JsonArray(listOf(JsonObject(reward + ("at" to JsonPrimitive("soon"))), reward))
+        val partly = LogCapture().use { MechanicsState.decode(JsonObject(written).toString()) }
+        assertEquals(listOf(owed), partly.rewards)
+        assertEquals(listOf("reward" to null), partly.unreadable.map { it.what to it.id }, "no canon id: the reconciliation never cancels a challenge won")
     }
 
     @Test

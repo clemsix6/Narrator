@@ -29,8 +29,8 @@ import java.util.UUID
  *
  * It is saved as one JSON text (kotlinx) rather than a DFU codec field by field: the specifications are
  * nested, and they are the very classes of the tools' arguments. The text has no length limit in the world's
- * file (`LongString`: past 20,000 characters it is saved in chunks). Each challenge, rule, return and
- * settlement is decoded on its own: an unreadable entry (a goal removed from the code, a field of the
+ * file (`LongString`: past 20,000 characters it is saved in chunks). Each challenge, rule, return, settlement
+ * and owed reward is decoded on its own: an unreadable entry (a goal removed from the code, a field of the
  * wrong type) is dropped with an error in the log and kept in [MechanicsState.unreadable], never the whole
  * state; the stakes of an unreadable challenge or settlement are given back. Immutable: always replaced by a
  * new instance, never changed in place (like `GuardState`).
@@ -49,6 +49,8 @@ data class MechanicsState(
     val returns: List<SavedPosition> = emptyList(),
     /** The settlement of every bet of a challenge that ended, its owner online or not, applied once they are online (M4 §5.6). */
     val settlements: List<Settlement> = emptyList(),
+    /** The rewards of winners away when their challenge was won (it ended while the server was down), paid once they are back (M4 review, finding 13). */
+    val rewards: List<OwedReward> = emptyList(),
     /**
      * What could not be read back when the state was loaded: never saved again. The engine reports each one
      * (a decision `mechanic unreadable`) and resolves its canon row `cancelled` at the reconciliation
@@ -102,9 +104,10 @@ data class MechanicsState(
             val rules = each(raw.rules, RuleState.serializer(), "rule", unreadable)
             val returns = each(raw.returns, SavedPosition.serializer(), "return", unreadable)
             val settlements = each(raw.settlements, Settlement.serializer(), "settlement", unreadable) { rescued += givenBack(JsonArray(listOf(it))) }
+            val rewards = each(raw.rewards, OwedReward.serializer(), "reward", unreadable)
             val added = rescued.distinctBy { it.owner to it.stake }.filter { new -> settlements.none { it.owner == new.owner && it.stake == new.stake } }
             if (added.isNotEmpty()) log.warn("${added.size} stakes of unreadable entries of the mechanics' state go back to their owners: ${added.joinToString { "stake ${it.stake}" }}")
-            return MechanicsState(challenges, rules, raw.lastChallengeAt, returns, settlements + added, unreadable)
+            return MechanicsState(challenges, rules, raw.lastChallengeAt, returns, settlements + added, rewards, unreadable)
         }
 
         /**
@@ -171,6 +174,7 @@ data class MechanicsState(
         @SerialName("last_challenge_at") val lastChallengeAt: Long? = null,
         val returns: List<JsonElement> = emptyList(),
         val settlements: List<JsonElement> = emptyList(),
+        val rewards: List<JsonElement> = emptyList(),
     )
 }
 
@@ -330,6 +334,17 @@ data class SavedPosition(
  */
 @Serializable
 data class Settlement(val owner: String, val stake: Long, val to: String? = null, val at: Long? = null)
+
+/**
+ * The reward [winner] won in [challenge] (M4 review, finding 13): it ended while the server was down and they were
+ * away when the engine closed it, so it is paid once they are back, by the challenges' part (one act of the engine,
+ * as any stake). In the state, so that it survives every restart until then; past [MechanicsLimits.CEDED_RESCUE_DAYS]
+ * days after [at] (epoch milliseconds, when it was owed) it is dropped: its winner never came back.
+ *
+ * @property challenge the challenge as it ended (its bets left out): what the stakes' payer reads, reward and ref.
+ */
+@Serializable
+data class OwedReward(val challenge: ChallengeState, val winner: Participant, val at: Long)
 
 /**
  * An active law or plan (M4 §8).

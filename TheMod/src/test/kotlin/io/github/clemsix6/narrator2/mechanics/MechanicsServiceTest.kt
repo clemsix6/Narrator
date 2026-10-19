@@ -15,7 +15,9 @@ import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
+import io.github.clemsix6.narrator2.tool.ToolStatus
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import kotlin.test.assertContains
@@ -23,7 +25,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -70,8 +74,11 @@ class MechanicsServiceTest {
     fun `the service hands the rules to the book, every end to the duels, and its lines and its stop to the engine`() = runBlocking<Unit> {
         RuleFixture().use { f ->
             val service = MechanicsService(f.services, f.store, f.ids, tags = { _, _ -> emptySet() }, clock = f.clock)
-            service.engine.begin(f.clock.millis()) {}
+            val unwired = f.guards.isDueling
+            service.starting { service.engine.begin(f.clock.millis()) {} }
             try {
+                assertNotSame(unwired, f.guards.isDueling, "once started, the guards ask the duels' part who duels")
+                assertFalse(f.guards.isDueling(MechanicsSamples.bartok.uuid), "nobody duels")
                 assertTrue(service.available)
                 assertNull(service.unavailableReason)
                 assertEquals(emptyList(), service.situationLines(f.clock.millis()))
@@ -91,12 +98,53 @@ class MechanicsServiceTest {
                 assertEquals("Invalid arguments: C-999 is not one of your running challenges; running: none", refused.toResult().text)
                 assertEquals(emptyList(), service.challenges.list())
 
+                val wired = f.guards.isDueling
                 service.stop()
                 assertTrue(service.engine.stopped)
                 assertEquals(emptyList(), service.situationLines(f.clock.millis()), "a stopped engine has nothing to say")
+                assertNotSame(wired, f.guards.isDueling, "a stopped engine no longer answers who duels")
             } finally {
                 service.stop()
             }
+        }
+    }
+
+    @Test
+    fun `the engine's acts reach the tools of the rules and the stakes, never sql, run_command nor delegate`() = runBlocking<Unit> {
+        RuleFixture().use { f ->
+            val service = MechanicsService(f.services, f.store, f.ids, tags = { _, _ -> emptySet() }, clock = f.clock)
+            assertEquals(MechanicsService.TOOLS, service.actions.names)
+            assertTrue(
+                listOf("say", "explosion", "teleport", "mob_effect", "notify", "punish", "give_item", "apply_effect", "favor").all { it in service.actions.names },
+                "the rules' tools and the stakes': ${service.actions.names}",
+            )
+            for (tool in listOf("sql", "run_command", "delegate", "remember", "start_challenge")) {
+                val act = service.actions.open("fired", null, null)
+                val refused = service.actions.run(act, tool, JsonObject(emptyMap()))
+                assertEquals(ToolStatus.INVALID, refused.status, tool)
+                assertEquals("Invalid arguments: unknown tool \"$tool\" for the engine", refused.text)
+            }
+        }
+    }
+
+    @Test
+    fun `a start that fails stops the engine and puts the state back as it was, what ended while the server was down included`() = runBlocking<Unit> {
+        RuleFixture().use { f ->
+            // C-50 ended an hour ago, nobody made it: the start would take it out of the state and give its bet back.
+            val ended = MechanicsSamples.runningChallenge.copy(endsAt = f.clock.millis() - 3_600_000)
+            f.store.update { MechanicsState(challenges = listOf(ended)) }
+            val before = f.store.get()
+            val service = MechanicsService(f.services, f.store, f.ids, tags = { _, _ -> emptySet() }, clock = f.clock)
+            val unwired = f.guards.isDueling
+            f.services.bus.close() // the engine's subscriber cannot subscribe: the start fails after the startup pruned the state
+
+            LogCapture().use { logs ->
+                assertFailsWith<IllegalStateException> { service.starting { service.engine.begin(f.clock.millis()) {} } }
+                assertContains(logs.text, "the engine's start failed: its state is back as it was in the world")
+            }
+            assertEquals(before, f.store.get(), "C-50 still in the state, its bet not settled: the next start reconciles it")
+            assertTrue(service.engine.stopped)
+            assertSame(unwired, f.guards.isDueling, "the guards are not wired to an engine that did not start")
         }
     }
 

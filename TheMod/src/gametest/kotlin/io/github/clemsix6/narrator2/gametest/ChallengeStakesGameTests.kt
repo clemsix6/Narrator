@@ -296,7 +296,8 @@ class ChallengeStakesGameTests {
 
     /**
      * M4 review, finding 13: a challenge whose end passed while the server was down was cancelled, and who had made it lost
-     * what they had won. It is won by them now, without penalty for the others, each reward paid once the winner is back.
+     * what they had won. It is won by them now, without penalty for the others, each reward paid once the winner is back,
+     * even after yet another stop before they are: the reward owed is in the world's state.
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun aChallengeMadeBeforeAStopIsWonAfterItAndTheRewardPaidOnceBack(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
@@ -319,6 +320,7 @@ class ChallengeStakesGameTests {
             }
 
             val again = Rig(helper, StateStore.inMemory(saved), rig.clock, rig.director, rig.sink)
+            var third: Rig? = null
             var back: ServerPlayer? = null
             try {
                 rig.onServer {
@@ -333,18 +335,27 @@ class ChallengeStakesGameTests {
                 check(Regex(expected).matches(line)) { "the line: $line" }
                 val canon = rig.canon(view.ref)
                 check(canon.status == CanonStatus.WON && canon.winners.map { it.uuid } == listOf(bob.uuid)) { "the canon: ${canon.status} ${canon.winners}" }
-                rig.onServer {
+                // Another stop before Bob is back: what is owed to him is in the state the world saves.
+                val owed = rig.onServer {
                     check(near(ann.live.getAttributeValue(Attributes.SCALE), 1.0) && near(cid.live.getAttributeValue(Attributes.SCALE), 1.0)) { "no penalty for the others" }
+                    again.second()
+                    again.engine.stop()
+                    MechanicsState.decode(MechanicsState.encode(again.store.get()))
                 }
+                check(owed.rewards.map { it.challenge.id to it.winner.uuid } == listOf(view.ref.id to bob.uuid.toString())) { "Bob's reward owed, saved: ${owed.rewards}" }
+                val last = Rig(helper, StateStore.inMemory(owed), rig.clock, rig.director, rig.sink).also { third = it }
+                rig.onServer { last.engine.start(helper.level.server) }
 
                 back = rig.onServer { rejoin(helper, bob) }
-                awaitCondition("Bob's diamond, once back") { rig.onServer { again.second(); count(back!!, Items.DIAMOND) } == 1 }
+                awaitCondition("Bob's diamond, once back") { rig.onServer { last.second(); count(back!!, Items.DIAMOND) } == 1 }
+                check(rig.onServer { last.store.get().rewards }.isEmpty()) { "paid: no longer owed" }
                 // The gift enters his history once given, in the payment's coroutine.
                 awaitCondition("Bob's gift in his history") { rig.runtime.memory.store.interactions(bob.uuid, 20).any { it.canon == view.ref && it.kind == InteractionKind.GIFT } }
-                again.checkStakes(view.ref, listOf(bob to InteractionKind.GIFT), listOf(ann, cid))
+                last.checkStakes(view.ref, listOf(bob to InteractionKind.GIFT), listOf(ann, cid))
             } finally {
                 rig.onServer {
                     again.engine.stop()
+                    third?.engine?.stop()
                     back?.let { helper.level.server.playerList.remove(it) }
                 }
             }

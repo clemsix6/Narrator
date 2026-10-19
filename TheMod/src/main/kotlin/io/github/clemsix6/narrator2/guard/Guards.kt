@@ -89,7 +89,8 @@ interface Guards {
      * Narrator's creatures and explosions spare them, as just after a death. For a player saved from a death:
      * [rescue] and the death guard's rescue beyond the quota shield for [RESCUE_SHIELD_MS] by themselves; a
      * duel's fatal blow stopped (1 hp, the engine refusing the death) calls it with `now + RESCUE_SHIELD_MS`.
-     * A longer shield already running is kept. In memory: a restart forgets it. Decision `guard shielded`.
+     * A longer shield already running is kept. Saved with the player (`GuardState.shield`): it holds across a
+     * restart. Decision `guard shielded`.
      * Server thread only.
      */
     fun shield(player: ServerPlayer, until: Long, reason: String)

@@ -240,12 +240,17 @@ interface MechanicPart {
  * The engine when it does not run (M4 §4.1): [reason] says why (`mechanics.enabled is false`, `the Journal is
  * unavailable: …`, `the memory is unavailable: …`, `it could not start: …`). Starting a challenge, a duel or a rule fails with
  * `DENIED (mechanics_off): the mechanics are unavailable: <reason>`; ending or removing one fails the same
- * way. Lists are empty, there is no situation line, the hooks do nothing and every death is allowed.
+ * way. Lists are empty, there is no situation line and every death is allowed.
  *
- * [ui] gives the texts of the players' commands (`mechanics.unavailable`); null in tests, where an English
- * line answers instead.
+ * [guardian], on a server, keeps what the engine left in the world from staying frozen there (M4 review, finding
+ * 9): its ticks, joins and creature loads go to it; without one, the hooks do nothing. [ui] gives the texts of the
+ * players' commands (`mechanics.unavailable`); null in tests, where an English line answers instead.
  */
-class DisabledMechanics(private val reason: String, private val ui: (() -> UiTexts)? = null) : Mechanics {
+class DisabledMechanics(
+    private val reason: String,
+    private val guardian: EngineGuardian? = null,
+    private val ui: (() -> UiTexts)? = null,
+) : Mechanics {
     override val available = false
     override val unavailableReason: String = reason
 
@@ -278,15 +283,21 @@ class DisabledMechanics(private val reason: String, private val ui: (() -> UiTex
 
     override fun situationLines(now: Long): List<String> = emptyList()
 
-    override fun tick(server: MinecraftServer) {}
+    override fun tick(server: MinecraftServer) {
+        guardian?.tick(server)
+    }
 
-    override fun onJoin(player: ServerPlayer) {}
+    override fun onJoin(player: ServerPlayer) {
+        guardian?.onJoin(player)
+    }
 
     override fun onLeave(player: ServerPlayer) {}
 
     override fun onRespawn(old: ServerPlayer, new: ServerPlayer) {}
 
-    override fun onMobLoad(entity: Entity, level: ServerLevel) {}
+    override fun onMobLoad(entity: Entity, level: ServerLevel) {
+        guardian?.onMobLoad(entity)
+    }
 
     override fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean = true
 

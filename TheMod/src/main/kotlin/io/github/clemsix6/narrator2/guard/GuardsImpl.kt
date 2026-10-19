@@ -49,7 +49,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     val states = GuardStates()
 
     private val episodes = Episodes(clock)
-    private val shields = Shields(clock)
+    private val shields = Shields(states, clock)
     private val targeting = TargetingPolicy(services.players, clock, ::caps)
     private val protection = ProtectedPlayers(
         services.dataDir.resolve(PROTECTED_FILE),
@@ -129,7 +129,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
             isDueling(target.uuid) ->
                 Verdict.Denied(Rules.DUEL, "${ModelText.name(name)} is fighting a duel; nothing hostile against a duelist while the duel runs.")
             else -> targeting.check(
-                target.ref(), caller, episodes, diedAt = state.lastDeathAt, category = category, shield = shields.active(target.uuid), punishment = punishment,
+                target.ref(), caller, episodes, diedAt = state.lastDeathAt, category = category, shield = shields.active(target), punishment = punishment,
             )
         }
         if (verdict is Verdict.Denied) {
@@ -160,7 +160,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     }
 
     override fun shield(player: ServerPlayer, until: Long, reason: String) {
-        val shield = shields.shield(player.uuid, until, reason)
+        val shield = shields.shield(player, until, reason)
         decisions.record(
             log, DecisionRecord.Kind.GUARD, "shielded", player.plainTextName,
             reason = "${shield.reason}: nothing hostile against them, the Narrator's creatures and explosions spare them, until ${clockTime(clock, shield.until)}",
@@ -337,13 +337,13 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     /**
      * Whether the Narrator's creatures and explosions leave [player] alone now ([CreatureShield]):
-     * protected, dead, died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago, under the
-     * Narrator's grace (both saved with the player: they hold across a reconnection), shielded after a rescue
-     * ([shield]), or fighting a duel ([isDueling]). Server thread.
+     * protected, dead, died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago, under the Narrator's grace,
+     * shielded after a rescue or a refused death ([shield]; all three saved with the player: they hold across a
+     * reconnection and a restart), or fighting a duel ([isDueling]). Server thread.
      */
     fun spares(player: Player): Boolean {
         if (player.isDeadOrDying || protection.isProtected(player.uuid, player.plainTextName)) return true
-        if (shields.active(player.uuid) != null || isDueling(player.uuid)) return true
+        if (shields.active(player) != null || isDueling(player.uuid)) return true
         val state = GuardStates.read(player)
         val now = clock.millis()
         if ((state.graceUntil ?: 0L) > now) return true
@@ -471,6 +471,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 if ((states.of(player).episode?.until ?: Long.MAX_VALUE) <= now) states.update(player) { it.copy(episode = null) }
                 val died = states.of(player).lastDeathAt
                 if (died != null && now - died >= TargetingPolicy.NO_PILE_ON_MS) states.update(player) { it.copy(lastDeathAt = null) }
+                shields.tidy(player)
                 tidyFavors(player, now)
             } catch (e: Exception) {
                 log.error("the guards' check failed for ${player.plainTextName}", e)

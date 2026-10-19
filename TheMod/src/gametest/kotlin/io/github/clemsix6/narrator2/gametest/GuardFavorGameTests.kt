@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.deathGuard
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.equip
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.homeAt
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.isAt
+import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.reconnect
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.setPlayTime
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.withPlayer
 import io.github.clemsix6.narrator2.gametest.GuardGapGameTests.Companion.hit
@@ -332,6 +333,27 @@ class GuardFavorGameTests {
     }
 
     /**
+     * A shield is saved with the player (M4 review, finding 18, made to last by M4-FIX-H): after a restart (the player
+     * read back from their file, the guards new and empty), the Narrator still leaves them alone until it ends.
+     */
+    @GameTest
+    fun aShieldHoldsAcrossARestart(helper: GameTestHelper) = withPlayer(helper) { player ->
+        val (before, clock, _) = ownGuards(helper)
+        before.shield(player, clock.millis() + Guards.RESCUE_SHIELD_MS, "duel C-52: fatal blow stopped at 1 hp")
+
+        val back = reconnect(helper, player)
+        val after = ownGuards(helper, clock).guards // the guards of the next start: nothing in memory
+        clock.advance(Duration.ofMinutes(1))
+        val refused = after.hostile(back, turn(51), clock.millis() + 60_000, PunishmentCategory.HARM)
+        helper.assertTrue(
+            refused is Verdict.Denied && refused.rule == Rules.NO_PILE_ON && refused.message.contains("(duel C-52: fatal blow stopped at 1 hp)"),
+            "refused after the restart: $refused",
+        )
+        helper.assertTrue(after.spares(back), "spared by the Narrator's creatures and explosions")
+        helper.assertEquals("duel C-52: fatal blow stopped at 1 hp", GuardStates.read(back).shield?.reason, "in the player's file")
+    }
+
+    /**
      * A duelist is out of the Narrator's reach while their duel runs (M4 review, finding 19): `hostile` refuses them,
      * whatever the act, and its creatures and explosions spare them; the mechanics engine says who duels.
      */
@@ -412,9 +434,8 @@ class GuardFavorGameTests {
         /** Guards of the test's own, their clock (it starts now and moves when told) and their services (their decisions). */
         data class Own(val guards: GuardsImpl, val clock: TestClock, val services: TestServices)
 
-        /** [Own] guards, on the runtime's player states. */
-        fun ownGuards(helper: GameTestHelper): Own {
-            val clock = TestClock(Instant.now())
+        /** [Own] guards, on the runtime's player states, on [clock] (a new one by default). */
+        fun ownGuards(helper: GameTestHelper, clock: TestClock = TestClock(Instant.now())): Own {
             val services = TestServices(minecraft = helper.level.server, clock = clock, settings = testSettings(NarratorConfig()), players = helper.narrator().players)
             return Own(GuardsImpl(services), clock, services)
         }
