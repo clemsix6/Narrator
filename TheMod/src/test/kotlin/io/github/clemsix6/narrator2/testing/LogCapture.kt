@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.testing
 
+import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.logging.log4j.core.Logger
@@ -19,13 +20,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * ```
  */
 class LogCapture : AutoCloseable {
-    private val lines = CopyOnWriteArrayList<String>()
+    private class Entry(val level: Level, val text: String)
+
+    private val entries = CopyOnWriteArrayList<Entry>()
     private val closed = AtomicBoolean(false)
     private val context = (LogManager.getLogger("narrator2") as Logger).context
     private val appender = object : AbstractAppender("narrator2-capture-${IDS.incrementAndGet()}", null, null, true, Property.EMPTY_ARRAY) {
         override fun append(event: LogEvent) {
             if (!event.loggerName.startsWith("narrator2.")) return
-            lines += event.message.formattedMessage + (event.thrown?.let { "\n" + it.stackTraceToString() } ?: "")
+            entries += Entry(event.level, event.message.formattedMessage + (event.thrown?.let { "\n" + it.stackTraceToString() } ?: ""))
         }
     }
 
@@ -36,9 +39,12 @@ class LogCapture : AutoCloseable {
     }
 
     /** Every line so far, stack traces included. */
-    val text: String get() = lines.joinToString("\n")
+    val text: String get() = entries.joinToString("\n") { it.text }
 
-    val messages: List<String> get() = lines.toList()
+    val messages: List<String> get() = entries.map { it.text }
+
+    /** The lines logged at exactly [level], stack traces included. */
+    fun at(level: Level): List<String> = entries.filter { it.level == level }.map { it.text }
 
     /** Stops recording; calling it again does nothing. */
     override fun close() {
