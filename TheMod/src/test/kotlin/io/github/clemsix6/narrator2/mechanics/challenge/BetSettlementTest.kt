@@ -143,6 +143,32 @@ class BetSettlementTest {
         assertNull(BetSettlement.pick(participants, "Josiane"), "out: a sure loss is no bet either")
         assertNull(BetSettlement.pick(participants, "Hugo"), "not in the challenge")
         assertEquals(listOf("Bartok", "Lea", "nobody"), BetSettlement.options(participants))
+        assertEquals(participants[0], BetSettlement.pick(participants, "Bartok", hugo.uuid.toString())?.on, "a spectator bets on anyone in the running")
+        assertEquals(listOf("Bartok", "Lea", "nobody"), BetSettlement.options(participants, hugo.uuid.toString()))
+    }
+
+    @Test
+    fun `a participant bets on themselves only, never against themselves`() {
+        val participants = listOf(
+            Participant(bartok.uuid.toString(), "Bartok"),
+            Participant(mimosa.uuid.toString(), "Mimosa"),
+            Participant(josiane.uuid.toString(), "Josiane", out = OutReason.DIED),
+            Participant(lea.uuid.toString(), "Lea", late = true),
+        )
+        val bartokBets = bartok.uuid.toString()
+        assertEquals(participants[0], BetSettlement.pick(participants, "bartok", bartokBets)?.on)
+        assertNull(BetSettlement.pick(participants, "Mimosa", bartokBets), "on the other duelist: he could lose on purpose")
+        assertNull(BetSettlement.pick(participants, "nobody", bartokBets), "on nobody: the same")
+        assertEquals(listOf("Bartok"), BetSettlement.options(participants, bartokBets))
+        assertEquals(listOf("Lea"), BetSettlement.options(participants, lea.uuid.toString()), "a latecomer takes part too")
+        assertEquals(emptyList(), BetSettlement.options(participants, josiane.uuid.toString()), "out: nothing left to bet on")
+    }
+
+    @Test
+    fun `the instructions are dated when the bets' part writes them`() {
+        val c = challenge(bet(josiane, mimosa, 1, "12x iron_ingot"))
+        val (state, _) = BetSettlement.settle(empty, c, Ending.CANCELLED, emptyList(), at = 1_234)
+        assertEquals(listOf(Settlement(josiane.uuid.toString(), 1, at = 1_234)), state.settlements)
     }
 
     @Test
