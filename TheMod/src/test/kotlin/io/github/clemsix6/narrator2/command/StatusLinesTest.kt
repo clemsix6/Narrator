@@ -48,7 +48,8 @@ class StatusLinesTest {
         assertEquals("Guards: chaos 3 · creatures 0 of 16 · protected online: nobody", lines[9])
         assertTrue(lines.any { it.startsWith("  director: claude-opus-5-5 · effort medium") }, lines.toString())
         assertEquals("Mechanics: on · 0 challenges · 0 rules · 0 trap blocks pending", lines[11], "the engine of the tests (FakeMechanics), no trap set")
-        assertTrue(lines.size <= 23, "status stays short: ${lines.size} lines")
+        assertEquals("Forge: on · 0 modules running", lines[12], "the Forge of the tests (FakeForge), no module")
+        assertTrue(lines.size <= 24, "status stays short: ${lines.size} lines")
     }
 
     @Test
