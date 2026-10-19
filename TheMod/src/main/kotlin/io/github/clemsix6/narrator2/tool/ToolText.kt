@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.tool
 
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
 import net.minecraft.server.MinecraftServer
@@ -109,11 +110,12 @@ fun ToolContext.online(name: String): PlayerRef = online(listOf(name)).single()
 
 /**
  * A hostile action against [player] until [until] (epoch milliseconds): the guards check it (protection,
- * chaos 0, no piling on, one punishment at a time, fairness) and open or extend the turn's punishment.
+ * chaos 0, no piling on, one punishment at a time, fairness; from M4 the grace and the rest of [category])
+ * and open or extend the act's punishment. [category]: the kind of punishment (M4 §6.1), deduced by the tool.
  * Refuses with the verdict. Server thread.
  */
-fun ToolContext.punish(player: ServerPlayer, until: Long) {
-    val verdict = guards.hostile(player, caller, until)
+fun ToolContext.punish(player: ServerPlayer, until: Long, category: PunishmentCategory? = null) {
+    val verdict = guards.hostile(player, caller, until, category)
     if (verdict is Verdict.Denied) refuse(ToolResult.denied(verdict))
 }
 
