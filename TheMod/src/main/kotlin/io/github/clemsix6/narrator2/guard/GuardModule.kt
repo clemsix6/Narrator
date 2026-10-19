@@ -43,7 +43,7 @@ fun registerGuardHooks() {
         try {
             val guards = running()
             if (guards != null) {
-                guards.death.allowDeath(entity, source)
+                guards.allowDeath(entity, source)
             } else {
                 DeathGuard.clearMarkWithoutGuards(entity)
                 true

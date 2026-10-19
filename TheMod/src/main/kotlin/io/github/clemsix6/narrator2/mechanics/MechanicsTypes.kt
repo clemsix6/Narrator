@@ -254,9 +254,9 @@ data class Near(
 @Serializable
 data class RuleConditions(
     @Items(1, 8) @MaxLen(MechanicsLimits.PLAYER_NAME) val players: List<String>? = null,
-    @Doc("The trigger's creature (victim, shooter, killer, new one).") @MaxLen(MechanicsLimits.ID) val entity: String? = null,
-    @MaxLen(MechanicsLimits.ID) val block: String? = null,
-    @MaxLen(MechanicsLimits.ID) val item: String? = null,
+    @Doc("The trigger's creature (victim, shooter, killer, new one): id or #tag.") @MaxLen(MechanicsLimits.ID) val entity: String? = null,
+    @Doc("id or #tag") @MaxLen(MechanicsLimits.ID) val block: String? = null,
+    @Doc("id or #tag") @MaxLen(MechanicsLimits.ID) val item: String? = null,
     @Doc("block_break: a block another player placed.") val grief: Boolean? = null,
     @MaxLen(MechanicsLimits.DIMENSION) val dimension: String? = null,
     @MaxLen(MechanicsLimits.ID) val structure: String? = null,

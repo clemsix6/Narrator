@@ -1,5 +1,5 @@
 {
-  "//": "Invented evaluation set of the reflexes (REFLEX-HAIKU): no real data, fictional names. c01-c20 come from docs/research/jev-eval (intents in English, c11 and c13 given every acceptable tone); n21-n52 add slang, typos, verlan, irony, prayers, context (recent chat, the Narrator's last line), injections aimed at the classifier, and players talking to each other. tone and intent list every acceptable answer.",
+  "//": "Invented evaluation set of the reflexes (REFLEX-HAIKU): no real data, fictional names. c01-c20 come from docs/research/jev-eval (intents in English, c11 and c13 given every acceptable tone); n21-n52 add slang, typos, verlan, irony, prayers, context (recent chat, the Narrator's last line), injections aimed at the classifier, and players talking to each other. tone and intent list every acceptable answer. boredom (M4-POST): chat between players, bored or not, for the heuristic's boredom words (none of the 52 cases is bored).",
   "cases": [
     { "id": "c01", "player": "Thawyn", "text": "narrateur t'es nul",
       "expected": { "addressed": true, "tone": ["disrespectful", "hostile", "mocking_playful"], "intent": "provocation", "manipulation": false } },
@@ -121,5 +121,23 @@
     { "id": "h4", "summary": ["Thawyn: health 3/20 after a fight with 4 zombies, no food left, night"], "online": ["Thawyn"], "worth": true },
     { "id": "h5", "summary": ["Clowew: entered an ancient city, killed 2 creepers", "Bartok: fishing for 5 min, caught 9 cod"], "online": ["Clowew", "Bartok"], "worth": true },
     { "id": "h6", "summary": ["Bartok: fishing for 5 min, caught 7 cod and 1 salmon"], "online": ["Bartok"], "worth": false }
+  ],
+  "boredom": [
+    { "id": "b1", "text": "Moi je m'ennuie un peu, on fait quoi après ?", "bored": true },
+    { "id": "b2", "text": "on s'ennuie grave la", "bored": true },
+    { "id": "b3", "text": "bon on fait quoi maintenant", "bored": true },
+    { "id": "b4", "text": "c'est mort ici, personne fait rien", "bored": true },
+    { "id": "b5", "text": "jsp quoi faire, quelqu'un a une idee ?", "bored": true },
+    { "id": "b6", "text": "il se passe jamais rien sur ce serveur", "bored": true },
+    { "id": "b7", "text": "on se fait chier, viens on fait un truc", "bored": true },
+    { "id": "b8", "text": "y'a rien a faire ici", "bored": true },
+    { "id": "b9", "text": "jm'ennuie de ouf", "bored": true },
+    { "id": "b10", "text": "c'est trop calme ce soir", "bored": true },
+    { "id": "b11", "text": "ca m'ennuie de te demander mais t'as du fer ?", "bored": false },
+    { "id": "b12", "text": "tu m'ennuies avec tes questions Bartok", "bored": false },
+    { "id": "b13", "text": "il est mort ici, ses items sont dans la lave", "bored": false },
+    { "id": "b14", "text": "rien a faire, ce creeper me suit partout", "bored": false },
+    { "id": "b15", "text": "on fait une base dans la montagne ?", "bored": false },
+    { "id": "b16", "text": "trop bien ce serveur, il se passe toujours un truc", "bored": false }
   ]
 }

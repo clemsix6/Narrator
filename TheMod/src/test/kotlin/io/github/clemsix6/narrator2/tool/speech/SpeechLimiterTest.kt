@@ -49,6 +49,21 @@ class SpeechLimiterTest {
         denied(limiter.line(turn(4)))
     }
 
+    /** M4-POST: a batch of in-game tests starts with the minute the batch before it spent forgotten; the rest stays. */
+    @Test
+    fun `forgetting the minute frees its lines and sounds, not a turn's count`() {
+        repeat(4) { limiter.line(turn(1)) }
+        repeat(4) { limiter.line(turn(2)) }
+        repeat(SpeechLimiter.SOUNDS_PER_MINUTE) { limiter.sound() }
+        denied(limiter.line(turn(3)))
+        denied(limiter.sound())
+
+        limiter.forgetTheMinute()
+        assertEquals(Verdict.Allowed, limiter.line(turn(3)), "the minute is free")
+        assertEquals(Verdict.Allowed, limiter.sound(), "so are its sounds")
+        assertContains(denied(limiter.line(turn(1))), "4 lines already this turn")
+    }
+
     @Test
     fun `a refusal counts nothing`() {
         repeat(4) { limiter.line(turn(1)) }

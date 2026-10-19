@@ -143,10 +143,11 @@ class DeathGuard(
      * Saves [player] from a death the engine refuses (a duel, M4 §5.5): the same rescue as beyond the quota
      * ([save]), whatever is killing them, without counting anything against the quota nor arming anything.
      * Decision `death_guard rescued` with [why]. Called from `ALLOW_DEATH` (the caller then refuses the death)
-     * or at any time. Server thread.
+     * or at any time. [inPlace]: the danger is already gone (the creatures of a punishment, sent away: M4-POST),
+     * and the player is kept where they stand rather than taken to their respawn point. Server thread.
      */
-    fun rescue(player: ServerPlayer, why: String) {
-        val saved = save(player, why)
+    fun rescue(player: ServerPlayer, why: String, inPlace: Boolean = false) {
+        val saved = save(player, why, inPlace)
         decisions.record(
             log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
             reason = "$why: ${saved.what(player)}; not counted against the Narrator's quota, nothing armed${saved.warning()}",
@@ -170,14 +171,17 @@ class DeathGuard(
 
         /**
          * `taken to respawn point (x …), fire put out, air given, lifted slowness II, 6.0 health, no fall damage for 30s,
-         * nothing hostile against them for 5m`.
+         * nothing hostile against them for 5m`; `kept where they stood (x …), …` for a rescue in place.
          */
         fun what(player: ServerPlayer): String =
-            (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
+            (safety?.let { (how, spot) -> "${moved(how)} (${where(player, spot)})" } ?: "could not be moved") +
                 ", fire put out, air given" +
                 (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
                 ", ${"%.1f".format(Locale.ROOT, health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}" +
                 ", nothing hostile against them for ${ToolText.duration(Guards.RESCUE_SHIELD_MS)}"
+
+        /** `taken to respawn point`, `kept where they stood`. */
+        private fun moved(how: String): String = if (how == IN_PLACE) "kept where they stood" else "taken to ${how.replace('_', ' ')}"
 
         fun warning(): String =
             if (often) "; rescued $rescues times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""
@@ -196,7 +200,8 @@ class DeathGuard(
     /**
      * Takes [player] out of the danger that was killing them. In order: alive again, before anything moves
      * them; the Narrator's harmful effects and modifiers lifted (a levitation would lift them again, a
-     * smaller scale changes where they fit); taken to safety ([moveToSafety]); their fall stopped, their fire
+     * smaller scale changes where they fit); taken to safety ([moveToSafety]), unless [inPlace] (the danger is
+     * already gone: they stay where they stand); their fall stopped, their fire
      * put out (again at the end of the tick, [afterTick]), air in their lungs, food if they were starving; no
      * fall damage for [CUSHION_SECONDS] (a favor in the attribute ledger); [RESCUE_HEALTH] health; the mark
      * of a protected death cleared; and a shield of [Guards.RESCUE_SHIELD_MS] because [why]: nothing hostile
@@ -204,11 +209,11 @@ class DeathGuard(
      * Each rescue is remembered for [RESCUE_WINDOW_MS]: more than [RESCUES_BEFORE_WARNING] warn the operators
      * that something keeps putting the player in mortal danger, or that they use the rescue as a way home.
      */
-    private fun save(player: ServerPlayer, why: String): Saved {
+    private fun save(player: ServerPlayer, why: String, inPlace: Boolean = false): Saved {
         player.health = 1f
         val effectsLifted = effects.removeHarmful(player).map(EffectLedger::describe)
         val attributesLifted = attributes.resetHarmful(player).map { it.id }
-        val safety = moveToSafety(player)
+        val safety = if (inPlace) IN_PLACE to player.position() else moveToSafety(player)
         if (safety == null) log.error("could not take ${player.plainTextName} to safety: the game refused to move them; kept alive where they are")
         player.resetFallDistance()
         player.deltaMovement = Vec3.ZERO
@@ -355,6 +360,9 @@ class DeathGuard(
 
         /** How a rescue took the player to safety, in its decision: onto safe ground where they were. */
         const val SAFE_GROUND = "safe_ground"
+
+        /** How a rescue took the player to safety, in its decision: nowhere, the danger being gone (`rescue` in place). */
+        const val IN_PLACE = "in_place"
 
         /** The longest fall [fallSeconds] counts: a player who barely falls (no gravity) is not cushioned for ever. */
         private const val MAX_FALL_SECONDS = 900
