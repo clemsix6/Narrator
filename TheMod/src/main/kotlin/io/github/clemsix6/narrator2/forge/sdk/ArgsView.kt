@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.forge.sdk
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.forge.ParamSpec
+import io.github.clemsix6.narrator2.forge.arsenal.Manifest
 import io.github.clemsix6.narrator2.forge.api.Args
 import io.github.clemsix6.narrator2.forge.api.ForgeRefusal
 import io.github.clemsix6.narrator2.forge.api.ParamType
@@ -54,10 +55,6 @@ data class CheckedParams(val params: JsonObject, val players: List<PlayerRef>)
 
 /** The check of a deployment's parameters against the module's manifest (M5 §6.4 step 3). */
 object ParamCheck {
-    /** Most players a [ParamType.PLAYERS] names, and characters a [ParamType.TEXT] holds (`ParamType`'s Javadoc). */
-    const val MAX_PLAYERS = 8
-    const val MAX_TEXT_CHARS = 300
-
     /**
      * [given] (`deploy_module params`) against [specs], the manifest's parameters, in their order: no unknown name;
      * each required one given; each value of its type, within its bounds and choices; its players known to the server
@@ -96,7 +93,7 @@ object ParamCheck {
                 }
                 ParamType.PLAYERS -> {
                     val names = ParamValues.names(value, field).ifEmpty { reject("$field must name at least one player") }
-                    bounded(field, "name", names.size.toDouble(), spec.min, minOf(spec.max ?: MAX_PLAYERS.toDouble(), MAX_PLAYERS.toDouble()), " players")
+                    bounded(field, "name", names.size.toDouble(), spec.min, minOf(spec.max ?: PLAYERS_MAX, PLAYERS_MAX), " players")
                     names.groupBy { it.lowercase() }.values.firstOrNull { it.size > 1 }?.let { reject("$field names ${it.first()} twice") }
                     val found = lookup.players(names, field)
                     if (found.size < names.size || found.distinctBy { it.uuid }.size < found.size) reject("$field names the same player twice")
@@ -113,7 +110,7 @@ object ParamCheck {
 
     private fun text(spec: ParamSpec, text: String, field: String): String {
         if (text.isEmpty()) reject("$field must not be empty")
-        bounded(field, "have", text.length.toDouble(), spec.min, minOf(spec.max ?: MAX_TEXT_CHARS.toDouble(), MAX_TEXT_CHARS.toDouble()), " characters")
+        bounded(field, "have", text.length.toDouble(), spec.min, minOf(spec.max ?: TEXT_MAX, TEXT_MAX), " characters")
         if (spec.choices.isEmpty()) return text
         return spec.choices.firstOrNull { it.equals(text, ignoreCase = true) }
             ?: reject("$field must be one of: ${spec.choices.joinToString()} (got \"$text\")")
@@ -150,6 +147,10 @@ object ParamCheck {
     private fun n(value: Double): String = ToolText.number(value)
 
     private fun reject(message: String): Nothing = throw MechanicRejected(null, message)
+
+    /** The caps of `@Param`'s Javadoc, one source with the manifest's check: 8 players, 300 characters. */
+    private const val PLAYERS_MAX = Manifest.PARAM_PLAYERS.toDouble()
+    private const val TEXT_MAX = Manifest.PARAM_TEXT_CHARS.toDouble()
 }
 
 /**

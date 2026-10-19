@@ -199,6 +199,29 @@ class ArgsViewTest {
         assertContains(assertFailsWith<ForgeRefusal> { args.player("wolf") }.message.orEmpty(), "has ended")
     }
 
+    /** The text forms the manifest accepts for a fallback (handoff M5-09), read as they are when a key is missing. */
+    @Test
+    fun `every fallback form the manifest accepts reads`() {
+        val fallbacks = listOf(
+            spec("n", ParamType.INTEGER, required = false, fallback = "-7"),
+            spec("x", ParamType.NUMBER, required = false, fallback = "-2.5"),
+            spec("b", ParamType.BOOLEAN, required = false, fallback = "true"),
+            spec("p", ParamType.PLAYER, required = false, fallback = "Bartok"),
+            spec("ps", ParamType.PLAYERS, required = false, fallback = "Bartok, Mimosa"),
+            spec("at", ParamType.PLACE, required = false, fallback = "1 2.5 -3 the_nether"),
+            spec("t", ParamType.TEXT, required = false, fallback = "tel quel"),
+        )
+        val args = ArgsView(fallbacks, JsonObject(emptyMap()))
+        assertEquals(-7, args.integer("n"))
+        assertEquals(-2.5, args.number("x"))
+        assertEquals(true, args.bool("b"))
+        assertEquals("Bartok", args.player("p"))
+        assertEquals(listOf("Bartok", "Mimosa"), args.players("ps"))
+        assertEquals(Place("nether", 1.0, 2.5, -3.0), args.place("at"))
+        assertEquals("tel quel", args.text("t"))
+        assertEquals(args.place("at"), ArgsView(fallbacks, check("{}", fallbacks).params).place("at"), "the same once resolved")
+    }
+
     @Test
     fun `a state that is not of its manifest's types cannot be read`() {
         assertFailsWith<IllegalArgumentException> { ArgsView(specs, json("""{"wolf": "Mimosa", "chickens": "many"}""")) }
