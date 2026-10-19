@@ -62,7 +62,7 @@ Tout vit dans le processus du serveur : un seul `.jar` à déposer dans `mods/`,
 
 L'arrêt se fait en deux temps : à `SERVER_STOPPING`, plus aucun travail nouveau et les appels à Claude sont annulés sans rien ajouter aux conversations ; à `SERVER_STOPPED`, une fois les joueurs déconnectés et leurs départs journalisés, le Journal est vidé (avec un délai maximal) puis la base fermée.
 
-**Ce qui doit rester cohérent avec le monde vit dans le monde** : l'index des blocs posés, les lieux visités, l'état des garde-fous (modificateurs d'attributs, confiscations, mort protégée) et l'échéance des créatures du Narrateur sont des pièces jointes Fabric persistantes, sauvées avec le tronçon ou le joueur. DuckDB garde l'historique ; il n'est jamais la source d'un état de jeu.
+**Ce qui doit rester cohérent avec le monde vit dans le monde** : l'index des blocs posés, les lieux visités, l'état des garde-fous (modificateurs d'attributs, confiscations, mises et offrandes en séquestre, mort protégée, grâce) et l'échéance des créatures du Narrateur sont des pièces jointes Fabric persistantes, sauvées avec le tronçon ou le joueur ; les blocs que les pièges doivent remettre sont dans leur tronçon ; les défis et duels en cours, les règles actives et les rappels du Directeur sont dans une pièce jointe **globale** (`server.globalAttachments()`), sauvée avec le monde ([design M4](design/M4.md) §3). DuckDB garde l'historique ; il n'est jamais la source d'un état de jeu.
 
 ## 3. Stack technique
 
@@ -155,9 +155,10 @@ Calculer la distance entre deux joueurs ne demande pas d'assistant : c'est un ou
 ### 6.1 Des outils typés plutôt que des commandes
 Le Narrateur agit surtout par des outils typés, validés et journalisés — ils ne dépendent d'aucune syntaxe de commande :
 
-- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). La barre de boss arrive en M4, attachée aux défis.
+- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). Les barres de boss (M4) n'existent qu'attachées à un défi ou à un duel : une par participant, tenue par le moteur.
 - **Effets sur les joueurs** : `apply_effect` / `remove_effect`, `set_attribute` / `reset_attribute` (temporaire), `teleport` (atterrissage sûr, même dimension en M2), `launch`, `give_item` / `take_item` (objets décrits en JSON : nom, lore, enchantements, incassable… convertis en composants 26.x par le code ; une confiscation est toujours temporaire).
-- **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time`.
+- **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time` ; en M4, `trap` (pièges de blocs temporaires, remis tout seuls par le `BlockRestorer`, jamais sur une construction).
+- **Mécaniques** (M4, §9) : `start_challenge`, `end_challenge`, `propose_duel`, `create_rule`, `remove_rule`, `punish`, `favor`, `answer_offering` ; `teleport` sait aussi un point au hasard dans un rayon.
 - **Commandes brutes** : `run_command`, en dernier recours. La commande est d'abord **analysée par le parseur Brigadier du serveur sans être exécutée** : si elle est invalide, le Narrateur reçoit l'erreur, sa position, et l'usage exact de la commande en 26.3. L'outil `command_help` renvoie l'arbre de syntaxe d'une commande. C'est ce qui manquait à la v1.
 
 La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retours, est dans le [design M1/M2](design/M1_M2.md) §9. Les schémas JSON sont générés depuis les classes d'arguments Kotlin et validés côté serveur ; on n'utilise pas `strict: true` (trop limité en nombre d'outils et en contraintes, et non vérifié à travers LLMGW).
@@ -166,7 +167,7 @@ La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retou
 Les attributs de 26.x offrent des châtiments et récompenses spectaculaires, visibles par tous les clients, sans une ligne de code : `scale` (joueur minuscule ou géant), `gravity` (gravité lunaire), `jump_strength`, `movement_speed`, `block_break_speed`, `safe_fall_distance`, `step_height`, `block_interaction_range`, `entity_interaction_range`, `max_health`, `attack_speed`, `knockback_resistance`, `oxygen_bonus`, `burning_time`… Chaque modification porte un identifiant et une durée : elle est retirée automatiquement, même après un redémarrage.
 
 ### 6.3 Garde-fous
-Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets, la progression ou des entités, y compris derrière `execute … run`) ; seules les commandes relues pour le Narrateur passent, celles des autres mods sont refusées tant qu'un opérateur ne les a pas autorisées. Puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables (ses créatures ne les blessent pas plus que les joueurs morts depuis peu), aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10.
+Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets, la progression ou des entités, y compris derrière `execute … run`) ; seules les commandes relues pour le Narrateur passent, celles des autres mods sont refusées tant qu'un opérateur ne les a pas autorisées. Puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables (ses créatures ne les blessent pas plus que les joueurs morts depuis peu), aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10, et ce que M4 y ajoute (catégories de châtiments, grâce, séquestre, `BlockRestorer`) dans le [design M4](design/M4.md) §13.
 
 ## 7. Le Cerveau
 
@@ -214,13 +215,13 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | Rôle | Mission | Outils |
 |---|---|---|
 | **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
-| **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, SQL (positions) |
+| **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, `survey` (terrains plats et dégagés), SQL (positions), `recall` |
 | **Forgeron** | Écrire, compiler et tester un module de la Forge | Outils de la Forge (§10) |
 | **Scénariste** | Proposer trois idées originales (défi, châtiment, rebondissement) notées sur la nouveauté, le fun et l'équité, en évitant ce qui a déjà été fait | Mémoire, historique des interventions, `inspire` |
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
-Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'Éclaireur arrive en M4 avec les mécaniques qui en ont besoin, les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
+Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
 
 ### 7.4 Chapitres et contexte
 - La conversation du Directeur est **append-only** : on n'édite jamais un tour passé, on ne change pas le prompt système ni la liste d'outils en cours de chapitre. C'est indispensable avec Opus 5.5 (sa réflexion est liée au préfixe exact de la conversation) et c'est ce qui rend le cache de prompt efficace.
@@ -256,53 +257,110 @@ Voir **[MEMOIRE.md](MEMOIRE.md)** : les cinq couches, la fiche joueur (identité
 
 ## 9. Les mécaniques de jeu
 
+Le moteur des mécaniques (M4) est un abonné du bus de faits : il apparie les faits sur le thread serveur, tient
+l'état vivant dans le monde (pièce jointe globale), agit **par les vrais outils**, sous les garde-fous, et prévient
+le Directeur. Un défi, un duel, une loi ou un plan est **une ligne du canon** (`C-…`) que le moteur suit et résout
+lui-même : le canon fait loi même quand le Directeur se tait. Le design exécutable est dans
+[design/M4.md](design/M4.md).
+
 ### 9.1 Défis
-Des objets de jeu à part entière : participants, règles, durée, enjeux (récompense, gage), barre de boss, progression, et **résolution automatique** quand le moteur sait détecter la victoire.
+Des objets de jeu à part entière : participants, durée, enjeux (récompense, gage), une **barre de boss par
+participant**, progression, et **résolution automatique** quand le moteur sait détecter la victoire. L'outil
+`start_challenge` écrit le canon et lance le suivi ; à la fin, le moteur paie la récompense aux gagnants et la
+pénalité aux perdants (un châtiment du catalogue), par les outils et sous les garde-fous, règle les paris, résout
+le canon et prévient le Directeur (`CHALLENGE`).
 
 | Type | Exemple | Détection |
 |---|---|---|
-| Course à l'objet | « Le premier qui obtient un œuf de tortue » | inventaire / ramassage / fabrication |
-| Course au lieu | « Le premier au sommet de ce pic », « le premier dans une ancient city » | positions, structures |
-| Collecte | « 64 bambous en 5 minutes » | inventaire |
-| Chasse | « 10 araignées avant l'aube » | kills |
-| Survie | « Survivre 10 minutes sans armure » | morts, équipement |
-| Duel | PvP dans une arène, positions restaurées après | morts, dégâts |
-| Pari | Les joueurs misent des objets sur une issue | selon l'issue |
-| Quiz / énigme | Répondre dans le chat | chat |
-| Construction jugée | « La plus belle statue en 15 minutes » | jugement du Narrateur (Oracle sur la zone) |
-| Personnalisé | Condition implémentée par un module de la Forge | module |
+| Course à l'objet, collecte (`obtain`) | « Le premier qui obtient un œuf de tortue », « 64 bambous en 5 minutes » | inventaire, chaque seconde |
+| Course au lieu (`reach`) | « Le premier au sommet de ce pic », « le premier dans une ancient city » | position, structure, biome, dimension, hauteur |
+| Chasse (`kill`) | « 10 araignées avant l'aube » | kills (jamais un joueur) |
+| Survie (`survive`) | « Survivre 10 minutes sans armure » | morts, armure, départs |
+| Quiz, énigme (`answer`) | Répondre dans le chat | chat public et prières, réponses normalisées |
+| Construction jugée (`judged`) | « La plus belle statue en 15 minutes » | le Narrateur nomme les gagnants à l'échéance (`JUDGE`) |
+| Duel (`propose_duel`) | PvP consenti, dans une arène ou sur place, positions restaurées | coup fatal de l'adversaire **arrêté à 1 PV** : personne ne meurt d'un duel |
+| Pari (`/bet`) | Les joueurs misent la pile qu'ils tiennent sur l'issue d'un défi ou d'un duel | l'issue ; les mises perdues vont aux parieurs gagnants, **rien au Narrateur** |
+| Personnalisé | Condition implémentée par un module de la Forge | M5 |
 
 ### 9.2 Châtiments
-Un catalogue paramétrable, avec une sévérité de 1 à 5 : joueur minuscule, gravité lunaire, pioche au ralenti, inventaire mélangé, poules en orbite, pluie de slimes, téléportation au sommet d'un arbre, faim soudaine, invités surprises (mobs nommés), éclair « d'avertissement »… Plus tout ce que la Forge sait fabriquer. Chaque châtiment a une raison, une durée, et passe par les **cooldowns du moteur** (par joueur, par catégorie, plafond de sévérité selon le niveau de chaos configuré).
+Un **catalogue** (`punish`) de onze punitions composées, avec une **sévérité de 1 à 5** plafonnée par le niveau de
+chaos : joueur minuscule, gravité lunaire, pioche au ralenti, pieds de plomb, faim soudaine, inventaire mélangé
+(rien n'est perdu), invités surprises (zombies nommés), pluie de slimes, envol, téléportation au sommet d'un arbre,
+foudre. Les outils bruts restent pour le reste, et les pièges de blocs (§9.4). Toute action hostile, de n'importe
+quel outil, d'une règle ou d'un enjeu, porte une **catégorie** (taille, gravité, mouvement, foudre…) : une même
+catégorie ne frappe pas deux fois le même joueur avant un délai qui dépend du chaos (30 min au chaos 3). Chaque
+châtiment a une raison, gardée dans l'historique du joueur, et une durée ; il passe par les garde-fous comme tout
+(protégé, mort récente, déjà puni, quatre par heure au plus). Les « poules en orbite » attendent la Forge.
 
 ### 9.3 Faveurs
-La carotte : objets nommés avec une histoire (« La Pioche du Pardon »), effets bénéfiques, titres honorifiques, protection temporaire, jokers (annuler un châtiment), indices vers un trésor.
+La carotte : objets nommés avec une histoire (« La Pioche du Pardon »), effets bénéfiques, titres honorifiques,
+indices vers un trésor (l'Éclaireur et un livre), et trois faveurs que le moteur fait respecter (`favor`) : le
+**pardon** (tout ce que le Narrateur a infligé est levé), la **grâce** (protection temporaire : ni lui ni ses
+créatures ne touchent le joueur) et le **joker** (un objet que le joueur joue lui-même pour lever un châtiment). Leur
+**coût** : un rationnement par joueur (objets précieux, une grâce par heure, un joker par jour), et les
+**offrandes** : un joueur offre de lui-même la pile qu'il tient (`/offer`) ; si le Narrateur l'accepte, il la garde
+contre une faveur, et c'est tracé ; sinon, ou sans réponse, elle revient.
 
 ### 9.4 Pièges et intentions
-Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur — « quand Bartok entrera dans le Nether, fais apparaître un comité d'accueil », « si Mimosa descend sous y=0, félicite-la ». Il prépare ainsi des surprises sans surveiller en boucle.
+Reprise d'une bonne idée de la v1 : le Narrateur peut **armer une intention**, une règle évaluée par le moteur —
+« quand Bartok entrera dans le Nether, fais apparaître un comité d'accueil », « si Mimosa descend sous y=0,
+préviens-moi pour que je la félicite ». C'est une règle de sorte **`plan`** (§10.1), secrète et souvent à usage
+unique, gardée au canon pour qu'il s'en souvienne d'un chapitre à l'autre. Les **pièges de blocs** (cage de verre,
+fosse, toiles, sol de glace ou de slime) passent par l'outil `trap` : posés pour quelques secondes, remis tout seuls
+par le `BlockRestorer`, seul chemin d'écriture de blocs, et jamais sur ce que les joueurs ont construit.
 
 ### 9.5 Récits
-Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée maximale. Un arc actif à la fois (deux au plus). Un thème clos entre en « jachère » et ne revient pas tout de suite.
+Des arcs narratifs avec un titre, une prémisse, des actes (début, escalade, résolution), une fin prévue et une durée
+maximale. Le moteur garantit **deux récits actifs au plus**, une **fin à 7 jours au plus** (un `DUE` la rappelle) et
+un **thème** par récit, qui entre en **jachère** 20 heures de jeu une fois le récit clos. Les actes vivent dans le
+texte du récit et les plans du Grimoire.
 
 ### 9.6 Rythme
-Des objectifs indicatifs dans le prompt (un défi toutes les 20–40 min, quelques altérations du monde par session…) et des **limites dures dans le moteur** (cooldowns, nombre de châtiments actifs, sévérité maximale), réglées par un **niveau de chaos** de 0 à 5.
+Des objectifs indicatifs dans le prompt (un défi toutes les 20–40 min quand les joueurs sont actifs, une loi
+rarement, des plans librement) et des **limites dures dans le moteur** : deux défis à la fois et 10 min entre deux
+départs, huit règles actives, deux récits, quatre châtiments par heure et par joueur, délais par catégorie,
+sévérité maximale, durée des pièges, fréquence des règles. Les plafonds qui dépendent du **niveau de chaos** (0 à 5,
+3 par défaut) sont dans le tableau du [design M1/M2](design/M1_M2.md) §10.4 et du [design M4](design/M4.md) §6.2. La
+situation du Directeur lui montre ce qui le limite (`Pacing`) avant qu'il n'y bute.
 
 ## 10. La Forge : du code à chaud
 
 La Forge a deux étages. Le premier couvre la plupart des envies sans une ligne de code ; le second, tout le reste.
 
 ### 10.1 Les Règles : déclaratives, instantanées
-Une règle est un objet JSON validé par un schéma strict : **déclencheur → conditions → effets**. Le Directeur les crée lui-même, sans passer par un assistant, et elles s'activent immédiatement. Les cinq exemples du cahier des charges tiennent dans des règles :
+Une règle est un objet JSON validé : **déclencheur → conditions → effets**. Le Directeur la crée lui-même
+(`create_rule`), sans passer par un assistant, et elle s'active immédiatement ; c'est une ligne du canon, une
+**loi** (`law`, un décret public, une semaine au plus) ou un **plan** (`plan`, une intention secrète, §9.4).
+
+- **Déclencheurs** : les faits du bus (bloc cassé ou posé, kill, coup porté, projectile qui touche un joueur, mort,
+  chat public, dimension, structure, biome, progrès, artisanat, repas, sommeil, connexion), une condition de
+  position évaluée chaque seconde (au front montant), et l'apparition d'une créature (`mob_spawn`, un crochet propre).
+- **Conditions** : un objet plat, toutes vraies : joueurs, créature, bloc, objet, casse d'une construction d'autrui,
+  dimension, structure, biome, progrès, hauteur, rayon autour d'un point, mots du chat, probabilité. Pas de langage
+  d'expressions.
+- **Effets** (1 à 4) : **un outil du Narrateur avec ses arguments habituels**, une cible `at` que le moteur remplit
+  (`actor` le joueur du déclencheur, `subject` sa créature ou le joueur touché, `position`, `everyone`) et un délai.
+  Outils permis : parole, mise en scène, effets, attributs, propulsion, téléportation, invocation, foudre,
+  explosion, piège, `punish` ; et trois réservés aux règles : `mob_effect`, `mob_attribute` (sur la créature du
+  déclencheur) et `notify` (réveille le Directeur avec sa note). Jamais de don, de confiscation, de commande, de
+  météo, ni de règle qui crée une règle.
+
+Les cinq exemples du cahier des charges tiennent dans des règles :
 
 | Envie | Déclencheur | Conditions | Effets |
 |---|---|---|---|
-| Squelettes à flèches explosives | un projectile touche | tireur = squelette | explosion (puissance 2, sans casser de blocs) |
-| Silverfish téléporteurs | une entité est blessée | victime = silverfish, attaquant = joueur | téléporter l'attaquant au hasard (rayon 300, atterrissage sûr) |
-| Vaches qui s'envolent et explosent | une entité est blessée | victime = vache | lévitation 3 s, puis explosion et feux d'artifice |
-| Creepers sous caféine | une entité apparaît ou se charge | type = creeper | vitesse ×3 (modificateur d'attribut temporaire) |
-| Diamants explosifs | un bloc est cassé | bloc = minerai de diamant | explosion (puissance 3) |
+| Squelettes à flèches explosives | un projectile touche un joueur | tireur = squelette | `explosion` à l'impact (puissance 2, sans casser de blocs) |
+| Silverfish téléporteurs | un joueur blesse une entité | victime = silverfish | `teleport` de l'attaquant au hasard (rayon 300, atterrissage sûr) |
+| Vaches qui s'envolent et explosent | un joueur blesse une entité | victime = vache | `mob_effect` lévitation 3 s, puis `explosion` inoffensive et `fireworks` là où est la vache |
+| Creepers sous caféine | une créature apparaît ou se charge | type = creeper | `mob_attribute` vitesse ×3, retiré avec la règle |
+| Diamants explosifs | un bloc est cassé | bloc = `#diamond_ores` | `explosion` (puissance 3) |
 
-Déclencheurs, conditions et effets correspondent aux actions typées du §6 : un seul moteur, validé côté serveur, avec des erreurs précises (identifiant inconnu, puissance hors limites…). Une règle a une durée, des cibles (joueurs, zone) et se retire proprement.
+Un seul moteur : les effets passent par les vrais outils, validés côté serveur avec leurs propres décodeurs et
+vérifications, **à la création** (erreurs précises : identifiant inconnu, puissance au-delà du chaos, cible mal
+placée…) et à l'exécution. Chaque déclenchement est un acte à part, soumis aux garde-fous (pas d'acharnement, délais
+par catégorie) ; une explosion refusée se rejoue inoffensive. Une créature qu'une règle touche devient « du
+Narrateur » : ses explosions ne cassent aucun bloc. Une règle a une durée, des cibles, une fréquence bornée, se
+désactive après cinq échecs et se retire proprement ([design M4](design/M4.md) §8).
 
 ### 10.2 Les Modules : du Java compilé à chaud
 Pour les mécaniques vraiment nouvelles (IA de mobs, mini-jeux, machines à états), le Forgeron écrit un module Java.
@@ -370,6 +428,7 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 - **Le chat est une entrée non fiable.** Les messages des joueurs sont balisés comme paroles de personnages ; le prompt traite les tentatives de manipulation comme un manque de respect (en jeu). Les vraies consignes n'arrivent que par le canal opérateur.
 - **Garde-fous du moteur** (§6.3) indépendants du modèle.
 - **Canaux de parole** (repris de la v1) : mention publique dans le chat ; `/pray <message>` pour parler au Narrateur en privé (le nom d'une commande est un littéral du code, donc anglais ; « prier le Narrateur-dieu » est dans le ton) ; `/narrator whisper <consigne>`, réservé aux opérateurs, qui arrive au Directeur comme consigne système.
+- **Commandes des joueurs pour les mécaniques** (M4) : `/duel accept|decline <id>` (un duel n'a lieu qu'avec les deux acceptations), `/bet <id> <joueur|nobody>` (parier la pile tenue en main sur l'issue d'un défi), `/offer` (offrir au Narrateur la pile tenue en main).
 - **Commandes d'administration** :
 
 ```
@@ -383,7 +442,8 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator rule list | remove <id>
 /narrator module list | unload <id> | unload-all
 /narrator challenge list | cancel <id>
-/narrator fiche <joueur>
+/narrator traps [restore]        # pièges en cours ; tout remettre maintenant
+/narrator sheet <joueur>
 /narrator memory …               # voir MEMOIRE.md §12
 /narrator trace …                # voir §12.4
 /narrator usage                  # consommation de tokens par rôle
@@ -447,7 +507,7 @@ Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, dur
 | **M1 — Journal** | Observateur (hooks, statistiques, mixins, positions), DuckDB, outil `sql` | Tout est enregistré et interrogeable. **Terminé le 25/09/2026** (voir `design/handoff/T07.md`) |
 | **M2 — Directeur v1** | Boucle événementielle, saillance, parole, Oracle, actions typées, validation des commandes, prompt de voix, transcriptions | Le Narrateur réagit au chat et au jeu. **Terminé le 25/09/2026** : recette en jeu contre le vrai LLMGW (voir `design/handoff/T22.md`), puis correctifs de la relecture fusionnés et vérifiés sur `main` (voir `design/reviews/M2_REVIEW.md`) |
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures. **Terminé le 18/10/2026** : correctifs de la relecture fusionnés (voir `design/reviews/M3_REVIEW.md`), puis évals E1 à E6 et recette E7 contre le vrai LLMGW (voir `design/handoff/M3-19.md`) |
-| **M4 — Mécaniques** | Défis, châtiments, faveurs, pièges, récits, cooldowns, barres de boss, Règles (§10.1) | Des parties rythmées, des règles du monde folles |
+| **M4 — Mécaniques** | Moteur des mécaniques (abonné du bus, état dans le monde, actes par les vrais outils) ; défis suivis (objectifs détectés, barres de boss, enjeux payés sous les garde-fous), duels consentis, paris ; catalogue de châtiments, catégories et sévérité ; faveurs (pardon, grâce, joker) et offrandes ; pièges de blocs temporaires (`BlockRestorer`) et index des blocs posés fiable ; Règles (§10.1), lois et plans ; récits bornés ; rythme ; Éclaireur ; rappels persistants. Design : [design/M4.md](design/M4.md) | Des parties rythmées, des règles du monde folles |
 | **M5 — Forge** | SDK, compilation Java à chaud, outils d'introspection, Forgeron, arsenal de départ | Il invente de nouvelles mécaniques |
 | **M6 — Finitions** | Scénariste, `inspire`, tics, évaluation du ton, tableau de bord web des traces | Il se renouvelle, et on voit tout |
 
@@ -458,6 +518,15 @@ Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats,
 - **Garde-fous** : chaque règle du §17 a un composant qui l'applique ; les plafonds découlent du niveau de chaos ; le quota de morts se mesure en temps joué (stat vanilla `PLAY_TIME`) ; tant qu'aucun outil n'écrit de blocs (M2), la règle sur les constructions est garantie par l'absence d'API, la liste des commandes interdites et le blocage des explosions du Narrateur.
 - **Jev** : une requête de 9 questions par message de chat (tri et signaux de personnalité, stockés dès M2 pour M3), questions en anglais, repli heuristique alimenté par un fichier de mots français.
 - **Canal privé** : `/pray` ; **Analyste seul** en M2, Éclaireur en M4.
+
+Le design exécutable de M4 est dans [docs/design/M4.md](design/M4.md). Il tranche, le 18/10/2026 :
+- **Le moteur des mécaniques est un abonné du bus** qui n'apparie que dans l'appel ; son état vivant est dans une pièce jointe globale du monde, son historique dans le canon, les interactions et les décisions `mechanic`.
+- **Un défi, un duel, une loi ou un plan est une ligne du canon** (`C-…`, colonne `mechanic`), que le moteur suit et résout lui-même ; une nouvelle sorte de canon, `plan` (migration V3).
+- **Le moteur agit par les vrais outils** (`EngineActions`), chaque acte avec son propre `Caller` : mêmes vérifications, plafonds et garde-fous que le Directeur. Les effets d'une Règle sont des appels d'outils avec une cible `at`.
+- **Châtiments** : catégories et délai par catégorie et par joueur pour toute action hostile ; catalogue `punish` à sévérité plafonnée par le chaos.
+- **Objets** : mises et offrandes en séquestre dans l'état du joueur ; paris sans maison ; offrande = don voulu et compensé, tracé.
+- **Blocs** : un seul chemin d'écriture, le `BlockRestorer`, temporaire, jamais sur une construction ; l'index des blocs posés vérifie le bloc encore en place.
+- **L'Éclaireur** entre avec `survey` ; les rappels deviennent persistants ; la reprise d'un Journal indisponible au démarrage est rangée en M6.
 
 ## 17. Décisions prises
 
