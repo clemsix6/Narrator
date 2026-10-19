@@ -781,3 +781,28 @@ Ordre conseillé :
 - **C36** : un participant ne parie-t-il que sur lui-même ?
 - **C37** : accesseur mixin pour `CommandSourceStack.source`, ou opérateurs de confiance ?
 - **C38** : nouveau texte de `duel.lost` ?
+
+## Décisions du superviseur (19/10/2026)
+
+Toutes les propositions de correctif sont acceptées, sauf ce qui suit.
+
+- **C3** : **bloquant.** La protection d'un duelliste épargné dure tant qu'un danger persiste (feu, lave, vide, chute en cours), avec 10 s au moins. Le duelliste est éteint, et retiré de la lave ou du vide, avant que la protection tombe.
+- **C8** : `levitation` est interdite aux règles. Les attributs posés par une règle ont des bornes propres : `scale` entre 0,5 et 2, jamais de vie maximale réduite, jamais de dégâts de chute provoqués.
+- **C12** : dans une règle, les outils hostiles ne visent jamais la victime d'un coup entre joueurs, seulement l'auteur du fait. `teleport to_player` est interdit dans une règle.
+- **C13** :
+  - Un concours jugé échu pendant l'arrêt passe en `JUDGING` au redémarrage, et `JUDGE` est renvoyé.
+  - Pour les autres objectifs, si au moins un participant avait fini (`doneAt`) avant l'arrêt, le défi est gagné par ces participants, avec leurs récompenses et sans gage pour les autres.
+  - Sinon, il est annulé sans enjeux, et les paris sont rendus.
+- **C16** : un seul `punish` par acte et par joueur.
+- **C17** : les créatures du Narrateur ne visent que des joueurs, jamais des villageois ni des animaux.
+- **C18** : le contrat des garde-fous (protection après un sauvetage ou une mort refusée) va au lot F. Le côté duel est branché par le lot H.
+- **C19** :
+  - Un duel dont l'issue est décidée par un tiers (coup d'un autre joueur, du Narrateur ou d'une créature du Narrateur) est **annulé**, et les paris sont rendus.
+  - `hostile` refuse de viser un duelliste pendant son duel.
+- **C31** : les fins de règles s'écrivent dans une décision `mechanic rule_ended`, avec `detail.ending` valant `expired`, `disabled`, `removed` ou `fulfilled`.
+  - Le lot D l'écrit.
+  - Le lot G l'ajoute à `ENGINE_NEWS`.
+  - Un `RULE` non prioritaire part quand un opérateur retire une règle.
+- **C36** : un participant ne parie que sur lui-même.
+- **C37** : on ajoute un accesseur mixin pour `CommandSourceStack.source`. `/duel accept` et `/bet` n'agissent qu'au nom du joueur réel, même derrière `execute as`.
+- **C38** : le lot I réécrit `duel.lost` : railleur, jamais glauque.
