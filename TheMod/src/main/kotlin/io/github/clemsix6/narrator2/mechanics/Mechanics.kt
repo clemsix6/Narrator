@@ -237,8 +237,8 @@ interface MechanicPart {
 }
 
 /**
- * The engine when it does not run (M4 §4.1): [reason] says why (`mechanics.enabled is false`, `the memory is
- * unavailable: …`, `not wired yet`). Starting a challenge, a duel or a rule fails with
+ * The engine when it does not run (M4 §4.1): [reason] says why (`mechanics.enabled is false`, `the Journal is
+ * unavailable: …`, `the memory is unavailable: …`, `it could not start: …`). Starting a challenge, a duel or a rule fails with
  * `DENIED (mechanics_off): the mechanics are unavailable: <reason>`; ending or removing one fails the same
  * way. Lists are empty, there is no situation line, the hooks do nothing and every death is allowed.
  *

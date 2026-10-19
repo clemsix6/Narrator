@@ -36,8 +36,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * the saved state after a restart, and is taken down when its challenge ends.
  *
  * Each test has its own [Bossbars] and its own players, whose connection records the boss bar packets: what
- * their client shows is those packets played back ([BarClient.view]). The real engine is not wired yet (M4-23):
- * the tests draw the bars from a state of their own, as the engine's part does each second.
+ * their client shows is those packets played back ([BarClient.view]). The tests draw the bars from a state of their
+ * own, as the engine's part does each second, never from the server's engine.
  */
 class BossbarGameTests {
 

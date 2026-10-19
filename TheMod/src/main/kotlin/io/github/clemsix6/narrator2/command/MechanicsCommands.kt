@@ -199,7 +199,7 @@ object MechanicsCommands {
 
     /**
      * The `Mechanics:` line of `/narrator status`: `Mechanics: on · 1 challenge, 1 duel · 3 rules · 12 trap blocks
-     * pending`, or `Mechanics: off (not wired yet) · 0 trap blocks pending` (the traps are the guards': they run
+     * pending`, or `Mechanics: off (mechanics.enabled is false) · 0 trap blocks pending` (the traps are the guards': they run
      * with the engine off). [pending]: [BlockRestorer.pending]. From snapshots: any thread.
      */
     fun statusLine(mechanics: Mechanics, pending: Int): String {

@@ -41,7 +41,8 @@
       "io.github.clemsix6.narrator2.gametest.RuleGameTests",
       "io.github.clemsix6.narrator2.gametest.MechanicsCommandGameTests",
       "io.github.clemsix6.narrator2.gametest.DuelGameTests",
-      "io.github.clemsix6.narrator2.gametest.RuleEngineGameTests"
+      "io.github.clemsix6.narrator2.gametest.RuleEngineGameTests",
+      "io.github.clemsix6.narrator2.gametest.MechanicsAssemblyGameTests"
     ]
   },
   "depends": {
