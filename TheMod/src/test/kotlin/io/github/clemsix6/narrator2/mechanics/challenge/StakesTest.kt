@@ -201,13 +201,13 @@ class StakesTest {
 
     @Test
     fun `the stakes are paid in one act per player, to the players online, and kept in their history`() {
-        val segments = pay(challenge(MechanicsSamples.goldenApple, MechanicsSamples.tinyForfeit), listOf(mimosa), listOf(bartok, josiane))
+        val segments = pay(challenge(MechanicsSamples.speed, MechanicsSamples.tinyForfeit), listOf(mimosa), listOf(bartok, josiane))
 
-        assertEquals(listOf("reward: Mimosa got 1x golden_apple", "penalty: Bartok tiny (2) until 18:02, Josiane offline, not paid"), segments)
+        assertEquals(listOf("reward: Mimosa got speed II for 5m", "penalty: Bartok tiny (2) until 18:02, Josiane offline, not paid"), segments)
         val opened = decisions("stake")
         assertEquals(listOf("Mimosa", "Bartok"), opened.map { it.subject }, "one act per player online, none for Josiane")
         assertEquals(
-            listOf("C-50 reward to Mimosa: 1x golden_apple", "C-50 penalty to Bartok: tiny (2)"),
+            listOf("C-50 reward to Mimosa: speed II for 5m", "C-50 penalty to Bartok: tiny (2)"),
             opened.map { it.reason },
         )
         assertTrue(opened.all { it.conversationId == "mechanics:C-50" && it.turnId == null })
@@ -219,15 +219,15 @@ class StakesTest {
         )
         assertEquals(opened.map { -it.id }, decisions("action").map { it.detail!!.getValue("act").jsonPrimitive.long })
 
-        assertEquals(GiveItemArgs("Mimosa", "golden_apple", 1), runs[0].args)
+        assertEquals(ApplyEffectArgs(listOf("Mimosa"), "speed", 300, 2), runs[0].args)
         assertEquals(PunishArgs("Bartok", PunishmentId.TINY, 2, "lost the challenge C-50"), runs[1].args)
 
-        val (gift, punishment) = interactions
+        val (blessing, punishment) = interactions
         assertEquals(
-            listOf(mimosa.uuid to InteractionKind.GIFT, bartok.uuid to InteractionKind.PUNISHMENT),
+            listOf(mimosa.uuid to InteractionKind.BLESSING, bartok.uuid to InteractionKind.PUNISHMENT),
             interactions.map { it.player.uuid to it.kind },
         )
-        assertEquals("challenge reward: give_item for Mimosa", gift.summary, "the tool's first line")
+        assertEquals("challenge reward: apply_effect for Mimosa", blessing.summary, "the tool's first line")
         assertEquals("challenge penalty: punish for Bartok", punishment.summary)
         assertTrue(interactions.all { it.valence == 0 && it.canon == MechanicsSamples.canon(50) && it.source == Source.ENGINE })
         assertTrue(memory.store.writes.all { it.endsWith("by engine") }, "${memory.store.writes}")
@@ -285,9 +285,12 @@ class StakesTest {
 
     @Test
     fun `a duel pays its winner's reward only, and a challenge without stakes pays nothing`() {
-        val duel = MechanicsSamples.invitedDuel.copy(participants = listOf(participant(bartok), participant(mimosa)))
-        assertEquals(listOf("reward: Mimosa got 1x golden_apple"), pay(duel, listOf(mimosa), listOf(bartok)))
-        assertEquals("duel reward: give_item for Mimosa", interactions.single().summary)
+        val duel = MechanicsSamples.invitedDuel.copy(
+            duel = MechanicsSamples.duel.copy(reward = MechanicsSamples.joker),
+            participants = listOf(participant(bartok), participant(mimosa)),
+        )
+        assertEquals(listOf("reward: Mimosa got a joker"), pay(duel, listOf(mimosa), listOf(bartok)))
+        assertEquals("duel reward: favor for Mimosa", interactions.single().summary)
         assertEquals(MechanicsSamples.canon(52), interactions.single().canon)
 
         assertEquals(emptyList(), pay(challenge(null, null), listOf(mimosa), listOf(bartok)))
@@ -299,11 +302,33 @@ class StakesTest {
     fun `without the memory the stakes are still paid, only not kept`() {
         memory.available = false
         assertEquals(
-            listOf("reward: Mimosa got 1x golden_apple", "penalty: Bartok tiny (2) until 18:02"),
-            pay(challenge(MechanicsSamples.goldenApple, MechanicsSamples.tinyForfeit), listOf(mimosa), listOf(bartok)),
+            listOf("reward: Mimosa got a joker", "penalty: Bartok tiny (2) until 18:02"),
+            pay(challenge(MechanicsSamples.joker, MechanicsSamples.tinyForfeit), listOf(mimosa), listOf(bartok)),
         )
         assertTrue(interactions.isEmpty())
         assertEquals(2, runs.size)
+    }
+
+    /**
+     * M4 review, finding 36: `give_item` drops what finds no room at the player's feet, where it burns or vanishes. An
+     * item reward passes `give_item`'s dry checks as its act, then goes through the ledger (`GameTest`s), never through
+     * the tool's run; its act's `action` decision is written all the same.
+     */
+    @Test
+    fun `an item reward passes give_item's checks as its act, and never its run`() {
+        dry["give_item"] = ToolResult.denied("precious_limit", "1x golden_apple is worth more than you think")
+
+        val segments = pay(challenge(MechanicsSamples.goldenApple, null), listOf(mimosa), emptyList())
+
+        assertEquals(listOf("reward: Mimosa refused (precious_limit: 1x golden_apple is worth more than you think)"), segments)
+        assertTrue(runs.isEmpty(), "give_item never runs: $runs")
+        val act = decisions("stake").single()
+        assertEquals("give_item" to Caller(io.github.clemsix6.narrator2.llm.Role.DIRECTOR, "mechanics:C-50", null, null, firingId = act.id), dryChecks.single())
+        val action = decisions("action").single()
+        assertEquals("give_item denied: DENIED (precious_limit): 1x golden_apple is worth more than you think", action.reason)
+        assertEquals(-act.id, action.detail!!.getValue("act").jsonPrimitive.long)
+        assertEquals("mechanics:C-50", action.conversationId)
+        assertTrue(interactions.isEmpty(), "nothing given, nothing kept")
     }
 
     private fun <A : Any> decode(serializer: KSerializer<A>, json: JsonObject): A {

@@ -233,6 +233,49 @@ class GoalsTest {
         assertNull(Goals.verdict(MechanicsSamples.invitedDuel.copy(status = ChallengeStatus.RUNNING), start + 999 * MINUTE))
     }
 
+    /** M4 review, finding 13, as the supervisor decided it. */
+    @Test
+    fun `a challenge whose end passed while the server was down is judged, won by those who made it, or else cancelled`() {
+        val statue = running(MechanicsSamples.statue)
+        assertEquals(Verdict.Judge, Goals.afterDowntime(statue), "the statues are built: the Director judges them")
+        assertEquals(Verdict.Judge, Goals.afterDowntime(statue.copy(status = ChallengeStatus.JUDGING, judgeUntil = statue.endsAt + 15 * MINUTE)))
+
+        var reach = running(MechanicsSamples.nether, bartok, mimosa, josiane)
+        assertEquals(Verdict.Ends(Ending.CANCELLED, emptyList()), Goals.afterDowntime(reach), "nobody made it: no winner, no stakes")
+        reach = Goals.reached(reach, josiane.uuid, start + 5 * MINUTE)
+        reach = Goals.reached(reach, bartok.uuid, start + 6 * MINUTE)
+        assertEquals(listOf("Josiane", "Bartok"), winners(Goals.afterDowntime(reach)), "winners 0: everyone who made it, in order")
+        assertEquals(Ending.WON, (Goals.afterDowntime(reach) as Verdict.Ends).ending)
+
+        val egg = Goals.held(running(MechanicsSamples.turtleEgg.copy(winners = 3), bartok, mimosa, josiane), mimosa.uuid, 1, start + 1_000)
+        assertEquals(listOf("Mimosa"), winners(Goals.afterDowntime(egg)), "fewer than winners made it: they win")
+
+        val naked = running(MechanicsSamples.naked, bartok, mimosa)
+        assertEquals(Verdict.Ends(Ending.CANCELLED, emptyList()), Goals.afterDowntime(naked), "nobody makes a survive before its end")
+        assertEquals(Verdict.Ends(Ending.CANCELLED, emptyList()), Goals.afterDowntime(MechanicsSamples.invitedDuel), "a duel")
+    }
+
+    /** M4 review, finding 27: the participants were those of the check, not those of the start. */
+    @Test
+    fun `the participants are those of the start, not of the check`() {
+        fun named(goal: ChallengeSpec) = goal.copy(players = listOf("Bartok", "Mimosa"))
+        val prepared = participants(bartok, mimosa)
+        val online = setOf(bartok.uuid.toString(), josiane.uuid.toString())
+
+        assertEquals(
+            listOf(null, OutReason.LEFT),
+            Goals.atStart(named(MechanicsSamples.naked), prepared, participants(bartok, josiane), online).map { it.out },
+            "Mimosa left while the canon row was written: out of the survive",
+        )
+        assertEquals(prepared, Goals.atStart(named(MechanicsSamples.turtleEgg), prepared, participants(bartok, josiane), online), "she may come back for the egg")
+        assertEquals(
+            listOf("Bartok", "Josiane"),
+            Goals.atStart(MechanicsSamples.nether, prepared, participants(bartok, josiane), online).map { it.name },
+            "open to everyone: who is there at the start, Josiane who came included, never late",
+        )
+        assertTrue(Goals.atStart(MechanicsSamples.nether, prepared, participants(bartok, josiane), online).none { it.late })
+    }
+
     @Test
     fun `endings close the canon with its statuses, and an early end asks for one of three`() {
         assertEquals(listOf(CanonStatus.WON, CanonStatus.LOST, CanonStatus.EXPIRED, CanonStatus.CANCELLED), Ending.entries.map { it.status })

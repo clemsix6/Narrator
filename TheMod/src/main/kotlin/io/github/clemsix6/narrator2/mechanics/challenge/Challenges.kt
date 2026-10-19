@@ -51,9 +51,12 @@ import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -133,17 +136,27 @@ interface BetBook {
  * Director's event.
  *
  * - **Start**: the goal's fields and ids ([Goals.shape], [Goals.target]), the participants (named and online,
- *   else everyone online and whoever joins), the pace ([room]), the stakes' dry checks ([StakePayer.check]); then
- *   the canon row (`challenge`, mechanic `challenge`, by the Director), then the state, in the order of the
- *   starts ([Mutex]).
+ *   else everyone online who may take part — neither a spectator nor a player in creative — and whoever joins),
+ *   the pace ([room]), the stakes' dry checks ([StakePayer.check]); then the canon row (`challenge`, mechanic
+ *   `challenge`, by the Director), then the state with the participants as they are then ([Goals.atStart]), in
+ *   the order of the starts ([Mutex]). Once the canon row is written, nothing cancels the start: the state
+ *   follows, or the row is cancelled (M4 review, finding 25).
  * - **Detection** (M4 §5.2): `obtain` and `reach` each second, for each participant online; `kill`, `survive`
  *   (death) and `answer` at the facts, matched on the bus and applied at the next tick; `survive` with
- *   `no_armor` and departures each second and at `LEAVE`. The bars draw themselves from the state (M4-09).
+ *   `no_armor` each second, departures at `LEAVE`. A spectator makes no progress; a tamed or named creature is no
+ *   kill; a message is one attempt at a quiz every [Answers.ATTEMPT_GAP_MS] at most (M4 review, findings 14, 15,
+ *   26). The bars draw themselves from the state (M4-09).
  * - **End** ([finish]): on the server thread, the challenge leaves the state with its bets settled
  *   ([BetBook.settle]) and its duelists to put back ([MechanicsState.returns]), and its bars are taken down in
- *   the same tick; then a coroutine pays the stakes ([StakePayer.pay]), resolves the canon (`Source.ENGINE`),
- *   writes a `challenge_result` interaction per participant, records the decision `mechanic won|lost|expired|
+ *   the same tick; then a coroutine resolves the canon (`Source.ENGINE`, before anything else and whatever
+ *   cancels it: M4 review, finding 24), pays the stakes ([StakePayer.pay]), writes a `challenge_result`
+ *   interaction per participant (never "lost" for a latecomer), records the decision `mechanic won|lost|expired|
  *   cancelled` and tells the Director (`CHALLENGE` or `DUEL`), unless the Director asked for it himself.
+ * - **Restart** (M4 review, finding 13): at the engine's first tick, the Director being there by then, a judged
+ *   challenge waiting for its verdict, or whose end passed while the server was down, is judged again (a whole
+ *   window, a new `JUDGE`); a challenge whose end passed while the server was down and that some participants
+ *   made (`Reconcile` kept it) is won by them, without penalty for the others, each winner's reward paid once
+ *   they are back online.
  *
  * Duels (M4-19) live in the same state: this part leaves them alone but for their situation line and their end,
  * which goes through [finish] like a challenge's.
@@ -174,6 +187,15 @@ class Challenges(
     /** Each challenge's target, resolved once (server thread); null when it could not be (logged once). */
     private val targets = HashMap<Long, Target?>()
 
+    /** The quizzes' attempts (any thread). */
+    private val attempts = Attempts()
+
+    /** When the engine started, until its first tick takes up what the stop left ([resume]). Server thread. */
+    private var restartedAt: Long? = null
+
+    /** The rewards of the winners of a challenge that ended while the server was down, until they are back. Server thread. */
+    private val owed = ArrayList<Owed>()
+
     override val listensTo: Set<KClass<out GameEvent>> = setOf(EntityKilled::class, PlayerDied::class, ChatMessage::class)
 
     // ── Start (ChallengeControl.start) ──
@@ -193,11 +215,31 @@ class Challenges(
             stakes.check(spec.reward, spec.penalty, caller)
             services.journal.barrier() // the players' join rows, which the canon checks
             val ref = writeCanon(spec, participants, caller)
-            val refusal = services.server.onServerThread { insert(ref, spec, participants, caller) }
-            refusal?.let { cancelRefused(ref, it) }
-            val challenge = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it started")
-            view(challenge, clock.millis())
+            // The canon row is written: from here on, the state follows or the row is cancelled, whatever cancels the caller.
+            withContext(NonCancellable) { track(ref, spec, participants, caller) }
         }
+    }
+
+    /**
+     * Puts challenge [ref], whose canon row is written, in the state ([insert]); when it cannot (the pace refuses it
+     * now, the server thread does not answer, an error), its canon row is cancelled and the refusal thrown, so that
+     * no open row is left without a state (M4 review, finding 25). Its view once in the state.
+     */
+    private suspend fun track(ref: Ref, spec: ChallengeSpec, participants: List<Participant>, caller: Caller): ChallengeView {
+        val refusal = try {
+            services.server.onServerThread { insert(ref, spec, participants, caller) }
+        } catch (e: Exception) {
+            if (store.snapshot.challenge(ref.id) == null) {
+                log.error("$ref could not start once its canon row was written: its row is cancelled", e)
+                MechanicRejected(null, "$ref could not start: ${e.message ?: e.javaClass.simpleName}")
+            } else {
+                log.warn("$ref started, but its start ended with an error", e)
+                null
+            }
+        }
+        refusal?.let { cancelRefused(ref, it) }
+        val challenge = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it started")
+        return view(challenge, clock.millis())
     }
 
     /** The participants of [spec], its target checked and the pace too. Throws [MechanicRejected]. Server thread. */
@@ -205,7 +247,7 @@ class Challenges(
         Goals.target(spec, server).onFailure { throw invalid(it.message.orEmpty()) }
         val online = server.playerList.players.filter { it !is FakePlayer }
         val players = when (val names = spec.players) {
-            null -> online.ifEmpty { throw invalid("nobody is online to take up a challenge") }
+            null -> online.filter(::enrolls).ifEmpty { throw invalid(NOBODY) }
             else -> {
                 val found = names.map { name -> name to online.firstOrNull { it.plainTextName.equals(name.trim(), ignoreCase = true) } }
                 val missing = found.filter { it.second == null }.map { ModelText.name(it.first) }.distinct()
@@ -217,8 +259,16 @@ class Challenges(
             }
         }
         room(store.get(), clock.millis(), duel = false)?.let { throw it }
-        return players.map { Participant(it.uuid.toString(), it.plainTextName) }
+        return players.map(::participantOf)
     }
+
+    /**
+     * Whether [player] takes part in a challenge open to everyone, at its start or joining late: neither a spectator
+     * nor a player in creative, who would win without playing (M4 review, finding 26).
+     */
+    private fun enrolls(player: ServerPlayer): Boolean = player !is FakePlayer && !player.isSpectator && !player.isCreative
+
+    private fun participantOf(player: ServerPlayer) = Participant(player.uuid.toString(), player.plainTextName)
 
     /** Writes [spec]'s canon row as the Director (M4 §3.3): its ref. A text the memory refuses is [MechanicRejected]. */
     private suspend fun writeCanon(spec: ChallengeSpec, participants: List<Participant>, caller: Caller): Ref {
@@ -238,10 +288,17 @@ class Challenges(
         }
     }
 
-    /** Puts challenge [ref] in the state now, unless the pace refuses it now (a duel came first): the refusal. Server thread. */
-    private fun insert(ref: Ref, spec: ChallengeSpec, participants: List<Participant>, caller: Caller): MechanicRejected? {
+    /**
+     * Puts challenge [ref] in the state now, with the participants [prepared] as they are now ([Goals.atStart]: who
+     * left or came while its canon row was written), unless the pace refuses it now (a duel came first), or nobody is
+     * left to take up a challenge open to everyone: the refusal. Server thread.
+     */
+    private fun insert(ref: Ref, spec: ChallengeSpec, prepared: List<Participant>, caller: Caller): MechanicRejected? {
         val now = clock.millis()
         room(store.get(), now, duel = false)?.let { return it }
+        val online = services.server.playerList.players.filter { it !is FakePlayer }
+        val participants = Goals.atStart(spec, prepared, online.filter(::enrolls).map(::participantOf), online.mapTo(HashSet()) { it.uuid.toString() })
+        if (participants.isEmpty()) return invalid(NOBODY)
         val challenge = ChallengeState(
             id = ref.id,
             spec = spec,
@@ -367,8 +424,20 @@ class Challenges(
         return close(challenge, ending, if (ending == Ending.WON) ordered else emptyList(), how, note, author)
     }
 
-    /** The server thread's share of [finish]: out of the state, bets settled, bars down; then the coroutine's. */
-    private fun close(challenge: ChallengeState, ending: Ending, winners: List<Participant>, how: String?, note: String?, author: Author?): Deferred<String> {
+    /**
+     * The server thread's share of [finish]: out of the state, bets settled, bars down; then the coroutine's.
+     * [downtime]: it ended while the server was down ([resume]): no penalty, and the rewards of the winners offline
+     * now are paid once they are back ([owed]).
+     */
+    private fun close(
+        challenge: ChallengeState,
+        ending: Ending,
+        winners: List<Participant>,
+        how: String?,
+        note: String?,
+        author: Author?,
+        downtime: Boolean = false,
+    ): Deferred<String> {
         val now = clock.millis()
         val state = store.get()
         val rest = state.copy(
@@ -384,12 +453,19 @@ class Challenges(
         store.update { settled }
         bars.hideAll(Bossbars.key(challenge.id))
         targets.remove(challenge.id)
+        attempts.forget(challenge.id)
+        // A winner of a challenge that ended while the server was down is paid once back (M4 review, finding 13).
+        val later = if (downtime && challenge.spec?.reward != null) winners.filter { services.server.playerList.getPlayer(it.playerId) == null } else emptyList()
+        later.forEach { owed += Owed(challenge, it) }
         log.info("${challenge.ref} ${ending.id}${if (winners.isEmpty()) "" else " by ${winners.joinToString { it.name }}"}; its stakes and canon follow")
-        val ended = Ended(challenge, ending, winners, now, how, note, author, betLine)
+        val ended = Ended(challenge, ending, winners, now, how, note, author, betLine, downtime, later)
         return services.scope.async { conclude(ended) }
     }
 
-    /** A challenge that left the state at [at], to conclude. */
+    /**
+     * A challenge that left the state at [at], to conclude. [downtime]: it ended while the server was down (no
+     * penalty); [later]: its winners whose reward waits until they are back.
+     */
     private class Ended(
         val challenge: ChallengeState,
         val ending: Ending,
@@ -399,28 +475,37 @@ class Challenges(
         val note: String?,
         val author: Author?,
         val betLine: String?,
+        val downtime: Boolean,
+        val later: List<Participant>,
     ) {
         val ref: Ref get() = challenge.ref
     }
 
-    /** The coroutine's share of [finish]: stakes, canon, interactions, decision, event. Each step's failure is logged and the next ones go on. */
+    /**
+     * The coroutine's share of [finish]: canon, stakes, interactions, decision, event. The canon is resolved first,
+     * whatever cancels the rest: an end cut short is never taken for a world rolled back (M4 review, finding 24).
+     * Each step's failure is logged and the next ones go on.
+     */
     private suspend fun conclude(ended: Ended): String {
         val challenge = ended.challenge
+        val summary = ended.how ?: (ChallengeLines.summary(challenge, ended.ending, ended.winners, ended.at, ended.author) + if (ended.downtime) DOWNTIME else "")
+        withContext(NonCancellable) { step(ended.ref, "resolve the canon", Unit) { resolve(ended, ended.note ?: summary) } }
         val winnerIds = ended.winners.mapTo(HashSet()) { it.uuid }
-        val losers = when (ended.ending) {
-            Ending.WON -> challenge.participants.filter { it.uuid !in winnerIds && !it.late }
-            Ending.LOST -> challenge.participants.filter { !it.late }
+        val losers = when {
+            ended.downtime -> emptyList()
+            ended.ending == Ending.WON -> challenge.participants.filter { it.uuid !in winnerIds && !it.late }
+            ended.ending == Ending.LOST -> challenge.participants.filter { !it.late }
             else -> emptyList()
         }
         val paid = if (ended.ending == Ending.WON || ended.ending == Ending.LOST) {
-            step(ended.ref, "pay the stakes", listOf("stakes: not paid (an error)")) { stakes.pay(challenge, ended.winners, losers) }
+            val online = ended.winners - ended.later.toSet()
+            val later = if (ended.later.isEmpty()) null else "reward: " + ended.later.joinToString { "${ModelText.name(it.name)} paid once back online" }
+            step(ended.ref, "pay the stakes", listOf("stakes: not paid (an error)")) { stakes.pay(challenge, online, losers) } + listOfNotNull(later)
         } else {
             emptyList()
         }
-        val summary = ended.how ?: ChallengeLines.summary(challenge, ended.ending, ended.winners, ended.at, ended.author)
         val noted = ended.note?.let { "$summary; note: « ${ModelText.escape(it)} »" } ?: summary
         val line = ModelText.cut((listOf("${ended.ref} $noted") + paid + listOfNotNull(ended.betLine)).joinToString(" · "), MechanicsLimits.EVENT_LINE)
-        step(ended.ref, "resolve the canon", Unit) { resolve(ended, ended.note ?: summary) }
         if (ended.ending == Ending.WON || ended.ending == Ending.LOST) {
             step(ended.ref, "write the interactions", Unit) { interactions(ended, winnerIds) }
         }
@@ -461,13 +546,17 @@ class Challenges(
         }
     }
 
-    /** A `challenge_result` per participant (M4 §5.2): +1 for a winner, 0 for the others; canon = the challenge, by the engine. */
+    /**
+     * A `challenge_result` per participant (M4 §5.2): +1 for a winner, 0 for the others; canon = the challenge, by the
+     * engine. None for a latecomer who did not win: they may win, never lose (M4 review, finding 27).
+     */
     private suspend fun interactions(ended: Ended, winners: Set<String>) {
         if (!services.memory.available) return
         val what = "${if (ended.challenge.isDuel) "duel" else "challenge"} ${ended.ref}" +
             (ended.challenge.spec?.let { " (${Goals.describe(it)})" } ?: "")
         for (participant in ended.challenge.participants) {
             val won = participant.uuid in winners
+            if (participant.late && !won) continue
             val summary = ModelText.cut(if (won) "won the $what" else "lost the $what", MemoryLimits.INTERACTION_SUMMARY)
             step(ended.ref, "write ${participant.name}'s result", Unit) {
                 services.memory.store.addInteraction(
@@ -503,20 +592,28 @@ class Challenges(
         data class Answer(override val id: Long, override val uuid: UUID) : Fact
     }
 
-    /** Matches a fact of the bus against the challenges running (the snapshot) and queues what it means; never a change. Any thread. */
+    /**
+     * Matches a fact of the bus against the challenges running (the snapshot) and queues what it means; never a
+     * change. A kill counts only a wild creature without a name: never another player's pet nor anyone's named
+     * creature (M4 review, finding 15). A message is an attempt at a quiz once every [Answers.ATTEMPT_GAP_MS] at
+     * most ([Attempts]). Any thread.
+     */
     override fun onEvent(envelope: Envelope) {
         val running = store.snapshot.challenges.filter { it.spec != null && it.status == ChallengeStatus.RUNNING }
         if (running.isEmpty()) return
         when (val event = envelope.event) {
-            is EntityKilled -> if (!event.pvp) {
+            is EntityKilled -> if (!event.pvp && !event.tamed && event.victim.name == null) {
                 running.forEach { c -> if (c.spec!!.goal == GoalKind.KILL && c.participant(event.player.uuid) != null) facts += Fact.Kill(c.id, event.player.uuid, event.victim.type) }
             }
             is PlayerDied -> running.forEach { c -> if (c.spec!!.goal == GoalKind.SURVIVE && c.participant(event.player.uuid) != null) facts += Fact.Death(c.id, event.player.uuid) }
             is ChatMessage -> if (event.channel == ChatChannel.PUBLIC || event.channel == ChatChannel.PRAY) {
+                val uuid = event.player.uuid
                 running.forEach { c ->
                     val spec = c.spec!!
-                    if (spec.goal == GoalKind.ANSWER && c.participant(event.player.uuid) != null && Answers.matches(event.text, spec.answers.orEmpty())) {
-                        facts += Fact.Answer(c.id, event.player.uuid)
+                    if (spec.goal == GoalKind.ANSWER && c.participant(uuid) != null && attempts.take(c.id, uuid, clock.millis()) &&
+                        Answers.matches(event.text, spec.answers.orEmpty())
+                    ) {
+                        facts += Fact.Answer(c.id, uuid)
                     }
                 }
             }
@@ -525,11 +622,13 @@ class Challenges(
     }
 
     override fun everyTick(server: MinecraftServer, now: Long) {
-        if (applyFacts(now)) decide(now)
+        resume(now)
+        if (applyFacts(server, now)) decide(now)
     }
 
     override fun everySecond(server: MinecraftServer, now: Long) {
-        applyFacts(now)
+        payOwed()
+        applyFacts(server, now)
         for (challenge in store.get().challenges) {
             if (challenge.spec == null || challenge.status != ChallengeStatus.RUNNING) continue
             val seen = detect(server, challenge, now)
@@ -538,12 +637,16 @@ class Challenges(
         decide(now)
     }
 
-    /** Applies the facts queued since the last tick; true when one changed a challenge. Server thread. */
-    private fun applyFacts(now: Long): Boolean {
+    /**
+     * Applies the facts queued since the last tick; true when one changed a challenge. A kill or an answer of a
+     * participant who is a spectator now counts for nothing (M4 review, finding 26). Server thread.
+     */
+    private fun applyFacts(server: MinecraftServer, now: Long): Boolean {
         var changed = false
         while (true) {
             val fact = facts.poll() ?: break
             val challenge = store.get().challenge(fact.id) ?: continue
+            if (fact !is Fact.Death && server.playerList.getPlayer(fact.uuid)?.isSpectator == true) continue
             val next = when (fact) {
                 is Fact.Kill -> if ((target(challenge) as? Target.Creatures)?.matches?.invoke(fact.type) == true) Goals.killed(challenge, fact.uuid, now) else challenge
                 is Fact.Death -> Goals.out(challenge, fact.uuid, OutReason.DIED)
@@ -557,7 +660,10 @@ class Challenges(
         return changed
     }
 
-    /** What the second sees of [challenge]'s participants online: items held, places reached, armor worn. Server thread. */
+    /**
+     * What the second sees of [challenge]'s participants online: items held, places reached, armor worn; nothing of
+     * a spectator, who goes through walls (M4 review, finding 26). Server thread.
+     */
     private fun detect(server: MinecraftServer, challenge: ChallengeState, now: Long): ChallengeState {
         val spec = challenge.spec!!
         if (spec.goal != GoalKind.OBTAIN && spec.goal != GoalKind.REACH && !(spec.goal == GoalKind.SURVIVE && spec.noArmor)) return challenge
@@ -565,7 +671,7 @@ class Challenges(
         var seen = challenge
         for (participant in challenge.participants) {
             if (participant.out != null || participant.doneAt != null) continue
-            val player = server.playerList.getPlayer(participant.playerId) ?: continue
+            val player = server.playerList.getPlayer(participant.playerId)?.takeUnless { it.isSpectator } ?: continue
             seen = when (spec.goal) {
                 GoalKind.OBTAIN -> (target as? Target.Items)?.let { Goals.held(seen, player.uuid, Goals.count(player, it), now) } ?: seen
                 GoalKind.REACH -> {
@@ -589,6 +695,45 @@ class Challenges(
         }
     }
 
+    /**
+     * The engine's first tick (M4 review, finding 13), the Director being there by then: what the stop left. A judged
+     * challenge waiting for its verdict, or whose end passed while the server was down, is judged again ([judge]: a
+     * whole window, a new `JUDGE`, the one before was lost with the stop). A challenge whose end passed while the
+     * server was down, kept by the startup for some participants made it ([Goals.afterDowntime]), is won by them:
+     * no penalty for the others, each winner's reward once they are back ([owed]). Server thread.
+     */
+    private fun resume(now: Long) {
+        val since = restartedAt ?: return
+        restartedAt = null
+        for (challenge in store.get().challenges) {
+            if (challenge.spec == null) continue
+            val waiting = challenge.status == ChallengeStatus.JUDGING
+            if (!waiting && (challenge.status != ChallengeStatus.RUNNING || challenge.endsAt > since)) continue
+            when (val verdict = Goals.afterDowntime(challenge)) {
+                Verdict.Judge -> judge(challenge, now)
+                is Verdict.Ends -> close(challenge, verdict.ending, verdict.winners, null, null, null, downtime = true)
+            }
+        }
+    }
+
+    /** Pays the rewards [owed] to the winners back online, each in a coroutine of its own. Server thread. */
+    private fun payOwed() {
+        if (owed.isEmpty()) return
+        val back = owed.filter { services.players.get(it.winner.playerId) != null }
+        if (back.isEmpty()) return
+        owed.removeAll(back.toSet())
+        for (due in back) {
+            log.info("${due.challenge.ref}: ${due.winner.name} is back, their reward is paid")
+            services.scope.launch {
+                val paid = step(due.challenge.ref, "pay ${due.winner.name}'s reward", emptyList()) { stakes.pay(due.challenge, listOf(due.winner), emptyList()) }
+                log.info("${due.challenge.ref}: ${paid.joinToString(" · ").ifEmpty { "nothing paid" }}")
+            }
+        }
+    }
+
+    /** The reward of [winner] of [challenge], which ended while the server was down: paid once they are back online. */
+    private class Owed(val challenge: ChallengeState, val winner: Participant)
+
     /** A judged challenge reached its end (M4 §5.2): `JUDGING` for `mechanics.judgeMinutes`, a `JUDGE` event (priority). */
     private fun judge(challenge: ChallengeState, now: Long) {
         val until = now + config.judgeMinutes * MINUTE
@@ -600,11 +745,14 @@ class Challenges(
     }
 
     /** [challenge]'s target, resolved at its first need; null when its ids no longer exist (logged once). Server thread. */
-    private fun target(challenge: ChallengeState): Target? = targets.getOrPut(challenge.id) {
-        Goals.target(challenge.spec!!, services.server).getOrElse {
+    private fun target(challenge: ChallengeState): Target? {
+        if (challenge.id in targets) return targets[challenge.id]
+        val target = Goals.target(challenge.spec!!, services.server).getOrElse {
             log.error("${challenge.ref}: its goal cannot be resolved any more, nothing will be detected: ${it.message}")
             null
         }
+        targets[challenge.id] = target
+        return target
     }
 
     /** Puts [challenge] in the state in place of its former self. Server thread. */
@@ -612,9 +760,12 @@ class Challenges(
         store.update { state -> state.copy(challenges = state.challenges.map { if (it.id == challenge.id) challenge else it }) }
     }
 
-    /** A player joined: a latecomer of every challenge open to everyone (M4 §5.2), whose bar shows at the next second. */
+    /**
+     * A player joined: a latecomer of every challenge open to everyone (M4 §5.2), whose bar shows at the next second;
+     * not a spectator nor a player in creative ([enrolls]).
+     */
     override fun onJoin(player: ServerPlayer) {
-        if (player is FakePlayer) return
+        if (!enrolls(player)) return
         for (challenge in store.get().challenges) {
             val joined = Goals.joined(challenge, player.uuid, player.plainTextName)
             if (joined === challenge) continue
@@ -637,14 +788,22 @@ class Challenges(
     override fun started(server: MinecraftServer, now: Long) {
         targets.clear()
         facts.clear()
+        attempts.clear()
+        restartedAt = now
     }
 
     override fun dropped(ids: Set<Long>) {
-        ids.forEach { targets.remove(it) }
+        ids.forEach {
+            targets.remove(it)
+            attempts.forget(it)
+        }
     }
 
     override fun stopping() {
         facts.clear()
+        // In memory only: a reward still owed is lost with the stop, and said so.
+        owed.forEach { log.warn("${it.challenge.ref}: ${it.winner.name}'s reward was never paid, they did not come back before the stop") }
+        owed.clear()
     }
 
     private fun hourMinute(epochMs: Long): String = ChallengeLines.hourMinute(epochMs, clock)
@@ -660,6 +819,11 @@ class Challenges(
 
         /** Winners written in the canon at most (the memory's bound of players). */
         private const val MAX_CANON_WINNERS = 8
+
+        private const val NOBODY = "nobody is online to take up a challenge"
+
+        /** After the summary of a challenge that ended while the server was down (M4 review, finding 13). */
+        private const val DOWNTIME = "; the server was down when it ended: no penalty"
 
         private const val MINUTE = 60_000L
 

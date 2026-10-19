@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
+import com.mojang.authlib.GameProfile
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.core.onServerThread
@@ -7,6 +8,7 @@ import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.guard.ItemLedger
+import io.github.clemsix6.narrator2.guard.LedgerPurpose
 import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
@@ -22,11 +24,13 @@ import io.github.clemsix6.narrator2.mechanics.Engine
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.MechanicPart
 import io.github.clemsix6.narrator2.mechanics.Mechanics
+import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
 import io.github.clemsix6.narrator2.mechanics.challenge.Stakes
 import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.InteractionKind
 import io.github.clemsix6.narrator2.memory.Ref
@@ -45,15 +49,22 @@ import io.github.clemsix6.narrator2.tool.mechanics.EndChallengeTool
 import io.github.clemsix6.narrator2.tool.mechanics.StartChallengeTool
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.TraceSink
+import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.network.Connection
+import net.minecraft.network.protocol.PacketFlow
 import net.minecraft.network.protocol.game.ClientboundBossEventPacket
 import net.minecraft.server.MinecraftServer
+import net.minecraft.server.level.ClientInformation
+import net.minecraft.server.level.ServerPlayer
+import net.minecraft.server.network.CommonListenerCookie
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.ai.attributes.Attributes
+import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
@@ -167,6 +178,10 @@ class ChallengeStakesGameTests {
             }
             rig.checkStakes(view.ref, listOf(ann to InteractionKind.PUNISHMENT), listOf(bob, cid, dan))
             rig.checkActs(view.ref, listOf(bob, ann))
+            // M4 review, finding 27: the latecomer may win, never lose, not even in his history.
+            awaitCondition("the decision of ${view.ref}, written after its results") { rig.decisions("lost").any { it.subject == "${view.ref}" } }
+            for (player in listOf(bob, ann, cid)) check(rig.results(player, view.ref).map { it.valence } == listOf(0)) { "${player.name} lost: ${rig.results(player, view.ref)}" }
+            check(rig.results(dan, view.ref).isEmpty()) { "no « lost the challenge » for the latecomer: ${rig.results(dan, view.ref)}" }
         }
     }
 
@@ -242,6 +257,100 @@ class ChallengeStakesGameTests {
         }
     }
 
+    /**
+     * M4 review, finding 36: the winners of an `obtain` often have a full inventory, and `give_item` dropped their reward
+     * at their feet, where it burns or vanishes in five minutes. It waits in their ledger now, and comes once there is room.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun anItemRewardForAFullInventoryWaitsInTheLedgerNeverOnTheGround(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 1) { rig, (bob) ->
+            val started = rig.call(
+                rig.start,
+                """{"title": "Les mains pleines", "statement": "Le Narrateur a défié un joueur de tenir une pomme.", "goal": "obtain",
+                   "item": "apple", "players": ["${bob.name}"], "minutes": 5, "reward": {"kind": "item", "item": "golden_apple"}}""",
+            )
+            check(started.status == ToolStatus.OK) { "the start: ${started.text}" }
+            val view = rig.challenges.list().single()
+            rig.onServer {
+                val inventory = bob.live.inventory
+                inventory.add(ItemStack(Items.APPLE))
+                for (slot in 0 until MAIN_SLOTS) if (inventory.getItem(slot).isEmpty) inventory.setItem(slot, ItemStack(Items.COBBLESTONE, 64))
+                rig.second()
+                check(rig.store.get().challenges.isEmpty()) { "won" }
+            }
+            val line = rig.awaitEnd(view.ref)
+            check(line.endsWith(" · reward: ${bob.name} got 1x golden_apple")) { "the line: $line" }
+            awaitCondition("the reward in the ledger") { rig.onServer { rig.runtime.guards.items.held(bob.live).isNotEmpty() } }
+            rig.onServer {
+                check(count(bob, Items.GOLDEN_APPLE) == 0) { "no room for it" }
+                val ground = bob.live.level().getEntitiesOfClass(ItemEntity::class.java, bob.live.boundingBox.inflate(16.0)) { it.item.`is`(Items.GOLDEN_APPLE) }
+                check(ground.isEmpty()) { "nothing on the ground: $ground" }
+                check(rig.runtime.guards.items.held(bob.live).single().purpose == LedgerPurpose.OWED) { "it waits in his ledger: ${rig.runtime.guards.items.held(bob.live)}" }
+                bob.live.inventory.setItem(1, ItemStack.EMPTY)
+            }
+            awaitCondition("the golden apple, once there is room") { rig.onServer { count(bob, Items.GOLDEN_APPLE) } == 1 }
+            rig.checkStakes(view.ref, listOf(bob to InteractionKind.GIFT), emptyList())
+            rig.checkActs(view.ref, listOf(bob))
+        }
+    }
+
+    /**
+     * M4 review, finding 13: a challenge whose end passed while the server was down was cancelled, and who had made it lost
+     * what they had won. It is won by them now, without penalty for the others, each reward paid once the winner is back.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aChallengeMadeBeforeAStopIsWonAfterItAndTheRewardPaidOnceBack(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 3) { rig, (bob, ann, cid) ->
+            val started = rig.call(
+                rig.start,
+                """{"title": "Avant l'arrêt", "statement": "Le Narrateur a défié trois joueurs de tenir une pomme.", "goal": "obtain",
+                   "item": "apple", "players": ["${bob.name}", "${ann.name}", "${cid.name}"], "minutes": 5, "winners": 0,
+                   "reward": {"kind": "item", "item": "diamond"}, "penalty": {"punishment": "tiny", "severity": 1}}""",
+            )
+            check(started.status == ToolStatus.OK) { "the start: ${started.text}" }
+            val view = rig.challenges.list().single()
+            val saved = rig.onServer {
+                bob.live.inventory.add(ItemStack(Items.APPLE))
+                rig.second()
+                check(rig.challenge(view.ref)!!.participants.map { it.doneAt != null } == listOf(true, false, false)) { "Bob made it" }
+                rig.engine.stop()
+                bob.close() // he is away when the server comes back
+                MechanicsState.decode(MechanicsState.encode(rig.store.get()))
+            }
+
+            val again = Rig(helper, StateStore.inMemory(saved), rig.clock, rig.director, rig.sink)
+            var back: ServerPlayer? = null
+            try {
+                rig.onServer {
+                    rig.clock.now = Instant.ofEpochMilli(view.endsAt + 10 * 60_000L)
+                    again.engine.start(helper.level.server)
+                    check(again.challenge(view.ref) != null) { "kept by the startup" }
+                    again.tick()
+                    check(again.store.get().challenges.isEmpty()) { "won at the first tick" }
+                }
+                val line = again.awaitEnd(view.ref)
+                val expected = "^${view.ref} won by ${bob.name} in \\d+s \\(apple 1/1\\); the server was down when it ended: no penalty · reward: ${bob.name} paid once back online$"
+                check(Regex(expected).matches(line)) { "the line: $line" }
+                val canon = rig.canon(view.ref)
+                check(canon.status == CanonStatus.WON && canon.winners.map { it.uuid } == listOf(bob.uuid)) { "the canon: ${canon.status} ${canon.winners}" }
+                rig.onServer {
+                    check(near(ann.live.getAttributeValue(Attributes.SCALE), 1.0) && near(cid.live.getAttributeValue(Attributes.SCALE), 1.0)) { "no penalty for the others" }
+                }
+
+                back = rig.onServer { rejoin(helper, bob) }
+                awaitCondition("Bob's diamond, once back") { rig.onServer { again.second(); count(back!!, Items.DIAMOND) } == 1 }
+                // The gift enters his history once given, in the payment's coroutine.
+                awaitCondition("Bob's gift in his history") { rig.runtime.memory.store.interactions(bob.uuid, 20).any { it.canon == view.ref && it.kind == InteractionKind.GIFT } }
+                again.checkStakes(view.ref, listOf(bob to InteractionKind.GIFT), listOf(ann, cid))
+            } finally {
+                rig.onServer {
+                    again.engine.stop()
+                    back?.let { helper.level.server.playerList.remove(it) }
+                }
+            }
+        }
+    }
+
     // ── The rig ──
 
     /**
@@ -249,12 +358,14 @@ class ChallengeStakesGameTests {
      * tool of the catalogue), and the bars, on a store in memory; a fake Director, the decisions kept, a clock the test
      * moves. The guards, the memory, the Journal and the tools' limits are the running Narrator's.
      */
-    private class Rig(val helper: GameTestHelper) {
+    private class Rig(
+        val helper: GameTestHelper,
+        val store: StateStore = StateStore.inMemory(),
+        val clock: TestClock = helper.narrator().clock.let { TestClock(Instant.ofEpochMilli(it.millis()), it.zone) },
+        val director: FakeDirector = FakeDirector(clock),
+        val sink: KeptDecisions = KeptDecisions(helper.narrator().trace),
+    ) {
         val runtime: NarratorRuntime = helper.narrator()
-        val clock = TestClock(Instant.ofEpochMilli(runtime.clock.millis()), runtime.clock.zone)
-        val director = FakeDirector(clock)
-        val sink = KeptDecisions(runtime.trace)
-        val store: StateStore = StateStore.inMemory()
         val bars = Bossbars()
         val services: NarratorServices = object : NarratorServices by runtime {
             override val trace: TraceSink get() = sink
@@ -313,6 +424,15 @@ class ChallengeStakesGameTests {
             }
             for (player in unpaid) check(stakesOf(player).isEmpty()) { "nothing in ${player.name}'s history: ${stakesOf(player)}" }
         }
+
+        /** [player]'s `challenge_result` interactions of [ref]. */
+        suspend fun results(player: TestPlayer, ref: Ref): List<Interaction> =
+            runtime.memory.store.interactions(player.uuid, 20).filter { it.canon == ref && it.kind == InteractionKind.CHALLENGE_RESULT }
+
+        fun challenge(ref: Ref) = store.get().challenge(ref.id)
+
+        /** A tick of the engine at the clock's time. Server thread. */
+        fun tick() = engine.tick(helper.level.server)
 
         /** One act of the engine per player paid ([players], in order): its `stake` decision, the tool's `action` as that act. */
         fun checkActs(ref: Ref, players: List<TestPlayer>) {
@@ -397,8 +517,24 @@ class ChallengeStakesGameTests {
 
         fun near(value: Double, expected: Double): Boolean = kotlin.math.abs(value - expected) < 1e-6
 
-        fun count(player: TestPlayer, item: Item): Int =
-            (0 until player.live.inventory.containerSize).sumOf { slot -> player.live.inventory.getItem(slot).let { if (it.`is`(item)) it.count else 0 } }
+        fun count(player: TestPlayer, item: Item): Int = count(player.live, item)
+
+        fun count(player: ServerPlayer, item: Item): Int =
+            (0 until player.inventory.containerSize).sumOf { slot -> player.inventory.getItem(slot).let { if (it.`is`(item)) it.count else 0 } }
+
+        /** The inventory's main slots (hot bar included), those `Inventory.add` fills. */
+        const val MAIN_SLOTS = 36
+
+        /** [player], who left, joins again as a new player object, as after a restart. Server thread. */
+        fun rejoin(helper: GameTestHelper, player: TestPlayer): ServerPlayer {
+            val server = helper.level.server
+            val profile = GameProfile(player.uuid, player.name)
+            val back = ServerPlayer(server, helper.level, profile, ClientInformation.createDefault())
+            val connection = Connection(PacketFlow.SERVERBOUND)
+            EmbeddedChannel(connection)
+            server.playerList.placeNewPlayer(connection, back, CommonListenerCookie.createInitial(profile, false))
+            return back
+        }
 
         fun jokers(player: TestPlayer): Int =
             (0 until player.live.inventory.containerSize).sumOf { slot -> player.live.inventory.getItem(slot).let { if (ItemLedger.isJoker(it)) it.count else 0 } }

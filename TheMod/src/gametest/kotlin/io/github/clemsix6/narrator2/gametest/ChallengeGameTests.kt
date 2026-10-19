@@ -11,6 +11,7 @@ import io.github.clemsix6.narrator2.mechanics.Bet
 import io.github.clemsix6.narrator2.mechanics.Bossbars
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeSpec
+import io.github.clemsix6.narrator2.mechanics.ChallengeState
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.Engine
 import io.github.clemsix6.narrator2.mechanics.GoalKind
@@ -18,28 +19,41 @@ import io.github.clemsix6.narrator2.mechanics.MechanicPart
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.OutReason
+import io.github.clemsix6.narrator2.mechanics.Participant
 import io.github.clemsix6.narrator2.mechanics.PlaceSpec
 import io.github.clemsix6.narrator2.mechanics.RewardKind
 import io.github.clemsix6.narrator2.mechanics.RewardSpec
 import io.github.clemsix6.narrator2.mechanics.Settlement
 import io.github.clemsix6.narrator2.mechanics.StateStore
+import io.github.clemsix6.narrator2.mechanics.challenge.Answers
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
+import io.github.clemsix6.narrator2.mechanics.challenge.StakePayer
+import io.github.clemsix6.narrator2.memory.Added
 import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.InteractionKind
+import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.testing.FakeDirector
+import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.TraceSink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestHelper
@@ -57,6 +71,7 @@ import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.block.Blocks
 import java.time.Duration
 import java.time.Instant
@@ -187,6 +202,26 @@ class ChallengeGameTests {
         }
     }
 
+    /** M4 review, finding 15: the shortest way to « kill 3 wolves » was Ann's dogs. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun killNeverCountsAnothersPetNorANamedCreature(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val view = rig.challenges.start(spec(GoalKind.KILL, listOf(bob), "Un loup", entity = "wolf"), DIRECTOR)
+            rig.onServer {
+                for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)
+                kill(helper, EntityTypes.WOLF, bob) { it.tame(ann.live) }
+                kill(helper, EntityTypes.WOLF, bob) { it.setCustomName(Component.literal("Croc-Blanc")) }
+                rig.tick()
+                check(rig.challenge(view.ref)!!.participants.single().progress == 0) { "neither Ann's dog nor a named wolf: ${rig.challenge(view.ref)}" }
+                kill(helper, EntityTypes.WOLF, bob)
+                rig.tick()
+                check(rig.store.get().challenges.isEmpty()) { "a wild wolf wins" }
+            }
+            val line = rig.awaitEnd(view.ref, MechanicSignal.CHALLENGE)
+            check(Regex("^${view.ref} won by ${bob.name} in \\d+s \\(wolf 1/1\\)$").matches(line)) { "the line: $line" }
+        }
+    }
+
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun surviveEliminatesTheDeadAndTheArmoredAndCrownsTheRestAtTheDeadline(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 3) { rig, (bob, ann, cid) ->
@@ -223,8 +258,15 @@ class ChallengeGameTests {
                 command(helper.level.server, cid, "msg ${ann.name} c'est une enclume")
                 say(helper.level.server, bob, "Un marteau ?")
                 say(helper.level.server, ann, "C'est une ENCLUME, évidemment !")
+                say(helper.level.server, cid, "diamant fer or émeraude enclume pioche épée arc")
                 rig.tick()
-                check(rig.challenge(view.ref)!!.participants.map { it.doneAt != null } == listOf(false, true, false)) { "Ann answered, not the whisper nor the hammer" }
+                check(rig.challenge(view.ref)!!.participants.map { it.doneAt != null } == listOf(false, true, false)) {
+                    "Ann answered, not the whisper, the hammer nor the list of guesses (M4 review, finding 14)"
+                }
+                say(helper.level.server, bob, "Une enclume !")
+                rig.tick()
+                check(rig.challenge(view.ref)!!.participants.first().doneAt == null) { "a second guess within five seconds of the hammer is not read" }
+                rig.clock.advance(Duration.ofMillis(Answers.ATTEMPT_GAP_MS))
                 command(helper.level.server, bob, "pray Je dirais... l'enclume")
                 rig.tick()
                 check(rig.store.get().challenges.isEmpty() && bars(bob).isEmpty()) { "two answered: it ends" }
@@ -313,6 +355,53 @@ class ChallengeGameTests {
     }
 
     /**
+     * M4 review, finding 13: « the most beautiful statue in 15 minutes », a restart at the fourteenth, and the contest
+     * was cancelled in silence; one waiting for its verdict lost its `JUDGE` with the stop. Now both are judged again at
+     * the first tick, each with a whole window and a new `JUDGE`.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun judgedChallengesOverWhileTheServerWasDownAreJudgedAgainAtTheFirstTick(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val waiting = rig.challenges.start(spec(GoalKind.JUDGED, listOf(bob, ann), "La statue", minutes = 5), DIRECTOR)
+            rig.onServer { rig.at(waiting.endsAt + 6 * MINUTE) } // judging for 15m from then; the pace allows the next one
+            val building = rig.challenges.start(spec(GoalKind.JUDGED, listOf(bob, ann), "La tour", minutes = 5), DIRECTOR)
+            val saved = rig.onServer {
+                check(rig.challenge(waiting.ref)!!.status == ChallengeStatus.JUDGING && rig.challenge(building.ref)!!.status == ChallengeStatus.RUNNING) { "one judged, one built" }
+                rig.engine.stop()
+                MechanicsState.decode(MechanicsState.encode(rig.store.get()))
+            }
+            val before = rig.director.signals.size
+
+            val again = Rig(helper, rig.director, rig.sink, StateStore.inMemory(saved), rig.clock)
+            try {
+                val restart = waiting.endsAt + 30 * MINUTE // past the first one's judging and the second one's end
+                rig.onServer {
+                    rig.clock.now = Instant.ofEpochMilli(restart)
+                    again.engine.start(helper.level.server)
+                    check(again.store.get().challenges.map { it.ref } == listOf(waiting.ref, building.ref)) { "both kept by the startup: ${again.store.get()}" }
+                    again.tick()
+                    for (ref in listOf(waiting.ref, building.ref)) {
+                        val judged = again.challenge(ref)!!
+                        check(judged.status == ChallengeStatus.JUDGING && judged.judgeUntil == restart + 15 * MINUTE) { "judged again, a whole window: $judged" }
+                    }
+                }
+                val judges = rig.director.signals.drop(before).filterIsInstance<DirectorSignal.Mechanic>()
+                check(judges.map { it.kind to it.priority } == listOf(MechanicSignal.JUDGE to true, MechanicSignal.JUDGE to true)) { "two JUDGE events: $judges" }
+                check(judges.map { it.line.substringBefore(' ') } == listOf("${waiting.ref}", "${building.ref}") && judges.all { it.line.endsWith("; you have 15m") }) {
+                    "their lines: ${judges.map { it.line }}"
+                }
+                for (ref in listOf(waiting.ref, building.ref)) {
+                    val note = "Ann a bâti la plus belle œuvre."
+                    val ended = again.challenges.end(ref, ChallengeOutcome.WON, listOf(ann.uuid), note, Author(Source.DIRECTOR, turnId = 4242))
+                    again.checkClosed(ref, CanonStatus.WON, listOf(ann), listOf(bob), ended.line, resolution = note)
+                }
+            } finally {
+                rig.onServer { again.engine.stop() }
+            }
+        }
+    }
+
+    /**
      * The pace refuses a second challenge at once; an operator cancels the first: no stakes, no result, its
      * bets given back by instructions saved with the end, and the Director told (with priority).
      */
@@ -346,6 +435,122 @@ class ChallengeGameTests {
         }
     }
 
+    /**
+     * M4 review, finding 24: the stakes were paid (about a second per `punish`) before the canon was resolved, so that a
+     * stop in between left a challenge won in the state's eyes and open in the canon's, then « lost when the world
+     * rolled back » at the next start.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun theCanonIsResolvedBeforeTheStakesArePaid(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        val seen = CopyOnWriteArrayList<CanonStatus>()
+        val runtime = helper.narrator()
+        val stakes = object : StakePayer {
+            override suspend fun pay(challenge: ChallengeState, winners: List<Participant>, losers: List<Participant>): List<String> {
+                seen += runtime.memory.store.canon(challenge.ref)!!.status
+                return listOf("reward: paid")
+            }
+        }
+        withRig(helper, 2, stakes) { rig, (bob, ann) ->
+            val view = rig.challenges.start(spec(GoalKind.OBTAIN, listOf(bob, ann), "Une pomme", item = "apple"), DIRECTOR)
+            rig.onServer {
+                bob.live.inventory.add(ItemStack(Items.APPLE))
+                rig.second()
+            }
+            val line = rig.awaitEnd(view.ref, MechanicSignal.CHALLENGE)
+            check(line.endsWith(" · reward: paid")) { "the stakes were paid: $line" }
+            check(seen.toList() == listOf(CanonStatus.WON)) { "the canon was resolved when the stakes were paid: $seen" }
+        }
+    }
+
+    /**
+     * M4 review, finding 25: once the canon row is written, a start cut short (the tool's timeout, the server stopping)
+     * left an open row without a state, which no `end_challenge` could end. Now the state follows.
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aStartCutShortOnceItsCanonIsWrittenStillStarts(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        val written = CopyOnWriteArrayList<Ref>()
+        val cutShort = { _: List<TestPlayer> ->
+            OnCanonWritten(helper.narrator().memory) { ref ->
+                written += ref
+                currentCoroutineContext().cancel() // the caller gives up as the row is written
+            }
+        }
+        withRig(helper, 1, memory = cutShort) { rig, (bob) ->
+            val start = CoroutineScope(Dispatchers.Default).async { rig.challenges.start(spec(GoalKind.OBTAIN, listOf(bob), "Coupé", item = "apple"), DIRECTOR) }
+            check(runCatching { start.await() }.exceptionOrNull() is CancellationException) { "the caller was cancelled: $start" }
+            val ref = written.single()
+            awaitCondition("the start's end") { rig.onServer { rig.challenge(ref) } != null || canon(rig, ref).status != CanonStatus.ACTIVE }
+            check(rig.onServer { rig.challenge(ref) } != null && canon(rig, ref).status == CanonStatus.ACTIVE) {
+                "the state follows its canon row: ${rig.onServer { rig.store.get() }} ${canon(rig, ref).status}"
+            }
+            rig.challenges.end(ref, ChallengeOutcome.CANCELLED, emptyList(), "Le défi d'essai a été annulé.", Author(Source.OPERATOR, operator = "gametest"))
+        }
+    }
+
+    /** M4 review, finding 27: who left while the canon row was written stayed in a `survive` for good. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aParticipantGoneAsTheChallengeStartsIsOutOfASurvive(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        val server = helper.level.server
+        val leaves = { players: List<TestPlayer> -> OnCanonWritten(helper.narrator().memory) { server.onServerThread { players[1].close() } } }
+        withRig(helper, 2, memory = leaves) { rig, (bob, ann) ->
+            val view = rig.challenges.start(spec(GoalKind.SURVIVE, listOf(bob, ann), "Tenir", minutes = 2), DIRECTOR)
+            check(view.participants.map { it.out } == listOf(null, OutReason.LEFT)) { "Ann left as it started: ${view.participants}" }
+            rig.onServer { rig.at(view.endsAt) }
+            val line = rig.awaitEnd(view.ref, MechanicSignal.CHALLENGE)
+            check(line == "${view.ref} won by ${bob.name}: still in after 2m; out: ${ann.name} (left)") { "the line: $line" }
+        }
+    }
+
+    /** M4 review, finding 26: an operator in spectator mode won a `survive`; in creative, an `obtain` from the creative inventory. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aSpectatorMakesNoProgressAndNobodyInSpectatorOrCreativeJoinsLate(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 3) { rig, (bob, ann, cid) ->
+            val view = rig.challenges.start(spec(GoalKind.OBTAIN, listOf(bob), "Une pomme", item = "apple", minutes = 10), DIRECTOR)
+            rig.onServer {
+                bob.live.setGameMode(GameType.SPECTATOR)
+                bob.live.inventory.add(ItemStack(Items.APPLE))
+                rig.second()
+                check(rig.challenge(view.ref)!!.participants.single().doneAt == null) { "a spectator makes no progress" }
+                bob.live.setGameMode(GameType.SURVIVAL)
+                rig.second()
+                check(rig.store.get().challenges.isEmpty()) { "back in survival, he holds it: won" }
+            }
+            rig.awaitEnd(view.ref, MechanicSignal.CHALLENGE)
+
+            // A challenge open to everyone, as the start puts it in the state (an open start would enrol the batch's players).
+            rig.onServer {
+                val open = running(OPEN_ID, spec(GoalKind.OBTAIN, emptyList(), "Pour tous", item = "apple").copy(players = null), emptyList(), rig.clock.millis())
+                rig.store.update { MechanicsState(challenges = listOf(open)) }
+                ann.live.setGameMode(GameType.CREATIVE)
+                cid.live.setGameMode(GameType.SPECTATOR)
+                rig.challenges.onJoin(ann.live)
+                rig.challenges.onJoin(cid.live)
+                check(rig.store.get().challenge(OPEN_ID)!!.participants.isEmpty()) { "neither in creative nor in spectator: ${rig.store.get()}" }
+                ann.live.setGameMode(GameType.SURVIVAL)
+                rig.challenges.onJoin(ann.live)
+                check(rig.store.get().challenge(OPEN_ID)!!.participants.map { it.name to it.late } == listOf(ann.name to true)) { "in survival, she joins late" }
+                rig.store.update { MechanicsState.EMPTY }
+            }
+        }
+    }
+
+    /** M4 review, finding 27: a goal that cannot be resolved any more was resolved again, with an `ERROR`, each second. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aGoalThatCannotBeResolvedIsSaidOnce(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 1) { rig, (bob) ->
+            LogCapture().use { logs ->
+                rig.onServer {
+                    val lost = running(LOST_ID, spec(GoalKind.OBTAIN, listOf(bob), "Disparu", item = "narrator2:no_such_item"), listOf(bob), rig.clock.millis())
+                    rig.store.update { MechanicsState(challenges = listOf(lost)) }
+                    repeat(3) { rig.second() }
+                    rig.store.update { MechanicsState.EMPTY }
+                }
+                val said = logs.messages.filter { "C-$LOST_ID: its goal cannot be resolved any more" in it }
+                check(said.size == 1) { "said once: $said" }
+            }
+        }
+    }
+
     // ── The rig ──
 
     /**
@@ -358,14 +563,17 @@ class ChallengeGameTests {
         val sink: KeptDecisions,
         val store: StateStore = StateStore.inMemory(),
         val clock: TestClock,
+        stakes: StakePayer = StakePayer.NONE,
+        memory: Memory? = null,
     ) {
         val runtime: NarratorRuntime = helper.narrator()
         val services: NarratorServices = object : NarratorServices by runtime {
             override val trace: TraceSink get() = sink
             override val director: DirectorControl get() = this@Rig.director
+            override val memory: Memory = memory ?: runtime.memory
         }
         val bars = Bossbars()
-        val challenges = Challenges(services, store, bars, clock = clock)
+        val challenges = Challenges(services, store, bars, stakes, clock = clock)
         val engine = Engine(services, store, listOf(challenges, DrawnBars(bars, store, runtime.settings.get().ui)), clock)
 
         fun challenge(ref: Ref) = store.get().challenge(ref.id)
@@ -426,10 +634,21 @@ class ChallengeGameTests {
         }
 
         companion object {
-            operator fun invoke(helper: GameTestHelper): Rig {
+            operator fun invoke(helper: GameTestHelper, stakes: StakePayer = StakePayer.NONE, memory: Memory? = null): Rig {
                 val clock = TestClock(Instant.ofEpochMilli(helper.narrator().clock.millis()), helper.narrator().clock.zone)
-                return Rig(helper, FakeDirector(clock), KeptDecisions(helper.narrator().trace), clock = clock)
+                return Rig(helper, FakeDirector(clock), KeptDecisions(helper.narrator().trace), clock = clock, stakes = stakes, memory = memory)
             }
+        }
+    }
+
+    /**
+     * The running Narrator's memory, but a canon row written by a challenge's start runs [then] once written, from the
+     * start's coroutine: what happens between the canon and the state (M4 review, findings 25 and 27).
+     */
+    private class OnCanonWritten(private val real: Memory, private val then: suspend (Ref) -> Unit) : Memory by real {
+        override val store: MemoryStore = object : MemoryStore by real.store {
+            override suspend fun addCanon(draft: CanonDraft, author: Author): Added<CanonEntry> =
+                real.store.addCanon(draft, author).also { then(it.row.ref) }
         }
     }
 
@@ -458,13 +677,29 @@ class ChallengeGameTests {
     private companion object {
         const val MINUTE = 60_000L
 
+        /** Challenges put in a rig's state by hand, never in the canon. */
+        const val OPEN_ID = 990_001_001L
+        const val LOST_ID = 990_001_002L
+
+        /** Challenge [id] of [spec], running from [now] for [players], as a start puts it in the state. */
+        fun running(id: Long, spec: ChallengeSpec, players: List<TestPlayer>, now: Long) = ChallengeState(
+            id = id, spec = spec, status = ChallengeStatus.RUNNING, createdAt = now, startedAt = now, endsAt = now + spec.minutes * MINUTE,
+            participants = players.map { Participant(it.uuid.toString(), it.name) }, turnId = null, conversationId = null,
+        )
+
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4242, taskId = null)
 
         /** Runs [test] with a [Rig] started on the server thread and [count] players who record their boss bars; all closed however it ends. */
-        suspend fun CoroutineScope.withRig(helper: GameTestHelper, count: Int, test: suspend (Rig, List<TestPlayer>) -> Unit) {
+        suspend fun CoroutineScope.withRig(
+            helper: GameTestHelper,
+            count: Int,
+            stakes: StakePayer = StakePayer.NONE,
+            memory: (List<TestPlayer>) -> Memory? = { null },
+            test: suspend (Rig, List<TestPlayer>) -> Unit,
+        ) {
             val server = helper.level.server
             val players = server.onServerThread { List(count) { TestPlayer(helper, "ch_", keep = ::isBossBar) } }
-            val rig = Rig(helper)
+            val rig = Rig(helper, stakes, memory(players))
             try {
                 rig.onServer { rig.engine.start(server) }
                 test(rig, players)
@@ -542,9 +777,10 @@ class ChallengeGameTests {
             reward = reward,
         )
 
-        /** [killer] kills a new creature of [type] in the test's area. Server thread. */
-        fun <E : LivingEntity> kill(helper: GameTestHelper, type: EntityType<E>, killer: TestPlayer) {
+        /** [killer] kills a new creature of [type] in the test's area, [prepared] first. Server thread. */
+        fun <E : LivingEntity> kill(helper: GameTestHelper, type: EntityType<E>, killer: TestPlayer, prepared: (E) -> Unit = {}) {
             val victim = helper.spawn(type, BlockPos(3, 1, 3))
+            prepared(victim)
             victim.hurtServer(helper.level, helper.level.damageSources().playerAttack(killer.live), 1_000f)
             check(victim.isDeadOrDying) { "the ${type.description.string} died" }
         }

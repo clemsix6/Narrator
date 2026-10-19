@@ -1,6 +1,11 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.director.DirectorSignal
+import io.github.clemsix6.narrator2.director.MechanicSignal
+import io.github.clemsix6.narrator2.mechanics.challenge.Ending
+import io.github.clemsix6.narrator2.mechanics.challenge.Goals
+import io.github.clemsix6.narrator2.mechanics.challenge.Verdict
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonFilter
 import io.github.clemsix6.narrator2.memory.CanonKind
@@ -27,8 +32,16 @@ import java.time.format.DateTimeFormatter
  *   out what ended while it was down: nothing else can have changed them yet.
  * @property closings what the startup took out of the state: id → the resolution of its canon row.
  * @property unreadable the entries the state could not read back.
+ * @property told what the Director hears of [closings] once the server runs (it is created after the engine):
+ *   a `CHALLENGE` or `DUEL` event each, no priority (M4 review, finding 13).
  */
-internal data class Startup(val at: Long, val ids: Set<Long>, val closings: Map<Long, String>, val unreadable: List<Unreadable>)
+internal data class Startup(
+    val at: Long,
+    val ids: Set<Long>,
+    val closings: Map<Long, String>,
+    val unreadable: List<Unreadable>,
+    val told: List<DirectorSignal.Mechanic> = emptyList(),
+)
 
 /**
  * Brings the engine's state and the canon back in line when the server starts (M4 §4.6). The state lives
@@ -38,11 +51,14 @@ internal data class Startup(val at: Long, val ids: Set<Long>, val closings: Map<
  * - [startup], on the server thread as the engine starts, without the database: a challenge or a duel whose
  *   deadline passed while the server was down is taken out of the state (no winner, no stakes over a time
  *   nobody played; its bets go back, its duelists are put back), and each entry that could not be read is
- *   reported.
- * - [run], in a coroutine once the server runs: the canon rows of what the startup took out, or could not
- *   read, are resolved; an open row the engine tracks with no state is resolved `cancelled` (`retired` for a
- *   law); and the entries whose canon row is missing, or was closed before the server started, are named
- *   for the engine to drop from the state (with [drop], at its next tick).
+ *   reported. Two kinds stay, for the challenges' part to end at its first tick (M4 review, finding 13;
+ *   `Goals.afterDowntime`): a judged challenge, judged again, and a challenge some participants made before the
+ *   stop, won by them.
+ * - [run], in a coroutine once the server runs: the Director hears of what the startup took out (no
+ *   priority); the canon rows of what the startup took out, or could not read, are resolved; an open row the
+ *   engine tracks with no state is resolved `cancelled` (`retired` for a law); and the entries whose canon row
+ *   is missing, or was closed before the server started, are named for the engine to drop from the state (with
+ *   [drop], at its next tick).
  *
  * The engine resolves as [Source.ENGINE] (M4 §3.3). A read or a write that fails is logged and changes
  * nothing: an entry is never dropped on a doubt.
@@ -53,8 +69,9 @@ internal class Reconcile(private val services: NarratorServices) {
 
     /**
      * The state [state] as the engine starts at [now]: without the challenges and duels whose deadline
-     * passed (a `mechanic cancelled` decision for each), its unreadable entries reported (a
-     * `mechanic unreadable` decision for each). Server thread; never the database.
+     * passed (a `mechanic cancelled` decision for each), but for those that outlive the stop
+     * ([outlivesDowntime]); its unreadable entries reported (a `mechanic unreadable` decision for each). Server
+     * thread; never the database.
      */
     fun startup(state: MechanicsState, now: Long): Pair<MechanicsState, Startup> {
         for (entry in state.unreadable) {
@@ -69,30 +86,34 @@ internal class Reconcile(private val services: NarratorServices) {
                 level = Log.Level.WARN,
             )
         }
-        val ended = state.challenges.filter { deadline(it) <= now }
+        val ended = state.challenges.filter { deadline(it) <= now && !outlivesDowntime(it) }
         val kept = drop(state, ended.mapTo(HashSet()) { it.id })
-        for (challenge in ended) {
+        val told = ended.map { challenge ->
+            val down = "$DOWN (${STAMP.format(Instant.ofEpochMilli(deadline(challenge)).atZone(services.clock.zone))})"
             val back = listOfNotNull(
                 challenge.bets.size.takeIf { it > 0 }?.let { "${count(it, "bet")} given back" },
                 challenge.arena.size.takeIf { it > 0 }?.let { "${count(it, "duelist")} put back at their next join" },
-            )
+            ).joinToString("") { "; $it" }
             decisions.record(
                 log, DecisionRecord.Kind.MECHANIC, CANCELLED, challenge.ref.toString(),
-                reason = "$DOWN (${STAMP.format(Instant.ofEpochMilli(deadline(challenge)).atZone(services.clock.zone))}); " +
-                    "its canon is resolved once the memory runs" + back.joinToString("") { "; $it" },
+                reason = "$down; its canon is resolved once the memory runs$back",
                 conversationId = EngineActions.conversationOf(challenge.ref),
             )
+            val kind = if (challenge.isDuel) MechanicSignal.DUEL else MechanicSignal.CHALLENGE
+            DirectorSignal.Mechanic(kind, "${challenge.ref} cancelled: $down; no stakes$back", now, priority = false)
         }
         val ids = kept.challenges.mapTo(LinkedHashSet()) { it.id } + kept.rules.map { it.id }
-        return kept to Startup(now, ids, ended.associate { it.id to DOWN }, state.unreadable)
+        return kept to Startup(now, ids, ended.associate { it.id to DOWN }, state.unreadable, told)
     }
 
     /**
-     * The reconciliation of [startup] (M4 §4.6), once the server runs: resolves the canon rows to close and
-     * returns the ids of the entries to drop from the state. Each change is a `mechanic reconciled`
-     * decision. Nothing is done without the memory. Never on the server thread.
+     * The reconciliation of [startup] (M4 §4.6), once the server runs: tells the Director what the startup took
+     * out ([Startup.told]), resolves the canon rows to close and returns the ids of the entries to drop from the
+     * state. Each change is a `mechanic reconciled` decision. Nothing but the Director's events without the
+     * memory. Never on the server thread.
      */
     suspend fun run(startup: Startup): Set<Long> {
+        startup.told.forEach { services.director.post(it) }
         val memory = services.memory
         if (!memory.available) {
             decisions.record(log, DecisionRecord.Kind.MECHANIC, RECONCILED, reason = "skipped: the memory is unavailable (${memory.unavailableReason})", level = Log.Level.WARN)
@@ -228,6 +249,13 @@ internal class Reconcile(private val services: NarratorServices) {
         /** When [challenge] ends: its end, or for a judged one waiting for its verdict, the end of the judging. */
         fun deadline(challenge: ChallengeState): Long =
             if (challenge.status == ChallengeStatus.JUDGING) challenge.judgeUntil ?: challenge.endsAt else challenge.endsAt
+
+        /**
+         * Whether [challenge], past its deadline as the server starts, stays in the state for the challenges' part
+         * to end it ([Goals.afterDowntime]): judged again, or won by those who made it; not when it is cancelled.
+         */
+        private fun outlivesDowntime(challenge: ChallengeState): Boolean =
+            (Goals.afterDowntime(challenge) as? Verdict.Ends)?.ending != Ending.CANCELLED
 
         /** How a tracked row of [kind] closes when the engine gives it up: `cancelled`, or `retired` for a law. */
         private fun closing(kind: CanonKind): CanonStatus = if (CanonStatus.CANCELLED in kind.closedBy) CanonStatus.CANCELLED else CanonStatus.RETIRED

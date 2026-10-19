@@ -317,6 +317,18 @@ object Goals {
         return challenge.copy(participants = challenge.participants + Participant(uuid.toString(), name, late = true))
     }
 
+    /**
+     * The participants of [spec] as it starts, from those [prepared] when it was checked (M4 review, finding 27): a
+     * challenge open to everyone takes [everyone], the players online now who may take part (who left meanwhile is
+     * not in it, who came is, from the start); a named participant who is not [online] any more (UUIDs as text) is
+     * out of a `survive` (left). Pure.
+     */
+    fun atStart(spec: ChallengeSpec, prepared: List<Participant>, everyone: List<Participant>, online: Set<String>): List<Participant> = when {
+        spec.players == null -> everyone
+        spec.goal != GoalKind.SURVIVE -> prepared
+        else -> prepared.map { if (it.uuid in online) it else it.copy(out = OutReason.LEFT) }
+    }
+
     /** [challenge] with participant [uuid] changed by [change], when they are in and not out. */
     private inline fun change(challenge: ChallengeState, uuid: UUID, change: (Participant) -> Participant): ChallengeState {
         if (challenge.status != ChallengeStatus.RUNNING) return challenge
@@ -370,6 +382,21 @@ object Goals {
                 }
             }
         }
+    }
+
+    /**
+     * What becomes of [challenge], whose end passed while the server was down, as it starts again (M4 review,
+     * finding 13): a judged challenge, or one already waiting for its verdict, is judged now ([Verdict.Judge]); any
+     * other is won by the participants who made it before the stop, in their order and [ChallengeSpec.winners] at
+     * most ([Verdict.Ends] `WON`: their reward, no penalty for the others), or cancelled when nobody had (a
+     * `survive` included: nobody makes it before its end). A duel is cancelled. Pure.
+     */
+    fun afterDowntime(challenge: ChallengeState): Verdict {
+        val spec = challenge.spec ?: return Verdict.Ends(Ending.CANCELLED, emptyList())
+        if (spec.goal == GoalKind.JUDGED) return Verdict.Judge
+        val done = challenge.participants.filter { it.doneAt != null }.sortedBy { it.doneAt }
+        val winners = if (spec.winners > 0) done.take(spec.winners) else done
+        return Verdict.Ends(if (winners.isEmpty()) Ending.CANCELLED else Ending.WON, winners)
     }
 
     // ── How a goal reads (English, for the model) ──
