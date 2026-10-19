@@ -13,7 +13,8 @@ import java.util.UUID
  * The anti-spam limits of the speech tools (M1_M2 §9.1), enforced whatever the model asks:
  * - `say`: [LINES_PER_TURN] lines per turn and [LINES_PER_MINUTE] per sliding minute, whoever speaks; each act
  *   of the mechanics engine (a rule's firing) is a turn of its own ([Caller.act], [TurnCounter]), and its lines
- *   count in the minute like the Director's;
+ *   count in the minute like the Director's. The engine's acts together say at most [ENGINE_LINES_PER_MINUTE]
+ *   of them (M4 review, finding 33): a chatty rule never silences the Director, who keeps the rest;
  * - `show_title`: one title per player every [TITLE_COOLDOWN_MS];
  * - `actionbar`: one line per player every [ACTIONBAR_COOLDOWN_MS];
  * - `give_book`: one book per player every [BOOK_COOLDOWN_MS];
@@ -25,6 +26,7 @@ import java.util.UUID
  */
 class SpeechLimiter(private val clock: Clock) {
     private val lines = Window(LINES_PER_MINUTE)
+    private val engineLines = Window(ENGINE_LINES_PER_MINUTE)
     private val linesThisTurn = TurnCounter(LINES_PER_TURN)
     private val sounds = Window(SOUNDS_PER_MINUTE)
     private val titles = Cooldown(TITLE_COOLDOWN_MS)
@@ -42,14 +44,27 @@ class SpeechLimiter(private val clock: Clock) {
                     "put the rest in fewer, fuller lines next turn, or end the turn",
             )
         }
+        val engine = isEngine(caller)
+        val engineWait = if (engine) engineLines.waitMs(now) else 0
+        if (engineWait > 0) {
+            return Verdict.Denied(
+                RULE,
+                "the engine's acts already said $ENGINE_LINES_PER_MINUTE lines in the last minute, their share (the rest is the Director's); " +
+                    "the next is possible in ${ToolText.wait(engineWait)}",
+            )
+        }
         val wait = lines.waitMs(now)
         if (wait > 0) {
             return Verdict.Denied(RULE, "$LINES_PER_MINUTE lines already in the last minute; the next is possible in ${ToolText.wait(wait)}")
         }
         lines.add(now)
+        if (engine) engineLines.add(now)
         linesThisTurn.take(caller)
         return Verdict.Allowed
     }
+
+    /** An act of the mechanics engine (a rule's firing, a challenge's stake), not a turn of the Director. */
+    private fun isEngine(caller: Caller): Boolean = caller.turnId == null && caller.firingId != null
 
     /** One `play_sound` call: allowed and counted, or refused with when to try again. */
     @Synchronized
@@ -120,6 +135,9 @@ class SpeechLimiter(private val clock: Clock) {
 
         const val LINES_PER_TURN = 4
         const val LINES_PER_MINUTE = 8
+
+        /** The engine's share of [LINES_PER_MINUTE]: half, the other half kept for the Director. */
+        const val ENGINE_LINES_PER_MINUTE = LINES_PER_MINUTE / 2
         const val SOUNDS_PER_MINUTE = 10
         const val TITLE_COOLDOWN_MS = 30_000L
         const val ACTIONBAR_COOLDOWN_MS = 5_000L

@@ -75,10 +75,29 @@ class SpeechLimiterTest {
         repeat(4) { assertEquals(Verdict.Allowed, limiter.line(firing(812))) }
         assertContains(denied(limiter.line(firing(812))), "4 lines already this turn")
 
+        clock.advance(Duration.ofMinutes(1))
         repeat(4) { assertEquals(Verdict.Allowed, limiter.line(firing(813)), "the next firing speaks afresh") }
         // Still 8 lines in any minute, the Director's and the engine's together.
-        assertContains(denied(limiter.line(firing(814))), "8 lines already in the last minute")
-        assertContains(denied(limiter.line(turn(5))), "8 lines already in the last minute")
+        repeat(4) { assertEquals(Verdict.Allowed, limiter.line(turn(5))) }
+        assertContains(denied(limiter.line(turn(6))), "8 lines already in the last minute")
+    }
+
+    /** M4 review, finding 33: the engine's acts say at most half the minute's lines; a chatty rule never silences the Director. */
+    @Test
+    fun `the engine speaks within its share and leaves the Director its own`() {
+        repeat(2) { assertEquals(Verdict.Allowed, limiter.line(firing(812))) }
+        clock.advance(Duration.ofSeconds(20))
+        repeat(2) { assertEquals(Verdict.Allowed, limiter.line(firing(813))) }
+        assertEquals(
+            "the engine's acts already said 4 lines in the last minute, their share (the rest is the Director's); the next is possible in 40s",
+            denied(limiter.line(firing(814))),
+        )
+        repeat(4) { assertEquals(Verdict.Allowed, limiter.line(turn(1)), "the Director's half") }
+        assertContains(denied(limiter.line(turn(2))), "8 lines already in the last minute")
+
+        clock.advance(Duration.ofSeconds(40))
+        repeat(2) { assertEquals(Verdict.Allowed, limiter.line(firing(815)), "the first two lines of the engine are a minute old") }
+        denied(limiter.line(firing(816)))
     }
 
     @Test

@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.guard
 
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -22,11 +23,11 @@ data class Episode(val target: UUID, val act: Long?, val until: Long)
 data class Strike(val act: Long?, val at: Long)
 
 /**
- * The punishments running against each player, when the recent ones began, and the categories they were
- * struck in. An episode opens with the first hostile action of an act against a player; the hostile actions
- * of the same act extend it (one punishment = several coordinated actions); it ends when its last effect
- * ends, or at a pardon ([close]). The guards rebuild it from the player's guard state when they join after a
- * restart.
+ * The punishments running against each player, when the recent ones began, the categories they were
+ * struck in, and the punishments of the catalogue (`punish`) each act put on them. An episode opens with the
+ * first hostile action of an act against a player; the hostile actions of the same act extend it (one
+ * punishment = several coordinated actions); it ends when its last effect ends, or at a pardon ([close]). The
+ * guards rebuild it from the player's guard state when they join after a restart.
  *
  * Kept in memory for the life of the server: a player who leaves and comes back finds their episode, their
  * recent punishments and their resting categories where they were; a restart forgets the last two (M4 §3.1:
@@ -41,6 +42,18 @@ class Episodes(private val clock: Clock) {
     /** The last strike of each category, per player; strikes older than [STRIKES_KEPT_MS] are dropped. */
     private val struck = ConcurrentHashMap<UUID, Map<PunishmentCategory, Strike>>()
 
+    /** The `punish` of each act against each player within the last hour (M4 review, finding 16), keyed by act. */
+    private val punished = ConcurrentHashMap<UUID, Map<Long?, Punished>>()
+
+    /**
+     * One act's `punish` against a player: [punishment] at [at], and the player's punishments as they were
+     * just [before] it, to [withdraw] it.
+     */
+    private class Punished(val punishment: PunishmentId, val at: Long, val before: Before)
+
+    /** A player's punishments at one moment: their running episode, the hour's beginnings and the strikes. */
+    private class Before(val running: Episode?, val began: List<Long>?, val struck: Map<PunishmentCategory, Strike>?)
+
     /** The episode still running against [target], if any. */
     fun active(target: UUID): Episode? {
         val episode = running[target] ?: return null
@@ -53,10 +66,15 @@ class Episodes(private val clock: Clock) {
      * Opens the episode of [act] against [target], or extends it, until [until] (epoch milliseconds), and
      * records a strike in [category] when it rests ([PunishmentCategory.rests]). Only a new episode counts as
      * a punishment in [recentPunishments] (an episode rebuilt at a join after a restart counts again: in
-     * doubt, the player is spared).
+     * doubt, the player is spared). [punishment]: the act's `punish` of the catalogue, if this is one
+     * ([punishmentBy], [withdraw]).
      */
-    fun open(target: UUID, act: Long?, until: Long, category: PunishmentCategory? = null) {
+    fun open(target: UUID, act: Long?, until: Long, category: PunishmentCategory? = null, punishment: PunishmentId? = null) {
         val now = clock.millis()
+        if (punishment != null) {
+            val before = Before(running[target], began[target], struck[target])
+            punished.compute(target) { _, marks -> marks.orEmpty().filterValues { now - it.at < WINDOW_MS } + (act to Punished(punishment, now, before)) }
+        }
         running.compute(target) { _, current ->
             val live = current?.takeIf { it.until > now }
             if (live != null && act != null && live.act == act) {
@@ -72,6 +90,29 @@ class Episodes(private val clock: Clock) {
                 strikes.orEmpty().filterValues { now - it.at < STRIKES_KEPT_MS } + (category to Strike(act, now))
             }
         }
+    }
+
+    /** The punishment of the catalogue [act] put on [target] within the last hour, if any: an act punishes a player once. */
+    fun punishmentBy(target: UUID, act: Long?): PunishmentId? =
+        punished[target]?.get(act)?.takeIf { clock.millis() - it.at < WINDOW_MS }?.punishment
+
+    /**
+     * Withdraws the `punish` [act] put on [target], which did nothing at all (M4 review, finding 39): the
+     * player's episode, the hour's punishments and the categories' rest are put back as they were just before
+     * it, as if it had never been asked; the act may punish them again. Whatever the act did to them since
+     * goes with it: nobody else acts on a player while the act's episode runs. Returns whether there was one.
+     */
+    fun withdraw(target: UUID, act: Long?): Boolean {
+        var mark: Punished? = null
+        punished.computeIfPresent(target) { _, marks ->
+            mark = marks[act]
+            (marks - act).ifEmpty { null }
+        }
+        val before = mark?.before ?: return false
+        restore(running, target, before.running)
+        restore(began, target, before.began)
+        restore(struck, target, before.struck)
+        return true
     }
 
     /** Ends the episode running against [target] now (a pardon), and returns it; null when none ran. */
@@ -102,5 +143,9 @@ class Episodes(private val clock: Clock) {
         val STRIKES_KEPT_MS: Long = (Caps.MIN_CHAOS..Caps.MAX_CHAOS).maxOf { Caps.of(it).categoryCooldownMinutes } * 60_000L
 
         private fun recent(times: List<Long>?, now: Long): List<Long> = times.orEmpty().filter { now - it < WINDOW_MS }
+
+        private fun <V : Any> restore(map: ConcurrentHashMap<UUID, V>, key: UUID, value: V?) {
+            if (value == null) map.remove(key) else map[key] = value
+        }
     }
 }
