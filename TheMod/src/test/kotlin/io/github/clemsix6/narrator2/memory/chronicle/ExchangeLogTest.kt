@@ -16,6 +16,9 @@ import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerFixture.Companion.at
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -135,10 +138,44 @@ class ExchangeLogTest {
     }
 
     /** A decision of the engine at [time] (`HH:mm:ss`), as `Decisions.record` writes it; returns its id. */
-    private fun decision(time: String, kind: DecisionRecord.Kind, decision: String, subject: String?, reason: String): Long {
+    private fun decision(time: String, kind: DecisionRecord.Kind, decision: String, subject: String?, reason: String, detail: JsonObject? = null): Long {
         val id = f.journal.journal.nextId(IdKind.DECISION)
-        f.journal.journal.decision(DecisionRecord(id, at(time), kind, decision, subject, reason, null, "mechanics:C-50", null, null))
+        f.journal.journal.decision(DecisionRecord(id, at(time), kind, decision, subject, reason, null, "mechanics:C-50", null, detail))
         return id
+    }
+
+    /**
+     * M4 review, finding 31: a rule's end is news of its own (`mechanic rule_ended`), whatever its ending, and says
+     * it after the subject; a challenge's `expired` is still news, and no rule's end is mistaken for it. The
+     * mechanic's news make a batch, the ledger's alone do not (finding 41).
+     */
+    @Test
+    fun `a rule's end is an ENGINE line with its ending, and only a mechanic's news is worth a batch`() = runBlocking<Unit> {
+        f.chapterRow()
+        val mechanic = DecisionRecord.Kind.MECHANIC
+        fun ending(ending: String) = buildJsonObject { put("ending", ending) }
+        decision("20:01:00", mechanic, ExchangeLog.RULE_ENDED, "C-60", "C-60 law retired: 3 fired, 0 skipped; « its time ran out »", ending("expired"))
+        decision("20:02:00", mechanic, ExchangeLog.RULE_ENDED, "C-61", "C-61 plan cancelled by operator Clement: 0 fired; « trop cruel »", ending("removed"))
+        decision("20:03:00", mechanic, ExchangeLog.RULE_ENDED, "C-62", "C-62 law retired: disabled after 5 failures in a row: no air", ending("disabled"))
+        decision("20:04:00", mechanic, ExchangeLog.RULE_ENDED, "C-63", "C-63 plan fulfilled: 1 fired; « fired once: Bartok entered the_nether »", ending("fulfilled"))
+        decision("20:05:00", mechanic, "expired", "C-50", "C-50 expired: nobody brought a turtle egg", ending("expired"))
+        decision("20:05:30", mechanic, "disabled", "C-64", "C-64 disabled after 5 failures: no air")
+        decision("20:06:00", DecisionRecord.Kind.LEDGER, "returned", "Bartok", "confiscation 4001: 1x iron_sword given back")
+        f.journal.sync()
+
+        val lines = log.lines(f.chapter, at("20:00"), at("20:10"))
+        assertEquals(
+            listOf(
+                "[20:01:00] ENGINE mechanic rule_ended C-60 (expired): C-60 law retired: 3 fired, 0 skipped; « its time ran out »",
+                "[20:02:00] ENGINE mechanic rule_ended C-61 (removed): C-61 plan cancelled by operator Clement: 0 fired; « trop cruel »",
+                "[20:03:00] ENGINE mechanic rule_ended C-62 (disabled): C-62 law retired: disabled after 5 failures in a row: no air",
+                "[20:04:00] ENGINE mechanic rule_ended C-63 (fulfilled): C-63 plan fulfilled: 1 fired; « fired once: Bartok entered the_nether »",
+                "[20:05:00] ENGINE mechanic expired C-50: C-50 expired: nobody brought a turtle egg",
+                "[20:06:00] ENGINE ledger returned Bartok: confiscation 4001: 1x iron_sword given back",
+            ),
+            lines.map { it.text },
+        )
+        assertEquals(listOf(true, true, true, true, true, false), lines.map { it.worthABatch })
     }
 
     /**
