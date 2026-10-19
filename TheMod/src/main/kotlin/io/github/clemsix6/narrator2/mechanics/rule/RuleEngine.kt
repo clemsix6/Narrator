@@ -496,7 +496,8 @@ class RuleEngine(
             unmark(entity, marks)
             creatures++
         }
-        log.info("${ids.joinToString { "C-$it" }} left the rules at work; marks taken off $creatures creatures")
+        val line = "${ids.joinToString { "C-$it" }} left the rules at work; marks taken off $creatures creatures"
+        if (creatures > 0) log.info(line) else log.debug { line }
     }
 
     // ── Outcomes and ends ──
