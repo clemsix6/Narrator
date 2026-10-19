@@ -202,7 +202,8 @@ data class DecisionRecord(
 
         /**
          * An attribute modifier or a confiscation was applied, expired, reapplied or returned; from M4 also a stake
-         * or an offering `held`, `released`, `transferred` or `offered` (M4 §19).
+         * or an offering `held`, `released`, `forfeited`, `transferred` or `offered`, and what waits for room
+         * `owed`, then `delivered` (M4 §19, M4-15).
          */
         LEDGER,
 

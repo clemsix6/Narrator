@@ -523,13 +523,16 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
          * The engine's decisions the log shows (M4 §19), by kind, the players' side of the mechanics: of the
          * engine (`mechanic`), the ends of a challenge or a duel (`won`, `lost`, `expired`, `cancelled`), a
          * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a joker
-         * played (`joker`); of the ledger, a stake or an offering put in escrow (`held`), an offering taken for
-         * good (`offered`), items given back (`returned`, `released`). Their `reason` is what the Chronicler
-         * reads: a line that stands alone (refs, players, what happened), like the Director's event.
+         * played (`joker`); of the ledger (M4-15), a stake or an offering put in escrow (`held`), an offering
+         * taken for good (`offered`), items given back (`returned`: an offering not taken, a stake, a
+         * confiscation). Left out: what only says where items go next (`released`, `forfeited`, `owed`) or what
+         * the Director's event of a challenge's end already tells (`transferred`, `delivered`). Their `reason` is
+         * what the Chronicler reads: a line that stands alone (refs, players, what happened), like the
+         * Director's event.
          */
         val ENGINE_NEWS: Map<String, Set<String>> = mapOf(
             MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", "joker"),
-            LEDGER to setOf("held", "offered", "returned", "released"),
+            LEDGER to setOf("held", "offered", "returned"),
         )
 
         /** Longest reason of an `ENGINE` line: the Director's event line (a challenge's end with its stakes and bets). */

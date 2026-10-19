@@ -167,6 +167,9 @@ class ExchangeLogTest {
         decision("20:17:00", mechanic, "judging", "C-53", "C-53 « La plus belle <statue> » ended: judge it now with end_challenge C-53 (winners); you have 15m")
         decision("20:18:00", mechanic, "joker", "Bartok", "Bartok played a joker: " + "slowness II lifted, ".repeat(80))
         decision("20:19:00", mechanic, "cancelled", "C-52", "C-52 cancelled: Mimosa declined the duel")
+        decision("20:19:30", ledger, "released", "Josiane", "stake 4012 (12x iron_ingot) goes back to its owner")
+        decision("20:19:31", ledger, "returned", "Josiane", "stake 4012: 12x iron_ingot given back")
+        decision("20:19:32", ledger, "delivered", "Mimosa", "owed 4030: 1x paper delivered")
         f.journal.sync()
 
         val lines = log.lines(f.chapter, at("20:00"), at("20:20"))
@@ -181,6 +184,7 @@ class ExchangeLogTest {
                 "[20:17:00] ENGINE mechanic judging C-53: C-53 « La plus belle ‹statue› » ended: judge it now with end_challenge C-53 (winners); you have 15m",
                 "[20:18:00] ENGINE mechanic joker Bartok: " + ("Bartok played a joker: " + "slowness II lifted, ".repeat(80)).take(ExchangeLog.ENGINE_MAX - 1) + "…",
                 "[20:19:00] ENGINE mechanic cancelled C-52: C-52 cancelled: Mimosa declined the duel",
+                "[20:19:31] ENGINE ledger returned Josiane: stake 4012: 12x iron_ingot given back",
             ),
             lines.map { it.text },
         )
