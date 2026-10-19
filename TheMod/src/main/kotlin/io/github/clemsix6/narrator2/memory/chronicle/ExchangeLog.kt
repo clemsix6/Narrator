@@ -75,10 +75,10 @@ import java.util.UUID
  *   milestone advancements, first visits and notable structures, griefs (counted as the salience does),
  *   rare ores (counted by run), explosions near players;
  * - the news of the mechanics engine (M4 §19), lines `ENGINE`: its decisions in [ENGINE_NEWS], the ends of
- *   challenges and duels, the judgings, a rule's `notify`, a joker played, the offerings and stakes the
- *   Narrator holds, takes or gives back. Their `reason` is the line, written by the engine for the model;
- *   they have no ref to cite (`engine_decisions` is no evidence): the canon (`C-…`) and the lines around
- *   them are. A rule's other firings are left out: a law that strikes writes its own interaction.
+ *   challenges and duels, the judgings, a rule's `notify` and its end, a joker played, the offerings and
+ *   stakes the Narrator holds, takes or gives back. Their `reason` is the line, written by the engine for the
+ *   model; they have no ref to cite (`engine_decisions` is no evidence): the canon (`C-…`) and the lines
+ *   around them are. A rule's other firings are left out: a law that strikes writes its own interaction.
  *
  * [blocks] cuts the lines into `<exchange>` blocks of [MAX_CHARS] at most; [known] says what the memory
  * already holds about the window. The nap reads the chapter through [written], [shown] and [left] too.
@@ -86,8 +86,20 @@ import java.util.UUID
  * zone.
  */
 internal class ExchangeLog(private val services: NarratorServices, private val sanctions: Sanctions) {
-    /** One line of the log: when, its text, what it is, and the names of the players it involves. */
-    data class Line(val at: Instant, val text: String, val kind: Kind, val players: Set<String>, val order: Long)
+    /**
+     * One line of the log: when, its text, what it is, and the names of the players it involves. [worthABatch]:
+     * the line alone makes its window worth a batch of the Chronicler: chat, a line of the Narrator, a tool call,
+     * a mechanic's news; not a fact, nor the ledger's news (an M2 confiscation given back, a stake held: the
+     * Narrator committed to nothing there).
+     */
+    data class Line(
+        val at: Instant,
+        val text: String,
+        val kind: Kind,
+        val players: Set<String>,
+        val order: Long,
+        val worthABatch: Boolean = kind != Kind.FACT,
+    )
 
     enum class Kind {
         /** A message of a player: public chat or prayer. */
@@ -387,18 +399,24 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
     /**
      * The decisions of [ENGINE_NEWS] in `]from, to]`: `[20:09:12] ENGINE mechanic won C-50: <reason>`, the
-     * decision as the log writes it ([Decisions.line]), its reason escaped and cut to [ENGINE_MAX]. Its
-     * subject is among the players of the line: the block's `<known>` keeps those the Journal knows.
+     * decision as the log writes it ([Decisions.line]), its reason escaped and cut to [ENGINE_MAX]. A decision
+     * whose `detail.ending` says more than its name gives it after the subject: `ENGINE mechanic rule_ended C-60
+     * (removed): …`. Its subject is among the players of the line: the block's `<known>` keeps those the Journal
+     * knows. Only a mechanic's news is [Line.worthABatch].
      */
     private fun engineLines(connection: Connection, from: Instant, to: Instant, zone: ZoneId): List<Line> = connection.query(
         ENGINE_SQL, from, to, stringArray(ENGINE_NEWS.flatMap { (kind, decisions) -> decisions.map { "$kind:$it" } }),
     ) {
         val id = getLong(1)
         val at = instant(2)
+        val kind = getString(3)
+        val decision = getString(4)
         val subject = getString(5)
         val reason = getString(6)?.let { ModelText.escape(ModelText.cut(it, ENGINE_MAX)) }
-        val text = "[${SECONDS.withZone(zone).format(at)}] ENGINE ${getString(3)} " + Decisions.line(getString(4), subject?.let(ModelText::name), reason)
-        Line(at, text, Kind.ENGINE, setOfNotNull(subject), id)
+        val ending = getString(7)?.takeIf { it.isNotBlank() && it != decision }?.let { " (${ModelText.name(it)})" }.orEmpty()
+        val shown = subject?.let(ModelText::name)?.plus(ending) ?: ending.trim().ifEmpty { null }
+        val text = "[${SECONDS.withZone(zone).format(at)}] ENGINE $kind " + Decisions.line(decision, shown, reason)
+        Line(at, text, Kind.ENGINE, setOfNotNull(subject), id, worthABatch = kind == MECHANIC)
     }
 
     /** Blocks one player broke within a window: rare ores of one kind, or blocks of one owner (a grief). */
@@ -520,18 +538,24 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         private val LEDGER = DecisionRecord.Kind.LEDGER.id
 
         /**
+         * The `mechanic` decision of a rule that ends (M4 review, finding 31: the supervisor's contract with the
+         * rules' engine), its `detail.ending` `expired`, `disabled`, `removed` or `fulfilled`, shown after the subject.
+         */
+        const val RULE_ENDED = "rule_ended"
+
+        /**
          * The engine's decisions the log shows (M4 §19), by kind, the players' side of the mechanics: of the
          * engine (`mechanic`), the ends of a challenge or a duel (`won`, `lost`, `expired`, `cancelled`), a
-         * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a joker
-         * played (`joker`); of the ledger (M4-15), a stake or an offering put in escrow (`held`), an offering
-         * taken for good (`offered`), items given back (`returned`: an offering not taken, a stake, a
-         * confiscation). Left out: what only says where items go next (`released`, `forfeited`, `owed`) or what
-         * the Director's event of a challenge's end already tells (`transferred`, `delivered`). Their `reason` is
-         * what the Chronicler reads: a line that stands alone (refs, players, what happened), like the
-         * Director's event.
+         * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a rule's
+         * end ([RULE_ENDED]), a joker played (`joker`); of the ledger (M4-15), a stake or an offering put in
+         * escrow (`held`), an offering taken for good (`offered`), items given back (`returned`: an offering not
+         * taken, a stake, a confiscation). Left out: what only says where items go next (`released`,
+         * `forfeited`, `owed`) or what the Director's event of a challenge's end already tells (`transferred`,
+         * `delivered`). Their `reason` is what the Chronicler reads: a line that stands alone (refs, players,
+         * what happened), like the Director's event.
          */
         val ENGINE_NEWS: Map<String, Set<String>> = mapOf(
-            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", "joker"),
+            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", RULE_ENDED, "joker"),
             LEDGER to setOf("held", "offered", "returned"),
         )
 
@@ -680,7 +704,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
             ORDER BY e.ts, e.id"""
 
         /** The engine's decisions of a period that are news: `kind:decision` among a list. */
-        private const val ENGINE_SQL = "SELECT id, ts, kind, decision, subject, reason FROM engine_decisions WHERE ts > ? AND ts <= ? " +
+        private const val ENGINE_SQL = "SELECT id, ts, kind, decision, subject, reason, detail ->> 'ending' FROM engine_decisions WHERE ts > ? AND ts <= ? " +
             "AND list_contains(?, kind || ':' || decision) ORDER BY ts, id"
 
         private const val OPEN_CANON_SQL ="SELECT $CANON_COLUMNS FROM canon WHERE status IN ('planned', 'active') AND NOT archived ORDER BY created_at, id"
