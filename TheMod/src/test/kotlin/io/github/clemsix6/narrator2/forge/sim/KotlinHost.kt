@@ -3,40 +3,62 @@ package io.github.clemsix6.narrator2.forge.sim
 import java.lang.management.ManagementFactory
 import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A [BenchHost] for modules written in Kotlin (or compiled by the tests, not rewritten): no loader of its own, no
- * meter. A call's time is the thread's CPU time (a GC pause or a busy machine never makes a test's call slow), its
- * fault the exception's class, message and the module's line, as the game's host keeps it. The module's frames are
- * those of [main] and its nested classes. [retained] is a small reflective estimate in the spirit of the game's gauge:
- * texts, arrays, collections and maps, and the fields of the module's own objects, from the roots and [main]'s
- * static fields; any other object counts 16 bytes and is not followed.
+ * meter, but each call on a module thread of its own (a pool), never the caller's, as M5-05's host does. The caller
+ * waits [wait] for it (a budget of 20 ms waits 10 s by default: a busy machine never abandons a test's call), then
+ * abandons it. A call's time is the module thread's CPU time; its fault the exception's class, message and the
+ * module's line, as the game's host keeps it. The module's frames are those of [main] and its nested classes.
+ * [retained] is a small reflective estimate in the spirit of the game's gauge: texts, arrays, the JDK's collections and
+ * maps, and the fields of the module's own objects, from the roots and [main]'s static fields; any other object counts
+ * 16 bytes and is not followed (a module's own collection is never asked anything).
  */
-internal class KotlinHost(override val main: Class<*>) : BenchHost {
+internal class KotlinHost(override val main: Class<*>, private val wait: (Long) -> Long = { maxOf(it, PATIENCE) }) : BenchHost {
     private val threads = ManagementFactory.getThreadMXBean()
 
     /** How many calls ran. */
-    var calls = 0
-        private set
+    val calls = AtomicInteger()
 
     override fun call(budgetNanos: Long, body: () -> Unit): HostCall {
-        calls++
-        val depth = DEPTH.get()
-        DEPTH.set(depth + 1)
-        val start = threads.currentThreadCpuTime
-        val fault = try {
-            body()
-            null
-        } catch (error: Throwable) {
-            error.javaClass.simpleName + (error.message?.let { ": $it" } ?: "") + (where(error)?.let { " at $it" } ?: "")
-        } finally {
-            DEPTH.set(depth)
+        calls.incrementAndGet()
+        val waiting = wait(budgetNanos)
+        val future = POOL.submit(
+            Callable {
+                DEPTH.set(DEPTH.get() + 1)
+                val start = threads.currentThreadCpuTime
+                try {
+                    body()
+                    HostCall(threads.currentThreadCpuTime - start, null)
+                } catch (error: Throwable) {
+                    val line = line(error)
+                    HostCall(threads.currentThreadCpuTime - start, error.javaClass.simpleName + (error.message?.let { ": $it" } ?: "") + where(error), line)
+                } finally {
+                    DEPTH.set(DEPTH.get() - 1)
+                }
+            },
+        )
+        return try {
+            future.get(waiting, TimeUnit.NANOSECONDS)
+        } catch (e: TimeoutException) {
+            HostCall(waiting, "ForgeLimit: time budget (the call was abandoned)")
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            HostCall(0, "the caller was interrupted")
         }
-        return HostCall(threads.currentThreadCpuTime - start, fault)
     }
 
-    override fun where(error: Throwable): String? =
-        error.stackTrace.firstOrNull { it.className == main.name || it.className.startsWith(main.name + "$") }?.let { "${it.fileName}:${it.lineNumber}" }
+    override fun line(error: Throwable): Int = frame(error)?.lineNumber ?: 0
+
+    private fun where(error: Throwable): String = frame(error)?.let { " at ${it.fileName}:${it.lineNumber}" }.orEmpty()
+
+    private fun frame(error: Throwable): StackTraceElement? =
+        error.stackTrace.firstOrNull { it.className == main.name || it.className.startsWith(main.name + "$") }
 
     override fun retained(roots: List<Any>): Long {
         val seen = IdentityHashMap<Any, Boolean>()
@@ -84,7 +106,9 @@ internal class KotlinHost(override val main: Class<*>) : BenchHost {
     }
 
     companion object {
+        private val POOL = Executors.newCachedThreadPool { task -> Thread(task, "bench-module").apply { isDaemon = true } }
         private val DEPTH = ThreadLocal.withInitial { 0 }
+        private val PATIENCE = TimeUnit.SECONDS.toNanos(10)
 
         /** Whether the module's code runs in a call of a [KotlinHost] on this thread. */
         val inCall: Boolean get() = DEPTH.get() > 0

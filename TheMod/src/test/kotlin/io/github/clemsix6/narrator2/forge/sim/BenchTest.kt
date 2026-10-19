@@ -1,31 +1,48 @@
 package io.github.clemsix6.narrator2.forge.sim
 
 import io.github.clemsix6.narrator2.forge.ParamSpec
+import io.github.clemsix6.narrator2.forge.api.Acts
 import io.github.clemsix6.narrator2.forge.api.Cell
-import io.github.clemsix6.narrator2.forge.api.Creature
 import io.github.clemsix6.narrator2.forge.api.ForgeModule
 import io.github.clemsix6.narrator2.forge.api.ForgeRefusal
 import io.github.clemsix6.narrator2.forge.api.Game
 import io.github.clemsix6.narrator2.forge.api.GameFact
+import io.github.clemsix6.narrator2.forge.api.Ground
 import io.github.clemsix6.narrator2.forge.api.ModuleContext
 import io.github.clemsix6.narrator2.forge.api.Outcome
 import io.github.clemsix6.narrator2.forge.api.ParamType
 import io.github.clemsix6.narrator2.forge.api.Place
+import io.github.clemsix6.narrator2.forge.api.Scheduled
 import io.github.clemsix6.narrator2.forge.api.Spawn
 import io.github.clemsix6.narrator2.forge.api.StopReason
 import io.github.clemsix6.narrator2.forge.api.Subscription
 import io.github.clemsix6.narrator2.forge.api.test.Bench
+import io.github.clemsix6.narrator2.forge.compile.Diagnostic
+import io.github.clemsix6.narrator2.forge.sdk.ActQueue
+import io.github.clemsix6.narrator2.forge.sdk.ActRunner
+import io.github.clemsix6.narrator2.forge.sdk.CreatureControl
+import io.github.clemsix6.narrator2.forge.sdk.GroundView
+import io.github.clemsix6.narrator2.forge.sdk.ModuleActs
+import io.github.clemsix6.narrator2.forge.sdk.ModuleCall
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.EngineActions
+import io.github.clemsix6.narrator2.mechanics.Firing
+import io.github.clemsix6.narrator2.mechanics.module.moduleOnlyTools
 import io.github.clemsix6.narrator2.mechanics.rule.ruleOnlyTools
+import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
+import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -37,20 +54,26 @@ import net.minecraft.server.Bootstrap
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The bench (M5 §6.2, §7), with modules written in Kotlin: no compiler, no rewriting, no meter (the [KotlinHost]).
- * Each part of the simulated world and SDK, the smoke run (memory retained included), the dry checks through the real
- * tools, the scenarios, and the report's budget; and the witness module of M5-01 (compiled by the tests' ECJ) passes
- * its own scenarios.
+ * The bench (M5 §6.2, §7), with modules written in Kotlin: no compiler, no rewriting, no meter, but each call on a
+ * module thread of the test's host ([KotlinHost]), as in the game. Each part of the simulated world and of the SDK
+ * (the game's own pieces where they need no server), the smoke run (memory retained included), the dry checks
+ * through the real tools, the scenarios, the report's budget, an abandoned call; and the witness module of M5-01
+ * (compiled by the tests' ECJ) passes its own scenarios.
  */
 class BenchTest {
     @BeforeEach
@@ -60,8 +83,8 @@ class BenchTest {
 
     @Test
     fun `a tick is 50 ms of the module's clock, and timers run when due, again when they repeat, never once cancelled`() {
-        val seen = mutableListOf<String>()
-        var every: io.github.clemsix6.narrator2.forge.api.Scheduled? = null
+        val seen = CopyOnWriteArrayList<String>()
+        var every: Scheduled? = null
         Scripted.script = { ctx ->
             val start = ctx.now()
             ctx.timers().after(3) { seen += "after at ${(ctx.now() - start) / 50}" }
@@ -77,7 +100,7 @@ class BenchTest {
 
     @Test
     fun `a fact comes the tick after, to the subscriptions of its class only, and no more once cancelled`() {
-        val seen = mutableListOf<String>()
+        val seen = CopyOnWriteArrayList<String>()
         var chat: Subscription? = null
         Scripted.script = { ctx -> chat = ctx.events().on(GameFact.Chat::class.java) { seen += "${it.player()}: ${it.text()}" } }
         val bench = bench()
@@ -88,18 +111,19 @@ class BenchTest {
         assertEquals(emptyList(), seen, "not before the next tick")
         bench.run(1)
         assertEquals(listOf("Mimosa: salut"), seen)
-        chat!!.cancel()
+        val subscription = assertNotNull(chat)
+        subscription.cancel()
         bench.fact(GameFact.Chat("Mimosa", at(0.5), "encore"))
         bench.run(2)
         assertEquals(listOf("Mimosa: salut"), seen)
-        assertFalse(chat!!.active())
+        assertFalse(subscription.active())
     }
 
     // ── The world ──────────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `the world reads what the scenario poses of its players, and their comings and goings are facts`() {
-        val facts = mutableListOf<String>()
+        val facts = CopyOnWriteArrayList<String>()
         Scripted.script = { ctx ->
             ctx.events().on(GameFact.Joined::class.java) { facts += "joined ${it.player()}" }
             ctx.events().on(GameFact.Left::class.java) { facts += "left ${it.player()}" }
@@ -210,7 +234,7 @@ class BenchTest {
 
     @Test
     fun `a summoned creature vanishes at the end of its lifetime, and the module hears it`() {
-        val gone = mutableListOf<String>()
+        val gone = CopyOnWriteArrayList<String>()
         Scripted.script = { ctx ->
             ctx.events().on(GameFact.CreatureGone::class.java) { gone += "${it.creature().type()} ${it.why()}" }
             ctx.acts().spawn("chicken", "Bartok", Spawn.of(1).withLifetimeMinutes(1))
@@ -218,23 +242,24 @@ class BenchTest {
         val bench = bench()
         bench.player("Bartok", at(0.5))
         bench.start()
-        bench.run(1_200)
-        assertEquals(emptyList(), gone)
+        bench.run(1_201)
+        assertEquals(emptyList(), gone, "summoned at tick 1, gone at tick 1201, heard the tick after")
         bench.run(1)
         assertEquals(listOf("chicken vanished"), gone)
         assertEquals(emptyList(), bench.creatures())
     }
 
     @Test
-    fun `a module claims the scenario's creatures near a player only, and a claimed one goes back where it was`() {
+    fun `a module claims the scenario's creatures near a player only, never a boss, and a claimed one goes back where it was`() {
         val bench = bench()
         bench.player("Bartok", at(0.5))
         val near = bench.creature("zombie", at(10.5))
         val far = bench.creature("zombie", at(200.5))
-        bench.creature("minecraft:skeleton", at(20.5))
+        val warden = bench.creature("warden", at(20.5))
         bench.start()
         val ctx = Scripted.context!!
         assertNull(ctx.creatures().claim(far))
+        assertNull(ctx.creatures().claim(warden))
         assertNull(ctx.creatures().claim("no such creature"))
         val zombie = assertNotNull(ctx.creatures().claim(near))
         assertNull(ctx.creatures().claim(near), "its own already")
@@ -257,7 +282,7 @@ class BenchTest {
 
     @Test
     fun `acts are recorded, never done, answer ok at the next tick, but for the refusal a scenario imposed`() {
-        val outcomes = mutableListOf<String>()
+        val outcomes = CopyOnWriteArrayList<String>()
         var secondThen: Throwable? = null
         Scripted.script = { ctx ->
             ctx.acts().say("Ça commence.").then { outcomes += "say ${it.status()}" }
@@ -270,18 +295,18 @@ class BenchTest {
         bench.player("Bartok", at(0.5))
         bench.refuseNext("punish", "DENIED (already_punished): Bartok was punished by an earlier act")
         bench.start()
+        assertEquals(emptyList(), outcomes, "the acts go after the call, their callbacks at the next tick")
+        assertIs<ForgeRefusal>(secondThen)
+        bench.run(1)
         assertEquals(listOf("say: Ça commence.", "punish Bartok tiny 2 → denied", "teleport Bartok to 100 64 100"), bench.acts())
         assertEquals(at(0.5), bench.world.player("Bartok")!!.at, "a teleport is not done")
-        assertEquals(emptyList(), outcomes, "the callbacks come at the next tick")
-        assertTrue(secondThen is ForgeRefusal)
-        bench.run(1)
         assertEquals(listOf("say ok", "punish denied: DENIED (already_punished): Bartok was punished by an earlier act"), outcomes)
         assertFailsWith<ForgeRefusal> { bench.refuseNext("smite", "DENIED (protected): no") }
         assertFailsWith<ForgeRefusal> { bench.refuseNext("punish", " ") }
     }
 
     @Test
-    fun `the module's own limits deny acts beyond 4 a call, 30 a minute, 4 lines a minute and an action bar a second, and a player offline is invalid`() {
+    fun `the SDK's own limits deny acts beyond 4 a call, 30 a minute and 4 lines a minute, the hud tool one line a second, and a player offline is invalid`() {
         val place = Place("overworld", 0.5, 66.0, 0.5)
         Scripted.script = { ctx ->
             repeat(5) { ctx.acts().particles(place, "heart", 3) }
@@ -295,20 +320,18 @@ class BenchTest {
         val bench = bench()
         bench.player("Bartok", at(0.5))
         bench.start()
-        assertEquals(List(4) { "particles heart x3 at 0.5 66 0.5" } + "particles heart x3 at 0.5 66 0.5 → denied", bench.acts())
         bench.run(5)
-        val acts = bench.acts().drop(5)
+        assertEquals(List(4) { "particles heart x3 at 0.5 66 0.5" } + "particles heart x3 at 0.5 66 0.5 → denied", bench.acts().take(5))
         assertEquals(
             listOf(
                 "say: Encore.", "hud Bartok: 10 s", "hud everyone: 9 s → denied", "say to Zed: Où es-tu ? → invalid",
                 "say: Encore.", "say: Encore.", "say: Encore. → denied", "say: Encore. → denied",
             ),
-            acts,
+            bench.acts().drop(5),
             "four lines a minute (the one to a player offline counts: the tool answered it), one action bar a second",
         )
         bench.run(1_200)
         assertEquals(List(4) { "say: Encore." } + "say: Encore. → denied", bench.acts().takeLast(5), "a minute later, four lines again")
-        assertTrue(bench.acts().count { it.endsWith("→ denied") } > 25)
     }
 
     @Test
@@ -316,9 +339,8 @@ class BenchTest {
         Scripted.script = { ctx -> ctx.timers().every(1) { ctx.acts().lightning(at(0.5)) } }
         val bench = bench()
         bench.start()
-        bench.run(31)
-        assertEquals(List(30) { "lightning at 0.5 64 0.5" } + "lightning at 0.5 64 0.5 → denied", bench.acts())
-        assertEquals(1, bench.deployment!!.actsOverLimits)
+        bench.run(32)
+        assertEquals(List(30) { "lightning at 0.5 64 0.5" } + List(2) { "lightning at 0.5 64 0.5 → denied" }, bench.acts())
     }
 
     @Test
@@ -327,20 +349,22 @@ class BenchTest {
         Scripted.script = { ctx ->
             game = ctx.game()
             ctx.timers().after(1) { ctx.game()!!.win(listOf("Zed"), "Zed ?") }
-            ctx.timers().after(2) { ctx.game()!!.win(listOf("Mimosa"), "Mimosa a gagné") }
-            ctx.timers().after(3) { ctx.game()!!.lose("trop tard") }
+            ctx.timers().after(2) { ctx.game()!!.win(listOf("Mimosa"), "Mimosa a gagné").then { ctx.end("Mimosa a gagné") } }
+            ctx.timers().after(4) { ctx.game()!!.lose("trop tard") }
         }
         val bench = bench()
         bench.player("Bartok", at(0.5))
         bench.player("Mimosa", at(4.5))
         bench.challenge("Bartok", "Mimosa")
         bench.start()
-        assertEquals("C-2", game!!.id())
-        assertEquals(listOf("Bartok", "Mimosa"), game!!.players())
-        assertTrue(game!!.running())
-        bench.run(3)
-        assertEquals(listOf("game won: Zed → invalid", "game won: Mimosa", "game lost → invalid"), bench.acts())
-        assertFalse(game!!.running())
+        val refereed = assertNotNull(game)
+        assertEquals("C-2", refereed.id())
+        assertEquals(listOf("Bartok", "Mimosa"), refereed.players())
+        assertTrue(refereed.running())
+        bench.run(5)
+        assertEquals(listOf("game won: Zed → invalid", "game won: Mimosa"), bench.acts())
+        assertEquals("Mimosa a gagné", bench.ended(), "won, then ended from the win's callback")
+        assertFailsWith<ForgeRefusal> { refereed.running() }
         assertFailsWith<ForgeRefusal> { bench.challenge("Bartok") }
 
         val alone = bench()
@@ -351,7 +375,7 @@ class BenchTest {
     // ── Ends, restarts, notes ──────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `ctx end stops the module after its call, its last acts are done, those of stop dropped, and its creatures are taken back`() {
+    fun `ctx end stops the module after its call, and the acts of that call and of stop are dropped, as in the game`() {
         Scripted.script = { ctx ->
             ctx.acts().spawn("chicken", "Bartok", Spawn.of(2))
             ctx.creatures().claim(ctx.world().creatures(at(0.5), 48.0, "zombie").first().uuid())
@@ -371,7 +395,7 @@ class BenchTest {
         bench.run(5)
         assertEquals("Mimosa a gagné", bench.ended())
         assertEquals(listOf(StopReason.ENDED), Scripted.stops)
-        assertEquals(listOf("spawn chicken x2 near Bartok", "say: C'est fini.", "say: Adieu. → dropped"), bench.acts())
+        assertEquals(listOf("spawn chicken x2 near Bartok", "say: C'est fini. → dropped", "say: Adieu. → dropped"), bench.acts())
         assertEquals(emptyList(), bench.creatures())
         assertEquals(setOf(zombie), bench.world.creatures.keys, "the summoned vanished, the claimed one stays, wild again")
         assertEquals(at(12.5), bench.world.creatures.getValue(zombie).at)
@@ -395,7 +419,7 @@ class BenchTest {
     @Test
     fun `a restart stops the module for the server, then a new instance starts again with its storage and creatures, not its timers`() {
         var ticks = 0
-        val restarted = mutableListOf<Boolean>()
+        val restarted = CopyOnWriteArrayList<Boolean>()
         Scripted.script = { ctx ->
             ctx.storage().putInt("starts", ctx.storage().getInt("starts", 0) + 1)
             restarted += ctx.restarted()
@@ -407,6 +431,7 @@ class BenchTest {
         bench.start()
         bench.run(5)
         val before = Scripted.context!!
+        val storage = before.storage()
         bench.restart()
         assertEquals(listOf(StopReason.SERVER_STOPPING), Scripted.stops)
         assertEquals(listOf(false, true), restarted)
@@ -417,6 +442,7 @@ class BenchTest {
         bench.run(5)
         assertEquals(10, ticks, "the timer of the first instance is gone")
         assertFailsWith<ForgeRefusal> { before.storage() }
+        assertFailsWith<ForgeRefusal> { storage.get("starts") }
         assertNull(bench.ended())
     }
 
@@ -438,7 +464,7 @@ class BenchTest {
     }
 
     @Test
-    fun `the storage keeps its keys in order within its limits`() {
+    fun `the storage is the game's, within its limits`() {
         val bench = bench()
         bench.start()
         val storage = Scripted.context!!.storage()
@@ -458,8 +484,7 @@ class BenchTest {
         assertFailsWith<ForgeRefusal> { storage.put("one too many", "v") }
         storage.remove("key0")
         val refusal = assertFailsWith<ForgeRefusal> { repeat(20) { storage.put("key${it + 1}", "v".repeat(512)) } }
-        assertContains(refusal.message!!, "the storage holds 8192 characters at most")
-        assertTrue(storage.keys().sumOf { it.length + storage.get(it)!!.length } <= 8_192)
+        assertContains(refusal.message!!, "8192 characters at most")
     }
 
     @Test
@@ -491,7 +516,7 @@ class BenchTest {
         assertFalse(args.bool("loud"))
         assertEquals(at(6.5), args.place("spot"))
         assertNull(args.player("rival"))
-        assertEquals("params.player is player: read it with player()", assertFailsWith<ForgeRefusal> { args.integer("player") }.message)
+        assertContains(assertFailsWith<ForgeRefusal> { args.integer("player") }.message!!, "read it with args().player(\"player\")")
         assertFailsWith<ForgeRefusal> { args.text("nope") }
 
         val given = listOf("player=Bartok", "players=Bartok,Mimosa", "speed=1", "spot=1 2 3 the_nether")
@@ -501,48 +526,55 @@ class BenchTest {
         assertEquals("params.chickens must be between 3 and 8 (got 12)", refused(*(given + "chickens=12").toTypedArray()))
         assertContains(refused("player=Bartok", "players=Bartok,Mimosa", "spot=Bartok"), "params.speed is required")
         assertContains(refused(*(given.drop(1) + "player=Zed").toTypedArray()), "Zed is not a player of the bench")
-        assertContains(refused(*(given.drop(2) + listOf("player=Bartok", "players=Bartok")).toTypedArray()), "params.players needs 2 to 3 players (got 1)")
-        assertContains(refused(*(given + "mood=gai").toTypedArray()), "params.mood must be one of taquin, sévère")
-        assertContains(refused(*(given.dropLast(1) + "spot=1 2").toTypedArray()), "params.spot must be a place")
-        assertContains(refused(*(given + "nope=1").toTypedArray()), "params.nope is not a parameter of the module")
+        assertContains(refused(*(given.drop(2) + listOf("player=Bartok", "players=Bartok")).toTypedArray()), "params.players must name between 2 and 3 players (got 1)")
+        assertContains(refused(*(given + "mood=gai").toTypedArray()), "params.mood must be one of")
+        assertContains(refused(*(given.dropLast(1) + "spot=1 2").toTypedArray()), "params.spot must be")
+        assertContains(refused(*(given + "nope=1").toTypedArray()), "params.nope is not a parameter of this module")
         assertContains(refused(*(given + "player").toTypedArray()), "is not name=value")
         assertContains(refused(*(given + "player=Mimosa").toTypedArray()), "params.player is given twice")
     }
 
     @Test
     fun `the SDK refuses subscriptions and timers past its own limits`() {
-        val refusals = mutableListOf<String?>()
+        val refusals = CopyOnWriteArrayList<String>()
+        fun refused(attempt: () -> Unit) {
+            refusals += runCatching(attempt).exceptionOrNull().let { assertIs<ForgeRefusal>(it) }.message!!
+        }
         Scripted.script = { ctx ->
             repeat(16) { ctx.events().on(GameFact.Chat::class.java) { } }
-            refusals += runCatching { ctx.events().on(GameFact.Chat::class.java) { } }.exceptionOrNull()?.message
-            refusals += runCatching { ctx.events().on(GameFact::class.java) { } }.exceptionOrNull()?.message
+            refused { ctx.events().on(GameFact.Chat::class.java) { } }
+            refused { ctx.events().on(GameFact::class.java) { } }
             repeat(16) { ctx.timers().every(100) { } }
-            refusals += runCatching { ctx.timers().every(100) { } }.exceptionOrNull()?.message
+            refused { ctx.timers().every(100) { } }
             repeat(48) { ctx.timers().after(100) { } }
-            refusals += runCatching { ctx.timers().after(100) { } }.exceptionOrNull()?.message
-            refusals += runCatching { ctx.timers().after(0) { } }.exceptionOrNull()?.message
-            refusals += runCatching { ctx.timers().after(72_001) { } }.exceptionOrNull()?.message
+            refused { ctx.timers().after(100) { } }
+            refused { ctx.timers().after(0) { } }
+            refused { ctx.timers().after(72_001) { } }
         }
         val bench = bench()
         bench.start()
-        assertEquals<List<String?>>(
-            listOf(
-                "16 subscriptions are active already, the most: cancel one first",
-                "subscribe to one of GameFact's records (GameFact.Chat.class…), not GameFact",
-                "16 repeating timers are active already, the most: cancel one first",
-                "64 timers are waiting already, the most: cancel one first",
-                "a timer's delay is 1 to 72000 ticks (asked 0)",
-                "a timer's delay is 1 to 72000 ticks (asked 72001)",
-            ),
-            refusals,
-        )
+        assertNull(bench.failure, "${bench.failure}")
+        listOf("16 subscriptions", "GameFact's records", "16 timers repeat", "64 timers wait", "got 0", "got 72001").forEachIndexed { i, said ->
+            assertContains(refusals[i], said)
+        }
     }
 
     @Test
     fun `the bench never calls a module's object outside its calls`() = runBlocking<Unit> {
         val report = BenchRun(KotlinHost(Touchy::class.java), emptyList(), listOf("touchy"), { _, _ -> null }).run()
-        assertTrue(report.ok, report.text)
+        assertTrue(report.ok, report.text(null))
         assertTrue(Touchy.ran > 10, "its timer, handler and callbacks ran")
+    }
+
+    @Test
+    fun `a call the host abandoned fails the bench, and its thread is refused by the SDK from then on`() = runBlocking<Unit> {
+        val report = BenchRun(KotlinHost(Stuck::class.java) { TimeUnit.MILLISECONDS.toNanos(200) }, emptyList(), emptyList(), { _, _ -> null }).run()
+        val problem = report.problems.single()
+        assertEquals("smoke, timer 1 at tick 1", problem.where)
+        assertContains(problem.message, "abandoned")
+        Stuck.gate.countDown()
+        assertTrue(Stuck.done.await(5, TimeUnit.SECONDS))
+        assertIs<ForgeRefusal>(Stuck.late, "the abandoned call, going on, asks an act: refused")
     }
 
     // ── The smoke run ──────────────────────────────────────────────────────────────────────────────
@@ -552,7 +584,7 @@ class BenchTest {
         Quiet.heard.clear()
         Quiet.stops.clear()
         val report = BenchRun(KotlinHost(Quiet::class.java), Quiet.SPECS, listOf("speaks"), { _, _ -> null }).run()
-        assertTrue(report.ok, report.text)
+        assertTrue(report.ok, report.text(null))
         assertEquals(listOf("speaks"), report.scenariosPassed)
         assertTrue(report.summary.startsWith("smoke: start ok, 16 facts, 1,200 ticks, acts say ×1 (checked), slowest call "), report.summary)
         assertTrue(report.summary.endsWith(" MiB; scenarios 1/1"), report.summary)
@@ -598,32 +630,36 @@ class BenchTest {
     fun `a fault in the smoke run fails it, with the call, the tick and the module's line`() = runBlocking<Unit> {
         val report = BenchRun(KotlinHost(Faulty::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
         assertFalse(report.ok)
-        assertEquals(1, report.problems.size, report.text)
         val problem = report.problems.single()
-        assertTrue(problem.startsWith("fault in smoke, a timer at tick 20: IllegalStateException: le loup s'est perdu at BenchTest.kt:"), problem)
+        assertEquals(Diagnostic.Kind.FAULT, problem.kind)
+        assertEquals("smoke, timer 1 at tick 20", problem.where)
+        assertTrue(problem.message.startsWith("IllegalStateException: le loup s'est perdu at BenchTest.kt:"), problem.message)
+        assertTrue(problem.line > 0)
         assertTrue(report.summary.startsWith("smoke: failed at tick 20, 0 facts, 20 ticks"), report.summary)
         assertTrue(report.summary.endsWith("; no scenarios"), report.summary)
+        assertTrue(report.text(null).startsWith(report.summary + "\n[1] fault smoke, timer 1 at tick 20: IllegalStateException: le loup s'est perdu"), report.text(null))
     }
 
     @Test
     fun `a call over 20 ms fails the smoke run`() = runBlocking<Unit> {
         val report = BenchRun(KotlinHost(Slow::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
         val problem = report.problems.single()
-        assertTrue(problem.startsWith("slow in smoke, a timer at tick 5: "), problem)
-        assertContains(problem, "the most is 20 ms a call")
+        assertEquals("smoke, timer 1 at tick 5", problem.where)
+        assertTrue(problem.message.startsWith("took "), problem.message)
+        assertContains(problem.message, "the most is 20 ms a call")
     }
 
     @Test
     fun `the smoke run fails a module that retains more than 4 MiB, or whose memory still grows`() = runBlocking<Unit> {
         val fat = BenchRun(KotlinHost(Fat::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
-        assertEquals(1, fat.problems.size, fat.text)
-        assertTrue(fat.problems.single().startsWith("memory in smoke: it retains 5.15 MiB after a minute, the most is 4 MiB"), fat.text)
+        assertEquals(1, fat.problems.size, fat.text(null))
+        assertTrue(fat.problems.single().message.startsWith("it retains 5.15 MiB after a minute, the most is 4 MiB"), fat.text(null))
 
         val hoarder = BenchRun(KotlinHost(Hoarder::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
-        assertEquals(2, hoarder.problems.size, hoarder.text)
-        assertTrue(hoarder.problems[0].startsWith("memory in smoke: it retains 11."), hoarder.text)
-        assertTrue(hoarder.problems[1].startsWith("memory in smoke: what it retains grew by 5.7"), hoarder.text)
-        assertContains(hoarder.problems[1], "over the second half of the minute, the most is 1 MiB")
+        assertEquals(2, hoarder.problems.size, hoarder.text(null))
+        assertTrue(hoarder.problems[0].message.startsWith("it retains 11."), hoarder.text(null))
+        assertTrue(hoarder.problems[1].message.startsWith("what it retains grew by 5.7"), hoarder.text(null))
+        assertContains(hoarder.problems[1].message, "over the second half of the minute, the most is 1 MiB")
     }
 
     // ── Dry checks by the real tools ───────────────────────────────────────────────────────────────
@@ -631,32 +667,56 @@ class BenchTest {
     @Test
     fun `every act the SDK asks is one the real tools' dry checks read and pass`() = runBlocking<Unit> {
         val actions = actions()
-        val checked = mutableListOf<String>()
+        val checked = CopyOnWriteArrayList<String>()
         val report = BenchRun(KotlinHost(EveryAct::class.java), emptyList(), emptyList(), { tool, args ->
             checked += tool
             actions.check(tool, args, MechanicsSamples.director)
         }).run()
-        assertTrue(report.ok, report.text)
+        assertTrue(report.ok, report.text(null))
         assertContains(report.summary, "(checked)")
         assertEquals(
             setOf(
-                "say", "show_title", "play_sound", "particles", "fireworks", "lightning", "explosion", "apply_effect", "set_attribute", "launch", "teleport",
-                "spawn", "punish", "mob_effect", "mob_attribute",
+                "say", "show_title", "hud", "play_sound", "particles", "fireworks", "lightning", "explosion", "apply_effect", "set_attribute",
+                "launch", "teleport", "spawn", "punish", "place_blocks", "creature_attack", "mob_effect", "mob_attribute",
             ),
             checked.toSet(),
         )
-        assertEquals(18, checked.size, "each tool and arguments once: two of say, lightning and teleport; the last batch asks nothing new")
+        assertEquals(21, checked.size, "each tool and arguments once: two of say, lightning and teleport; the last batch asks nothing new")
     }
 
     @Test
-    fun `an act the real tools refuse dry is a problem that says why`() = runBlocking<Unit> {
+    fun `an act the real tools refuse dry, or the SDK refuses for good, is a problem that says why and where`() = runBlocking<Unit> {
         val actions = actions()
         val report = BenchRun(KotlinHost(Harsh::class.java), emptyList(), emptyList(), { tool, args -> actions.check(tool, args, MechanicsSamples.director) }).run()
         assertFalse(report.ok)
-        val problem = report.problems.single()
-        assertTrue(problem.startsWith("act \"punish Bartok tiny 5\": Invalid arguments: at chaos 3 "), problem)
-        assertContains(problem, "(asked 5)")
-        assertContains(report.summary, "(1 refused by the dry checks)")
+        val (severity, wither) = report.problems
+        assertEquals(Diagnostic.Kind.REFUSED, severity.kind)
+        assertEquals("act \"punish Bartok tiny 5\"", severity.where)
+        assertTrue(severity.message.startsWith("Invalid arguments: at chaos 3 "), severity.message)
+        assertContains(severity.message, "(asked 5)")
+        assertTrue(severity.line > 0, "the module's line that asked it")
+        assertEquals("act \"effect Bartok wither 30s level 1\"", wither.where)
+        assertTrue(wither.message.startsWith("DENIED (forbidden_effect): "), wither.message)
+        assertContains(report.summary, "(2 refused by the dry checks)")
+    }
+
+    @Test
+    fun `the bench asks each act as the game's SDK does`() = runBlocking<Unit> {
+        val runner = Recorder()
+        val ref = Ref(RefKind.CANON, 70)
+        val queue = ActQueue(ref, runner, CoroutineScope(Dispatchers.Unconfined), TestClock(), ModuleCall { _, body -> body() }, Executor { it.run() })
+        val creatures = CreatureControl(TestServices(), ref.id, queue)
+        val game = ModuleActs(queue, creatures) { "overworld" }
+        Translated.BATCHES.forEach { batch -> queue.invocation("batch") { batch(game, GroundView(queue)) } }
+
+        val bench = CopyOnWriteArrayList<Pair<String, JsonObject>>()
+        val report = BenchRun(KotlinHost(Translated::class.java), emptyList(), emptyList(), { tool, args ->
+            bench += tool to args
+            null
+        }).run()
+        assertEquals(listOf("act \"effect Bartok wither 30s level 1\""), report.problems.map { it.where }, "refused by the SDK itself: sent by neither")
+        assertEquals(runner.ran.toSet(), bench.toSet())
+        assertEquals(22, bench.size)
     }
 
     // ── Scenarios, the report ──────────────────────────────────────────────────────────────────────
@@ -666,12 +726,16 @@ class BenchTest {
         val report = BenchRun(KotlinHost(Sentinel::class.java), emptyList(), Sentinel.SCENARIOS + "ghost", { _, _ -> null }).run()
         assertEquals(listOf("seesTheSneaker", "aNewBench"), report.scenariosPassed)
         assertFalse(report.ok)
-        val problems = report.problems
-        assertEquals(5, problems.size, report.text)
-        assertTrue(problems[0].matches(Regex("""scenario checksWrongly failed: check "nobody hides" at BenchTest\.kt:\d+""")), problems[0])
-        assertTrue(problems[1].matches(Regex("""scenario throws failed: IllegalStateException: le scénario a trébuché at BenchTest\.kt:\d+""")), problems[1])
-        assertTrue(problems[2].startsWith("scenario startsTwice failed: ForgeRefusal: the module is started already"), problems[2])
-        assertTrue(problems[3].matches(Regex("""fault in scenario timerThrows, a timer at tick 20: ArithmeticException: / by zero at BenchTest\.kt:\d+""")), problems[3])
+        val problems = report.problems.map { "${it.where}: ${it.message}" }
+        assertEquals(5, problems.size, report.text(null))
+        assertEquals("scenario checksWrongly: check failed: nobody hides", problems[0])
+        assertTrue(report.problems[0].line > 0)
+        assertTrue(problems[1].matches(Regex("""scenario throws: IllegalStateException: le scénario a trébuché at BenchTest\.kt:\d+""")), problems[1])
+        assertTrue(problems[2].startsWith("scenario startsTwice: ForgeRefusal: the module is started already"), problems[2])
+        assertTrue(
+            problems[3].matches(Regex("""scenario timerThrows, timer 1 \(every 20 ticks\) at tick 20: ArithmeticException: / by zero at BenchTest\.kt:\d+""")),
+            problems[3],
+        )
         assertEquals("scenario ghost: Scenarios has no method public void ghost(Bench b)", problems[4])
         assertTrue(report.summary.endsWith("; scenarios 2/7"), report.summary)
     }
@@ -681,12 +745,10 @@ class BenchTest {
         val refusal = ToolResult.invalid("x".repeat(1_000))
         val report = BenchRun(KotlinHost(Verbose::class.java), emptyList(), Verbose.SCENARIOS, { _, _ -> refusal }).run()
         assertTrue(report.problems.size > 100, "${report.problems.size}")
-        val text = report.text
+        val text = report.text(null)
         assertTrue(text.length <= BenchReport.MAX_CHARS, "${text.length}")
-        val lines = text.lines()
-        assertEquals(1 + BenchReport.SHOWN_PROBLEMS + 1, lines.size)
-        assertTrue(lines.all { it.length <= BenchReport.SUMMARY_CHARS }, text)
-        assertTrue(lines.last().startsWith("… and ") && lines.last().endsWith(" more problems"), lines.last())
+        assertTrue(text.lines().first().length <= BenchReport.SUMMARY_CHARS)
+        assertContains(text, "more not shown")
         assertTrue(text.none { it == '<' || it == '>' }, "the module's texts are escaped")
     }
 
@@ -694,9 +756,10 @@ class BenchTest {
     fun `the bench stops at the end of its time, and the scenarios left are not run`() = runBlocking<Unit> {
         val report = BenchRun(KotlinHost(Endless::class.java), emptyList(), listOf("forever", "never"), { _, _ -> null }, budgetMs = 1_000).run()
         assertFalse(report.ok)
-        assertEquals(2, report.problems.size, report.text)
-        assertTrue(report.problems[0].startsWith("the bench ran out of its 1 s in scenario forever at tick "), report.problems[0])
-        assertEquals("scenario never was not run: the bench ran out of time", report.problems[1])
+        val problems = report.problems.map { "${it.where}: ${it.message}" }
+        assertEquals(2, problems.size, report.text(null))
+        assertTrue(problems[0].matches(Regex("""scenario forever at tick \d+: the bench ran out of its 1 s: .*""")), problems[0])
+        assertEquals("scenario never: not run: the bench ran out of time", problems[1])
     }
 
     @Test
@@ -713,7 +776,7 @@ class BenchTest {
         val host = KotlinHost(loader.loadClass(ForgeSamples.CLASS))
         val manifest = ForgeSamples.manifest
         val report = BenchRun(host, manifest.params, manifest.scenarios, { _, _ -> null }).run()
-        assertTrue(report.ok, report.text)
+        assertTrue(report.ok, report.text(null))
         assertEquals(manifest.scenarios, report.scenariosPassed)
         assertTrue(report.summary.startsWith("smoke: start ok, 2 facts, 1,200 ticks, acts say ×1 (checked)"), report.summary)
     }
@@ -721,7 +784,7 @@ class BenchTest {
     // ── Helpers ────────────────────────────────────────────────────────────────────────────────────
 
     private fun bench(type: Class<*> = Scripted::class.java, specs: List<ParamSpec> = emptyList()): BenchImpl =
-        BenchImpl(KotlinHost(type), specs, System.nanoTime() + BUDGET_MS * 1_000_000, BUDGET_MS, "scenario test", BenchImpl.SCENARIO_MINUTES)
+        BenchImpl(KotlinHost(type), specs, System.nanoTime() + BUDGET_MS * 1_000_000, BUDGET_MS, "scenario test", BenchImpl.SCENARIO_MINUTES) { false }
 
     private fun spec(
         name: String,
@@ -733,10 +796,25 @@ class BenchTest {
         choices: List<String> = emptyList(),
     ) = ParamSpec(name, type, "The $name.", required, fallback, min, max, choices)
 
-    /** The engine's acts through the real tools of the rules and the stakes, on services without a server, chaos 3. */
+    /** The engine's acts through the real tools of the rules, the stakes and the modules, on services without a server, chaos 3. */
     private fun actions(): EngineActions {
         val services = TestServices()
-        return EngineActions(services, speechTools(services) + playerActionTools(services) + worldActionTools(services) + punishTools(services) + ruleOnlyTools())
+        return EngineActions(
+            services,
+            speechTools(services) + playerActionTools(services) + worldActionTools(services) + punishTools(services) + ruleOnlyTools() + moduleOnlyTools(),
+        )
+    }
+
+    /** The game's acts as they reach the Narrator's tools. */
+    private class Recorder : ActRunner {
+        val ran = CopyOnWriteArrayList<Pair<String, JsonObject>>()
+
+        override fun open(ref: Ref, subject: String?, reason: String): Firing = Firing(1, ref, Caller(Role.DIRECTOR, "mechanics:$ref", null, null, 1))
+
+        override suspend fun run(firing: Firing, tool: String, args: JsonObject): ToolResult {
+            ran += tool to args
+            return ToolResult.ok("ok")
+        }
     }
 
     /** Defines the classes ECJ compiled for the tests (not rewritten), the SDK from the tests' own loader. */
@@ -766,10 +844,17 @@ class BenchTest {
         }
 
         companion object {
+            @Volatile
             var script: (ModuleContext) -> Unit = {}
+
+            @Volatile
             var onStop: (ModuleContext) -> Unit = {}
-            val stops = mutableListOf<StopReason>()
+            val stops = CopyOnWriteArrayList<StopReason>()
+
+            @Volatile
             var context: ModuleContext? = null
+
+            @Volatile
             var made = 0
 
             fun reset() {
@@ -813,8 +898,10 @@ class BenchTest {
         }
 
         companion object {
-            val heard = mutableListOf<String>()
-            val stops = mutableListOf<StopReason>()
+            val heard = CopyOnWriteArrayList<String>()
+            val stops = CopyOnWriteArrayList<StopReason>()
+
+            @Volatile
             var read = emptyList<String>()
             val SPECS = listOf(
                 ParamSpec("player", ParamType.PLAYER, "Who.", true, null, null, null, emptyList()),
@@ -845,6 +932,25 @@ class BenchTest {
                 var spin = 0L
                 while (threads.currentThreadCpuTime < until) spin++
             }
+        }
+    }
+
+    /** A module whose timer waits for the test, far past its budget, then asks an act. */
+    class Stuck : ForgeModule {
+        override fun start(ctx: ModuleContext) {
+            ctx.timers().after(1) {
+                gate.await()
+                late = runCatching { ctx.acts().say("Trop tard.") }.exceptionOrNull()
+                done.countDown()
+            }
+        }
+
+        companion object {
+            val gate = CountDownLatch(1)
+            val done = CountDownLatch(1)
+
+            @Volatile
+            var late: Throwable? = null
         }
     }
 
@@ -915,10 +1021,61 @@ class BenchTest {
         }
     }
 
-    /** A punishment too severe for chaos 3. */
+    /** A punishment too severe for chaos 3, and an effect a module never gives. */
     class Harsh : ForgeModule {
         override fun start(ctx: ModuleContext) {
             ctx.acts().punish("Bartok", "tiny", 5, "a bougé")
+            ctx.acts().effect("Bartok", "wither", 30, 1)
+        }
+    }
+
+    /** The same acts as [BATCHES] give, one batch a tick: the bench's translation, against the game's. */
+    class Translated : ForgeModule {
+        override fun start(ctx: ModuleContext) {
+            BATCHES.forEachIndexed { i, batch -> ctx.timers().after(i + 1) { batch(ctx.acts(), ctx.ground()) } }
+        }
+
+        companion object {
+            private val place = Place("overworld", 3.5, 65.0, -3.5)
+
+            /** Every act's form, four a call; the effect that is refused is never sent, by either. */
+            val BATCHES: List<(Acts, Ground) -> Unit> = listOf(
+                { acts, _ ->
+                    acts.say("Bonjour.")
+                    acts.sayTo("Mimosa", "Psst.")
+                    acts.title("Bartok", "Attention", "le sol brûle")
+                    acts.title(null, "Tous", null)
+                },
+                { acts, _ ->
+                    acts.hud("Bartok", "10 s")
+                    acts.hud(null, "9 s")
+                    acts.sound("Bartok", "entity.chicken.egg")
+                    acts.sound(null, "block.bell.use")
+                },
+                { acts, _ ->
+                    acts.particles(place, "heart", 10)
+                    acts.fireworks(place, 3)
+                    acts.lightning(Place("the_nether", 0.5, 70.0, 0.5))
+                    acts.smite("Bartok", 2)
+                },
+                { acts, _ ->
+                    acts.explosion(place, 1.5, true)
+                    acts.effect("Bartok", "speed", 30, 2)
+                    acts.effect("Bartok", "minecraft:wither", 30, 1)
+                    acts.attribute("Bartok", "gravity", 0.5, 60)
+                },
+                { acts, _ ->
+                    acts.launch("Bartok", "forward", 1.5)
+                    acts.teleport("Bartok", Place("overworld", -10.5, 70.0, 10.5))
+                    acts.teleportRandom("Bartok", 40)
+                    acts.punish("Bartok", "moon_gravity", 2, "a ri")
+                },
+                { acts, ground ->
+                    acts.spawn("zombie", "Bartok", Spawn.of(2).withName("Gaston").withHeight(3).withTarget(true).withBaby(true))
+                    acts.spawn("chicken", "Mimosa", null)
+                    ground.place(listOf(Cell("overworld", 3, 70, 3), Cell("overworld", 4, 70, 3)), "red_stained_glass", 10)
+                },
+            )
         }
     }
 
@@ -1069,6 +1226,7 @@ class BenchTest {
         }
 
         companion object {
+            @Volatile
             var ran = 0
         }
     }

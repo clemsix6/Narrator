@@ -113,6 +113,7 @@ internal class SimWorld {
 
         const val AIR = "air"
         const val STONE = "stone"
+        const val OVERWORLD = "overworld"
         private val AIRS = setOf(AIR, "cave_air", "void_air")
         private val LIQUIDS = setOf("water", "lava")
         private val NOT_SOLID = setOf("cobweb", "short_grass", "tall_grass", "fern", "snow", "torch", "vine")

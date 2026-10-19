@@ -7,6 +7,9 @@ import io.github.clemsix6.narrator2.forge.api.GameFact
 import io.github.clemsix6.narrator2.forge.api.ParamType
 import io.github.clemsix6.narrator2.forge.api.Place
 import io.github.clemsix6.narrator2.forge.api.Who
+import io.github.clemsix6.narrator2.forge.compile.Diagnostic
+import io.github.clemsix6.narrator2.forge.compile.Diagnostics
+import io.github.clemsix6.narrator2.forge.sdk.Facts
 import io.github.clemsix6.narrator2.tool.ToolText
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -20,10 +23,10 @@ import kotlin.math.floor
  * `ForgeLimits.BENCH_RETAINED_BYTES`) or that still grew over its second half (more than
  * `ForgeLimits.BENCH_RETAINED_GROWTH_BYTES`), as [BenchHost.retained] estimates it.
  */
-internal class SmokeRun(private val host: BenchHost, private val specs: List<ParamSpec>, private val deadline: Long, private val budgetMs: Long) {
+internal class SmokeRun(private val host: BenchHost, private val specs: List<ParamSpec>, private val deadline: Long, private val budgetMs: Long, private val cancel: () -> Boolean) {
     fun run(): SmokeResult {
-        val bench = BenchImpl(host, specs, deadline, budgetMs, PHASE, ForgeLimits.DEPLOY_MIN_MINUTES)
-        var refused: String? = null
+        val bench = BenchImpl(host, specs, deadline, budgetMs, PHASE, ForgeLimits.DEPLOY_MIN_MINUTES, cancel)
+        var refused: Diagnostic? = null
         var half: Long? = null
         var end: Long? = null
         try {
@@ -31,7 +34,7 @@ internal class SmokeRun(private val host: BenchHost, private val specs: List<Par
             val zombie = bench.creature(ZOMBIE, ZOMBIE_AT)
             bench.start(*examples(specs).toTypedArray())
             val deployment = bench.deployment
-            deployment?.subscribedTypes()?.forEach { type -> sample(type, bench, zombie)?.let { bench.fact(it) } }
+            if (deployment != null) Facts.TYPES.filter { deployment.events.wants(it) }.forEach { type -> sample(type, bench, zombie)?.let { bench.fact(it) } }
             bench.run(HALF)
             half = bench.retained()
             bench.run(ForgeLimits.SMOKE_TICKS - HALF)
@@ -40,24 +43,29 @@ internal class SmokeRun(private val host: BenchHost, private val specs: List<Par
         } catch (stop: BenchStop) {
             // The failure is the bench's.
         } catch (refusal: ForgeRefusal) {
-            refused = "$PHASE: its example parameters were refused (${refusal.message}): check the @Param bounds and fallbacks"
+            refused = Diagnostics.fault(PHASE, "its example parameters were refused (${refusal.message}): check the bounds and fallbacks of its @Param")
         }
         return SmokeResult(bench, refused, memory(half, end), end)
     }
 
     /** The problems of the memory the module retains: [end] after the minute, grown from [half] over its second half. */
-    private fun memory(half: Long?, end: Long?): List<String> = buildList {
+    private fun memory(half: Long?, end: Long?): List<Diagnostic> = buildList {
         if (end == null) return@buildList
         if (end > ForgeLimits.BENCH_RETAINED_BYTES) {
             add(
-                "memory in $PHASE: it retains ${mib(end)} MiB after a minute, the most is ${mib(ForgeLimits.BENCH_RETAINED_BYTES)} MiB: " +
-                    "keep less, drop what is over",
+                Diagnostics.fault(
+                    PHASE,
+                    "it retains ${mib(end)} MiB after a minute, the most is ${mib(ForgeLimits.BENCH_RETAINED_BYTES)} MiB: keep less, drop what is over",
+                ),
             )
         }
         if (half != null && end - half > ForgeLimits.BENCH_RETAINED_GROWTH_BYTES) {
             add(
-                "memory in $PHASE: what it retains grew by ${mib(end - half)} MiB over the second half of the minute, the most is " +
-                    "${mib(ForgeLimits.BENCH_RETAINED_GROWTH_BYTES)} MiB: something piles up and is never dropped",
+                Diagnostics.fault(
+                    PHASE,
+                    "what it retains grew by ${mib(end - half)} MiB over the second half of the minute, the most is " +
+                        "${mib(ForgeLimits.BENCH_RETAINED_GROWTH_BYTES)} MiB: something piles up and is never dropped",
+                ),
             )
         }
     }
@@ -161,12 +169,12 @@ internal class SmokeRun(private val host: BenchHost, private val specs: List<Par
 /**
  * What the smoke run found.
  *
- * @property failure its first failure, as the forger reads it; null when it ran to the end.
+ * @property failure its first failure; null when it ran to the end.
  * @property memory the problems of the memory it retains.
  * @property retained what it retained after the minute; null when unknown (no gauge, or it did not run that long).
  */
-internal class SmokeResult(bench: BenchImpl, refused: String?, val memory: List<String>, val retained: Long?) {
-    val failure: String? = bench.failure ?: refused
+internal class SmokeResult(bench: BenchImpl, refused: Diagnostic?, val memory: List<Diagnostic>, val retained: Long?) {
+    val failure: Diagnostic? = bench.failure ?: refused
     val cancelled: Boolean = bench.cancelled
     val ticks: Int = bench.world.tick
     val slowestNanos: Long = bench.slowestNanos
@@ -174,9 +182,7 @@ internal class SmokeResult(bench: BenchImpl, refused: String?, val memory: List<
     private val deployment = bench.deployment
     val facts: Int = deployment?.factsDelivered ?: 0
     val acts: Map<String, Int> = deployment?.counts.orEmpty()
-    val actsOverLimits: Int = deployment?.actsOverLimits ?: 0
     val logsDropped: Int = deployment?.logsDropped ?: 0
-    val factsDropped: Int = deployment?.factsDropped ?: 0
     val dry: Collection<DryCall> = deployment?.dry?.values.orEmpty()
     val dryDropped: Int = deployment?.dryDropped ?: 0
 }
