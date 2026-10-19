@@ -25,14 +25,19 @@ import java.util.UUID
  *
  * - A **punishment** is a (turn, player) with at least one `guard allowed` decision: the guards' episode
  *   (T09a). Its calls are the successful world calls of that turn that targeted the player.
- * - A **benefit** is a successful `give_item` (a gift), or `apply_effect` or `set_attribute` (a blessing),
- *   on a player the turn did not punish. The calls of one turn are one benefit per player and kind.
+ * - A **benefit** is a successful `give_item` (a gift), or `apply_effect`, `set_attribute` or `favor` (a
+ *   blessing: a pardon, a grace or a joker, M4 §7.1), on a player the turn did not punish. The calls of one
+ *   turn are one benefit per player and kind. A favor that took an offering (M4 §7.2) is still a benefit:
+ *   the player's `offering` interaction is their side of the exchange, not the Narrator's.
  *
  * After each batch and nap, [cover] writes an interaction for each one of the window that no interaction
- * links yet (`interactions.tool_calls`): kind `punishment`, `blessing` or `gift`, valence 0, a summary
- * made of its first call, source [Source.ENGINE]. The Chronicler has the first hand, to note them with
- * their reason; the code guarantees the coverage. The exchange log marks their calls `(hostile)` and
- * `(benefit)` ([find]).
+ * links yet (`interactions.tool_calls`; an `offering` that links a favor's call does not count): kind
+ * `punishment`, `blessing` or `gift`, valence 0, a summary made of its first call, source [Source.ENGINE].
+ * The Chronicler has the first hand, to note them with their reason; the code guarantees the coverage. The
+ * exchange log marks their calls `(hostile)` and `(benefit)` ([find]).
+ *
+ * The engine's acts (a rule's firing, a challenge's stakes) are no `tool_calls`: the engine writes their
+ * interactions itself (M4 §5.3, §8.6), and none is found here.
  */
 internal class Sanctions(private val services: NarratorServices) {
     private val log = Log.memory
@@ -103,11 +108,14 @@ internal class Sanctions(private val services: NarratorServices) {
         return groups.map { (key, list) -> Sanction(key.first, refs.getValue(key.second), key.third, list.take(MAX_CALLS)) }
     }
 
-    /** The calls among [ids] that an interaction already links. */
+    /**
+     * The calls among [ids] that an interaction already links: one that notes the Narrator's act. An
+     * `offering` is the player's act, even when it links the favor that took it (M4 §7.2): that favor is
+     * still to cover.
+     */
     private fun linked(connection: Connection, ids: List<Long>): Set<Long> {
         if (ids.isEmpty()) return emptySet()
-        return connection.query("SELECT tool_calls FROM interactions WHERE list_has_any(tool_calls, ?)", longArray(ids)) { longs(1) }
-            .flatten().toSet()
+        return connection.query(LINKED_SQL, longArray(ids), InteractionKind.OFFERING.id) { longs(1) }.flatten().toSet()
     }
 
     /** The players named [names] (targets of tool calls), by lowercase name: their current name, else a former one. */
@@ -119,8 +127,11 @@ internal class Sanctions(private val services: NarratorServices) {
     private class CallTarget(val call: Call, val turnId: Long?, val target: String)
 
     companion object {
-        /** Tools whose success on a player, without a `guard allowed` in the turn, is a blessing. */
-        val BLESSING_TOOLS = setOf("apply_effect", "set_attribute")
+        /**
+         * Tools whose success on a player, without a `guard allowed` in the turn, is a blessing: an effect, an
+         * attribute, or a favor of the mechanics (a pardon, a grace, a joker; M4 §7.1).
+         */
+        val BLESSING_TOOLS = setOf("apply_effect", "set_attribute", "favor")
 
         /** The tool whose success on a player, without a `guard allowed` in the turn, is a gift. */
         const val GIVE_ITEM = "give_item"
@@ -134,6 +145,9 @@ internal class Sanctions(private val services: NarratorServices) {
         private const val CALLS_SQL = "SELECT id, ts, turn_id, tool, result, unnest(targets) AS target FROM tool_calls " +
             "WHERE conversation_id = ? AND role = 'director' AND status = 'ok' AND effect = 'world' AND ts > ? AND ts <= ? " +
             "ORDER BY ts, id"
+
+        /** The interactions that note the Narrator's act of some of the calls (`list_has_any`), but the players' offerings. */
+        private const val LINKED_SQL = "SELECT tool_calls FROM interactions WHERE list_has_any(tool_calls, ?) AND kind <> ?"
 
         /** The guards' episodes of a chapter: (turn, player name) of each hostile action allowed. */
         private const val ALLOWED_SQL = "SELECT turn_id, subject FROM engine_decisions " +

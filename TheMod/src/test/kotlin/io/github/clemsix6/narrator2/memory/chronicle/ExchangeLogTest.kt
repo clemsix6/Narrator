@@ -7,7 +7,14 @@ import io.github.clemsix6.narrator2.event.EntityKilled
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
+import io.github.clemsix6.narrator2.journal.IdKind
+import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonDraft
+import io.github.clemsix6.narrator2.memory.CanonKind
+import io.github.clemsix6.narrator2.memory.CanonMechanic
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerFixture.Companion.at
+import io.github.clemsix6.narrator2.trace.DecisionRecord
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -125,6 +132,92 @@ class ExchangeLogTest {
         assertEquals(blocks[0].to, blocks[1].from)
         assertEquals(blocks[1].to, blocks[2].from)
         assertEquals(at("20:10"), blocks[2].to)
+    }
+
+    /** A decision of the engine at [time] (`HH:mm:ss`), as `Decisions.record` writes it; returns its id. */
+    private fun decision(time: String, kind: DecisionRecord.Kind, decision: String, subject: String?, reason: String): Long {
+        val id = f.journal.journal.nextId(IdKind.DECISION)
+        f.journal.journal.decision(DecisionRecord(id, at(time), kind, decision, subject, reason, null, "mechanics:C-50", null, null))
+        return id
+    }
+
+    /**
+     * M4 §19: what the mechanics engine did that the players saw the end of, as ENGINE lines among the facts:
+     * the end of a challenge, a judging, a rule's notify, a joker, an offering and a stake; never its acts,
+     * firings and refusals, nor the guards' or the ledger's other decisions. Escaped and cut like the rest.
+     */
+    @Test
+    fun `the engine's news are ENGINE lines among the facts, and nothing else it decides`() = runBlocking<Unit> {
+        f.chapterRow()
+        val join = f.publish("20:00:01", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
+        val mechanic = DecisionRecord.Kind.MECHANIC
+        val ledger = DecisionRecord.Kind.LEDGER
+        decision("20:01:00", ledger, "held", "Josiane", "stake 4012: 12x iron_ingot on Mimosa in C-50")
+        decision("20:08:59", mechanic, "action", "Bartok", "punish: ok: Bartok punished, tiny (severity 2)")
+        decision("20:09:00", mechanic, "fired", "Bartok", "C-60 fired: block_break grief → punish")
+        decision("20:09:01", mechanic, "throttled", "Bartok", "C-60: 30 firings in 10m")
+        decision("20:09:02", DecisionRecord.Kind.GUARD, "allowed", "Bartok", "hostile action")
+        decision("20:09:03", ledger, "applied", "Bartok", "scale ×0.5 until 20:13")
+        val won = "C-50 won by Mimosa in 9m12s (turtle_egg 1/1) · reward: Mimosa got 1x golden_apple · penalty: Bartok tiny (2) until 20:13 · " +
+            "bets: Josiane got back 12x iron_ingot (nobody else bet)"
+        decision("20:09:12", mechanic, "won", "C-50", won)
+        decision("20:12:00", mechanic, "notified", "C-61", "C-61 fired: Bartok entered the_nether (-12 70 40); your note: « comité d'accueil prêt »")
+        decision("20:15:00", ledger, "held", "Mimosa", "offering O-4020: 10x diamond, back at 20:25 unless taken")
+        decision("20:16:00", ledger, "offered", "Mimosa", "offering O-4020: 10x diamond, the Narrator's for good")
+        decision("20:17:00", mechanic, "judging", "C-53", "C-53 « La plus belle <statue> » ended: judge it now with end_challenge C-53 (winners); you have 15m")
+        decision("20:18:00", mechanic, "joker", "Bartok", "Bartok played a joker: " + "slowness II lifted, ".repeat(80))
+        decision("20:19:00", mechanic, "cancelled", "C-52", "C-52 cancelled: Mimosa declined the duel")
+        f.journal.sync()
+
+        val lines = log.lines(f.chapter, at("20:00"), at("20:20"))
+        assertEquals(
+            listOf(
+                "[20:00:01] e$join JOIN Bartok (overworld 0 64 0)",
+                "[20:01:00] ENGINE ledger held Josiane: stake 4012: 12x iron_ingot on Mimosa in C-50",
+                "[20:09:12] ENGINE mechanic won C-50: $won",
+                "[20:12:00] ENGINE mechanic notified C-61: C-61 fired: Bartok entered the_nether (-12 70 40); your note: « comité d'accueil prêt »",
+                "[20:15:00] ENGINE ledger held Mimosa: offering O-4020: 10x diamond, back at 20:25 unless taken",
+                "[20:16:00] ENGINE ledger offered Mimosa: offering O-4020: 10x diamond, the Narrator's for good",
+                "[20:17:00] ENGINE mechanic judging C-53: C-53 « La plus belle ‹statue› » ended: judge it now with end_challenge C-53 (winners); you have 15m",
+                "[20:18:00] ENGINE mechanic joker Bartok: " + ("Bartok played a joker: " + "slowness II lifted, ".repeat(80)).take(ExchangeLog.ENGINE_MAX - 1) + "…",
+                "[20:19:00] ENGINE mechanic cancelled C-52: C-52 cancelled: Mimosa declined the duel",
+            ),
+            lines.map { it.text },
+        )
+        assertTrue(lines.drop(1).all { it.kind == ExchangeLog.Kind.ENGINE })
+        assertEquals(lines.map { it.text }, log.lines(f.chapter, at("20:00"), at("20:20"), chat = false).map { it.text }, "the engine's news are notable facts")
+        val block = log.blocks(lines, "13", at("20:00"), at("20:20"), at("20:20:05")).single()
+        assertEquals(setOf("Bartok", "Josiane", "C-50", "C-61", "Mimosa", "C-53", "C-52"), block.players, "the subjects: <known> keeps the players among them")
+        assertTrue("Players: Bartok\n" in log.known(f.chapter, at("20:00"), at("20:20:05"), block.players), "Josiane and Mimosa never joined this Journal")
+    }
+
+    /** M4 §3.3: the Chronicler is told which rows the engine follows, which it may not settle (the store refuses). */
+    @Test
+    fun `what the memory knows marks the rows the engine follows`() = runBlocking<Unit> {
+        f.chapterRow()
+        f.publish("20:00:01", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
+        f.journal.sync()
+        f.clock.now = at("20:05")
+        val director = Author(Source.DIRECTOR, turnId = 45, conversationId = f.chapter)
+        val challenge = f.store.addCanon(
+            CanonDraft(CanonKind.CHALLENGE, "Le Narrateur a défié Bartok de rapporter un œuf de tortue.", players = listOf(f.bartok.uuid), stakes = "reward 1x golden_apple", mechanic = CanonMechanic.CHALLENGE),
+            director,
+        ).row.ref
+        val law = f.store.addCanon(CanonDraft(CanonKind.LAW, "Quiconque casse la construction d'un autre est rapetissé.", mechanic = CanonMechanic.RULE), director).row.ref
+        val plan = f.store.addCanon(
+            CanonDraft(CanonKind.PLAN, "Un comité d'accueil attend Bartok dans le Nether.", players = listOf(f.bartok.uuid), mechanic = CanonMechanic.RULE),
+            director,
+        ).row.ref
+        f.clock.now = at("20:10:05")
+
+        val known = log.known(f.chapter, at("20:00"), at("20:10:05"), setOf("Bartok"))
+        assertTrue("- $law law (enforced) (by the director at 20:05): Quiconque casse la construction d'un autre est rapetissé.\n" in known, known)
+        assertTrue("- $plan plan → Bartok (by the director at 20:05): Un comité d'accueil attend Bartok dans le Nether.\n" in known, known)
+        assertTrue(
+            "Open challenges (1):\n- $challenge challenge (tracked) → Bartok (by the director at 20:05): " +
+                "Le Narrateur a défié Bartok de rapporter un œuf de tortue. — stakes: reward 1x golden_apple\n" in known,
+            known,
+        )
     }
 
     @Test

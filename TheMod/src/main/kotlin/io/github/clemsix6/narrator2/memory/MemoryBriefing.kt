@@ -27,8 +27,11 @@ import java.util.UUID
  * - `<grimoire>`: the current version, as it is (never reduced).
  * - `<chronicle>`: the saga, the season in progress, the last [SESSIONS] sessions, then the chapters not
  *   in a session yet (titles only). Reduced: the saga and the season.
- * - `<canon>`: the open commitments by due time with their quote, then laws, names, places, gags, planned
- *   arcs, lore and opinions; cut at its budget with `(+N more: recall kinds=canon)` (never reduced).
+ * - `<canon>`: the open commitments by due time with their quote, the plans of the mechanics engine among
+ *   them (M4 §3.3; the engine's rows have no due time: they come after the dated ones), then laws, names,
+ *   places, gags, planned arcs, lore and opinions; a row the engine follows is marked `(tracked)` (a
+ *   challenge; `tracked duel`) or `(enforced)` (a law); cut at its budget with `(+N more: recall kinds=canon)`
+ *   (never reduced).
  * - `<sheets>`: the condensed sheet of each player online, [MAX_CONDENSED] at most, one line for the
  *   others and for those that do not fit. Reduced: one line each.
  * - `<memories>`: the [MEMORIES] strongest memories about the players online. Left out of a reduced briefing.
@@ -184,7 +187,7 @@ class MemoryBriefing(
     private suspend fun canon(now: Instant): Built {
         val open = store.canon(CanonFilter(open = true, limit = MAX_ROWS))
         if (open.isEmpty()) return whole("canon", listOf(NO_CANON))
-        val (commitments, standing) = open.partition { it.kind.dueAllowed && it.status == CanonStatus.ACTIVE }
+        val (commitments, standing) = open.partition(::isCommitment)
         val fill = Filler(budget("canon") - MORE_ROOM)
         if (commitments.isEmpty()) fill.line(NO_COMMITMENT)
         commitments.sortedWith(compareBy<CanonEntry> { it.dueAt ?: Instant.MAX }.thenByDescending { it.importance }.thenByDescending { it.ref.id })
@@ -192,7 +195,10 @@ class MemoryBriefing(
         val byWeight = compareByDescending<CanonEntry> { it.importance }.thenByDescending { it.ref.id }
         fun group(label: String, kinds: Set<CanonKind>, render: (CanonEntry) -> String) =
             fill.group(label, standing.filter { it.kind in kinds }.sortedWith(byWeight).map { it.ref to render(it) })
-        group("Laws", setOf(CanonKind.LAW)) { "${it.ref} (since ${dates.day(it.createdAt, now)}): ${BriefText.cut(it.statement, STATEMENT_SHORT)}" }
+        group("Laws", setOf(CanonKind.LAW)) { law ->
+            val facts = listOfNotNull(BriefText.engineMark(law), "since ${dates.day(law.createdAt, now)}").joinToString(", ")
+            "${law.ref} ($facts): ${BriefText.cut(law.statement, STATEMENT_SHORT)}"
+        }
         group("Names", setOf(CanonKind.NICKNAME, CanonKind.TITLE), ::name)
         group("Places", setOf(CanonKind.PLACE), ::place)
         group("Gags", setOf(CanonKind.RUNNING_GAG)) { gag(it, now) }
@@ -204,11 +210,20 @@ class MemoryBriefing(
     }
 
     /**
+     * An open commitment: a promise, a threat, a prophecy, a challenge or an arc under way, and a plan (M4 §3.3),
+     * the Narrator's secret intention the engine runs, which has no due time of its own.
+     */
+    private fun isCommitment(entry: CanonEntry): Boolean =
+        entry.status == CanonStatus.ACTIVE && (entry.kind.dueAllowed || entry.kind == CanonKind.PLAN)
+
+    /**
      * `C-45 promise → Mimosa, due 21:00 (in 1h): « je te rends tes bottes demain, promis » — Le Narrateur a promis…`,
-     * with ` · stakes: …` for a challenge.
+     * with ` · stakes: …` for a challenge; `C-50 challenge (tracked) → all: …` for one the engine follows.
      */
     private fun commitment(entry: CanonEntry, now: Instant): String = buildString {
-        append("${entry.ref} ${entry.kind.id} → ${BriefText.players(entry.players)}")
+        append("${entry.ref} ${entry.kind.id}")
+        BriefText.engineMark(entry)?.let { append(" ($it)") }
+        append(" → ${BriefText.players(entry.players)}")
         entry.dueAt?.let { append(", ").append(BriefText.due(it, now, dates)) }
         append(": ")
         entry.quote?.let { append(BriefText.quote(it, MemoryLimits.CANON_QUOTE)).append(" — ") }
@@ -474,6 +489,18 @@ internal object BriefText {
 
     /** `Bartok, Mimosa`, or `all` for an entry about everyone. */
     fun players(players: List<PlayerRef>): String = players.joinToString { it.shownName }.ifEmpty { "all" }
+
+    /**
+     * What the mechanics engine does with [entry] (M4 §3.3), for whoever reads the canon: `tracked` for a
+     * challenge it detects, pays and ends itself, `tracked duel` for a duel, `enforced` for a law whose rule it
+     * applies; null for any other row. A plan is always one of its rules: its kind says so already.
+     */
+    fun engineMark(entry: CanonEntry): String? = when (entry.mechanic) {
+        CanonMechanic.CHALLENGE -> "tracked"
+        CanonMechanic.DUEL -> "tracked duel"
+        CanonMechanic.RULE -> "enforced".takeIf { entry.kind == CanonKind.LAW }
+        null -> null
+    }
 
     /** The name a nickname, a title or a place gives: what its statement puts between « », else its quote when short, else its statement. */
     fun named(entry: CanonEntry): String {

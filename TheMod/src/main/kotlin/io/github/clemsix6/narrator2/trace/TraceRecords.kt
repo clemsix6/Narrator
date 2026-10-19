@@ -243,8 +243,10 @@ data class DecisionRecord(
         /**
          * The mechanics engine (M4 §19): a challenge or a duel (`started`, `invited`, `accepted`, `declined`,
          * `won`, `lost`, `expired`, `cancelled`, `judging`), a `stake`, a `bet` and its `settled`, a rule (`fired`,
-         * `throttled`, `skipped`, `failed`, `disabled`, `removed`), each tool call of an act (`action`), an
-         * entry of the state that could not be read (`unreadable`), the startup's `reconciled`, a `joker`.
+         * `throttled`, `skipped`, `failed`, `disabled`, `removed`, and `notified` when its `notify` reaches the
+         * Director), each tool call of an act (`action`), an entry of the state that could not be read
+         * (`unreadable`), the startup's `reconciled`, a `joker`. The Chronicler reads some as news
+         * (`ExchangeLog.ENGINE_NEWS`): their reason must stand alone, like the Director's event line.
          */
         MECHANIC,
         ;

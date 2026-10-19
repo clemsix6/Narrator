@@ -4,6 +4,8 @@ import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.EventFormatter
 import io.github.clemsix6.narrator2.director.Salience
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.memory.BriefText
 import io.github.clemsix6.narrator2.memory.CANON_COLUMNS
 import io.github.clemsix6.narrator2.memory.CHRONICLE_COLUMNS
 import io.github.clemsix6.narrator2.memory.CanonEntry
@@ -37,6 +39,8 @@ import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
 import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -69,7 +73,12 @@ import java.util.UUID
  *   arguments is left out: nothing happened;
  * - the facts the salience finds notable (T18): deaths, PvP kills, critical health, joins and departures,
  *   milestone advancements, first visits and notable structures, griefs (counted as the salience does),
- *   rare ores (counted by run), explosions near players.
+ *   rare ores (counted by run), explosions near players;
+ * - the news of the mechanics engine (M4 §19), lines `ENGINE`: its decisions in [ENGINE_NEWS], the ends of
+ *   challenges and duels, the judgings, a rule's `notify`, a joker played, the offerings and stakes the
+ *   Narrator holds, takes or gives back. Their `reason` is the line, written by the engine for the model;
+ *   they have no ref to cite (`engine_decisions` is no evidence): the canon (`C-…`) and the lines around
+ *   them are. A rule's other firings are left out: a law that strikes writes its own interaction.
  *
  * [blocks] cuts the lines into `<exchange>` blocks of [MAX_CHARS] at most; [known] says what the memory
  * already holds about the window. The nap reads the chapter through [written], [shown] and [left] too.
@@ -92,6 +101,9 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
         /** A notable fact of the game. */
         FACT,
+
+        /** News of the mechanics engine (M4 §19): a challenge ended, a rule's notify, an offering… */
+        ENGINE,
     }
 
     /** One `<exchange>` block ([text], at most [MAX_CHARS]) over `]from, to]`, and the players of its lines. */
@@ -106,7 +118,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
     /**
      * The lines of the Director's [chapter] (its conversation id) in `]from, to]`, oldest first; the facts
-     * only when [chat] is false. The caller passes a barrier first.
+     * and the engine's news only when [chat] is false. The caller passes a barrier first.
      */
     suspend fun lines(chapter: String, from: Instant, to: Instant, chat: Boolean = true): List<Line> {
         val zone = zone
@@ -118,7 +130,8 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
                 lines += toolLines(connection, chapter, from, to, zone, marks)
             }
             lines += factLines(connection, from, to, zone)
-            lines.sortedWith(compareBy<Line>({ it.at }, { if (it.kind == Kind.TOOL) 1 else 0 }, { it.order }))
+            lines += engineLines(connection, from, to, zone)
+            lines.sortedWith(compareBy<Line>({ it.at }, { if (it.kind == Kind.TOOL) 1 else 0 }, { it.kind == Kind.ENGINE }, { it.order }))
         }
     }
 
@@ -370,6 +383,24 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         return lines
     }
 
+    // ── The engine's news ───────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The decisions of [ENGINE_NEWS] in `]from, to]`: `[20:09:12] ENGINE mechanic won C-50: <reason>`, the
+     * decision as the log writes it ([Decisions.line]), its reason escaped and cut to [ENGINE_MAX]. Its
+     * subject is among the players of the line: the block's `<known>` keeps those the Journal knows.
+     */
+    private fun engineLines(connection: Connection, from: Instant, to: Instant, zone: ZoneId): List<Line> = connection.query(
+        ENGINE_SQL, from, to, stringArray(ENGINE_NEWS.flatMap { (kind, decisions) -> decisions.map { "$kind:$it" } }),
+    ) {
+        val id = getLong(1)
+        val at = instant(2)
+        val subject = getString(5)
+        val reason = getString(6)?.let { ModelText.escape(ModelText.cut(it, ENGINE_MAX)) }
+        val text = "[${SECONDS.withZone(zone).format(at)}] ENGINE ${getString(3)} " + Decisions.line(getString(4), subject?.let(ModelText::name), reason)
+        Line(at, text, Kind.ENGINE, setOfNotNull(subject), id)
+    }
+
     /** Blocks one player broke within a window: rare ores of one kind, or blocks of one owner (a grief). */
     private class Run(val first: Fact, val who: String) {
         private val blocks = LinkedHashMap<String, Int>()
@@ -485,6 +516,25 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         /** Speech tools whose successful text is a line of the Narrator in the chat (`tool/speech`). */
         private val SAID_TOOLS = setOf("say", "show_title", "actionbar", "give_book")
 
+        private val MECHANIC = DecisionRecord.Kind.MECHANIC.id
+        private val LEDGER = DecisionRecord.Kind.LEDGER.id
+
+        /**
+         * The engine's decisions the log shows (M4 §19), by kind, the players' side of the mechanics: of the
+         * engine (`mechanic`), the ends of a challenge or a duel (`won`, `lost`, `expired`, `cancelled`), a
+         * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a joker
+         * played (`joker`); of the ledger, a stake or an offering put in escrow (`held`), an offering taken for
+         * good (`offered`), items given back (`returned`, `released`). Their `reason` is what the Chronicler
+         * reads: a line that stands alone (refs, players, what happened), like the Director's event.
+         */
+        val ENGINE_NEWS: Map<String, Set<String>> = mapOf(
+            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", "joker"),
+            LEDGER to setOf("held", "offered", "returned", "released"),
+        )
+
+        /** Longest reason of an `ENGINE` line: the Director's event line (a challenge's end with its stakes and bets). */
+        const val ENGINE_MAX = MechanicsLimits.EVENT_LINE
+
         private const val NO_TARGET = "neutral_no_target"
 
         private val JSON = Json { ignoreUnknownKeys = true }
@@ -532,9 +582,11 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
             return "(${parts.joinToString()})"
         }
 
-        /** `promise → Mimosa`, `law`. */
-        fun canonWhat(row: CanonEntry): String =
-            if (row.players.isEmpty()) row.kind.id else "${row.kind.id} → ${row.players.joinToString { ModelText.name(it.name) }}"
+        /** `promise → Mimosa`, `law`; `challenge (tracked) → Mimosa`, `law (enforced)` for a row the engine follows ([BriefText.engineMark]). */
+        fun canonWhat(row: CanonEntry): String {
+            val what = row.kind.id + (BriefText.engineMark(row)?.let { " ($it)" } ?: "")
+            return if (row.players.isEmpty()) what else "$what → ${row.players.joinToString { ModelText.name(it.name) }}"
+        }
 
         /** ` about Bartok, Mimosa`, or nothing. */
         private fun about(players: List<PlayerRef>): String = if (players.isEmpty()) "" else " about ${players.joinToString { ModelText.name(it.name) }}"
@@ -624,7 +676,11 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
                          OR coalesce(json_array_length((e.detail -> 'nearby')), 0) > 0))
             ORDER BY e.ts, e.id"""
 
-        private const val OPEN_CANON_SQL = "SELECT $CANON_COLUMNS FROM canon WHERE status IN ('planned', 'active') AND NOT archived ORDER BY created_at, id"
+        /** The engine's decisions of a period that are news: `kind:decision` among a list. */
+        private const val ENGINE_SQL = "SELECT id, ts, kind, decision, subject, reason FROM engine_decisions WHERE ts > ? AND ts <= ? " +
+            "AND list_contains(?, kind || ':' || decision) ORDER BY ts, id"
+
+        private const val OPEN_CANON_SQL ="SELECT $CANON_COLUMNS FROM canon WHERE status IN ('planned', 'active') AND NOT archived ORDER BY created_at, id"
 
         /** The citable rows inserted in a period, or by a job (a null job: none), by their audit. */
         private const val INSERTED_SQL = "SELECT DISTINCT table_name, row_key FROM memory_log WHERE op = 'insert' " +
