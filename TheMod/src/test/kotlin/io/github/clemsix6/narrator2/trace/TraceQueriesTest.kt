@@ -117,8 +117,8 @@ class TraceQueriesTest {
         assertEquals(
             listOf(
                 Usage("anthropic", "director", 4, 0, 1_850, 244_800, 0, 412, 2_425),
+                Usage("anthropic", "reflex", 2, 1, 90, 0, 0, 30, 800),
                 Usage("anthropic", "analyst", 1, 0, 3_000, 0, 0, 200, 3_000),
-                Usage("jev", "reflex", 2, 1, 90, 0, 0, 30, 800),
             ),
             usage,
         )

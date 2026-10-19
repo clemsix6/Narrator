@@ -6,8 +6,8 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The reflexes without Jev (M1_M2 §11, `docs/research/JEV.md` §2.1): word lists and a few rules. Used
- * when Jev is off or fails, and to settle Jev's gray zone. The words are data, one file per language
+ * The reflexes without a model (M1_M2 §11): word lists and a few rules. Used when the reflex model is off
+ * or fails, and to settle its gray zone. The words are data, one file per language
  * (`narrator2/reflex/heuristics_<language>.txt`); the rules are here.
  *
  * - Addressed: the Narrator's name without a determiner, or after an interjection ("hé le narrateur");
@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   never presumed).
  * - Intent: not addressed → chat between players; then offering, challenge, insult (provocation),
  *   manipulation (request), request, question, rude word (provocation), other.
- * - No personality signals; a heartbeat is always worth a wake-up (nothing is filtered without Jev).
+ * - No personality signals; a heartbeat is always worth a wake-up (nothing is filtered without the model).
  *
  * Pure and fast: never throws, never suspends for real.
  */
@@ -136,7 +136,7 @@ class HeuristicReflexes(private val words: HeuristicWords) : Reflexes {
          */
         fun forLanguage(language: String): HeuristicReflexes = byLanguage.computeIfAbsent(language) {
             val words = HeuristicWords.bundled(language) ?: run {
-                Log.jev.warn("no chat heuristic for language '$language'; using '$DEFAULT_LANGUAGE' words")
+                Log.reflex.warn("no chat heuristic for language '$language'; using '$DEFAULT_LANGUAGE' words")
                 HeuristicWords.bundled(DEFAULT_LANGUAGE) ?: error("the jar has no ${HeuristicWords.resource(DEFAULT_LANGUAGE)}")
             }
             HeuristicReflexes(words)

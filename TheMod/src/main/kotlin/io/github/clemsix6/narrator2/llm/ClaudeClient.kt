@@ -4,7 +4,6 @@ import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.core.RequestOptions
 import com.anthropic.core.Timeout
-import com.anthropic.core.http.Headers
 import com.anthropic.core.jsonMapper
 import com.anthropic.errors.AnthropicServiceException
 import com.anthropic.errors.SseException
@@ -17,7 +16,6 @@ import com.anthropic.models.messages.OutputConfig
 import com.anthropic.models.messages.RawMessageStreamEvent
 import com.anthropic.models.messages.StopReason
 import com.anthropic.models.messages.ThinkingConfigAdaptive
-import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.RoleConfig
 import io.github.clemsix6.narrator2.core.Log
@@ -292,27 +290,7 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
         }.getOrNull()?.coerceAtLeast(0)
     }
 
-    /** LLMGW's 402 `budget_exceeded`, with its reset time; null for any other failure. */
-    private fun budgetExceeded(error: Throwable): BudgetExceededException? {
-        if (error !is AnthropicServiceException || error.statusCode() != 402) return null
-        val detail = runCatching { mapper.valueToTree<JsonNode>(error.body()) }.getOrNull()?.path("error") ?: return null
-        if (detail.path("type").asText() != "budget_exceeded") return null
-        val resetAt = detail.path("reset_at").takeIf { it.isTextual }
-            ?.let { runCatching { OffsetDateTime.parse(it.asText()).toInstant() }.getOrNull() }
-        return BudgetExceededException(resetAt, detail.path("dimension").textOrNull(), detail.path("window").textOrNull())
-            .apply { initCause(error) }
-    }
-
     private fun requestIdOf(error: Throwable): String? = (error as? AnthropicServiceException)?.headers()?.let(::requestIdOf)
-
-    /**
-     * The id to quote to the gateway's operator: Anthropic's `request-id`, else CLIProxyAPI's
-     * `X-Cpa-Trace-Id` (LLMGW does not relay `request-id`, verified 25/09/2026).
-     */
-    private fun requestIdOf(headers: Headers): String? =
-        (headers.values("request-id") + headers.values("x-cpa-trace-id")).firstOrNull()
-
-    private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
 
     /**
      * Closes the client now; calls still in flight fail. Their callers are cancelled first when the

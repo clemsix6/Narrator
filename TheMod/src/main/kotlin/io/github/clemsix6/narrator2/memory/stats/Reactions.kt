@@ -17,10 +17,10 @@ import java.util.UUID
  * (`chat` channel `narrator`) addressed to players, what each of them wrote within [WINDOW_SECONDS].
  *
  * A line is addressed to its recipients when it was private, else to the players it names. Each of them:
- * [Kind.LAUGHED] (humor of [HUMOR] at least from Jev, or a laugh of the heuristic's word list),
+ * [Kind.LAUGHED] (humor of [HUMOR] at least from the reflex model, or a laugh of the heuristic's word list),
  * [Kind.ANNOYED] (a hostile or disrespectful tone, confident), [Kind.REPLIED] (anything else), or
  * [Kind.IGNORED] when nothing came although they were online. A player offline then is left out.
- * Nothing more is asked of Jev.
+ * Nothing more is asked of the reflexes.
  */
 object Reactions {
     const val WINDOW_SECONDS = 120L

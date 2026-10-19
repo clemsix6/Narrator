@@ -1,6 +1,6 @@
 package io.github.clemsix6.narrator2.reflex
 
-/** A player's tone towards the Narrator. Jev option names are `id`, e.g. `mocking_playful`. */
+/** A player's tone towards the Narrator. The model's labels are `id`, e.g. `mocking_playful`. */
 enum class Tone {
     RESPECTFUL,
 
@@ -20,7 +20,7 @@ enum class Tone {
     val id: String get() = name.lowercase()
 }
 
-/** What a chat message is mainly for. Jev option names are `id`, e.g. `banter_between_players`. */
+/** What a chat message is mainly for. The model's labels are `id`, e.g. `banter_between_players`. */
 enum class ChatIntent {
     QUESTION, REQUEST, OFFERING, CHALLENGE, PROVOCATION, BANTER_BETWEEN_PLAYERS, OTHER;
 
@@ -36,8 +36,9 @@ data class ChatLine(val player: String, val text: String)
  * @property message the message to judge (public chat or prayer).
  * @property recent the chat lines just before it, oldest first.
  * @property narratorLast the Narrator's last line, if recent.
+ * @property prayer the message is a prayer (`/pray`): it speaks to the Narrator whatever its words.
  */
-data class ChatTriageInput(val message: ChatLine, val recent: List<ChatLine>, val narratorLast: String?)
+data class ChatTriageInput(val message: ChatLine, val recent: List<ChatLine>, val narratorLast: String?, val prayer: Boolean = false)
 
 /** Personality signals of a message, each a probability in 0..1; stored for the player sheets (M3). */
 data class PersonalitySignals(
@@ -55,7 +56,7 @@ data class PersonalitySignals(
  * @property manipulation probability of an attempt to manipulate the Narrator: an annotation for the
  *   Director, never a reason for an automatic action.
  * @property personality null with the heuristic fallback.
- * @property source `jev:<model>` (e.g. `jev:jev-1.13.0`) or `heuristic`.
+ * @property source `reflex:<model>` (e.g. `reflex:claude-haiku-5-5`) or `heuristic`.
  */
 data class ChatVerdict(
     val toNarrator: Double,
@@ -77,8 +78,9 @@ data class ChatVerdict(
 data class HeartbeatVerdict(val worth: Double, val hook: String?, val source: String, val latencyMs: Long)
 
 /**
- * Fast judgments that decide whether to wake the Director: Jev when it is configured, a heuristic
- * otherwise or when Jev fails. They never throw and answer within `jev.timeoutMs` plus a little.
+ * Fast judgments that decide whether to wake the Director: a small Claude model when it is configured
+ * (`reflex`), a heuristic otherwise or when the model fails. They never throw and answer within
+ * `reflex.timeoutMs` plus a little.
  */
 interface Reflexes {
     /** Is this public message or prayer addressed to the Narrator, in what tone, and for what. */

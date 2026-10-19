@@ -287,7 +287,7 @@ class LiveMemoryEvalTest {
                     lines += channel.name.lowercase() to text
                     journal.journal.chatSignals(
                         ChatSignalsRecord(
-                            id, clock.instant(), player.uuid, "jev:jev-1.13.0", event.addressed ?: 0.5,
+                            id, clock.instant(), player.uuid, "reflex:claude-haiku-5-5", event.addressed ?: 0.5,
                             event.tone?.let { Tone.valueOf(it.uppercase(Locale.ROOT)) }, 0.85,
                             event.intent?.let { ChatIntent.valueOf(it.uppercase(Locale.ROOT)) }, event.manipulation ?: 0.02, null, null, null, null, null, 120,
                         ),

@@ -226,7 +226,7 @@ class NarratorRuntime private constructor(
         var current: NarratorRuntime? = null
             private set
 
-        /** Where the LLMGW and Jev keys are looked up. In-game tests replace it to inject a key. */
+        /** Where the LLMGW key is looked up. In-game tests replace it to inject a key. */
         @Volatile
         var environment: (String) -> String? = System::getenv
 

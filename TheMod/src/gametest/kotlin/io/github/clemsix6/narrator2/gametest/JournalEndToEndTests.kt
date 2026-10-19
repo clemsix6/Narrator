@@ -468,15 +468,13 @@ class JournalEndToEndTests {
     }
 
     /**
-     * The `gameTest` run blanks the real keys (build.gradle.kts): the in-game tests never reach LLMGW or
-     * Jev, even on a machine where the keys are set.
+     * The `gameTest` run blanks the real key (build.gradle.kts): the in-game tests never reach LLMGW, for
+     * the Director or the reflexes, even on a machine where the key is set.
      */
     @GameTest
     fun theInGameTestsSeeNoRealKey(helper: GameTestHelper) {
-        for (name in listOf("NARRATOR_LLMGW_KEY", "TYPESAFE_API_KEY")) {
-            helper.assertTrue(System.getenv(name).isNullOrEmpty(), "$name is set in the gameTest run")
-        }
-        helper.assertTrue(helper.narrator().settings.get().jev == null, "Jev is on without a key")
+        helper.assertTrue(System.getenv("NARRATOR_LLMGW_KEY").isNullOrEmpty(), "NARRATOR_LLMGW_KEY is set in the gameTest run")
+        helper.assertTrue(helper.narrator().settings.get().reflex == null, "the reflex model is on without a key")
         helper.succeed()
     }
 

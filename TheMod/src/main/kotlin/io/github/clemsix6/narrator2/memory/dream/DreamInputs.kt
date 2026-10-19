@@ -70,7 +70,7 @@ import kotlin.math.roundToLong
  *
  * - **Step 1, one conversation per player** ([candidates], [player]): the full sheet, the traits it hides,
  *   what is new about the player since their last reflection (memories, interactions, stats before and
- *   after), Jev's signals, the pairs they are in, their latest public messages.
+ *   after), the reflexes' signals, the pairs they are in, their latest public messages.
  * - **Step 2** ([review]): the Narrator's tics, its latest lines with the players' reactions, the running
  *   gags and nicknames with their uses, the previous review.
  * - **Step 3** ([chronicle]): the chapter entries no session covers yet, grouped by server session; the
@@ -252,12 +252,12 @@ internal class DreamInputs(private val services: NarratorServices) {
         return block("stats_change", "since=\"$lastAt\"", lines, STATS_MAX, "(no stat)")
     }
 
-    /** Jev's signals (M3 §6.3): hints in figures, never traits. */
+    /** The reflex model's signals (M3 §6.3): hints in figures, never traits. */
     private fun signals(stat: SheetStat?): String {
         val measured = stat?.value?.roundToLong() ?: 0
         val detail = stat?.detail
         if (detail == null) {
-            val why = if (measured == 0L) "none: no message of this player measured by Jev" else "none yet: $measured messages measured by Jev, ${Signals.MIN_MESSAGES} needed"
+            val why = if (measured == 0L) "none: no message of this player measured by the reflexes" else "none yet: $measured messages measured by the reflexes, ${Signals.MIN_MESSAGES} needed"
             return block("signals", "", emptyList(), SIGNALS_MAX, "($why)")
         }
         val lines = Signals.NAMES.mapNotNull { name ->

@@ -18,7 +18,7 @@ class Prompts private constructor(private val texts: Map<String, String>) {
 
     companion object {
         /** Every prompt the mod ships. Adding a prompt means adding its file name here. */
-        val NAMES = listOf("director", "analyst", "chapter_summary", "chronicler", "dreamer", "ping")
+        val NAMES = listOf("director", "analyst", "chapter_summary", "chronicler", "dreamer", "ping", "reflex")
 
         const val README = "README.md"
 

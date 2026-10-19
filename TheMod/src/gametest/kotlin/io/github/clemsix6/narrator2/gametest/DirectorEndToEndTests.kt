@@ -57,7 +57,7 @@ class DirectorEndToEndTests {
             Files.writeString(
                 NarratorRuntime.configFile,
                 """{ "gateway": { "baseUrl": "${fake.baseUrl}", "apiKeyEnv": "$KEY_ENV", "maxRetries": 0 },
-                   | "director": { "heartbeatMinutes": [60, 60], "chatDebounceMs": 200 } }""".trimMargin(),
+                   | "director": { "heartbeatMinutes": [60, 60], "chatDebounceMs": 200 }, "reflex": { "enabled": false } }""".trimMargin(),
             )
             runtime.reload()
             awaitCondition("the Director wakes up with a key") { runtime.director.status().state != DirectorState.DISABLED }

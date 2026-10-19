@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.reflex.ReflexClient
 import io.github.clemsix6.narrator2.reflex.Reflexes
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -29,10 +30,10 @@ import java.nio.file.Path
 import java.time.Clock
 
 /**
- * Settings for tests: [config], the jar's prompts and French texts, and [claude] (none by default).
+ * Settings for tests: [config], the jar's prompts and French texts, [claude] and [reflex] (none by default).
  */
-fun testSettings(config: NarratorConfig = NarratorConfig(), claude: ClaudeClient? = null): Settings =
-    Settings(config, Prompts.bundled(), UiTexts.load(config.language), claude, jev = null)
+fun testSettings(config: NarratorConfig = NarratorConfig(), claude: ClaudeClient? = null, reflex: ReflexClient? = null): Settings =
+    Settings(config, Prompts.bundled(), UiTexts.load(config.language), claude, reflex)
 
 /**
  * The services of a runtime, for unit tests: every part is a constructor parameter, with a harmless

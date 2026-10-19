@@ -145,14 +145,14 @@ class SalienceTest {
     @Test
     fun `chat annotations`() {
         fun triage(verdict: ChatVerdict, addressed: Boolean) = ChatTriage(verdict, addressed, "reason")
-        val jev = FakeReflexes.verdict(0.92, Tone.HOSTILE, ChatIntent.PROVOCATION)
-        assertEquals("(to you 0.92, hostile, provocation)", Salience.annotation(ChatChannel.PUBLIC, triage(jev, true)))
-        assertEquals("(to you 0.92, provocation)", Salience.annotation(ChatChannel.PUBLIC, triage(jev.copy(toneConfidence = 0.4), true)))
+        val model = FakeReflexes.verdict(0.92, Tone.HOSTILE, ChatIntent.PROVOCATION)
+        assertEquals("(to you 0.92, hostile, provocation)", Salience.annotation(ChatChannel.PUBLIC, triage(model, true)))
+        assertEquals("(to you 0.92, provocation)", Salience.annotation(ChatChannel.PUBLIC, triage(model.copy(toneConfidence = 0.4), true)))
         assertEquals(
             "(to you 0.97, mocking_playful, request) !manipulation 0.81",
             Salience.annotation(ChatChannel.PRAY, triage(FakeReflexes.verdict(0.97, Tone.MOCKING_PLAYFUL, ChatIntent.REQUEST, manipulation = 0.81), true)),
         )
-        val heuristic = jev.copy(source = HeuristicReflexes.SOURCE)
+        val heuristic = model.copy(source = HeuristicReflexes.SOURCE)
         assertEquals("(to you: heuristic)", Salience.annotation(ChatChannel.PUBLIC, triage(heuristic, true)))
         assertEquals("(between players)", Salience.annotation(ChatChannel.PUBLIC, triage(FakeReflexes.verdict(0.1), false)))
         assertEquals("(to you 0.10, other)", Salience.annotation(ChatChannel.PRAY, triage(FakeReflexes.verdict(0.1), false)))

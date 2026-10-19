@@ -65,7 +65,7 @@ internal object MemoryDataset {
     val DAY2: Instant = Instant.parse("2026-10-03T00:00:00Z")
     val NOW: Instant = day2("21:00")
 
-    const val JEV = "jev:jev-1.13.0"
+    const val REFLEX = "reflex:claude-haiku-5-5"
     const val HEURISTIC = "heuristic"
 
     fun day1(time: String): Instant = at(DAY1, time)
@@ -81,15 +81,15 @@ internal object MemoryDataset {
 
     fun nether(x: Int, y: Int, z: Int) = Pos("minecraft:the_nether", x, y, z)
 
-    /** Mimosa's Jev verdicts: 30 messages, numbered from 0, of which [MIMOSA_ADDRESSED] address the Narrator. */
+    /** Mimosa's verdicts by the reflex model: 30 messages, numbered from 0, of which [MIMOSA_ADDRESSED] address the Narrator. */
     fun mimosaPoliteness(i: Int) = (i % 5) / 4.0
 
     fun mimosaHumor(i: Int) = if (i < 15) 0.2 else 0.8
-    const val MIMOSA_JEV = 30
+    const val MIMOSA_MEASURED = 30
     const val MIMOSA_ADDRESSED = 3
 
-    /** Kelvin's Jev verdicts: 29, one short of the signals' minimum. */
-    const val KELVIN_JEV = 29
+    /** Kelvin's verdicts by the reflex model: 29, one short of the signals' minimum. */
+    const val KELVIN_MEASURED = 29
 
     /** A Journal on an in-memory database holding the dataset, committed. */
     fun journal(): JournalFixture {
@@ -160,18 +160,18 @@ internal object MemoryDataset {
         // Building: three cobblestones in one cell (the base), planks elsewhere.
         repeat(3) { on(day1("18:37"), BlockPlaced(bartok, ow(it, 64, 0), "minecraft:cobblestone", "minecraft:cobblestone", PlaceKind.BLOCK)) }
         on(day1("18:38"), BlockPlaced(bartok, ow(40, 70, 70), "minecraft:oak_planks", "minecraft:oak_planks", PlaceKind.BLOCK))
-        // Chat on day 1 (Bartok: heuristic verdicts only; Mimosa: Jev).
+        // Chat on day 1 (Bartok: heuristic verdicts only; Mimosa: the reflex model).
         chat(day1("18:40"), bartok, ChatChannel.PUBLIC, "narrateur, t'es nul", HEURISTIC, 0.9, Tone.HOSTILE, 0.7)
         chat(day1("18:41"), bartok, ChatChannel.PUBLIC, "salut Mimosa", HEURISTIC, 0.1, Tone.NEUTRAL_NO_TARGET, 0.7)
         chat(day1("18:42"), bartok, ChatChannel.PRAY, "rends-moi mes diamants", HEURISTIC, 0.3, Tone.RESPECTFUL, 0.4)
         chat(day1("18:43"), bartok, ChatChannel.PUBLIC, "merci narrateur", HEURISTIC, 0.9, Tone.RESPECTFUL, 0.7)
         chat(day1("18:44"), bartok, ChatChannel.PUBLIC, "narrateur tu es génial", HEURISTIC, 0.9, Tone.RESPECTFUL, 0.7)
-        repeat(MIMOSA_JEV) { i ->
+        repeat(MIMOSA_MEASURED) { i ->
             val time = day1("18:12").plusSeconds(60L * i)
             val addressed = i < MIMOSA_ADDRESSED
             val id = on(time, ChatMessage(mimosa, ChatChannel.PUBLIC, "message $i", emptyList()))
             signal(
-                fixture, id, time, mimosa, JEV, if (addressed) 0.8 else 0.2, if (addressed) Tone.RESPECTFUL else Tone.NEUTRAL_NO_TARGET, 0.9,
+                fixture, id, time, mimosa, REFLEX, if (addressed) 0.8 else 0.2, if (addressed) Tone.RESPECTFUL else Tone.NEUTRAL_NO_TARGET, 0.9,
                 politeness = mimosaPoliteness(i), humor = mimosaHumor(i),
             )
         }
@@ -224,7 +224,7 @@ internal object MemoryDataset {
         on(day2("20:00"), PositionSampled(bartok, ow(0, 64, 0), "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.JOIN))
         on(day2("20:10"), PlayerJoined(kelvin, ow(20, 64, 0), sessionId = 4, firstTime = true, isOp = false))
         on(day2("20:10"), PositionSampled(kelvin, ow(20, 64, 0), "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.JOIN))
-        repeat(KELVIN_JEV - 1) { i -> signal(fixture, 8_000L + i, day2("20:11").plusSeconds(60L * i), kelvin, JEV, 0.1, Tone.NEUTRAL_NO_TARGET, 0.9) }
+        repeat(KELVIN_MEASURED - 1) { i -> signal(fixture, 8_000L + i, day2("20:11").plusSeconds(60L * i), kelvin, REFLEX, 0.1, Tone.NEUTRAL_NO_TARGET, 0.9) }
         // The Narrator speaks; they react (or not).
         on(day2("20:20"), NarratorSpoke(NarratorChannel.NARRATOR, "Bartok, ta pioche pleure.", null, turnId = 41, operator = null))
         chat(day2("20:21"), bartok, ChatChannel.PUBLIC, "mdr", HEURISTIC, 0.65, Tone.MOCKING_PLAYFUL, 0.7)
@@ -234,7 +234,7 @@ internal object MemoryDataset {
         on(day2("20:45"), NarratorSpoke(NarratorChannel.NARRATOR, "Mimosa, reviens.", null, turnId = 44, operator = null))
         on(day2("20:50"), NarratorSpoke(NarratorChannel.NARRATOR, "Bartok et kelvin, au travail.", null, turnId = 45, operator = null))
         chat(day2("20:51"), bartok, ChatChannel.PUBLIC, "ok", HEURISTIC, 0.65, Tone.RESPECTFUL, 0.4)
-        chat(day2("20:51:30"), kelvin, ChatChannel.PUBLIC, "excellent", JEV, 0.7, Tone.MOCKING_PLAYFUL, 0.8, humor = 0.7)
+        chat(day2("20:51:30"), kelvin, ChatChannel.PUBLIC, "excellent", REFLEX, 0.7, Tone.MOCKING_PLAYFUL, 0.8, humor = 0.7)
         on(day2("20:55"), NarratorSpoke(NarratorChannel.OPERATOR, "Bartok, l'opérateur te salue.", null, turnId = null, operator = "Clement"))
         toolCall(fixture, day2("20:40"), "say", ToolStatus.OK, ToolEffect.SPEECH, listOf(bartok.name))
         toolCall(fixture, day2("20:41"), "smite", ToolStatus.DENIED, ToolEffect.WORLD, listOf(kelvin.name))
@@ -246,13 +246,13 @@ internal object MemoryDataset {
         fixture: JournalFixture, eventId: Long, ts: Instant, player: PlayerRef, source: String, toNarrator: Double, tone: Tone?, confidence: Double,
         politeness: Double? = null, humor: Double? = null,
     ) {
-        val jev = source.startsWith("jev:")
+        val measured = source.startsWith("reflex:")
         fixture.journal.chatSignals(
             ChatSignalsRecord(
                 eventId = eventId, ts = ts, playerUuid = player.uuid, source = source, toNarrator = toNarrator, tone = tone,
                 toneConfidence = confidence, intent = null, manipulation = 0.0,
-                politeness = if (jev) politeness ?: 0.5 else null, boastfulness = if (jev) 0.1 else null,
-                helpfulness = if (jev) 0.3 else null, aggressiveness = if (jev) 0.0 else null, humor = if (jev) humor ?: 0.2 else null,
+                politeness = if (measured) politeness ?: 0.5 else null, boastfulness = if (measured) 0.1 else null,
+                helpfulness = if (measured) 0.3 else null, aggressiveness = if (measured) 0.0 else null, humor = if (measured) humor ?: 0.2 else null,
                 latencyMs = 1,
             ),
         )

@@ -178,12 +178,12 @@ class TraceTextTest {
             listOf(
                 "[Narrator] usage over the last 24 h",
                 "director: 4 calls · 247k in (99% cached) · 412 out · 2.4 s avg",
+                "reflex: 2 calls · 90 in (0% cached) · 30 out · 0.8 s avg · 1 failed",
                 "analyst: 1 call · 3k in (0% cached) · 200 out · 3.0 s avg",
-                "jev (reflex): 2 calls · 800 ms avg · 1 failed",
             ),
             strings(text.page(text.usage(usage, 24), 1, null)),
         )
-        assertEquals("Usage (24 h): Claude 5 calls · 250k in (98% cached) · 612 out · Jev 2 calls (1 failed)", text.usageSummary(usage, 24))
+        assertEquals("Usage (24 h): Claude 5 calls · 250k in (98% cached) · 612 out · reflexes 2 calls (1 failed)", text.usageSummary(usage, 24))
         assertEquals("Usage (1 h): no model call", text.usageSummary(emptyList(), 1))
     }
 

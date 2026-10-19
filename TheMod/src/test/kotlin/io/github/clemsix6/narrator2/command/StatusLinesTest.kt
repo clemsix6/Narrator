@@ -1,9 +1,9 @@
 package io.github.clemsix6.narrator2.command
 
 import io.github.clemsix6.narrator2.agent.WorkersControl
-import io.github.clemsix6.narrator2.config.JevConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
+import io.github.clemsix6.narrator2.config.ReflexConfig
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.director.PendingReminder
@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
+import io.github.clemsix6.narrator2.reflex.ReflexClient
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.TestClock
@@ -43,14 +44,14 @@ class StatusLinesTest {
         assertEquals("Chapter: none open · operator channel system_message", lines[5])
         assertEquals("Tasks: none running", lines[6])
         assertEquals("Journal: unavailable (unit test) · 0 lost", lines[7])
-        assertEquals("Reflexes: heuristic (no Jev key in the environment variable TYPESAFE_API_KEY)", lines[8])
+        assertEquals("Reflexes: heuristic (no LLMGW key in the environment variable NARRATOR_LLMGW_KEY)", lines[8])
         assertEquals("Guards: chaos 3 · creatures 0 of 16 · protected online: nobody", lines[9])
         assertTrue(lines.any { it.startsWith("  director: claude-opus-5-5 · effort medium") }, lines.toString())
         assertTrue(lines.size <= 22, "status stays short: ${lines.size} lines")
     }
 
     @Test
-    fun `a busy Director, a running task, Jev disabled and a protected player online`() {
+    fun `a busy Director, a running task, the reflex model disabled and a protected player online`() {
         val mimosa = PlayerRef(UUID.fromString("00000000-0000-4000-8000-0000000000b2"), "Mimosa")
         val players = PlayerStates().apply {
             put(LivePlayer(mimosa, 1, now, false, "survival", Pos("minecraft:overworld", 0, 64, 0), null, null, false, 20f, 20f, 20, null, null, now, false))
@@ -73,7 +74,7 @@ class StatusLinesTest {
             )
             override fun cancel(taskId: Long) = Result.success(Unit)
         }
-        val settings = testSettings(NarratorConfig(chaos = 4, jev = JevConfig(enabled = false)))
+        val settings = testSettings(NarratorConfig(chaos = 4, reflex = ReflexConfig(enabled = false)))
         val lines = lines(TestServices(clock = clock, settings = settings, players = players, guards = guards, director = director, workers = workers))
         assertEquals(
             "Director: waiting until 19:30:04 · turn #42 running · turns this hour 12 of 30 (18 left) · inbox 3 (1 dropped) · reminders R-3 19:40:00",
@@ -81,8 +82,16 @@ class StatusLinesTest {
         )
         assertEquals("Chapter: #3 · context 61k tokens · operator channel user_tag", lines[5])
         assertEquals("Tasks: T-13 analyst running 12 s, T-14 analyst queued", lines[6])
-        assertEquals("Reflexes: heuristic (Jev is disabled in the configuration)", lines[8])
+        assertEquals("Reflexes: heuristic (reflex.enabled is false)", lines[8])
         assertEquals("Guards: chaos 4 · creatures 0 of 24 · protected online: Mimosa", lines[9])
+    }
+
+    @Test
+    fun `the reflex model in force, with its state`() {
+        val config = NarratorConfig()
+        ReflexClient(config, "status-key-7a1e").use { reflex ->
+            assertEquals("Reflexes: claude-haiku-5-5, active", lines(TestServices(clock = clock, settings = testSettings(config, reflex = reflex)))[8])
+        }
     }
 
     @Test
