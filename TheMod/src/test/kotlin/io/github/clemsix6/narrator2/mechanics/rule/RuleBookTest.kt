@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -77,18 +78,31 @@ class RuleBookTest {
         val canon = assertNotNull(f.base.store.canon(law.ref))
         assertEquals(CanonStatus.RETIRED, canon.status, "a law is retired")
         assertEquals("Le Narrateur a levé la loi des diamants.", canon.resolution)
-        f.director.signals.clear()
 
         f.book.remove(plan.ref, "Le Narrateur a renoncé au comité d'accueil.", MechanicsSamples.director.let { Author(Source.DIRECTOR, turnId = it.turnId, conversationId = it.conversationId) })
         assertEquals(CanonStatus.CANCELLED, f.base.store.canon(plan.ref)!!.status, "a plan is cancelled")
         assertEquals(emptyList(), f.book.list())
 
         val decisions = f.services.traces.decisions.filter { it.kind == DecisionRecord.Kind.MECHANIC }
-        assertEquals(listOf("started", "started", "removed", "removed"), decisions.map { it.decision })
+        assertEquals(listOf("started", "started", "rule_ended", "rule_ended"), decisions.map { it.decision })
         assertEquals(listOf("C-1000", "C-1001", "C-1000", "C-1001"), decisions.map { it.subject })
-        assertEquals("C-1000 law retired by operator Clement: 0 fired; « Le Narrateur a levé la loi des diamants. »", decisions[2].reason)
-        assertEquals("C-1001 plan cancelled by the director (turn 42): 0 fired; « Le Narrateur a renoncé au comité d'accueil. »", decisions[3].reason)
+        assertEquals("C-1000 law removed by operator Clement, canon retired: 0 fired; « Le Narrateur a levé la loi des diamants. »", decisions[2].reason)
+        assertEquals("C-1001 plan removed by the director (turn 42), canon cancelled: 0 fired; « Le Narrateur a renoncé au comité d'accueil. »", decisions[3].reason)
+        assertEquals(listOf("removed", "removed"), decisions.drop(2).map { it.detail!!.getValue("ending").jsonPrimitive.content }, "how each one ended")
         assertEquals("mechanics:C-1001", decisions[3].conversationId)
+
+        // The Director hears of the rule an operator removed, not of the one he removed himself.
+        assertEquals(
+            listOf<DirectorSignal>(
+                DirectorSignal.Mechanic(
+                    MechanicSignal.RULE,
+                    "C-1000 law ended: removed by operator Clement (0 fired); « Le Narrateur a levé la loi des diamants. »",
+                    f.clock.millis(),
+                    priority = false,
+                ),
+            ),
+            f.director.signals.toList(),
+        )
 
         assertEquals("C-99 is not an active rule; active: none", assertFailsWith<MechanicRejected> { f.book.remove(Ref(RefKind.CANON, 99), "x", operator) }.message)
     }
@@ -96,10 +110,14 @@ class RuleBookTest {
     @Test
     fun `the rule engine ends a rule through the book`() = runBlocking<Unit> {
         val plan = f.book.create(f.spec(MechanicsSamples.ruleExamples.getValue("welcome_plan")), f.caller)
-        val ended = assertNotNull(f.book.end(plan.ref.id, CanonStatus.FULFILLED, "Le comité d'accueil a reçu Bartok.", "fulfilled"))
+        val ended = assertNotNull(f.book.end(plan.ref.id, CanonStatus.FULFILLED, "Le comité d'accueil a reçu Bartok.", RuleEnding.FULFILLED))
         assertEquals(plan.ref, ended.ref)
         assertEquals(CanonStatus.FULFILLED, f.base.store.canon(plan.ref)!!.status)
-        assertNull(f.book.end(plan.ref.id, CanonStatus.FULFILLED, "deux fois", "fulfilled"), "a rule ends once")
+        assertNull(f.book.end(plan.ref.id, CanonStatus.FULFILLED, "deux fois", RuleEnding.FULFILLED), "a rule ends once")
+        val decision = f.services.traces.decisions.single { it.decision == RuleBook.ENDED }
+        assertEquals("C-1000 plan fulfilled, canon fulfilled: 0 fired; « Le comité d'accueil a reçu Bartok. »", decision.reason)
+        assertEquals("fulfilled", decision.detail!!.getValue("ending").jsonPrimitive.content)
+        assertEquals(emptyList(), f.director.signals.toList(), "the engine tells the Director itself, when it must")
     }
 
     @Test
@@ -119,7 +137,7 @@ class RuleBookTest {
             RuleText.line(MechanicsSamples.welcomePlan.copy(failures = 3, endsAt = now + 30 * 60_000L), now, zone),
         )
         assertEquals(
-            "damage_dealt where cow → mob_effect levitation level 2 on the subject, explosion (power 2) on the subject after 3s, fireworks on the subject after 3s",
+            "damage_dealt where cow → mob_effect glowing level 2 on the subject, explosion (power 2) on the subject after 3s, fireworks on the subject after 3s",
             RuleText.summary(MechanicsSamples.rules.getValue("flying_cows")),
         )
     }
@@ -168,7 +186,7 @@ class RuleBookTest {
     @Test
     fun `the creatures' tools check their effect and attribute without the world`() = runBlocking<Unit> {
         suspend fun check(tool: String, json: String) = f.actions.check(tool, Json.parseToJsonElement(json).jsonObject, f.caller)?.text
-        assertNull(check("mob_effect", """{"effect":"levitation","seconds":3,"level":2}"""))
+        assertNull(check("mob_effect", """{"effect":"glowing","seconds":3,"level":2}"""))
         assertEquals(
             "Invalid arguments: at chaos 3 an effect on a creature lasts at most 300 s and goes up to level 2 (asked 600 s, level 1)",
             check("mob_effect", """{"effect":"speed","seconds":600}"""),
@@ -178,7 +196,10 @@ class RuleBookTest {
         assertTrue(check("mob_effect", """{"effect":"levitaton","seconds":3}""")!!.startsWith("Invalid arguments: unknown effect \"levitaton\"; closest ids: levitation"))
         assertNull(check("mob_attribute", """{"attribute":"movement_speed","multiply":3}"""))
         assertNull(check("mob_attribute", """{"attribute":"max_health","multiply":2}"""))
-        assertEquals("Invalid arguments: scale multiplies by 0.25 to 4 (asked 5)", check("mob_attribute", """{"attribute":"scale","multiply":5}"""))
+        assertEquals(
+            "Invalid arguments: scale multiplies by 0.5 to 2 in a rule: a creature too big chokes under a low ceiling (asked 5)",
+            check("mob_attribute", """{"attribute":"scale","multiply":5}"""),
+        )
         f.guards.chaos = 0
         assertEquals("DENIED (chaos_0): the chaos level is 0: no rule changes a creature.", check("mob_attribute", """{"attribute":"scale","multiply":2}"""))
     }

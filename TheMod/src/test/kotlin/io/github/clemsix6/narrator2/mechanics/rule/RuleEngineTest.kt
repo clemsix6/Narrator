@@ -9,11 +9,16 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.mechanics.Engine
 import io.github.clemsix6.narrator2.mechanics.RuleState
 import io.github.clemsix6.narrator2.mechanics.RuleView
+import io.github.clemsix6.narrator2.mechanics.StateStore
+import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonStatus
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
+import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -26,8 +31,9 @@ import kotlin.test.fail
 /**
  * The rules at work, without the world (M4 §8.6; task M4-18): a real rule book on a real canon ([RuleFixture]),
  * the rule engine in the engine's host on a state in memory, facts published on the bus, the engine's clock moved
- * by the test. The effects used need no server: `notify`, and a `teleport` to a player who is not online (an
- * `INVALID`, which counts as a failure). The world's triggers and effects are the GameTests' (`RuleEngineGameTests`).
+ * by the test. The effects used need no server: `notify`, and an `explosion`, either too strong for a chaos level
+ * lowered (an `INVALID`, which counts as a failure) or with no world to go off in (a `FAILED`, skipped). The world's
+ * triggers and effects are the GameTests' (`RuleEngineGameTests`).
  */
 class RuleEngineTest {
     private val f = RuleFixture()
@@ -110,7 +116,8 @@ class RuleEngineTest {
 
     @Test
     fun `five failed firings in a row disable the rule, a skipped one in between neither counts nor breaks the row`() = runBlocking<Unit> {
-        val law = create(chatLaw("""{"tool":"teleport","at":"actor","args":{"to_player":"Nobody"}}"""))
+        val law = create(chatLaw("""{"tool":"explosion","at":"actor","args":{"power":3}}"""))
+        f.guards.chaos = 1 // its power no longer fits the guards' caps: each firing is INVALID (the text reads the settings' level)
         repeat(4) {
             chat(bartok, "nul")
             tick()
@@ -129,15 +136,67 @@ class RuleEngineTest {
         tick()
         awaitSignals(1)
 
-        val failure = "teleport: Invalid arguments: Nobody is not online; online: Mimosa, Bartok"
+        val failure = "explosion: Invalid arguments: at chaos 3 an explosion has a power of at most 1 (asked 3)"
         assertEquals("${law.ref} disabled after 5 failures: $failure", (f.director.signals.single() as DirectorSignal.Mechanic).line)
         val canon = assertNotNull(f.base.store.canon(law.ref))
         assertEquals(CanonStatus.RETIRED, canon.status)
         assertEquals("disabled after 5 failures in a row: $failure", canon.resolution)
         assertEquals(emptyList(), f.store.get().rules, "out of the state")
         assertEquals(5, decisions("failed").size)
-        assertEquals("${law.ref} skipped (Bartok spoke in the public chat): teleport skipped: Bartok is not online", decisions("skipped").single().reason)
-        assertEquals(1, decisions("disabled").size)
+        assertEquals("${law.ref} skipped (Bartok spoke in the public chat): explosion skipped: Bartok is not online", decisions("skipped").single().reason)
+        assertEquals(listOf("disabled"), endings())
+    }
+
+    @Test
+    fun `a firing the world could not do is skipped, and never disables the rule`() = runBlocking<Unit> {
+        // An explosion that passes its checks but cannot go off: no world here, as a chunk not loaded or a player dead.
+        val law = create(chatLaw("""{"tool":"explosion","at":"actor","args":{"power":2}}"""))
+        repeat(6) { i ->
+            chat(bartok, "nul")
+            tick()
+            awaitCounted(law) { it.skipped == i + 1 }
+            f.clock.advance(Duration.ofSeconds(3))
+        }
+        val rule = assertNotNull(f.store.get().rule(law.ref.id), "still at work")
+        assertEquals(0, rule.failures)
+        assertEquals(emptyList(), decisions("failed"))
+        assertEquals(emptyList(), endings())
+        assertEquals("${law.ref} skipped (Bartok spoke in the public chat): explosion skipped: FAILED: no Minecraft server in unit tests", decisions("skipped").first().reason)
+    }
+
+    @Test
+    fun `a delayed effect of a rule removed meanwhile never runs`() = runBlocking<Unit> {
+        val law = create(chatLaw(notify(delay = 10)))
+        chat(bartok, "nul")
+        tick()
+        f.book.remove(law.ref, "Le Narrateur a levé la loi.", Author(Source.OPERATOR, operator = "Clement"))
+        f.clock.advance(Duration.ofSeconds(10))
+        repeat(30) {
+            tick()
+            Thread.sleep(10)
+        }
+        assertEquals(emptyList(), decisions(NotifyTool.NOTIFIED), "no notify for a law removed")
+        assertEquals(emptyList(), decisions("action"), "nothing ran")
+        assertEquals(
+            listOf("${law.ref} law ended: removed by operator Clement (0 fired); « Le Narrateur a levé la loi. »"),
+            f.director.signals.map { (it as DirectorSignal.Mechanic).line },
+            "the Director hears of the removal only",
+        )
+    }
+
+    @Test
+    fun `the book sets a rule's end on the engine's clock`() = runBlocking<Unit> {
+        // The engine's clock an hour behind the services' (a GameTest's): the rule ends on the engine's.
+        val behind = TestClock(f.clock.instant().minus(Duration.ofHours(1)), f.clock.zone)
+        val store = StateStore.inMemory()
+        val book = RuleBook(f.services, store, RuleValidator(f.services, f.actions, f.ids), behind)
+        val rules = RuleEngine(f.services, store, book, f.actions, tags = { _, _ -> emptySet() }, clock = behind)
+        val law = book.create(f.spec(chatLaw(notify(), minutes = 5)), f.caller)
+        assertEquals(behind.millis() + 5 * 60_000L, store.get().rule(law.ref.id)!!.endsAt)
+        behind.advance(Duration.ofMinutes(5))
+        rules.second(null, behind.millis())
+        awaitCondition("the law's end") { f.base.store.canon(law.ref)?.status == CanonStatus.RETIRED }
+        rules.stopping()
     }
 
     @Test
@@ -160,7 +219,7 @@ class RuleEngineTest {
         Thread.sleep(100)
         assertEquals(1, f.director.signals.size, "the plan is done")
         assertEquals(1, decisions("fired").size)
-        assertEquals(1, decisions("fulfilled").size)
+        assertEquals(listOf("fulfilled"), endings())
     }
 
     @Test
@@ -182,7 +241,12 @@ class RuleEngineTest {
             listOf("${law.ref} law ended: its time is up (0 fired)", "${plan.ref} plan ended: its time is up (0 fired)"),
             f.director.signals.map { (it as DirectorSignal.Mechanic).line },
         )
-        assertEquals(2, decisions("expired").size)
+        assertEquals(listOf("expired", "expired"), endings())
+        assertEquals(
+            "${law.ref} law expired, canon retired: 0 fired; « its time ran out »",
+            decisions(RuleBook.ENDED).first().reason,
+            "a line that stands alone, for the Chronicler",
+        )
         assertEquals(0, decisions("fired").size, "nothing fires past its time")
     }
 
@@ -235,6 +299,9 @@ class RuleEngineTest {
 
     private fun decisions(name: String): List<DecisionRecord> =
         f.services.traces.decisions.filter { it.kind == DecisionRecord.Kind.MECHANIC && it.decision == name }
+
+    /** How the rules ended, in order: the `ending` of each `rule_ended` decision. */
+    private fun endings(): List<String> = decisions(RuleBook.ENDED).map { it.detail!!.getValue(RuleBook.ENDING).jsonPrimitive.content }
 
     /** Ticks until the firings are counted in [rule]'s state as [counted] says. */
     private suspend fun awaitCounted(rule: RuleView, counted: (RuleState) -> Boolean) =

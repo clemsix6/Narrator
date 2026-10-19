@@ -3,9 +3,12 @@ package io.github.clemsix6.narrator2.mechanics.rule
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.director.DirectorSignal
+import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.mechanics.EffectTarget
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.mechanics.RuleControl
 import io.github.clemsix6.narrator2.mechanics.RuleEffect
 import io.github.clemsix6.narrator2.mechanics.RuleKind
@@ -31,6 +34,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -45,15 +51,20 @@ import java.util.Locale
  *   (`mechanics.maxRules`), then the canon row (written as the Director: the engine's tools write its rows,
  *   M4-07), then the state, on the server thread.
  * - [remove], [end]: out of the state first (server thread), then the canon row resolved by the engine
- *   (`Source.ENGINE`, whoever asked: M4 §3.3), with the note given.
+ *   (`Source.ENGINE`, whoever asked: M4 §3.3), with the note given. A rule an operator removed is told to the
+ *   Director (a `RULE` event, no priority): he did not do it.
  *
  * Creations and ends go one at a time (a lock): the limit and the state never race. Each one is a `mechanic`
- * decision (`started`, `removed`, or the rule engine's own).
+ * decision: `started`, then `rule_ended` with how it ended in `detail.ending` ([RuleEnding]), which the Chronicler
+ * reads (M4 code review, finding 31).
+ *
+ * @param clock the rule engine's, which compares the ends of the rules with it: a rule's end is set on it.
  */
 class RuleBook(
     private val services: NarratorServices,
     private val store: StateStore,
     private val validator: RuleValidator,
+    private val clock: Clock = services.clock,
 ) : RuleControl {
     private val log = Log.mechanics
     private val lock = Mutex()
@@ -79,7 +90,7 @@ class RuleBook(
         } catch (e: MemoryRejected) {
             throw MechanicRejected(e.rule, e.message.orEmpty())
         }
-        val now = services.clock.millis()
+        val now = clock.millis()
         val rule = RuleState(
             id = row.ref.id,
             spec = valid.spec,
@@ -98,41 +109,56 @@ class RuleBook(
             resolve(rule, CanonStatus.CANCELLED, NOT_STARTED, null)
             throw e
         }
-        decision(STARTED, rule, "${rule.ref} ${spec.kind.id} active until ${RuleText.time(rule.endsAt, now, services.clock.zone)}: ${RuleText.summary(rule.spec)}", caller.turnId)
+        decision(STARTED, rule, "${rule.ref} ${spec.kind.id} active until ${RuleText.time(rule.endsAt, now, clock.zone)}: ${RuleText.summary(rule.spec)}", caller.turnId)
         view(rule, now)
     }
 
     override suspend fun remove(ref: Ref, note: String, author: Author): RuleView = lock.withLock {
         val rule = store.snapshot.rules.firstOrNull { ref.kind == RefKind.CANON && it.id == ref.id }
             ?: throw MechanicRejected(null, "$ref is not an active rule; active: ${store.snapshot.rules.joinToString { it.ref.toString() }.ifEmpty { "none" }}")
-        finish(rule.id, if (rule.spec.kind == RuleKind.LAW) CanonStatus.RETIRED else CanonStatus.CANCELLED, note, author, REMOVED)
+        val removed = finish(rule.id, if (rule.spec.kind == RuleKind.LAW) CanonStatus.RETIRED else CanonStatus.CANCELLED, note, author, RuleEnding.REMOVED)
             ?: throw MechanicRejected(null, "$ref is not an active rule any more: it just ended")
+        if (author.source != Source.DIRECTOR) {
+            val line = "${removed.rule.ref} ${removed.rule.spec.kind.id} ended: removed by ${who(author)} (${counts(removed.rule)}); « ${ModelText.escape(note)} »"
+            services.director.post(DirectorSignal.Mechanic(MechanicSignal.RULE, ModelText.cut(line, MechanicsLimits.RULE_LINE), clock.millis(), priority = false))
+        }
+        removed.view
     }
 
     override fun list(): List<RuleView> {
-        val now = services.clock.millis()
+        val now = clock.millis()
         return store.snapshot.rules.map { view(it, now) }
     }
 
     /**
-     * Ends rule [id] now (M4 §8.6), for the rule engine (M4-18): fired once, past its end, or disabled. Out of the
-     * state, then its canon row resolved [status] (`fulfilled`, `expired`, `retired`, `cancelled`) with [note]
-     * (French, the canon's resolution), by the engine; [decision] names the `mechanic` decision. Null when the
-     * rule is no longer active. Never on the server thread.
+     * Ends rule [id] now (M4 §8.6), for the rule engine (M4-18): fired once, past its end, or disabled ([ending]).
+     * Out of the state, then its canon row resolved [status] (`fulfilled`, `expired`, `retired`, `cancelled`) with
+     * [note] (the canon's resolution), by the engine. Null when the rule is no longer active. Never on the server
+     * thread.
      */
-    suspend fun end(id: Long, status: CanonStatus, note: String, decision: String): RuleView? = lock.withLock {
-        finish(id, status, note, null, decision)
+    suspend fun end(id: Long, status: CanonStatus, note: String, ending: RuleEnding): RuleView? = lock.withLock {
+        finish(id, status, note, null, ending)?.view
     }
 
-    /** [end] under the lock; [by] who asked, when someone did. */
-    private suspend fun finish(id: Long, status: CanonStatus, note: String, by: Author?, decision: String): RuleView? {
+    /** A rule ended: as it was in the state, and its view. */
+    private class Ended(val rule: RuleState, val view: RuleView)
+
+    /**
+     * [end] under the lock; [by] who asked, when someone did. The decision `rule_ended`, its reason a line that
+     * stands alone (`C-60 law expired, canon retired: 12 fired, 3 skipped; « its time ran out »`).
+     */
+    private suspend fun finish(id: Long, status: CanonStatus, note: String, by: Author?, ending: RuleEnding): Ended? {
         val rule = onServer {
             store.get().rule(id)?.also { gone -> store.update { state -> state.copy(rules = state.rules.filterNot { it.id == gone.id }) } }
         } ?: return null
         resolve(rule, status, note, by)
         val asked = by?.let { " by ${who(it)}" }.orEmpty()
-        decision(decision, rule, "${rule.ref} ${rule.spec.kind.id} ${status.name.lowercase()}$asked: ${counts(rule)}; « $note »", by?.turnId)
-        return view(rule, services.clock.millis())
+        Decisions(services.trace, clock).record(
+            log, DecisionRecord.Kind.MECHANIC, ENDED, subject = rule.ref.toString(),
+            reason = "${rule.ref} ${rule.spec.kind.id} ${ending.id}$asked, canon ${status.name.lowercase()}: ${counts(rule)}; « $note »",
+            conversationId = EngineActions.conversationOf(rule.ref), turnId = by?.turnId, detail = buildJsonObject { put(ENDING, ending.id) },
+        )
+        return Ended(rule, view(rule, clock.millis()))
     }
 
     /** The canon row of [rule] resolved by the engine; a refusal (already closed) or a failure is logged. */
@@ -149,7 +175,7 @@ class RuleBook(
     }
 
     private fun decision(what: String, rule: RuleState, reason: String, turnId: Long?) {
-        Decisions(services.trace, services.clock).record(
+        Decisions(services.trace, clock).record(
             log, DecisionRecord.Kind.MECHANIC, what, subject = rule.ref.toString(), reason = reason,
             conversationId = EngineActions.conversationOf(rule.ref), turnId = turnId,
         )
@@ -159,7 +185,7 @@ class RuleBook(
     private suspend fun <T> onServer(block: () -> T): T = if (store.inWorld) services.server.onServerThread(SERVER_TIMEOUT_MS, block) else block()
 
     private fun view(rule: RuleState, now: Long) =
-        RuleView(rule.ref, rule.spec, rule.endsAt, rule.fired, rule.skipped, rule.failures, RuleText.line(rule, now, services.clock.zone))
+        RuleView(rule.ref, rule.spec, rule.endsAt, rule.fired, rule.skipped, rule.failures, RuleText.line(rule, now, clock.zone))
 
     companion object {
         /** The rule of the limit of active rules: `DENIED (rule_limit): …`. */
@@ -168,8 +194,11 @@ class RuleBook(
         /** The decision of a rule created. */
         const val STARTED = "started"
 
-        /** The decision of a rule removed by the Director or an operator. */
-        const val REMOVED = "removed"
+        /** The decision of a rule ended, however it ended ([ENDING] in its detail). */
+        const val ENDED = "rule_ended"
+
+        /** The key of [ENDED]'s detail: a [RuleEnding] id. */
+        const val ENDING = "ending"
 
         /** The canon's resolution of a rule whose state could not be written (the server stopping). */
         const val NOT_STARTED = "it never took effect: the server was stopping"
@@ -182,10 +211,28 @@ class RuleBook(
 
         private fun who(author: Author): String = when (author.source) {
             Source.DIRECTOR -> "the director" + (author.turnId?.let { " (turn $it)" } ?: "")
-            Source.OPERATOR -> "operator " + (author.operator ?: "?")
+            Source.OPERATOR -> "operator " + (author.operator?.let(ModelText::name) ?: "?")
             else -> author.source.id
         }
     }
+}
+
+/** How a rule ended (M4 code review, finding 31): the `detail.ending` of its `rule_ended` decision. */
+enum class RuleEnding {
+    /** Its time was up (also while the server was down: at its first second). */
+    EXPIRED,
+
+    /** Five failed firings in a row. */
+    DISABLED,
+
+    /** The Director (`remove_rule`) or an operator (`/narrator rule remove`) removed it. */
+    REMOVED,
+
+    /** A rule that fires once fired. */
+    FULFILLED,
+    ;
+
+    val id: String get() = name.lowercase()
 }
 
 /** How a rule reads for the model: in the tools' answers and in the situation (M4 §4.5, §12.3). English, compact. */

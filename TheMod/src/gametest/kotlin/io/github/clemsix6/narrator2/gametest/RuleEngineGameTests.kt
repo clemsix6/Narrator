@@ -60,6 +60,7 @@ import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin
 import net.minecraft.world.entity.projectile.arrow.Arrow
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.portal.TeleportTransition
@@ -82,14 +83,16 @@ import kotlin.math.abs
  * rising edge of `position`.
  *
  * Each test builds its own engine (the rules' part in the engine's host) on a state in memory and a clock of its own,
- * which it drives; the canon, the tools, the guards and the Journal are the server's. The engine looks after the
- * creatures of its own test area only, and the creatures' load hook reaches it through [Loads]. The tests set off
- * explosions: they run in their own batch ([RULES_ENVIRONMENT]).
+ * which it drives, shared by its rule book; the canon, the tools, the guards and the Journal are the server's. The
+ * engine looks after the creatures of its own test area only, and the creatures' load hook reaches it through
+ * [Loads]. The tests set off explosions: they run in their own batch ([RULES_ENVIRONMENT]), and those that explode
+ * stand apart ([BLAST_PADDING]): a player of the next test within a blast's reach would turn it harmless, and two
+ * blasts of one tick within 16 blocks are told as one (M4 code review, finding 22).
  */
 class RuleEngineGameTests {
 
     /** §8.8: a skeleton's arrow that hits a player explodes where it hit; a second one, while the first act's punishment runs, plays harmless. */
-    @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
+    @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS, padding = BLAST_PADDING)
     fun aSkeletonsArrowExplodesOnThePlayerItHits(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 1) { rig, (bob) ->
             val law = rig.create(example("skeleton_arrows"))
@@ -155,20 +158,26 @@ class RuleEngineGameTests {
         }
     }
 
-    /** §8.8: a cow hit levitates, then explodes harmlessly (and maybe in fireworks) where it is 3 s later; its marks go with the law. */
-    @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
-    fun aCowHitFliesThenBurstsWhereItIs(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+    /**
+     * §8.8: a cow hit glows, then explodes harmlessly (and maybe in fireworks) where it is 3 s later; its marks go with
+     * the law. A cow a player named is never changed by the law (M4 code review, finding 8): its burst goes off, its
+     * creature's effect is skipped.
+     */
+    @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS, padding = BLAST_PADDING)
+    fun aCowHitGlowsThenBurstsWhereItIs(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 1) { rig, (bob) ->
             val law = rig.create(example("flying_cows"))
-            val cow = rig.onServer {
+            val (cow, named) = rig.onServer {
                 floor(helper)
                 bob.standAt(BlockPos(1, 1, 1))
                 bob.makeVulnerable()
-                helper.spawn(EntityTypes.COW, BlockPos(5, 1, 5))
+                val named = helper.spawn(EntityTypes.COW, BlockPos(6, 1, 1))
+                named.customName = Component.literal("Marguerite")
+                helper.spawn(EntityTypes.COW, BlockPos(5, 1, 5)) to named
             }
             try {
                 rig.onServer { cow.hurtServer(helper.level, helper.level.damageSources().playerAttack(bob.live), 1f) }
-                rig.await("the cow levitates") { cow.hasEffect(MobEffects.LEVITATION) }
+                rig.await("the cow glows") { cow.hasEffect(MobEffects.GLOWING) }
                 check(rig.onServer { cow.entityTags().containsAll(listOf(NarratorMobs.TAG, RuleMarks.tag(law.ref.id))) }) { "marked as the law's: ${cow.entityTags()}" }
                 check(rig.blastsNear(cow.blockPosition()).isEmpty()) { "nothing before its 3 s" }
 
@@ -176,17 +185,31 @@ class RuleEngineGameTests {
                 rig.await("the blast where the cow is") { rig.blastsNear(cow.blockPosition()).isNotEmpty() }
                 rig.await("the firing counted") { rig.rule(law)?.fired == 1 }
                 val actions = rig.decisions("action").associate { it.detail!!.getValue("tool").jsonPrimitive.content to it.reason!! }
-                check(actions.getValue("mob_effect").startsWith("mob_effect ok: ok: minecraft:cow gets levitation II for 3s")) { actions.toString() }
+                check(actions.getValue("mob_effect").startsWith("mob_effect ok: ok: minecraft:cow gets glowing II for 3s")) { actions.toString() }
                 check(actions.getValue("explosion").startsWith("explosion ok: ok: explosion of power 2, ") && "harmless" in actions.getValue("explosion")) { actions.toString() }
                 // Fireworks at a point want a pad 6 blocks from every player: near the player who hit, they often fail (M4 §8.8).
                 check(actions.getValue("fireworks").startsWith("fireworks ok:") || actions.getValue("fireworks").startsWith("fireworks failed:")) { actions.toString() }
+
+                // The named cow: the law fires (its burst), but never changes it.
+                rig.clock.advance(Duration.ofSeconds(4))
+                rig.onServer { named.hurtServer(helper.level, helper.level.damageSources().playerAttack(bob.live), 1f) }
+                rig.await("the named cow's firing") { rig.decisions("fired").size == 2 }
+                rig.clock.advance(Duration.ofSeconds(3))
+                rig.await("the named cow's firing ran") { rig.decisions("action").count { it.detail!!.getValue("tool").jsonPrimitive.content == "explosion" } == 2 }
+                check(rig.decisions("action").count { it.detail!!.getValue("tool").jsonPrimitive.content == "mob_effect" } == 1) { "no effect on the named cow" }
+                check(rig.onServer { !named.hasEffect(MobEffects.GLOWING) && named.entityTags().none { it == NarratorMobs.TAG || it.startsWith(RuleMarks.TAG_PREFIX) } }) {
+                    "the named cow is left alone: ${named.entityTags()}"
+                }
 
                 rig.remove(law)
                 rig.onServer { rig.second() }
                 rig.await("the cow's marks taken off") { cow.entityTags().none { it == NarratorMobs.TAG || it.startsWith(RuleMarks.TAG_PREFIX) } }
                 rig.awaitEnd(law, CanonStatus.RETIRED, NOTE)
             } finally {
-                rig.onServer { cow.discard() }
+                rig.onServer {
+                    cow.discard()
+                    named.discard()
+                }
             }
         }
     }
@@ -218,6 +241,10 @@ class RuleEngineGameTests {
                 rig.await("the creeper that appeared is caffeinated") { speed(after, law) == 2.0 }
                 check(rig.onServer { after.entityTags().containsAll(listOf(NarratorMobs.TAG, RuleMarks.tag(law.ref.id))) }) { after.entityTags().toString() }
                 rig.await("both counted") { rig.rule(law)?.fired == 2 }
+                // The creatures that appear are told in one decision a minute (M4 code review, finding 33), not one each.
+                rig.onServer { rig.second() }
+                val told = rig.decisions("fired").map { it.reason!! }
+                check(told.size == 2 && told[1].startsWith("${law.ref} since ") && told[1].endsWith(": fired on 1 creatures that appeared (1 creeper)")) { told.toString() }
 
                 rig.remove(law)
                 rig.onServer { rig.second() }
@@ -245,8 +272,51 @@ class RuleEngineGameTests {
         }
     }
 
-    /** §8.8: a diamond ore mined explodes where it was, no block touched; a second one within 3 s by the same player is held back by the limits. */
+    /**
+     * A `mob_spawn` law over a herd changes it [RuleEngine.MOB_FIRINGS_PER_TICK] creatures a tick at most (M4 code
+     * review, finding 33); and the delayed changes of a law removed meanwhile never come (finding 7).
+     */
     @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
+    fun aHerdChangesInStepsAndALawRemovedChangesNoMore(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 0) { rig, _ ->
+            val herd = rig.onServer {
+                floor(helper)
+                List(HERD) { i -> helper.spawnWithNoFreeWill(EntityTypes.CREEPER, BlockPos(i % 8, 1, i / 8)) }
+            }
+            try {
+                val law = rig.create(example("caffeinated_creepers"))
+                fun changed() = herd.count { speed(it, law) != null }
+                rig.onServer { rig.second() } // the sweep: the whole herd waits
+                check(rig.onServer { changed() } == 0) { "nothing before the next tick" }
+                rig.onServer { rig.tick() }
+                check(rig.onServer { changed() } == RuleEngine.MOB_FIRINGS_PER_TICK) { "a tick changes ${RuleEngine.MOB_FIRINGS_PER_TICK}: ${changed()}" }
+                rig.onServer { rig.tick() }
+                check(rig.onServer { changed() } == HERD) { "the next one the rest: ${changed()}" }
+                rig.remove(law)
+
+                val glow = rig.create(
+                    """{"kind":"law","statement":"Le Narrateur a décrété que les creepers brilleront.","trigger":"mob_spawn","when":{"entity":"creeper"},""" +
+                        """"effects":[{"tool":"mob_effect","at":"subject","args":{"effect":"glowing","seconds":60},"delay_seconds":30}],"minutes":60}""",
+                )
+                rig.onServer { rig.second() } // the sweep, each change due in 30 s
+                rig.remove(glow)
+                rig.onServer {
+                    rig.second()
+                    rig.clock.advance(Duration.ofSeconds(30))
+                    repeat(3) { rig.tick() }
+                }
+                check(rig.onServer { herd.none { it.hasEffect(MobEffects.GLOWING) || RuleMarks.tag(glow.ref.id) in it.entityTags() } }) {
+                    "a law removed changes nothing more"
+                }
+                rig.awaitEnd(glow, CanonStatus.RETIRED, NOTE)
+            } finally {
+                rig.onServer { herd.forEach { it.discard() } }
+            }
+        }
+    }
+
+    /** §8.8: a diamond ore mined explodes where it was, no block touched; a second one within 3 s by the same player is held back by the limits. */
+    @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS, padding = BLAST_PADDING)
     fun aDiamondOreMinedExplodesAndTheLimitsHoldTheNextOneBack(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 1) { rig, (bob) ->
             val law = rig.create(example("explosive_diamonds"))
@@ -323,12 +393,17 @@ class RuleEngineGameTests {
             val plan = rig.create(example("welcome_plan").replace("\"Bartok\"", "\"${bob.name}\"").replace("de Bartok", "de ${bob.name}"))
             val server = helper.level.server
             val nether = server.getLevel(Level.NETHER)!!
-            val room = rig.onServer {
-                val at = helper.absolutePos(BlockPos(4, 0, 4))
-                room(nether, BlockPos(at.x, ROOM_Y, at.z))
-            }
+            val at = helper.absolutePos(BlockPos(4, 0, 4))
+            val room = BlockPos(at.x, ROOM_Y, at.z)
+            val chunks = roomChunks(room)
             var committee = emptyList<ZombifiedPiglin>()
             try {
+                // The room's chunks held loaded: a chunk the game unloaded meanwhile has no free ground for `spawn` (M4 code review, finding 22).
+                rig.onServer {
+                    chunks.forEach { nether.setChunkForced(it.x, it.z, true) }
+                    room(nether, room)
+                }
+                rig.await("the room loaded") { chunks.all { nether.chunkSource.getChunkNow(it.x, it.z) != null } }
                 rig.onServer { bob.live.teleport(TeleportTransition(nether, Vec3.atBottomCenterOf(room), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING)) }
                 rig.await("the spawn's answer") { rig.decisions("action").any { it.detail!!.getValue("tool").jsonPrimitive.content == "spawn" } }
                 val spawned = rig.decisions("action").first { it.detail!!.getValue("tool").jsonPrimitive.content == "spawn" }.reason!!
@@ -357,28 +432,33 @@ class RuleEngineGameTests {
                 rig.onServer {
                     committee.forEach { it.discard() }
                     bob.live.teleport(TeleportTransition(helper.level, helper.absoluteVec(Vec3(3.5, 1.0, 3.5)), Vec3.ZERO, 0f, 0f, TeleportTransition.DO_NOTHING))
+                    chunks.forEach { nether.setChunkForced(it.x, it.z, false) }
                 }
             }
         }
     }
 
-    /** A rule whose effect fails five times in a row is disabled: its canon retired with the failure, the Director told, out of the state. */
+    /**
+     * A rule whose effect fails five times in a row is disabled: its canon retired with the failure, the Director told,
+     * out of the state. The effect: a teleport beyond the world border, which only the world knows (`INVALID`).
+     */
     @GameTest(environment = RULES_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
     fun aRuleThatFailsFiveTimesInARowIsDisabled(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 1) { rig, (bob) ->
             rig.runtime.journal.barrier()
-            val law = rig.create(chatLaw(bob, "coucou", """{"tool":"teleport","at":"actor","args":{"to_player":"Personne"}}"""))
+            val law = rig.create(chatLaw(bob, "coucou", """{"tool":"teleport","at":"actor","args":{"x":29999999,"z":0}}"""))
             repeat(5) { i ->
                 rig.onServer { say(helper.level.server, bob, "coucou") }
                 rig.await("failure ${i + 1}") { (rig.rule(law)?.failures ?: 5) >= i + 1 }
                 rig.clock.advance(Duration.ofSeconds(3))
             }
             rig.await("out of the state") { rig.store.get().rules.isEmpty() }
-            val failure = "teleport: Invalid arguments: Personne is not online"
+            val failure = "teleport: Invalid arguments: x 29999999, z 0 is beyond the world border"
             val canon = rig.awaitEnd(law, CanonStatus.RETIRED)
             check(canon.resolution!!.startsWith("disabled after 5 failures in a row: $failure")) { canon.resolution!! }
             check(rig.ruleLines().single().startsWith("${law.ref} disabled after 5 failures: $failure")) { rig.ruleLines().toString() }
-            check(rig.decisions("failed").size == 5 && rig.decisions("disabled").size == 1) { "decisions: ${rig.decisions("failed").size} failed" }
+            val ended = rig.decisions(RuleBook.ENDED).map { it.detail!!.getValue(RuleBook.ENDING).jsonPrimitive.content }
+            check(rig.decisions("failed").size == 5 && ended == listOf("disabled")) { "decisions: ${rig.decisions("failed").size} failed, ended $ended" }
         }
     }
 
@@ -504,7 +584,8 @@ class RuleEngineGameTests {
         }
         val store = StateStore.inMemory(initial)
         val actions = EngineActions(services, ToolCatalog.allTools(services) + ruleOnlyTools())
-        val book = RuleBook(services, store, RuleValidator(services, actions, ServerRuleIds(runtime.server)))
+        /** On the engine's clock: a rule's end is set on the clock that ends it (M4 code review, finding 22). */
+        val book = RuleBook(services, store, RuleValidator(services, actions, ServerRuleIds(runtime.server)), clock)
         private val area: AABB = helper.bounds.inflate(0.0, 16.0, 0.0)
         val rules = RuleEngine(services, store, book, actions, clock = clock, area = { area.contains(it.position()) })
         val engine = Engine(services, store, listOf(rules), clock)
@@ -608,6 +689,19 @@ class RuleEngineGameTests {
         /** The height of the room in the Nether. */
         const val ROOM_Y = 100
 
+        /** From the room's center to its walls. */
+        const val ROOM_HALF = 10
+
+        /** The creepers of the herd: more than a tick of `mob_spawn` firings changes. */
+        const val HERD = 60
+
+        /**
+         * The room around a test that sets off explosions, on each side (`@GameTest(padding)`): the next test's
+         * players stay beyond a blast's reach ([io.github.clemsix6.narrator2.guard.Caps.HOSTILE_EXPLOSION_BLOCKS], 8),
+         * and its blasts beyond the 16 blocks within which two of one tick are told as one.
+         */
+        const val BLAST_PADDING = 16
+
         /** Runs [test] with a [Rig] started on the server thread and [count] players; all closed however it ends. */
         suspend fun CoroutineScope.withRig(helper: GameTestHelper, count: Int, test: suspend (Rig, List<TestPlayer>) -> Unit) {
             val server = helper.level.server
@@ -674,11 +768,18 @@ class RuleEngineGameTests {
          * block): `spawn` puts its creatures 4 to 8 blocks from the player. Server thread.
          */
         fun room(nether: ServerLevel, center: BlockPos): BlockPos {
-            for (dx in -10..10) for (dy in -1..4) for (dz in -10..10) {
-                val shell = dx == -10 || dx == 10 || dz == -10 || dz == 10 || dy == -1 || dy == 4
+            for (dx in -ROOM_HALF..ROOM_HALF) for (dy in -1..4) for (dz in -ROOM_HALF..ROOM_HALF) {
+                val shell = dx == -ROOM_HALF || dx == ROOM_HALF || dz == -ROOM_HALF || dz == ROOM_HALF || dy == -1 || dy == 4
                 nether.setBlockAndUpdate(center.offset(dx, dy, dz), if (shell) Blocks.NETHERRACK.defaultBlockState() else Blocks.AIR.defaultBlockState())
             }
             return center
+        }
+
+        /** The chunks the room around [center] stands in. */
+        fun roomChunks(center: BlockPos): List<ChunkPos> {
+            val from = ChunkPos.containing(center.offset(-ROOM_HALF, 0, -ROOM_HALF))
+            val to = ChunkPos.containing(center.offset(ROOM_HALF, 0, ROOM_HALF))
+            return (from.x..to.x).flatMap { x -> (from.z..to.z).map { z -> ChunkPos(x, z) } }
         }
     }
 }

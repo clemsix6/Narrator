@@ -233,7 +233,7 @@ class MechanicsCommandGameTests {
                 "the operator's decisions: $operator"
             }
             val engine = bench.sink.kept.filter { it.kind == DecisionRecord.Kind.MECHANIC }.map { "${it.decision} ${it.subject}" }
-            check("cancelled ${challenge.ref}" in engine && "removed ${law.ref}" in engine) { "the engine's own decisions: $engine" }
+            check("cancelled ${challenge.ref}" in engine && "rule_ended ${law.ref}" in engine) { "the engine's own decisions: $engine" }
         } finally {
             server.onServerThread { player.close() }
         }

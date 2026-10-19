@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.event.GameEvent
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.NarratorMob
 import io.github.clemsix6.narrator2.guard.NarratorMobs
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.EffectTarget
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.Firing
@@ -71,6 +72,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.TreeMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.Continuation
@@ -95,22 +97,28 @@ import kotlin.reflect.KClass
  *   `skipped`, and a `throttled` decision tells it, once a minute per rule at most.
  * - **Firing**: an act of the engine ([EngineActions.open] `fired`), then the effects in order, each at its delay
  *   after the fact (the tick wakes them), through the real tools with their target filled ([RuleTargets]), in a
- *   coroutine: same checks, caps, guards and limits as the Director. An `explosion` or a `lightning` refused by a
- *   guard is played once more harmless. A `notify` gets what happened as its `fact`. A `punish` done is an
- *   interaction of the player (`punishment`, canon = the rule). The effects of `mob_spawn` (`mob_effect`,
- *   `mob_attribute`) run on the server thread, on the creature itself: cheap.
- * - **Outcome**: `fired` (an effect done), `skipped` (all refused or skipped), `failed` (a `FAILED` or an
- *   `INVALID`, none done), counted in the rule's state; a skipped or failed firing is a decision of that name.
- *   Five failed firings in a row disable the rule; a skipped one neither counts nor breaks the row.
+ *   coroutine: same checks, caps, guards and limits as the Director. An effect whose rule ended meanwhile is
+ *   skipped. An `explosion` or a `lightning` refused by a guard is played once more harmless. A `notify` gets what
+ *   happened as its `fact`. A `punish` done is an interaction of the player (`punishment`, canon = the rule). A
+ *   rule never turns on a player hurt by another (words only), and the creatures' tools leave alone a tamed
+ *   animal, a creature a player named and the Narrator's own. The effects of `mob_spawn` (`mob_effect`,
+ *   `mob_attribute`) run on the server thread, on the creature itself, [MOB_FIRINGS_PER_TICK] creatures a tick at
+ *   most; their firings are told in one `fired` decision a minute per rule.
+ * - **Outcome**: `fired` (an effect done), `skipped` (all refused or skipped, or `FAILED`: the world could not do
+ *   it now, a player dead, no free ground, a chunk not loaded), `failed` (an `INVALID` or an `UNKNOWN`, none done),
+ *   counted in the rule's state; a skipped or failed firing is a decision of that name. Five failed firings in a
+ *   row disable the rule; a skipped one neither counts nor breaks the row.
  * - **End** ([RuleBook.end], in a coroutine): `once` after its first `fired` (`fulfilled`), its time up
- *   (`expired`, a `RULE` event), disabled (`disabled`, a `RULE` event). A rule that leaves the state, however,
- *   gets its marks (tag and modifiers, [RuleMarks]) taken off the creatures loaded; a creature that loads later
- *   with the marks of a rule no longer active gets them taken off then.
+ *   (`expired`, a `RULE` event), disabled (`disabled`, a `RULE` event); the book writes the `rule_ended` decision.
+ *   A rule that leaves the state, however, gets its marks (tag and modifiers, [RuleMarks]) taken off the creatures
+ *   loaded, and its firings still waiting dropped; a creature that loads later with the marks of a rule no longer
+ *   active gets them taken off then.
  *
  * Hooks on the server thread; [onEvent] from any thread; [situation] from any thread (the snapshot).
  *
  * @param tags the tags of the conditions: the server's, by default.
- * @param clock the engine's: the delays, the limits, the ends. A GameTest moves its own.
+ * @param clock the engine's: the delays, the limits, the ends. A GameTest moves its own, and gives it to [book]
+ *   too, which sets the rules' ends on it.
  * @param area the creatures this part looks after: every one by default; a GameTest gives its own area, so that
  *   engines running side by side never touch each other's creatures.
  */
@@ -142,10 +150,33 @@ class RuleEngine(
     /** A firing done: what came of each of its effects. */
     private class Done(val rule: Long, val fact: RuleFact, val runs: List<EffectRun>)
 
-    /** A `mob_spawn` firing on [mob], on the server thread: its effects from [next] on, each at its delay after [at]. */
-    private class MobFiring(val rule: RuleState, val mob: Mob, val what: String, val at: Long, val act: Firing, val sweep: Boolean) {
+    /**
+     * A `mob_spawn` firing on [mob], on the server thread: its effects from [next] on, each at its delay after [at],
+     * checked as [caller].
+     */
+    private class MobFiring(val rule: RuleState, val mob: Mob, val what: String, val at: Long, val caller: Caller) {
         var next = 0
         val runs = ArrayList<EffectRun>()
+    }
+
+    /**
+     * The `mob_spawn` firings of a rule since its last `fired` decision ([tellSpawns]): the creatures that appeared,
+     * by type, and the firings that did nothing, with the last one's why.
+     */
+    private class Spawns {
+        val types = TreeMap<String, Int>()
+        var skipped = 0
+        var failed = 0
+        var why: String? = null
+        var since = 0L
+        var toldAt = Long.MIN_VALUE
+
+        val empty: Boolean get() = types.isEmpty() && skipped == 0 && failed == 0
+
+        /** Something to tell from [at] on: the first since the last decision starts the count. */
+        fun note(at: Long) {
+            if (empty) since = at
+        }
     }
 
     /** The firings of a rule held back by the limits: [pending] not counted in its state yet, [untold] since the last decision. */
@@ -169,6 +200,7 @@ class RuleEngine(
     private val held = HashMap<Long, Held>()
     private val running = HashMap<Long, Int>()
     private val mobFirings = ArrayList<MobFiring>()
+    private val spawns = HashMap<Long, Spawns>()
 
     /** The rules this part has seen: one that leaves the state gets its marks taken off. */
     private val known = HashSet<Long>()
@@ -202,8 +234,8 @@ class RuleEngine(
     /**
      * A creature appeared or loaded: the marks of the rules no longer active come off it; then each active
      * `mob_spawn` rule that matches it, and has not changed it already (a creature loaded again keeps its
-     * marks), fires on it within its limit. Never a player, one of the Narrator's creatures, a tamed animal nor a
-     * creature a player named. Server thread.
+     * marks), fires on it within its limit, told in the rule's next summary ([tellSpawns]). Never a player, one of
+     * the Narrator's creatures, a tamed animal nor a creature a player named. Server thread.
      */
     override fun onMobLoad(entity: Entity, level: ServerLevel) {
         if (stopped || entity !is Mob || !area(entity)) return
@@ -225,8 +257,8 @@ class RuleEngine(
                 continue
             }
             known += rule.id
-            val act = actions.open(FIRED, rule.ref, short(entity.typeId), detail = detail(rule, fact), reason = "${rule.ref} ${fact.what}")
-            mobFirings += MobFiring(rule, entity, fact.what, now, act, sweep = false)
+            spawns.getOrPut(rule.id) { Spawns() }.apply { note(now) }.types.merge(short(entity.typeId), 1, Int::plus)
+            mobFirings += MobFiring(rule, entity, fact.what, now, Caller(Role.DIRECTOR, EngineActions.conversationOf(rule.ref), turnId = null, taskId = null))
         }
     }
 
@@ -257,7 +289,8 @@ class RuleEngine(
     /**
      * A second: the rules that left the state get their marks taken off ([server] given), the new `mob_spawn` ones
      * change the creatures already loaded, the rules whose time is up end, the players' positions are looked at,
-     * and the firings held back by the limits are counted and told. Server thread; [server] null in unit tests.
+     * the firings held back by the limits are counted and told, and the `mob_spawn` firings summed up. Server
+     * thread; [server] null in unit tests.
      */
     internal fun second(server: MinecraftServer?, now: Long) {
         if (stopped) return
@@ -273,10 +306,14 @@ class RuleEngine(
         rules.filter { it.endsAt <= now && it.id !in ending }.forEach { end(it, Ending.EXPIRED, null) }
         server?.let { positions(it, now) }
         release(now)
+        tellSpawns(now)
     }
 
     /** The rule is still at work at [now]: not past its time, not being ended. */
     private fun live(rule: RuleState, now: Long): Boolean = rule.id !in ending && rule.endsAt > now
+
+    /** Rule [id] is still in the state and at work now (the snapshot: any thread). */
+    private fun alive(id: Long): Boolean = store.snapshot.rule(id)?.let { live(it, clock.millis()) } == true
 
     // ── Firing ──
 
@@ -296,7 +333,11 @@ class RuleEngine(
         }
     }
 
-    /** Fires [rule] for [fact] (at [at]): an act of the engine, then its effects in a coroutine. Server thread. */
+    /**
+     * Fires [rule] for [fact] (at [at]): an act of the engine, then its effects in a coroutine. An effect whose rule
+     * ended or left meanwhile (removed, past its time, disabled) is skipped: a delayed effect never outlives its
+     * rule (M4 code review, finding 7). Server thread.
+     */
     private fun fire(rule: RuleState, fact: RuleFact, at: Long) {
         known += rule.id
         val act = actions.open(FIRED, rule.ref, fact.actor?.name, detail = detail(rule, fact), reason = "${rule.ref} ${fact.what}")
@@ -304,6 +345,7 @@ class RuleEngine(
         scope.launch {
             val runs = rule.spec.effects.map { effect ->
                 until(at + effect.delaySeconds * SECOND_MS)
+                if (!alive(rule.id)) return@map EffectRun(effect.tool, EffectOutcome.SKIPPED, "${rule.ref} ended before it")
                 try {
                     effect(act, rule, fact, effect)
                 } catch (e: CancellationException) {
@@ -327,11 +369,14 @@ class RuleEngine(
 
     /**
      * One effect of a firing: its target filled, then the real tool in the act. A target gone (the player left,
-     * the creature died) or of the wrong kind (a creature for a tool of players) skips it.
+     * the creature died), of the wrong kind (a creature for a tool of players), a player hurt by another for a tool
+     * that does more than speak, or a creature a rule leaves alone, skips it. What a rule may never do (checked when
+     * it was created) fails it here too.
      */
     private suspend fun effect(act: Firing, rule: RuleState, fact: RuleFact, effect: RuleEffect): EffectRun {
         val tool = effect.tool
         val aiming = RuleTargets.ALLOWED[tool] ?: return EffectRun(tool, EffectOutcome.FAILED, "Invalid arguments: $tool cannot be used in a rule")
+        RuleTargets.forbidden(tool, effect.args)?.let { return EffectRun(tool, EffectOutcome.FAILED, "Invalid arguments: $it") }
         val aim = when (val target = aim(effect.at, aiming, fact)) {
             is Target.Gone -> return EffectRun(tool, EffectOutcome.SKIPPED, target.why)
             is Target.At -> target.aim
@@ -362,7 +407,8 @@ class RuleEngine(
         EffectTarget.ACTOR -> fact.actor?.let(::online) ?: Target.Gone("${fact.trigger.id} has no player")
         EffectTarget.SUBJECT -> when (val subject = fact.subject) {
             null -> Target.Gone("${fact.trigger.id} had no subject this time")
-            is RuleSubject.Player -> online(subject.ref)
+            is RuleSubject.Player ->
+                if (aiming == Aiming.AUDIENCE || aiming == Aiming.NEWS) online(subject.ref) else Target.Gone("a rule never turns on the player hurt")
             is RuleSubject.Creature -> creature(subject, aiming)
         }
         EffectTarget.POSITION -> fact.position?.let { Target.At(Aim.Point(it.x, it.y, it.z, ToolText.dimension(it.dim))) }
@@ -376,15 +422,25 @@ class RuleEngine(
 
     /**
      * The creature [subject], alive and loaded now: where it stands for a tool of places, itself for the
-     * creatures' tools; for a tool of players, itself, which [RuleTargets.aimed] refuses (skipped).
+     * creatures' tools, unless a rule leaves it alone ([spawnable]: a tamed animal, a creature a player named, the
+     * Narrator's own; M4 code review, finding 8); for a tool of players, itself, which [RuleTargets.aimed] refuses
+     * (skipped).
      */
     private suspend fun creature(subject: RuleSubject.Creature, aiming: Aiming): Target {
         if (aiming != Aiming.PLACE && aiming != Aiming.CREATURE) return Target.At(Aim.Creature(subject.uuid))
         val server = services.server
-        val where = server.onServerThread(SERVER_TIMEOUT_MS) {
-            server.overworld().getEntityInAnyDimension(subject.uuid)?.takeIf { it.isAlive }?.let { it.blockPosition().toPos(it.level()) }
-        } ?: return Target.Gone("the ${short(subject.type)} is gone")
-        return Target.At(if (aiming == Aiming.PLACE) Aim.Point(where.x, where.y, where.z, ToolText.dimension(where.dim)) else Aim.Creature(subject.uuid))
+        return server.onServerThread(SERVER_TIMEOUT_MS) {
+            val entity = server.overworld().getEntityInAnyDimension(subject.uuid)?.takeIf { it.isAlive }
+            when {
+                entity == null -> Target.Gone("the ${short(subject.type)} is gone")
+                aiming == Aiming.CREATURE -> if (entity is Mob && spawnable(entity)) {
+                    Target.At(Aim.Creature(subject.uuid))
+                } else {
+                    Target.Gone("the ${short(subject.type)} is tamed, named or the Narrator's own: a rule leaves it alone")
+                }
+                else -> entity.blockPosition().toPos(entity.level()).let { Target.At(Aim.Point(it.x, it.y, it.z, ToolText.dimension(it.dim))) }
+            }
+        }
     }
 
     /** [args] of an `explosion` or a `lightning` that hurts nobody, to play again after a guard refused it; null for any other. */
@@ -414,20 +470,40 @@ class RuleEngine(
 
     // ── Creatures (mob_spawn) ──
 
-    /** The `mob_spawn` firings whose effects are due, in order; each one done is counted. Server thread. */
+    /**
+     * The `mob_spawn` firings whose effects are due, in order, on [MOB_FIRINGS_PER_TICK] creatures a tick at most
+     * (a law swept over 500 cows spreads over ten ticks); each one done is counted, and what did nothing summed up
+     * for [tellSpawns]. A firing whose rule ended meanwhile is dropped. Server thread.
+     */
     private fun runMobFirings(now: Long) {
         if (mobFirings.isEmpty()) return
+        val state = store.get()
+        var left = MOB_FIRINGS_PER_TICK
         val iterator = mobFirings.iterator()
-        while (iterator.hasNext()) {
+        while (iterator.hasNext() && left > 0) {
             val firing = iterator.next()
+            val rule = state.rule(firing.rule.id)
+            if (rule == null || !live(rule, now)) {
+                iterator.remove()
+                continue
+            }
             val effects = firing.rule.spec.effects
+            if (firing.next < effects.size && firing.at + effects[firing.next].delaySeconds * SECOND_MS <= now) left--
             while (firing.next < effects.size && firing.at + effects[firing.next].delaySeconds * SECOND_MS <= now) {
                 firing.runs += onCreature(firing, effects[firing.next])
                 firing.next++
             }
             if (firing.next < effects.size) continue
             iterator.remove()
-            count(firing.rule.id, firing.runs, firing.what, now, told = !firing.sweep)
+            val outcome = FiringOutcome.of(firing.runs)
+            if (outcome != FiringOutcome.FIRED) {
+                spawns.getOrPut(rule.id) { Spawns() }.apply {
+                    note(now)
+                    if (outcome == FiringOutcome.SKIPPED) skipped++ else failed++
+                    why = "${short(firing.mob.typeId)}: ${summary(firing.runs)}"
+                }
+            }
+            count(rule.id, firing.runs, firing.what, now, told = false)
         }
     }
 
@@ -436,7 +512,7 @@ class RuleEngine(
         val mob = firing.mob
         if (mob.isRemoved || !mob.isAlive) return EffectRun(effect.tool, EffectOutcome.SKIPPED, "the ${short(mob.typeId)} is gone")
         val args = JsonObject(effect.args + (CREATURE to JsonPrimitive(mob.uuid.toString())))
-        dryChecks(effect.tool, args, firing.act.caller)?.let { return EffectRun(effect.tool, outcomeOf(it.status), firstLine(it)) }
+        dryChecks(effect.tool, args, firing.caller)?.let { return EffectRun(effect.tool, outcomeOf(it.status), firstLine(it)) }
         val result = answer {
             when (effect.tool) {
                 MOB_EFFECT -> MobEffectTool.apply(mob, firing.rule.id, decoded(MobEffectArgs.serializer(), args))
@@ -461,7 +537,7 @@ class RuleEngine(
         if (found.isEmpty()) return
         val types = found.groupingBy { short(it.typeId) }.eachCount().entries.joinToString { "${it.value} ${it.key}" }
         val act = actions.open(FIRED, rule.ref, "${found.size} creatures", reason = "${rule.ref} changes the ${found.size} creatures already loaded: $types")
-        found.forEach { mobFirings += MobFiring(rule, it, "already loaded", now, act, sweep = true) }
+        found.forEach { mobFirings += MobFiring(rule, it, "already loaded", now, act.caller) }
     }
 
     /** Whether a `mob_spawn` rule may change [mob]: never one of the Narrator's own, a tamed animal, nor a creature a player named. */
@@ -476,14 +552,19 @@ class RuleEngine(
     private fun creatures(server: MinecraftServer): Sequence<Entity> =
         server.allLevels.asSequence().flatMap { it.allEntities.asSequence() }.filter(area)
 
-    /** Rules [ids] left the state: forgotten, and their marks taken off the creatures loaded. Server thread. */
+    /**
+     * Rules [ids] left the state: forgotten, their creatures' firings still waiting dropped, and their marks taken
+     * off the creatures loaded. Server thread.
+     */
     private fun left(ids: Set<Long>) {
         known -= ids
         swept -= ids
+        mobFirings.removeIf { it.rule.id in ids }
         for (id in ids) {
             limits.forget(id)
             edges.forgetRule(id)
             held.remove(id)
+            spawns.remove(id)
             running.remove(id)
             ending.remove(id)
         }
@@ -535,16 +616,16 @@ class RuleEngine(
         }
     }
 
-    /** How a rule ends here: its decision, its canon's status (law, plan), and whether the Director hears of it. */
-    private enum class Ending(val decision: String, val law: CanonStatus, val plan: CanonStatus) {
+    /** How a rule ends here: its ending ([RuleEnding]), and its canon's status (law, plan). */
+    private enum class Ending(val ending: RuleEnding, val law: CanonStatus, val plan: CanonStatus) {
         /** A rule that fires once fired. */
-        ONCE("fulfilled", CanonStatus.RETIRED, CanonStatus.FULFILLED),
+        ONCE(RuleEnding.FULFILLED, CanonStatus.RETIRED, CanonStatus.FULFILLED),
 
         /** Its time is up (also while the server was down: at its first second). */
-        EXPIRED("expired", CanonStatus.RETIRED, CanonStatus.EXPIRED),
+        EXPIRED(RuleEnding.EXPIRED, CanonStatus.RETIRED, CanonStatus.EXPIRED),
 
         /** Five failed firings in a row. */
-        DISABLED("disabled", CanonStatus.RETIRED, CanonStatus.CANCELLED),
+        DISABLED(RuleEnding.DISABLED, CanonStatus.RETIRED, CanonStatus.CANCELLED),
     }
 
     /**
@@ -570,11 +651,11 @@ class RuleEngine(
         }
         services.scope.launch {
             val ended = try {
-                book.end(rule.id, if (law) ending.law else ending.plan, note, ending.decision)
+                book.end(rule.id, if (law) ending.law else ending.plan, note, ending.ending)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                log.error("${rule.ref} could not be ended (${ending.decision}); it is tried again at its next end", e)
+                log.error("${rule.ref} could not be ended (${ending.ending.id}); it is tried again at its next end", e)
                 this@RuleEngine.ending.remove(rule.id)
                 null
             }
@@ -613,6 +694,31 @@ class RuleEngine(
             )
             rule.untold = 0
             rule.toldAt = now
+        }
+    }
+
+    /**
+     * The `mob_spawn` firings since the last summary, told in one `fired` decision a minute per rule at most (M4 code
+     * review, finding 33): `C-60 since 20:31:05: fired on 12 creatures that appeared (9 creeper, 3 zombie), 2 skipped:
+     * cow: mob_attribute skipped: …`. Server thread.
+     */
+    private fun tellSpawns(now: Long) {
+        for ((id, spawned) in spawns) {
+            if (spawned.empty || (spawned.toldAt != Long.MIN_VALUE && now - spawned.toldAt < SUMMARY_GAP_MS)) continue
+            val appeared = spawned.types.values.sum()
+            val parts = listOfNotNull(
+                "fired on $appeared creatures that appeared (${spawned.types.entries.joinToString { "${it.value} ${it.key}" }})".takeIf { appeared > 0 },
+                "${spawned.skipped} skipped".takeIf { spawned.skipped > 0 },
+                "${spawned.failed} failed".takeIf { spawned.failed > 0 },
+            )
+            val why = spawned.why?.takeIf { spawned.skipped + spawned.failed > 0 }?.let { ": $it" }.orEmpty()
+            val since = TIME.format(Instant.ofEpochMilli(spawned.since).atZone(clock.zone))
+            decision(FIRED, Ref(RefKind.CANON, id), ModelText.cut("C-$id since $since: ${parts.joinToString(", ")}$why", REASON_MAX), Log.Level.DEBUG)
+            spawned.types.clear()
+            spawned.skipped = 0
+            spawned.failed = 0
+            spawned.why = null
+            spawned.toldAt = now
         }
     }
 
@@ -720,7 +826,7 @@ class RuleEngine(
     }
 
     companion object {
-        /** The decisions of the rules' firings (M4 §19); their ends are [Ending]'s. */
+        /** The decisions of the rules' firings (M4 §19); their ends are the book's `rule_ended` ([RuleBook.ENDED]). */
         const val FIRED = "fired"
         const val SKIPPED = "skipped"
         const val FAILED = "failed"
@@ -741,6 +847,12 @@ class RuleEngine(
 
         private const val SECOND_MS = 1_000L
         private const val SERVER_TIMEOUT_MS = 5_000L
+
+        /** The creatures a tick of `mob_spawn` firings changes at most: a sweep over a herd spreads over the ticks. */
+        const val MOB_FIRINGS_PER_TICK = 50
+
+        /** One summary of a `mob_spawn` rule's firings a minute at most. */
+        private const val SUMMARY_GAP_MS = 60_000L
 
         /** Longest reason of a `skipped` or `failed` decision. */
         private const val REASON_MAX = 1_000
@@ -787,9 +899,16 @@ class RuleEngine(
             if (marksOn(entity).isEmpty() && !entity.hasAttached(NarratorMob.TYPE)) entity.removeTag(NarratorMobs.TAG)
         }
 
+        /**
+         * What a tool's answer makes of an effect: a `FAILED` is the world or the moment (a player dead, no free
+         * ground, a chunk not loaded, a creature without the attribute), never the rule's fault: skipped, so that it
+         * never disables the rule (M4 code review, finding 33). An `INVALID` (its arguments no longer fit: the chaos
+         * level fell) or an `UNKNOWN` fails it.
+         */
         private fun outcomeOf(status: ToolStatus): EffectOutcome = when (status) {
             ToolStatus.OK -> EffectOutcome.DONE
             ToolStatus.DENIED -> EffectOutcome.REFUSED
+            ToolStatus.FAILED -> EffectOutcome.SKIPPED
             else -> EffectOutcome.FAILED
         }
 
@@ -809,10 +928,10 @@ enum class EffectOutcome {
     /** A guard refused it (`DENIED`). */
     REFUSED,
 
-    /** Its target was gone, or not of the kind its tool acts on. */
+    /** Its target was gone, not of the kind its tool acts on, or one a rule leaves alone; its rule ended; or `FAILED` (the world could not do it now). */
     SKIPPED,
 
-    /** `FAILED`, `INVALID`, or a world tool that did not finish. */
+    /** `INVALID`, a world tool that did not finish (`UNKNOWN`), or the engine's own error. */
     FAILED,
     ;
 
