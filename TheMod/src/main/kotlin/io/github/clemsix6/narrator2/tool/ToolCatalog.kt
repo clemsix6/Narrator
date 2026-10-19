@@ -32,17 +32,34 @@ import kotlinx.serialization.json.putJsonArray
  * Each family lives in its own file and belongs to its own task; this catalog only lists them and says
  * which role has which tool:
  *
- * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's);
- * - the Analyst has its reads ([ANALYST_TOOLS]);
+ * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's) and the
+ *   scout's own ([SCOUT_OWN]);
+ * - the Analyst has its reads ([ANALYST_TOOLS]), the scout its own ([SCOUT_TOOLS]);
  * - the Chronicler and the Dreamer have their own family, plus the tools they share with others
  *   ([CHRONICLER_SHARED], [DREAMER_SHARED]);
- * - the other roles have none yet.
+ * - the other roles have none yet;
+ * - the rules' own tools ([RULE_ONLY]) are nobody's: only the mechanics engine runs them.
  */
 object ToolCatalog {
     /** The Analyst's tools (M1_M2 §9.7, M3 §5): reads only. */
     private val ANALYST_TOOLS = setOf(
         "sql", "list_players", "inspect_player", "player_stats", "area_info", "scan_area", "locate", "recall", "player_profile",
     )
+
+    /**
+     * The scout's tools (M4 §14): where the players are and what is around them, the places they haunt (`sql`),
+     * the places the Narrator named (`recall`), and its own [SCOUT_OWN]. Reads only.
+     */
+    private val SCOUT_TOOLS = setOf("list_players", "inspect_player", "scan_area", "area_info", "locate", "sql", "recall", "survey")
+
+    /** The scout's own tools, never the Director's: a survey takes several readings, which he delegates. */
+    private val SCOUT_OWN = setOf("survey")
+
+    /**
+     * The tools of the rules alone (M4 §8.4): `mob_effect`, `mob_attribute` and `notify` exist only as the
+     * effects of a rule, run by the engine (`EngineActions`); no conversation ever sees them.
+     */
+    private val RULE_ONLY = setOf("mob_effect", "mob_attribute", "notify")
 
     /** What the Chronicler has besides its own family (M3 §7.5). */
     private val CHRONICLER_SHARED = setOf("remember", "resolve", "note_interaction", "recall")
@@ -122,10 +139,11 @@ object ToolCatalog {
         return set
     }
 
-    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3). */
-    private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = when (role) {
-        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer
+    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14). */
+    private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = name !in RULE_ONLY && when (role) {
+        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN
         Role.ANALYST -> name in ANALYST_TOOLS
+        Role.SCOUT -> name in SCOUT_TOOLS
         Role.CHRONICLER -> name in jobs.chronicler || name in CHRONICLER_SHARED
         Role.DREAMER -> name in jobs.dreamer || name in DREAMER_SHARED
         else -> false

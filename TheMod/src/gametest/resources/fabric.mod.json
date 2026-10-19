@@ -32,6 +32,7 @@
       "io.github.clemsix6.narrator2.gametest.TrapGameTests",
       "io.github.clemsix6.narrator2.gametest.DirectorReminderGameTests",
       "io.github.clemsix6.narrator2.gametest.MechanicsEngineGameTests",
+      "io.github.clemsix6.narrator2.gametest.SurveyGameTests",
       "io.github.clemsix6.narrator2.gametest.FavorGameTests"
     ]
   },
