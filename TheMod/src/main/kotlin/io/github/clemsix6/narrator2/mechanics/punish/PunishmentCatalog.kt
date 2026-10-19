@@ -133,10 +133,17 @@ object PunishmentCatalog {
      */
     const val GUESTS_HAT = "carved_pumpkin"
 
-    /** The episode of the instant punishments: time to sort an inventory, to climb down, to get over a bolt. */
+    /**
+     * The episode of the instant punishments: time to sort an inventory, to climb down, to get over a bolt. A tree
+     * top's death guard covers any death that long, and a fall [TREE_TOP_FALL_SECONDS_PER_BLOCK] more per block of
+     * the climb.
+     */
     const val SHUFFLE_SECONDS = 30
     const val TREE_TOP_SECONDS = 60
     const val SMITE_SECONDS = 30
+
+    /** Seconds more of a tree top's guard against a fall, per block between the top and where the player stood. */
+    const val TREE_TOP_FALL_SECONDS_PER_BLOCK = 2
 
     /** A launch's own fall protection (`launch`): the episode of `skyward`. */
     const val SKYWARD_SECONDS = 15
@@ -239,7 +246,9 @@ object PunishmentCatalog {
                 }
                 Draft(SKYWARD_SECONDS, true, Peril.FALL, null, listOf(Step.Launch(LaunchArgs(player, LaunchDirection.UP, strength))))
             }
-            PunishmentId.TREE_TOP -> Draft(TREE_TOP_SECONDS, false, Peril.FALL, Primitive.TreeTop, emptyList())
+            // Up there anything may kill: a skeleton, phantoms, the fall (M4 review, finding 10), like any teleport. The
+            // primitive covers the fall longer, by the height of the climb down (`Prepared.fallSeconds`).
+            PunishmentId.TREE_TOP -> Draft(TREE_TOP_SECONDS, false, Peril.ANY, Primitive.TreeTop, emptyList())
             PunishmentId.SMITE -> {
                 val hearts = if (severity <= caps.lightningHearts) {
                     severity.toDouble()

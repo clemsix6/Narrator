@@ -9,7 +9,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * A player the Narrator may not act against is no valid target for its creatures ({@link CreatureShield}).
+ * A player the Narrator may not act against is no valid target for its creatures, and nothing but a player is
+ * one for the creatures it summoned: never a villager nor an animal ({@link CreatureShield#keepsAway}).
  * {@code Mob.asValidTarget} is the game's own gate, read with {@code javap -c}: {@code setTarget},
  * {@code getTarget} and {@code getTargetFromBrain} all go through it, and it already turns away creative
  * and spectator players; no subclass overrides it.

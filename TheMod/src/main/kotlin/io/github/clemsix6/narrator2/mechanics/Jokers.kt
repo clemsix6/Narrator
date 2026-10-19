@@ -110,15 +110,15 @@ object Jokers {
     /**
      * Gives [player] a joker, a favor of [caller] at [now] (epoch milliseconds): they are told (`joker.given`), it
      * goes into their inventory through the ledger (what finds no room waits there and comes once there is room),
-     * and it is dated in their guards' state (`jokersGivenAt`, saved with that inventory). Ask [allowed] first.
+     * and the guards date it in their state (`Guards.jokerGiven`: `jokersGivenAt`, saved with that inventory). Ask
+     * [allowed] first.
      * Returns whether it waits for room. Decision `guard joker_given`. Server thread.
      */
     fun give(services: NarratorServices, player: ServerPlayer, caller: Caller, now: Long): Boolean {
         val ui = services.settings.get().ui
         player.sendSystemMessage(Speech.chatLine(ui, ui["joker.given"], private = true))
         val waiting = services.guards.items.owe(player, listOf(stack(ui)), "a joker, a favor of the Narrator").isNotEmpty()
-        // The attachment itself: the guards' own copy of the state reads it back at their next change of this player.
-        GuardStates.write(player, GuardStates.read(player).let { it.copy(jokersGivenAt = it.jokersGivenAt + now) })
+        services.guards.jokerGiven(player, now)
         Decisions(services.trace, services.clock).record(
             Log.guard, DecisionRecord.Kind.GUARD, "joker_given", player.plainTextName,
             reason = "a joker to play by themselves against one of the Narrator's punishments" +
@@ -135,9 +135,10 @@ object Jokers {
     /**
      * `UseItemCallback` (`registerMechanicsHooks`), server side only: [player] uses the stack in [hand].
      * [InteractionResult.PASS] lets the game go on as usual: not a joker, or nothing to lift (the player is told
-     * `joker.nothing`, and keeps it). A joker played pardons the player as an act of its own, takes one joker from
-     * the stack, tells the player (`joker.played`) and the Director (`JOKER`, no priority), and answers a success, so
-     * that the game does nothing else with it. Server thread.
+     * `joker.nothing`, and keeps it): `Guards.isPunished` is false once an instant punishment is done (a bolt, a
+     * tree top), whose episode alone is left (M4 review, finding 35). A joker played pardons the player as an act
+     * of its own, takes one joker from the stack, tells the player (`joker.played`) and the Director (`JOKER`, no
+     * priority), and answers a success, so that the game does nothing else with it. Server thread.
      *
      * The act is its decision `mechanic joker` (subject: the player), whose id the pardon carries as its
      * `Caller.firingId` (the guards' `pardoned` decision of the act). Its reason is the `JOKER` line, which stands

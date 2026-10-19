@@ -78,7 +78,8 @@ class PunishmentCatalogTest {
                 val strength = if (asked > caps.launchStrength) caps.launchStrength.also { notes += "strength capped at ${plain(it)} by the chaos level" } else asked
                 plan(15, true, Peril.FALL, null, listOf(Step.Launch(LaunchArgs(player, LaunchDirection.UP, strength))))
             }
-            PunishmentId.TREE_TOP -> plan(60, false, Peril.FALL, Primitive.TreeTop, emptyList())
+            // Any death up there is the Narrator's, not only the fall (M4 review, finding 10).
+            PunishmentId.TREE_TOP -> plan(60, false, Peril.ANY, Primitive.TreeTop, emptyList())
             PunishmentId.SMITE -> {
                 val hearts = if (s > caps.lightningHearts) caps.lightningHearts.also { notes += "damage capped at ${plain(it)} hearts by the chaos level" } else s.toDouble()
                 plan(30, false, Peril.ANY, null, listOf(Step.Lightning(LightningArgs(player = player, damageHearts = hearts))))
