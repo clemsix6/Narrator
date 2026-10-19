@@ -66,6 +66,42 @@ class SpeechLimiterTest {
         assertEquals(Verdict.Allowed, limiter.line(Caller(Role.DIRECTOR, "director-2", turnId = 1, taskId = null)))
     }
 
+    /** An act of the mechanics engine: firing [id] of the rule C-60 (M4 §4.3). */
+    private fun firing(id: Long) = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = id)
+
+    /** M4 review, finding 10: with the turn alone, every firing of a rule would share one count and fall silent for good. */
+    @Test
+    fun `each firing of a rule has its own 4 lines`() {
+        repeat(4) { assertEquals(Verdict.Allowed, limiter.line(firing(812))) }
+        assertContains(denied(limiter.line(firing(812))), "4 lines already this turn")
+
+        repeat(4) { assertEquals(Verdict.Allowed, limiter.line(firing(813)), "the next firing speaks afresh") }
+        // Still 8 lines in any minute, the Director's and the engine's together.
+        assertContains(denied(limiter.line(firing(814))), "8 lines already in the last minute")
+        assertContains(denied(limiter.line(turn(5))), "8 lines already in the last minute")
+    }
+
+    @Test
+    fun `a firing never passes for the turn of the same number`() {
+        val turn = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = 812, taskId = null)
+        repeat(4) { limiter.line(turn) }
+
+        assertEquals(Verdict.Allowed, limiter.line(firing(812)), "firing 812 is act -812, not turn 812")
+    }
+
+    @Test
+    fun `a turn keeps its count while the engine acts`() {
+        repeat(3) { limiter.line(turn(1)) }
+        // Many acts of the engine since (each counted in a turn of its own), the minute moving on.
+        repeat(100) {
+            clock.advance(Duration.ofSeconds(10))
+            limiter.line(firing(1_000L + it))
+            limiter.line(turn(1)).let { verdict -> if (it == 0) assertEquals(Verdict.Allowed, verdict, "the turn's 4th line") }
+        }
+
+        assertContains(denied(limiter.line(turn(1))), "4 lines already this turn")
+    }
+
     @Test
     fun `at most 10 sounds in any minute`() {
         repeat(10) {

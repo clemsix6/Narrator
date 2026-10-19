@@ -11,7 +11,9 @@ import java.util.UUID
 
 /**
  * The anti-spam limits of the speech tools (M1_M2 §9.1), enforced whatever the model asks:
- * - `say`: [LINES_PER_TURN] lines per turn and [LINES_PER_MINUTE] per sliding minute;
+ * - `say`: [LINES_PER_TURN] lines per turn and [LINES_PER_MINUTE] per sliding minute, whoever speaks; each act
+ *   of the mechanics engine (a rule's firing) is a turn of its own ([Caller.act], [TurnCounter]), and its lines
+ *   count in the minute like the Director's;
  * - `show_title`: one title per player every [TITLE_COOLDOWN_MS];
  * - `actionbar`: one line per player every [ACTIONBAR_COOLDOWN_MS];
  * - `give_book`: one book per player every [BOOK_COOLDOWN_MS];
@@ -29,7 +31,7 @@ class SpeechLimiter(private val clock: Clock) {
     private val actionbars = Cooldown(ACTIONBAR_COOLDOWN_MS)
     private val books = Cooldown(BOOK_COOLDOWN_MS)
 
-    /** One `say` line in [caller]'s turn: allowed and counted, or refused with when to try again. */
+    /** One `say` line in [caller]'s turn (or act of the engine): allowed and counted, or refused with when to try again. */
     @Synchronized
     fun line(caller: Caller): Verdict {
         val now = clock.millis()
