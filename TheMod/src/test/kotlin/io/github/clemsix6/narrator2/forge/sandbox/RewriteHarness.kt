@@ -136,7 +136,7 @@ internal class LoadedModule(val main: String, val classes: Map<String, ByteArray
 internal class FakeContext {
     val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
     val timers = mutableListOf<Runnable>()
-    val handlers = mutableListOf<Consumer<Any?>>()
+    val handlers = mutableListOf<Pair<Class<*>, Consumer<Any?>>>()
     val storage = LinkedHashMap<String, String>()
 
     @Suppress("UNCHECKED_CAST")
@@ -161,7 +161,7 @@ internal class FakeContext {
                 }
             }
             "events" -> fake(io.github.clemsix6.narrator2.forge.api.Events::class.java) { on, values ->
-                handlers += values[1] as Consumer<Any?>
+                handlers += (values[0] as Class<*>) to (values[1] as Consumer<Any?>)
                 default(on.returnType)
             }
             "timers" -> fake(io.github.clemsix6.narrator2.forge.api.Timers::class.java) { timer, values ->

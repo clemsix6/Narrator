@@ -10,6 +10,7 @@ import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
+import java.lang.reflect.Modifier
 import java.util.concurrent.ConcurrentHashMap
 
 /** Bytecode the rewriting cannot bound (M5 §3.4); the message is for the forger. */
@@ -32,21 +33,24 @@ data class RewrittenMember(val owner: String, val name: String, val descriptor: 
  * - Each method: `m.enter()` at its entry, `m.exit()` before each return, `m.tick()` before each backward jump or
  *   switch, and at the entry of each exception handler (a loop through a handler has no jump of its own).
  * - `newarray`, `anewarray`: `Guarded.array(n)` first.
- * - The constructors that reserve a capacity at once: `Guarded.capacity(n)` on that argument, wherever it sits on the
- *   stack; `StringBuilder(CharSequence)`: a CharSequence whose length can be trusted.
- * - Every member of [rewritten], called on a type of the JDK: a static method of `Guarded` in its place, the receiver
- *   first for an instance method. `toString()` on any type of the JDK but `String`, `StringBuilder` and the boxes.
+ * - The constructors that reserve a capacity at once ([SandboxPolicy.CAPACITY_CTOR_TYPES]): `Guarded.capacity(n)` on
+ *   that argument, wherever it sits on the stack; `StringBuilder(CharSequence)`: a CharSequence whose length can be
+ *   trusted.
+ * - Every member of [rewritten] ([SandboxPolicy.CAPACITY_METHODS], and the growth and texts that only this rewriting
+ *   bounds), called on a type of the JDK: a static method of `Guarded` in its place, the receiver first for an
+ *   instance method. `toString()` on any type of the JDK but `String`, `StringBuilder` and the boxes.
  * - `invokedynamic`: a concatenation and a record's `toString` bootstrap through `Guarded` (each object in them made a
  *   text within the limit); a lambda's method reference to anything but the module's own code goes through a private
  *   bridge in the class, rewritten like the rest, so that `list::add` is guarded and `List::stream` ticks.
  *
- * It refuses ([RewriteRefused]) what it cannot bound: a `multianewarray`, a class of the module that is a
- * `Collection`, a `Map` or a `CharSequence` (the JDK trusts their `size()` and `length()`: `new HashSet<>(lying)`
- * allocates the size it is told), and module code that names the holder or `forge.rt` (only the rewriting does).
- * Pure and thread-safe: it runs on the compiler's thread.
+ * It refuses ([RewriteRefused]) what it cannot bound: a `multianewarray`; a class of the module that is a
+ * `Collection`, a `Map` or a `CharSequence`, which the guard permits (the JDK trusts their `size()` and `length()`:
+ * `new HashSet<>(lying)` allocates the size it is told, `lying.chars().toArray()` the length); an exception handler
+ * inside its own range (a tripped meter would throw there forever); module code that names the holder or `forge.rt`
+ * (only the rewriting does). Pure and thread-safe: it runs on the compiler's thread.
  */
 object Instrumenter {
-    private const val RT = "io/github/clemsix6/narrator2/forge/rt/"
+    private const val RT = SandboxPolicy.RT_PACKAGE
     private const val METER = RT + "Meter"
     private const val GUARDED = RT + "Guarded"
     private const val METER_DESCRIPTOR = "L$METER;"
@@ -124,6 +128,33 @@ object Instrumenter {
         }
     }
 
+    // ── The JDK's classes, by internal name ─────────────────────────────────────────────────────────────────────
+
+    private val jdkClasses = ConcurrentHashMap<String, Any>()
+    private val MISSING = Any()
+
+    /** The JDK's class [internalName], loaded without being initialized; null for any other name. */
+    private fun jdkClass(internalName: String): Class<*>? {
+        if (!internalName.startsWith("java/")) return null
+        val found = jdkClasses.computeIfAbsent(internalName) {
+            runCatching { Class.forName(it.replace('/', '.'), false, ClassLoader.getPlatformClassLoader()) }.getOrDefault(MISSING)
+        }
+        return found as? Class<*>
+    }
+
+    /** Whether a call site can name [type]: a primitive, a public class, or an array of one. */
+    private fun nameable(type: Class<*>): Boolean = when {
+        type.isArray -> nameable(type.componentType)
+        else -> type.isPrimitive || Modifier.isPublic(type.modifiers)
+    }
+
+    private fun subtype(owner: String, base: String): Boolean {
+        if (owner == base) return true
+        val ownerClass = jdkClass(owner) ?: return false
+        val baseClass = jdkClass(base) ?: return false
+        return baseClass.isAssignableFrom(ownerClass)
+    }
+
     // ── The members sent through Guarded ────────────────────────────────────────────────────────────────────────
 
     private enum class Form { STATIC, INSTANCE }
@@ -142,7 +173,25 @@ object Instrumenter {
     private fun static(owner: String, name: String, descriptor: String, guarded: String = name) =
         CallRule(RewrittenMember(owner, name, descriptor), Form.STATIC, guarded)
 
-    private val CALLS: List<CallRule> = buildList {
+    /**
+     * The capacities the guard permits because they are wrapped here ([SandboxPolicy.CAPACITY_METHODS], the one list):
+     * every public overload the JDK declares under each name, sent to the `Guarded` method of the same name.
+     */
+    private val CAPACITY_CALLS: List<CallRule> = SandboxPolicy.CAPACITY_METHODS.flatMap { member ->
+        val owner = member.substringBeforeLast('.')
+        val name = member.substringAfterLast('.')
+        val type = checkNotNull(jdkClass(owner)) { "no $owner in the JDK" }
+        // A covariant bridge names the JDK's package-private AbstractStringBuilder: no call site can name it.
+        (type.methods.asSequence() + type.declaredMethods.asSequence())
+            .filter { method -> method.name == name && Modifier.isPublic(method.modifiers) && (method.parameterTypes + method.returnType).all(::nameable) }
+            .map { Type.getMethodDescriptor(it) to Modifier.isStatic(it.modifiers) }
+            .distinct()
+            .map { (descriptor, isStatic) -> if (isStatic) static(owner, name, descriptor) else instance(owner, name, descriptor) }
+            .toList()
+    }
+
+    /** What the guard permits and only the rewriting bounds: growth, texts, views (M5 §3.4; M5-01 and M5-03 handoffs). */
+    private val CALLS: List<CallRule> = CAPACITY_CALLS + buildList {
         // Collections: 10,000 elements each.
         add(instance(COLLECTION, "add", "(Ljava/lang/Object;)Z"))
         add(instance(COLLECTION, "addAll", "(Ljava/util/Collection;)Z"))
@@ -157,7 +206,6 @@ object Instrumenter {
         add(instance(LIST, "subList", "(II)Ljava/util/List;"))
         add(instance(LIST, "listIterator", "()Ljava/util/ListIterator;"))
         add(instance(LIST, "listIterator", "(I)Ljava/util/ListIterator;"))
-        add(instance("java/util/ArrayList", "ensureCapacity", "(I)V"))
         add(static("java/util/Collections", "addAll", "(Ljava/util/Collection;[Ljava/lang/Object;)Z"))
         add(static("java/util/Collections", "nCopies", "(ILjava/lang/Object;)Ljava/util/List;"))
         add(instance(MAP, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
@@ -168,44 +216,28 @@ object Instrumenter {
         add(instance(MAP, "computeIfAbsent", "(Ljava/lang/Object;Ljava/util/function/Function;)Ljava/lang/Object;"))
         add(instance("java/util/SequencedMap", "putFirst", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
         add(instance("java/util/SequencedMap", "putLast", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
-        // Hash tables: their whole table at the first put.
-        add(static("java/util/HashMap", "newHashMap", "(I)Ljava/util/HashMap;"))
-        add(static("java/util/LinkedHashMap", "newLinkedHashMap", "(I)Ljava/util/LinkedHashMap;"))
-        add(static("java/util/HashSet", "newHashSet", "(I)Ljava/util/HashSet;"))
-        add(static("java/util/LinkedHashSet", "newLinkedHashSet", "(I)Ljava/util/LinkedHashSet;"))
-        // Arrays: copies of 65,536 elements, texts within the limit.
-        for (element in listOf("Z", "B", "C", "S", "I", "J", "F", "D", "Ljava/lang/Object;")) {
-            add(static(ARRAYS, "copyOf", "([${element}I)[$element"))
-            add(static(ARRAYS, "copyOfRange", "([${element}II)[$element"))
-            add(static(ARRAYS, "toString", "([$element)Ljava/lang/String;", "arrayToString"))
-        }
-        add(static(ARRAYS, "copyOf", "([Ljava/lang/Object;ILjava/lang/Class;)[Ljava/lang/Object;"))
-        add(static(ARRAYS, "copyOfRange", "([Ljava/lang/Object;IILjava/lang/Class;)[Ljava/lang/Object;"))
-        add(static(ARRAYS, "deepToString", "([Ljava/lang/Object;)Ljava/lang/String;"))
-        // Streams: a JDK loop without the module's code in it.
-        add(static("java/util/stream/IntStream", "range", "(II)Ljava/util/stream/IntStream;"))
-        add(static("java/util/stream/IntStream", "rangeClosed", "(II)Ljava/util/stream/IntStream;"))
-        add(static("java/util/stream/LongStream", "range", "(JJ)Ljava/util/stream/LongStream;"))
-        add(static("java/util/stream/LongStream", "rangeClosed", "(JJ)Ljava/util/stream/LongStream;"))
+        // Builders of streams: as many elements as a collection.
         add(static("java/util/stream/Stream", "builder", "()Ljava/util/stream/Stream\$Builder;"))
         add(static("java/util/stream/IntStream", "builder", "()Ljava/util/stream/IntStream\$Builder;", "intBuilder"))
         add(static("java/util/stream/LongStream", "builder", "()Ljava/util/stream/LongStream\$Builder;", "longBuilder"))
         add(static("java/util/stream/DoubleStream", "builder", "()Ljava/util/stream/DoubleStream\$Builder;", "doubleBuilder"))
-        add(static("java/util/stream/Collectors", "joining", "()Ljava/util/stream/Collector;"))
-        add(static("java/util/stream/Collectors", "joining", "(Ljava/lang/CharSequence;)Ljava/util/stream/Collector;"))
-        add(static("java/util/stream/Collectors", "joining", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/util/stream/Collector;"))
-        // Texts: 65,536 characters, the text of a whole collection included.
+        // Texts: 65,536 characters, the text of a whole collection, map or array included.
         add(instance(OBJECT, "toString", "()Ljava/lang/String;"))
         add(static(STRING, "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;"))
         add(static("java/util/Objects", "toString", "(Ljava/lang/Object;)Ljava/lang/String;", "valueOf"))
         add(static("java/util/Objects", "toString", "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;"))
+        for (element in listOf("Z", "B", "C", "S", "I", "J", "F", "D", "Ljava/lang/Object;")) {
+            add(static(ARRAYS, "toString", "([$element)Ljava/lang/String;", "arrayToString"))
+        }
+        add(static(ARRAYS, "deepToString", "([Ljava/lang/Object;)Ljava/lang/String;"))
         add(static(STRING, "format", "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;"))
         add(static(STRING, "format", "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;"))
         add(instance(STRING, "formatted", "([Ljava/lang/Object;)Ljava/lang/String;"))
         add(static(STRING, "join", "(Ljava/lang/CharSequence;[Ljava/lang/CharSequence;)Ljava/lang/String;"))
         add(static(STRING, "join", "(Ljava/lang/CharSequence;Ljava/lang/Iterable;)Ljava/lang/String;"))
-        add(instance(STRING, "repeat", "(I)Ljava/lang/String;"))
-        add(instance(STRING, "indent", "(I)Ljava/lang/String;"))
+        add(static("java/util/stream/Collectors", "joining", "()Ljava/util/stream/Collector;"))
+        add(static("java/util/stream/Collectors", "joining", "(Ljava/lang/CharSequence;)Ljava/util/stream/Collector;"))
+        add(static("java/util/stream/Collectors", "joining", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/util/stream/Collector;"))
         add(instance(STRING, "concat", "(Ljava/lang/String;)Ljava/lang/String;"))
         add(instance(STRING, "replace", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;"))
         val text = "L$BUILDER;"
@@ -215,10 +247,6 @@ object Instrumenter {
         }
         add(instance(BUILDER, "appendCodePoint", "(I)$text"))
         add(instance(BUILDER, "replace", "(IILjava/lang/String;)$text"))
-        add(instance(BUILDER, "setLength", "(I)V"))
-        add(instance(BUILDER, "ensureCapacity", "(I)V"))
-        add(instance(BUILDER, "repeat", "(II)$text"))
-        add(instance(BUILDER, "repeat", "(Ljava/lang/CharSequence;I)$text"))
         add(instance("java/util/StringJoiner", "add", "(Ljava/lang/CharSequence;)Ljava/util/StringJoiner;"))
         add(instance("java/util/StringJoiner", "merge", "(Ljava/util/StringJoiner;)Ljava/util/StringJoiner;"))
     }
@@ -231,50 +259,27 @@ object Instrumenter {
         "java/lang/Boolean", "java/lang/Character",
     )
 
-    private val CONSTRUCTORS: Map<String, ConstructorRule> = listOf(
-        ConstructorRule(RewrittenMember("java/util/ArrayList", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/ArrayDeque", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/PriorityQueue", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/PriorityQueue", "<init>", "(ILjava/util/Comparator;)V"), 1),
-        ConstructorRule(RewrittenMember("java/util/HashMap", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/HashMap", "<init>", "(IF)V"), 1),
-        ConstructorRule(RewrittenMember("java/util/LinkedHashMap", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/LinkedHashMap", "<init>", "(IF)V"), 1),
-        ConstructorRule(RewrittenMember("java/util/LinkedHashMap", "<init>", "(IFZ)V"), 2),
-        ConstructorRule(RewrittenMember("java/util/HashSet", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/HashSet", "<init>", "(IF)V"), 1),
-        ConstructorRule(RewrittenMember("java/util/LinkedHashSet", "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember("java/util/LinkedHashSet", "<init>", "(IF)V"), 1),
-        ConstructorRule(RewrittenMember(BUILDER, "<init>", "(I)V"), 0),
-        ConstructorRule(RewrittenMember(BUILDER, "<init>", "(Ljava/lang/CharSequence;)V"), 0, trusted = true),
-    ).associateBy { it.member.owner + it.member.descriptor }
+    /**
+     * Every public constructor with a leading `int` of [SandboxPolicy.CAPACITY_CTOR_TYPES] (the one list), its capacity
+     * checked where it sits; and `StringBuilder(CharSequence)`, which reserves the length it is told.
+     */
+    private val CONSTRUCTORS: Map<String, ConstructorRule> = (
+        SandboxPolicy.CAPACITY_CTOR_TYPES.flatMap { owner ->
+            checkNotNull(jdkClass(owner)) { "no $owner in the JDK" }.constructors
+                .filter { it.parameterCount > 0 && it.parameterTypes[0] == Integer.TYPE }
+                .map { constructor ->
+                    val above = constructor.parameterTypes.drop(1)
+                    check(above.size <= 2 && above.none { it == java.lang.Long.TYPE || it == java.lang.Double.TYPE }) { "cannot reach the capacity of $constructor" }
+                    ConstructorRule(RewrittenMember(owner, "<init>", Type.getConstructorDescriptor(constructor)), above.size)
+                }
+        } + ConstructorRule(RewrittenMember(BUILDER, "<init>", "(Ljava/lang/CharSequence;)V"), 0, trusted = true)
+        ).associateBy { it.member.owner + it.member.descriptor }
 
     private fun callRule(opcode: Int, owner: String, name: String, descriptor: String, own: Set<String>): CallRule? {
         if (owner in own || !owner.startsWith("java/")) return null
         if (name == "toString" && owner in SHORT_TEXTS) return null
         val form = if (opcode == Opcodes.INVOKESTATIC) Form.STATIC else Form.INSTANCE
         return CALLS_BY_SIGNATURE[name + descriptor]?.firstOrNull { it.form == form && subtype(owner, it.member.owner) }
-    }
-
-    // ── The JDK's classes, by internal name ─────────────────────────────────────────────────────────────────────
-
-    private val jdkClasses = ConcurrentHashMap<String, Any>()
-    private val MISSING = Any()
-
-    /** The JDK's class [internalName], loaded without being initialized; null for any other name. */
-    private fun jdkClass(internalName: String): Class<*>? {
-        if (!internalName.startsWith("java/")) return null
-        val found = jdkClasses.computeIfAbsent(internalName) {
-            runCatching { Class.forName(it.replace('/', '.'), false, ClassLoader.getPlatformClassLoader()) }.getOrDefault(MISSING)
-        }
-        return found as? Class<*>
-    }
-
-    private fun subtype(owner: String, base: String): Boolean {
-        if (owner == base) return true
-        val ownerClass = jdkClass(owner) ?: return false
-        val baseClass = jdkClass(base) ?: return false
-        return baseClass.isAssignableFrom(ownerClass)
     }
 
     // ── The rewriting of one class ──────────────────────────────────────────────────────────────────────────────
@@ -365,7 +370,7 @@ object Instrumenter {
 
     private class MethodRewriter(next: MethodVisitor, val owner: ClassRewriter, val module: Module) : MethodVisitor(Opcodes.ASM9, next) {
         private val seen = HashSet<Label>()
-        private val handlers = HashSet<Label>()
+        private val handlers = HashMap<Label, MutableList<Pair<Label, Label>>>()
         private var handlerTick = false
 
         private fun meter(call: String) {
@@ -389,13 +394,17 @@ object Instrumenter {
         }
 
         override fun visitTryCatchBlock(start: Label, end: Label, handler: Label, type: String?) {
-            handlers += handler
+            handlers.getOrPut(handler) { mutableListOf() } += start to end
             super.visitTryCatchBlock(start, end, handler, type)
         }
 
         override fun visitLabel(label: Label) {
             seen += label
-            if (label in handlers) handlerTick = true
+            handlers[label]?.let { ranges ->
+                handlerTick = true
+                // A handler inside its own range would catch, forever, the error that a tripped meter throws again in it.
+                if (ranges.any { (start, end) -> start in seen && end !in seen }) throw RewriteRefused("an exception handler that covers itself")
+            }
             super.visitLabel(label)
         }
 

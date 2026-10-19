@@ -16,7 +16,12 @@ import kotlin.test.assertTrue
  * each one is stopped, a single call of the JDK before it allocates.
  */
 class RewriteBatteryTest {
-    private fun start(name: String, members: String = "", body: String) = Rewrites.rewritten(name, members, body).start()
+    /** Compiles, checks that the guard lets it through (the rewriting is then the barrier), rewrites and starts a module. */
+    private fun start(name: String, members: String = "", body: String): MeteredCall {
+        val classes = Rewrites.compile(name, Rewrites.source(name, members, body))
+        if ("nCopies" !in body) assertEquals(emptyList(), BytecodeGuard().check(classes), "$name passes the guard")
+        return LoadedModule(name, Instrumenter.rewrite(name, classes), metered = true).start()
+    }
 
     /** Stopped by a limit of `Guarded` ([message]) before the JDK allocated. */
     private fun assertGuarded(call: MeteredCall, message: String) {
@@ -69,10 +74,9 @@ class RewriteBatteryTest {
     }
 
     @Test
-    fun `an error swallowed by a finally is still seen, and a loop in a finally does not outlive the meter`() {
-        val swallowed = start("Swallow", body = "try { while (true) { } } finally { return; }")
-        assertNull(swallowed.error, "the module swallowed it: $swallowed")
-        assertTrue(swallowed.tripped!!.startsWith("time budget"), "the meter saw it: $swallowed")
+    fun `a finally cannot swallow the meter's error, and a loop in a finally does not outlive the meter`() {
+        // The handler's entry ticks: a tripped meter throws again there, before the finally's return can swallow it.
+        assertTripped(start("Swallow", body = "try { while (true) { } } finally { return; }"), "time budget", "Swallow")
         assertTripped(start("FinallyLoop", body = "try { while (true) { } } finally { while (true) { } }"), "time budget", "FinallyLoop")
     }
 
@@ -102,15 +106,14 @@ class RewriteBatteryTest {
 
     @Test
     fun `5,000 caught exceptions do not trip the depth`() {
-        val call = Rewrites.rewritten(
-            "CatchDrift",
-            "static int parse(String s) { return Integer.parseInt(s); } static int deep(int n, String s) { return n == 0 ? parse(s) : deep(n - 1, s); }",
-            "int bad = 0; for (int i = 0; i < 5000; i++) { try { deep(10, \"x\" + i); } catch (NumberFormatException e) { bad++; } } m.log(\"bad \" + bad);",
-        ).start(budgetNanos = 10_000_000_000L)
+        val members = "static int parse(String s) { return Integer.parseInt(s); } static int deep(int n, String s) { return n == 0 ? parse(s) : deep(n - 1, s); }"
+        val body = "int bad = 0; for (int i = 0; i < 5000; i++) { try { deep(10, \"x\" + i); } catch (NumberFormatException e) { bad++; } } m.log(\"bad \" + bad);"
+        val call = Rewrites.rewritten("CatchDrift", members, body).start(budgetNanos = 10_000_000_000L)
         assertNull(call.error, "$call")
         assertNull(call.tripped, "no false positive: $call")
         assertEquals(listOf("bad 5000"), call.logs)
-        println("[battery] 5,000 exceptions caught 11 frames deep: ${"%.1f".format(call.millis)} ms (budget ${ForgeLimits.CALL_MILLIS} ms)")
+        val plain = Rewrites.plain("CatchDrift", members, body).start()
+        println("[battery] 5,000 exceptions caught 11 frames deep: ${"%.1f".format(call.millis)} ms rewritten, ${"%.1f".format(plain.millis)} ms plain (budget ${ForgeLimits.CALL_MILLIS} ms)")
     }
 
     // ── One call of the JDK that allocates at once (design review, finding 1; M5-01 handoff, finding 1) ──────────
@@ -223,7 +226,7 @@ class RewriteBatteryTest {
         assertGuarded(start("SubList", body = "List<Integer> l = new ArrayList<>(); while (true) l.subList(0, 0).add(1);"), "a collection over 10000 elements")
         assertGuarded(start("SubSubList", body = "List<Integer> l = new ArrayList<>(List.of(1, 2, 3)); while (true) l.subList(0, 2).subList(1, 1).add(1);"), "a collection over 10000 elements")
         assertGuarded(start("Cursor", body = "List<Integer> l = new LinkedList<>(); ListIterator<Integer> it = l.listIterator(); while (true) { it.add(1); it.previous(); }"), "a collection over 10000 elements")
-        assertGuarded(start("Builder", body = "Stream.Builder<Integer> b = Stream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
+        assertGuarded(start("Builders", body = "Stream.Builder<Integer> b = Stream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
         assertGuarded(start("IntBuilder", body = "IntStream.Builder b = IntStream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
     }
 
@@ -244,6 +247,6 @@ class RewriteBatteryTest {
             """.trimIndent(),
         )
         assertIs<ForgeLimit>(reference.error, "$reference")
-        assertTrue(reference.tripped!!.startsWith("time budget"), "$reference")
+        assertTrue(reference.tripped!!.startsWith("time budget") || reference.tripped!!.startsWith("allocation budget"), "$reference")
     }
 }

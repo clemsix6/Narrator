@@ -40,7 +40,8 @@ import java.util.stream.Stream;
 
 /**
  * The call-site guards of the rewritten bytecode (M5 §3.4): the rewriting ({@code forge/sandbox/Instrumenter.kt},
- * which holds the list) sends each call of a module that allocates or grows something through here, and each method
+ * which holds the list, its capacities read from {@code SandboxPolicy}) sends each call of a module that allocates or
+ * grows something through here, and each method
  * throws a {@link ForgeLimit} before it changes anything. The meter cannot bound these: it is only sampled at the
  * module's own ticks, and one call of the JDK allocates at once.
  *
