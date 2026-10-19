@@ -112,11 +112,15 @@ class WorldActionToolsTest {
         assertEquals("launch must be between 0 and 3 (got 5)", invalid(SpawnArgs.serializer(), """{"entity":"cow","near":"Bob","launch":5}"""))
     }
 
+    /**
+     * After its dry checks (`check`, which needs no player), each tool refuses a player who is not online. The
+     * check of `spawn` reads the game's registries (the creature, its equipment), which unit tests do not load:
+     * it is covered in game (`WorldActionGameTests.theDryChecksTouchNothing`).
+     */
     @Test
     fun `a player who is not online is refused before the world is touched`() = runTest {
         online("Alice")
         val expected = "Invalid arguments: Bob is not online; online: Alice"
-        assertEquals(expected, SpawnTool().call("""{"entity":"zombie","near":"Bob"}""").text)
         assertEquals(expected, LightningTool().call("""{"player":"Bob"}""").text)
         assertEquals(expected, ExplosionTool().call("""{"player":"Bob","power":1}""").text)
         assertEquals(expected, FireworksTool().call("""{"player":"Bob"}""").text)
@@ -204,6 +208,44 @@ class WorldActionToolsTest {
     @Test
     fun `a player's name in a refusal is escaped`() = runTest {
         online("<engine>")
-        assertEquals("Invalid arguments: ‹b› is not online; online: ‹engine›", SpawnTool().call("""{"entity":"zombie","near":"<b>"}""").text)
+        assertEquals("Invalid arguments: ‹b› is not online; online: ‹engine›", ExplosionTool().call("""{"player":"<b>","power":1}""").text)
+    }
+
+    /**
+     * The dry checks (`check`, M4 §4.3) of the tools a rule may use, without any player online: what the engine
+     * answers when a rule's effect is created. `run` starts with them, so the Director gets the same answers.
+     */
+    @Test
+    fun `the dry checks need no player and give the answers of run`() = runTest {
+        guards.chaos = 3
+        suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? = check(context, decode(args, json))
+
+        assertEquals(
+            "Invalid arguments: at chaos 3 one call summons at most 6 creatures (asked 7)",
+            SpawnTool().dry("""{"entity":"zombie","near":"Bob","count":7}""")?.text,
+        )
+        assertEquals(
+            "Invalid arguments: movement_speed multiplies by 0.25 to 3 (asked 4)",
+            SpawnTool().dry("""{"entity":"creeper","near":"Bob","attributes":[{"attribute":"movement_speed","multiply":4}]}""")?.text,
+        )
+        assertEquals(
+            "Invalid arguments: at chaos 3 an explosion has a power of at most 3 (asked 3.5)",
+            ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":3.5}""")?.text,
+        )
+        assertNull(ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":3}"""))
+        assertEquals(
+            "Invalid arguments: at chaos 3 lightning does at most 3 hearts of damage (asked 4)",
+            LightningTool().dry("""{"player":"Bob","damage_hearts":4}""")?.text,
+        )
+        assertNull(LightningTool().dry("""{"player":"Bob","damage_hearts":3}"""))
+        assertNull(LightningTool().dry("""{"x":0,"y":64,"z":0}"""), "a harmless bolt")
+        assertNull(FireworksTool().dry("""{"x":0,"y":64,"z":0}"""), "the default colors")
+        assertNull(ParticlesTool().dry("""{"x":0,"y":64,"z":0,"particle":"heart"}"""), "nothing to check: decoding said it all")
+
+        guards.chaos = 0
+        assertTrue(SpawnTool().dry("""{"entity":"cow","near":"Bob"}""")!!.text.startsWith("DENIED (${Rules.CHAOS_0}):"))
+        assertTrue(ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":1,"hurts":false}""")!!.text.startsWith("DENIED (${Rules.CHAOS_0}):"))
+        assertTrue(LightningTool().dry("""{"player":"Bob","damage_hearts":1}""")!!.text.startsWith("DENIED (${Rules.CHAOS_0}):"))
+        assertNull(LightningTool().dry("""{"player":"Bob"}"""), "a harmless bolt, even at chaos 0")
     }
 }

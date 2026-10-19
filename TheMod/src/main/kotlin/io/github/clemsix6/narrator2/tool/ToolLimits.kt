@@ -26,12 +26,18 @@ class ToolLimits(clock: Clock) {
 }
 
 /**
- * At most [max] uses in one turn: the turn is the caller's conversation and turn ([Caller.conversationId],
- * [Caller.turnId]); the counts of the last [KEPT] turns are kept, so that two conversations that use the
- * same tool in turn never reset each other's. Any thread.
+ * At most [max] uses in one turn. The turn is the caller's conversation and act ([Caller.conversationId],
+ * [Caller.act]): a Director turn, or one act of the mechanics engine (a rule's firing, a challenge's stakes),
+ * which has its own count (M4 review, finding 10: with the turn alone, every firing of a rule would share one
+ * count, and the rule would fall silent for good after four lines). A worker's task has no act: its count
+ * is its conversation's.
+ *
+ * The counts of the [KEPT] turns used last are kept, so that two conversations, or a turn and the engine's
+ * acts, that use the same tool in turn never reset each other's. Any thread.
  */
 class TurnCounter(val max: Int) {
-    private val used = object : LinkedHashMap<Pair<String, Long?>, Int>() {
+    // Access order: a turn that keeps using the tool keeps its count, however many acts come in between.
+    private val used = object : LinkedHashMap<Pair<String, Long?>, Int>(KEPT, LOAD_FACTOR, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Long?>, Int>) = size > KEPT
     }
 
@@ -47,9 +53,11 @@ class TurnCounter(val max: Int) {
         return true
     }
 
-    private val Caller.turn: Pair<String, Long?> get() = conversationId to turnId
+    private val Caller.turn: Pair<String, Long?> get() = conversationId to act
 
     private companion object {
-        const val KEPT = 16
+        /** Turns and acts whose count is kept: the engine may run dozens of acts while a Director turn lasts. */
+        const val KEPT = 64
+        const val LOAD_FACTOR = 0.75f
     }
 }

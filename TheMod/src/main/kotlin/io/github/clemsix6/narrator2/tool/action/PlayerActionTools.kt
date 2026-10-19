@@ -1,12 +1,15 @@
 package io.github.clemsix6.narrator2.tool.action
 
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.AttributeKey
 import io.github.clemsix6.narrator2.guard.AttributeLedger
+import io.github.clemsix6.narrator2.guard.BeneficialWhen
 import io.github.clemsix6.narrator2.guard.Caps
 import io.github.clemsix6.narrator2.guard.EffectLedger
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.guard.Peril
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
@@ -37,6 +40,7 @@ import io.github.clemsix6.narrator2.tool.speech.closestIds
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.minecraft.core.Holder
+import net.minecraft.core.RegistryAccess
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
@@ -47,6 +51,7 @@ import net.minecraft.world.effect.MobEffect
 import net.minecraft.world.effect.MobEffectCategory
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
+import net.minecraft.world.flag.FeatureFlagSet
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.phys.Vec3
 import java.time.Clock
@@ -71,6 +76,12 @@ import kotlin.math.sin
  * - also, beyond the design: taking away a beneficial effect or a beneficial attribute change (the fire
  *   resistance of a player in lava, the fall protection of a launched one), which can kill as surely, and
  *   replacing a beneficial effect by a shorter or weaker one (M2 review, finding 2).
+ *
+ * Each hostile action tells the guards its category of punishment (M4 §6.1): the harmful effect's or the
+ * attribute's own, `teleport`, `air` for a launch, `inventory` for a confiscation, `other` for a benefit taken
+ * away. The checks that need neither the players online nor the world are each tool's `check` (M4 §4.3), which
+ * `run` starts with: the mechanics engine runs them alone to refuse a rule's effect or a challenge's reward
+ * when it is created, with the same answer.
  */
 fun playerActionTools(services: NarratorServices): List<NarratorTool<*>> = listOf(
     ApplyEffectTool(),
@@ -121,8 +132,8 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
     args = ApplyEffectArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    override suspend fun run(ctx: ToolContext, args: ApplyEffectArgs): ToolResult = answer {
-        val targets = ctx.online(args.players)
+    /** The effect known and allowed, and within the caps of the chaos level (a harmful one) or of the gifts. */
+    override suspend fun check(ctx: ToolContext, args: ApplyEffectArgs): ToolResult? = dryCheck {
         val effect = Effects.lookup(args.effect)
         val id = shortId(effect)
         Effects.forbidden(effect)?.let { refuse(ToolResult.denied(Effects.FORBIDDEN_EFFECT, "$id is never given: $it; the Narrator's effects never act on the world.")) }
@@ -151,7 +162,16 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
                 ),
             )
         }
-        val shown = "$id ${roman(args.level)}"
+    }
+
+    override suspend fun run(ctx: ToolContext, args: ApplyEffectArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
+        val targets = ctx.online(args.players)
+        val effect = Effects.lookup(args.effect)
+        val harmful = effect.value().category == MobEffectCategory.HARMFUL
+        val instant = effect.value().isInstantaneous
+        val category = PunishmentCategory.ofEffect(effect.registeredName)
+        val shown = "${shortId(effect)} ${roman(args.level)}"
         val now = ctx.clock.millis()
         val seconds = if (instant) Effects.INSTANT_SECONDS else args.seconds
         val until = now + seconds * 1_000L
@@ -161,7 +181,7 @@ class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
                     val player = server.live(ref)
                     var replaced = ""
                     if (harmful) {
-                        ctx.punish(player, until)
+                        ctx.punish(player, until, category)
                         // The effect's own length and 30 s more: a levitation's fall outlasts it (M2 review, finding 1).
                         Effects.perilOf(effect)?.let { ctx.guards.armDeathGuard(player.uuid, seconds + Effects.GUARD_MARGIN_SECONDS, it) }
                     } else {
@@ -301,7 +321,7 @@ class RemoveEffectTool : NarratorTool<RemoveEffectArgs>(
                     val shown = removed.map { effect -> "${shortId(effect)} ${roman(player.getEffect(effect)!!.amplifier + 1)}" }
                     val benefits = removed.filter { it.value().category == MobEffectCategory.BENEFICIAL }
                     if (benefits.isNotEmpty()) {
-                        ctx.punish(player, until)
+                        ctx.punish(player, until, PunishmentCategory.OTHER)
                         benefits.mapNotNull { Effects.perilOf(it) }.distinct().forEach { ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS, it) }
                     }
                     if (only == null) ctx.guards.effects.removeAll(player) else ctx.guards.effects.remove(player, only)
@@ -367,7 +387,7 @@ private fun ToolContext.replacing(player: ServerPlayer, ref: PlayerRef, effect: 
     val what = "${shortId(effect)} ${roman(had.amplifier + 1)} $lasting"
     if (!longer && !stronger) refuse(ToolResult.invalid("${ref.shownName} already has $what"))
     if (!shorter && !weaker) return ""
-    punish(player, clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L)
+    punish(player, clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L, PunishmentCategory.OTHER)
     Effects.perilOf(effect)?.let { guards.armDeathGuard(player.uuid, seconds + REMOVAL_GUARD_SECONDS, it) }
     return " (in place of $what: a punishment)"
 }
@@ -410,7 +430,19 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
     args = SetAttributeArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
+    /**
+     * A change in the player's disfavor whatever their attribute's value now (one that is never a gift, or an
+     * amount added the wrong way) lasts no longer than the chaos level allows. Whether any other change is in
+     * their disfavor, and whether it stays within the attribute's bounds, depends on the player: [run] tells.
+     */
+    override suspend fun check(ctx: ToolContext, args: SetAttributeArgs): ToolResult? {
+        val caps = ctx.guards.caps()
+        if (!caps.hostileAllowed || args.seconds <= caps.harmfulSeconds || !certainlyHarmful(args)) return null
+        return tooLong(ctx, ModelText.name(args.player), args.attribute, args.seconds)
+    }
+
     override suspend fun run(ctx: ToolContext, args: SetAttributeArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val ref = ctx.online(args.player)
         val key = args.attribute
         val (amount, operation) =
@@ -424,15 +456,12 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
             val after = ledger.valueWith(player, key, amount, operation)
             key.outOfBounds(after)?.let { refuse(ToolResult.invalid(it)) }
             val harmful = key.harmful(before, after)
-            val maxSeconds = if (harmful) caps.harmfulSeconds else Caps.BENEFICIAL_SECONDS
-            if ((!harmful || caps.hostileAllowed) && args.seconds > maxSeconds) {
-                refuse(ToolResult.invalid("this change of ${key.id} is in ${ref.shownName}'s disfavor: at chaos ${ctx.chaos} it lasts at most $maxSeconds s (asked ${args.seconds} s)"))
-            }
+            if (harmful && caps.hostileAllowed && args.seconds > caps.harmfulSeconds) refuse(tooLong(ctx, ref.shownName, key, args.seconds))
             val until = ctx.clock.millis() + args.seconds * 1_000L
             // Only a change in the player's disfavor arms the death guard (M2 review, finding 11), for
             // what it can kill with, until 30 s after it ends (a gravity that comes back mid-jump).
             if (harmful) {
-                ctx.punish(player, until)
+                ctx.punish(player, until, PunishmentCategory.ofAttribute(key))
                 key.peril?.let { ctx.guards.armDeathGuard(player.uuid, args.seconds + Effects.GUARD_MARGIN_SECONDS, it) }
             } else {
                 player.requireAlive()
@@ -440,6 +469,22 @@ class SetAttributeTool : NarratorTool<SetAttributeArgs>(
             val value = ledger.apply(player, key, amount, operation, until, harmful, ctx.caller.turnId)
             ToolResult.ok("ok: ${ref.shownName}'s ${key.id} ${number(current)} → ${number(value)} for ${duration(args.seconds * 1_000L)} (until ${ctx.at(until)})", listOf(ref))
         }
+    }
+
+    /** A change in [name]'s disfavor that lasts longer than the chaos level allows. */
+    private fun tooLong(ctx: ToolContext, name: String, key: AttributeKey, seconds: Int) = ToolResult.invalid(
+        "this change of ${key.id} is in $name's disfavor: at chaos ${ctx.chaos} it lasts at most ${ctx.guards.caps().harmfulSeconds} s (asked $seconds s)",
+    )
+
+    /**
+     * Whether [args] move the attribute in the player's disfavor whatever its value: an attribute that is never
+     * a gift (size, gravity…), or an amount added the wrong way. A factor depends on the value (a luck of 0
+     * stays 0), and going past [AttributeKey.favorableUpTo] too.
+     */
+    private fun certainlyHarmful(args: SetAttributeArgs): Boolean = when (args.attribute.beneficial) {
+        BeneficialWhen.NEVER -> true
+        BeneficialWhen.HIGHER -> (args.add ?: 0.0) < 0
+        BeneficialWhen.LOWER -> (args.add ?: 0.0) > 0
     }
 }
 
@@ -477,7 +522,7 @@ class ResetAttributeTool : NarratorTool<ResetAttributeArgs>(
             }
             val favors = changes.filter { !it.harmful }
             if (favors.isNotEmpty()) {
-                ctx.punish(player, ctx.clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L)
+                ctx.punish(player, ctx.clock.millis() + REMOVAL_GUARD_SECONDS * 1_000L, PunishmentCategory.OTHER)
                 favors.mapNotNull { AttributeLedger.keyOf(it)?.peril }.distinct().forEach { ctx.guards.armDeathGuard(player.uuid, REMOVAL_GUARD_SECONDS, it) }
             }
             val back = changes.mapNotNull { AttributeLedger.keyOf(it) }.map { key ->
@@ -497,7 +542,7 @@ data class TeleportArgs(
     @Doc("Name of the online player to move.")
     @MaxLen(16)
     val player: String,
-    @Doc("Name of an online player, in the same dimension, to bring them next to. Give this, or x and z.")
+    @Doc("Name of an online player, in the same dimension, to bring them next to. Give this, x and z, or random_radius.")
     @SerialName("to_player")
     @MaxLen(16)
     val toPlayer: String? = null,
@@ -510,9 +555,13 @@ data class TeleportArgs(
     @Doc("With x and z: the height to look for a landing from, downwards first. Left out: from the surface.")
     @Range(-2_048.0, 2_048.0)
     val y: Int? = null,
+    @Doc("A random spot in their own dimension, between half this many blocks and this many from them.")
+    @SerialName("random_radius")
+    @Range(10.0, 500.0)
+    val randomRadius: Int? = null,
 ) {
     init {
-        require((toPlayer != null) != (x != null || z != null)) { "give to_player, or x and z" }
+        require(listOf(toPlayer != null, x != null || z != null, randomRadius != null).count { it } == 1) { "give to_player, x and z, or random_radius" }
         require((x == null) == (z == null)) { "give both x and z" }
         require(y == null || x != null) { "y goes with x and z" }
     }
@@ -520,21 +569,37 @@ data class TeleportArgs(
 
 class TeleportTool : NarratorTool<TeleportArgs>(
     name = "teleport",
-    description = "Moves a player, within their own dimension, next to another player or to a column x, z: they land on " +
-        "safe ground (never in lava, water, a wall or the void), or nothing happens. A protected player is never moved. " +
-        "Taking them more than 32 blocks away is a punishment, refused like any other when the player may not be punished, " +
-        "and its distance is capped by the chaos level. Slow: the destination loads first.",
+    description = "Moves a player, within their own dimension, next to another player, to a column x, z or to a random spot " +
+        "(random_radius): they land on safe ground (never in lava, water, a wall or the void), or nothing happens. A protected " +
+        "player is never moved. Taking them more than 32 blocks away is a punishment, refused like any other when the player " +
+        "may not be punished, and its distance is capped by the chaos level. Slow: the destination loads first.",
     args = TeleportArgs.serializer(),
     effect = ToolEffect.WORLD,
     timeoutMs = 12_000,
 ) {
-    /** The column to land in, and its loading. */
-    private class Destination(val level: ServerLevel, val x: Int, val z: Int, val fromY: Int?, val near: String?, val loading: CompletableFuture<*>)
+    /**
+     * Where to land: the [columns] to try in order, all in the chunk being loaded ([loading]); [how] completes
+     * the answer (` next to Bob`, ` at random`).
+     */
+    private class Destination(val level: ServerLevel, val columns: List<Teleports.Column>, val fromY: Int?, val how: String, val loading: CompletableFuture<*>)
+
+    /** Nobody is teleported to themselves; a random spot is no farther than the chaos level allows. */
+    override suspend fun check(ctx: ToolContext, args: TeleportArgs): ToolResult? {
+        if (args.toPlayer != null && args.toPlayer.equals(args.player, ignoreCase = true)) {
+            return ToolResult.invalid("${ModelText.name(args.player)} cannot be teleported to themselves")
+        }
+        val radius = args.randomRadius ?: return null
+        val caps = ctx.guards.caps()
+        if (caps.hostileAllowed && radius > caps.teleportBlocks) {
+            return ToolResult.invalid("at chaos ${ctx.chaos} a teleport goes at most ${caps.teleportBlocks} blocks (random_radius $radius)")
+        }
+        return null
+    }
 
     override suspend fun run(ctx: ToolContext, args: TeleportArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val ref = ctx.online(args.player)
         val toRef = args.toPlayer?.let { ctx.online(it) }
-        if (toRef?.uuid == ref.uuid) refuse(ToolResult.invalid("${ref.shownName} cannot be teleported to themselves"))
         val caps = ctx.guards.caps()
         val destination = ctx.onServer { server ->
             val player = server.live(ref)
@@ -544,56 +609,74 @@ class TeleportTool : NarratorTool<TeleportArgs>(
                 refuse(ToolResult.denied(Rules.PROTECTED, "${ref.shownName} is protected by the operators; the Narrator never teleports them."))
             }
             val level = player.level()
-            val (x, z, fromY) = if (toRef != null) {
-                val other = server.live(toRef)
-                if (other.level().dimension() != level.dimension()) {
-                    refuse(ToolResult.invalid("${toRef.shownName} is in ${dimension(other.level())} and ${ref.shownName} in ${dimension(level)}; a teleport stays in the player's own dimension"))
+            val (column, fromY, how) = when {
+                toRef != null -> {
+                    val other = server.live(toRef)
+                    if (other.level().dimension() != level.dimension()) {
+                        refuse(ToolResult.invalid("${toRef.shownName} is in ${dimension(other.level())} and ${ref.shownName} in ${dimension(level)}; a teleport stays in the player's own dimension"))
+                    }
+                    Triple(Teleports.Column(other.blockX, other.blockZ), other.blockY, " next to ${toRef.shownName}")
                 }
-                Triple(other.blockX, other.blockZ, other.blockY)
-            } else {
-                Triple(args.x!!, args.z!!, args.y)
+                args.randomRadius != null -> Triple(randomColumn(level, player, args.randomRadius), null, " at random")
+                else -> Triple(Teleports.Column(args.x!!, args.z!!), args.y, "")
             }
             if (fromY != null && level.isOutsideBuildHeight(fromY)) {
                 refuse(ToolResult.invalid("y must be between ${level.minY} and ${level.maxY} in ${dimension(level)}"))
             }
-            if (!level.worldBorder.isWithinBounds(x + 0.5, z + 0.5)) refuse(ToolResult.invalid("x $x, z $z is beyond the world border"))
-            val far = hypot(player.x - (x + 0.5), player.z - (z + 0.5))
+            if (!level.worldBorder.isWithinBounds(column.x + 0.5, column.z + 0.5)) refuse(ToolResult.invalid("x ${column.x}, z ${column.z} is beyond the world border"))
+            val far = hypot(player.x - (column.x + 0.5), player.z - (column.z + 0.5))
             if (far > Caps.HOSTILE_TELEPORT_BLOCKS) {
                 // Certainly a punishment: refused before loading anything when it cannot be one.
-                if (!caps.hostileAllowed || ctx.guards.isProtected(ref.uuid)) ctx.punish(player, ctx.clock.millis())
+                if (!caps.hostileAllowed || ctx.guards.isProtected(ref.uuid)) ctx.punish(player, ctx.clock.millis(), PunishmentCategory.TELEPORT)
                 if (far > caps.teleportBlocks) refuse(tooFar(ctx, far, caps))
             }
-            Destination(level, x, z, fromY, toRef?.shownName, Teleports.requestLoad(level, x, z))
+            val columns = args.randomRadius?.let { Teleports.columnsAround(level.random, column, player.x, player.z, it) } ?: listOf(column)
+            Destination(level, columns, fromY, how, Teleports.requestLoad(level, column.x, column.z))
         }
+        val first = destination.columns.first()
         if (!Teleports.awaitLoaded(destination.loading)) {
-            refuse(ToolResult.failed("the destination x ${destination.x}, z ${destination.z} did not load within ${duration(Teleports.LOAD_TIMEOUT_MS)}; nothing happened"))
+            refuse(ToolResult.failed("the destination x ${first.x}, z ${first.z} did not load within ${duration(Teleports.LOAD_TIMEOUT_MS)}; nothing happened"))
         }
         ctx.onServer { server ->
             val player = server.live(ref)
             player.requireAlive()
             if (player.level() !== destination.level) refuse(ToolResult.failed("${ref.shownName} changed dimension meanwhile; nothing happened"))
-            val spot = Teleports.landing(destination.level, player, destination.x, destination.z, destination.fromY)
+            val spot = destination.columns.firstNotNullOfOrNull { Teleports.landing(destination.level, player, it.x, it.z, destination.fromY) }
                 ?: refuse(
                     ToolResult.failed(
-                        "no safe landing at x ${destination.x}, z ${destination.z} (only liquid, danger or no room to stand in that column); " +
-                            "nothing happened, try another spot",
+                        if (destination.columns.size == 1) {
+                            "no safe landing at x ${first.x}, z ${first.z} (only liquid, danger or no room to stand in that column); " +
+                                "nothing happened, try another spot"
+                        } else {
+                            "no safe landing around x ${first.x}, z ${first.z} (${destination.columns.size} columns tried: only liquid, danger " +
+                                "or no room to stand); nothing happened, try again"
+                        },
                     ),
                 )
             val distance = player.position().distanceTo(spot)
             if (distance > Caps.HOSTILE_TELEPORT_BLOCKS) {
                 if (caps.hostileAllowed && distance > caps.teleportBlocks) refuse(tooFar(ctx, distance, caps))
-                ctx.punish(player, ctx.clock.millis() + TELEPORT_PUNISHMENT_SECONDS * 1_000L)
+                ctx.punish(player, ctx.clock.millis() + TELEPORT_PUNISHMENT_SECONDS * 1_000L, PunishmentCategory.TELEPORT)
             }
             // The landing is safe, what is around it may not be (M2 review, finding 12).
             ctx.guards.armDeathGuard(player.uuid, TELEPORT_GUARD_SECONDS, Peril.ANY)
             if (!Teleports.move(player, spot)) refuse(ToolResult.failed("the game refused to move ${ref.shownName}"))
-            val near = destination.near?.let { " next to $it" } ?: ""
             ToolResult.ok(
-                "ok: ${ref.shownName} teleported$near, ${number(distance)} blocks away, to x ${number(spot.x)}, y ${number(spot.y)}, z ${number(spot.z)}",
+                "ok: ${ref.shownName} teleported${destination.how}, ${number(distance)} blocks away, to x ${number(spot.x)}, y ${number(spot.y)}, z ${number(spot.z)}",
                 listOf(ref),
             )
         }
     }
+
+    /**
+     * The column a random teleport of [player] aims at ([Teleports.randomColumn]), inside the world border: a
+     * few draws at most, then a refusal. Server thread.
+     */
+    private fun randomColumn(level: ServerLevel, player: ServerPlayer, radius: Int): Teleports.Column =
+        generateSequence { Teleports.randomColumn(level.random, player.x, player.z, radius) }
+            .take(Teleports.RANDOM_COLUMNS)
+            .firstOrNull { level.worldBorder.isWithinBounds(it.x + 0.5, it.z + 0.5) }
+            ?: refuse(ToolResult.failed("no spot ${radius / 2} to $radius blocks from ${player.shownName} is inside the world border; nothing happened"))
 
     private fun tooFar(ctx: ToolContext, distance: Double, caps: Caps) =
         ToolResult.invalid("at chaos ${ctx.chaos} a teleport goes at most ${caps.teleportBlocks} blocks (this one: ${number(distance)})")
@@ -639,16 +722,20 @@ class LaunchTool : NarratorTool<LaunchArgs>(
     args = LaunchArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
-    override suspend fun run(ctx: ToolContext, args: LaunchArgs): ToolResult = answer {
-        val ref = ctx.online(args.player)
+    /** No stronger than the chaos level allows (at chaos 0, the guards refuse any launch). */
+    override suspend fun check(ctx: ToolContext, args: LaunchArgs): ToolResult? {
         val caps = ctx.guards.caps()
-        if (caps.hostileAllowed && args.strength > caps.launchStrength) {
-            refuse(ToolResult.invalid("at chaos ${ctx.chaos} a launch has a strength of at most ${number(caps.launchStrength)} (asked ${number(args.strength)})"))
-        }
+        if (!caps.hostileAllowed || args.strength <= caps.launchStrength) return null
+        return ToolResult.invalid("at chaos ${ctx.chaos} a launch has a strength of at most ${number(caps.launchStrength)} (asked ${number(args.strength)})")
+    }
+
+    override suspend fun run(ctx: ToolContext, args: LaunchArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
+        val ref = ctx.online(args.player)
         ctx.onServer { server ->
             val player = server.live(ref)
             val until = ctx.clock.millis() + LAUNCH_SECONDS * 1_000L
-            ctx.punish(player, until)
+            ctx.punish(player, until, PunishmentCategory.AIR)
             ctx.guards.armDeathGuard(player.uuid, LAUNCH_SECONDS, Peril.FALL)
             // The fall protection goes through the ledger: it ends by itself, even after a restart.
             ctx.guards.attributes.apply(
@@ -730,22 +817,40 @@ class GiveItemTool(internal val limiter: GiftLimiter) : NarratorTool<GiveItemArg
     args = GiveItemArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
+    /**
+     * The item described (known, enabled in this world, never forbidden, one stack at most, its texts and its
+     * enchantments), and worth no more precious points than any player may get in an hour. Not a rule's effect
+     * (M4 §8.4), but a challenge's reward (M4 §5.3): the engine refuses it when the challenge starts. Reads the
+     * server's registries, frozen once it runs, never a player.
+     */
+    override suspend fun check(ctx: ToolContext, args: GiveItemArgs): ToolResult? = dryCheck {
+        val server = ctx.services.server
+        val spec = resolve(server.registryAccess(), server.worldData.enabledFeatures(), args)
+        GiftLimiter.tooPrecious(points(spec), what(spec))?.let { refuse(ToolResult.denied(it)) }
+    }
+
     override suspend fun run(ctx: ToolContext, args: GiveItemArgs): ToolResult = answer {
+        check(ctx, args)?.let { return@answer it }
         val ref = ctx.online(args.player)
         ctx.onServer { server ->
             val player = server.live(ref)
             player.requireAlive()
-            val spec = ItemSpecs.resolve(
-                server.registryAccess(), player.level().enabledFeatures(),
-                args.item, args.count, args.name, args.lore, args.enchantments, args.unbreakable,
-            )
-            val points = ItemSpecs.preciousness(spec.item) * spec.count
-            limiter.take(ref, points, "${spec.count}x ${shortId(spec.item)}").let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
+            val spec = resolve(server.registryAccess(), player.level().enabledFeatures(), args)
+            limiter.take(ref, points(spec), what(spec)).let { if (it is Verdict.Denied) refuse(ToolResult.denied(it)) }
             val dropped = give(player, ItemSpecs.build(spec, ctx.caller.turnId))
             val where = if (dropped) "dropped at ${ref.shownName}'s feet (inventory full)" else "to ${ref.shownName}"
             ToolResult.ok("ok: gave ${ItemSpecs.describe(spec)} $where", listOf(ref))
         }
     }
+
+    private fun resolve(registries: RegistryAccess, features: FeatureFlagSet, args: GiveItemArgs): ItemSpec =
+        ItemSpecs.resolve(registries, features, args.item, args.count, args.name, args.lore, args.enchantments, args.unbreakable)
+
+    /** What [spec] is worth in precious points ([ItemSpecs.preciousness]). */
+    private fun points(spec: ItemSpec): Int = ItemSpecs.preciousness(spec.item) * spec.count
+
+    /** `3x diamond`. */
+    private fun what(spec: ItemSpec): String = "${spec.count}x ${shortId(spec.item)}"
 
     /** Puts [stack] in [player]'s inventory, or at their feet when it is full, as `/give` does. Returns true when dropped. */
     private fun give(player: ServerPlayer, stack: ItemStack): Boolean {
@@ -798,18 +903,12 @@ class GiftLimiter(private val clock: Clock) {
         }
         val spent = lastHour(precious, player, now)
         if (points > 0 && spent.size + points > PRECIOUS_POINTS_PER_HOUR) {
-            val why = if (points > PRECIOUS_POINTS_PER_HOUR) {
-                "$what is worth $points precious points, more than the $PRECIOUS_POINTS_PER_HOUR a player may get in an hour"
-            } else {
-                // The points leave the hour oldest first: enough have left once this one has.
-                val next = spent[spent.size + points - PRECIOUS_POINTS_PER_HOUR - 1] + HOUR_MS
+            tooPrecious(points, what)?.let { return it }
+            // The points leave the hour oldest first: enough have left once this one has.
+            val next = spent[spent.size + points - PRECIOUS_POINTS_PER_HOUR - 1] + HOUR_MS
+            return precious(
                 "${player.shownName} got ${spent.size} of the $PRECIOUS_POINTS_PER_HOUR precious points a player may get in an hour, and " +
-                    "$what is worth $points; it is possible at ${clockTime(clock, next)} (in ${ToolText.wait(next - now)})"
-            }
-            return Verdict.Denied(
-                PRECIOUS_RULE,
-                "$why. The Narrator slows progression down: a diamond or a golden apple is 1 point; netherite, diamond gear, elytra, " +
-                    "totems, enchanted golden apples, beacons, shulker boxes and the like are $PRECIOUS_POINTS_PER_HOUR.",
+                    "$what is worth $points; it is possible at ${clockTime(clock, next)} (in ${ToolText.wait(next - now)})",
             )
         }
         repeat(points) { spent.addLast(now) }
@@ -835,6 +934,23 @@ class GiftLimiter(private val clock: Clock) {
         const val PRECIOUS_POINTS_PER_HOUR = 4
 
         private const val HOUR_MS = 3_600_000L
+
+        /**
+         * The refusal of a gift, [what] (`8x diamond`), worth more [points] than any player may get in an hour,
+         * whoever gets it and whenever; null when it may be given to a player who got nothing precious lately.
+         */
+        fun tooPrecious(points: Int, what: String): Verdict.Denied? =
+            if (points <= PRECIOUS_POINTS_PER_HOUR) {
+                null
+            } else {
+                precious("$what is worth $points precious points, more than the $PRECIOUS_POINTS_PER_HOUR a player may get in an hour")
+            }
+
+        private fun precious(why: String) = Verdict.Denied(
+            PRECIOUS_RULE,
+            "$why. The Narrator slows progression down: a diamond or a golden apple is 1 point; netherite, diamond gear, elytra, " +
+                "totems, enchanted golden apples, beacons, shulker boxes and the like are $PRECIOUS_POINTS_PER_HOUR.",
+        )
     }
 }
 
@@ -888,7 +1004,7 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
             val has = (0 until inventory.containerSize).map { inventory.getItem(it) }.filter { !it.isEmpty && match(it) }.sumOf { it.count }
             if (has == 0) refuse(ToolResult.invalid("${ref.shownName} has no $raw"))
             val returnAt = ctx.clock.millis() + args.minutes * 60_000L
-            ctx.punish(player, returnAt)
+            ctx.punish(player, returnAt, PunishmentCategory.INVENTORY)
             // Taking the elytra of a gliding player, the blocks of one bridging over lava, the armor of one
             // at war with a horde, can kill in any way.
             ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS, Peril.ANY)
@@ -910,6 +1026,17 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
 }
 
 // ── Shared ──────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Runs a tool's dry checks ([NarratorTool.check]), written with [refuse] like the rest of the tool: the first
+ * refusal is the answer, null when they all pass.
+ */
+internal inline fun dryCheck(checks: () -> Unit): ToolResult? = try {
+    checks()
+    null
+} catch (e: Refusal) {
+    e.result
+}
 
 /** Refuses when the player is dead, on the respawn screen: what they get now would be lost. */
 private fun ServerPlayer.requireAlive() {

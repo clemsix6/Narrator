@@ -181,10 +181,10 @@ enum class Enclosure(val id: String) {
             builtShare = if (walls == 0) 0.0 else built.toDouble() / walls
         }
 
-        /** A player placed the block at [pos] (its chunk is loaded). */
+        /** A player placed the block at [pos], and it is still that block (its chunk is loaded). */
         private fun placed(pos: BlockPos): Boolean {
             val chunk = reader.chunkAt(pos) ?: return false
-            return chunk.getAttached(PlacedBlocks.TYPE)?.placerAt(PlacedBlocks.pack(chunk, pos)) != null
+            return PlacedBlocks.placerAt(chunk, pos) != null
         }
 
         private companion object {
