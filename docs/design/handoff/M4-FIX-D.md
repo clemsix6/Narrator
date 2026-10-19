@@ -217,6 +217,8 @@ Hors de ma liste (signalé) :
 - Après un troisième `git merge main` (lot G, qui lit déjà `rule_ended` et son `detail.ending`) : `build` à
   1 512 tests unitaires verts, GameTests 314/315 (de nouveau le seul duel de l'assemblage, même message) ;
   `runGameTest` relancé : **« All 315 required tests passed »**.
+- Après un quatrième `git merge main` (lot C, duels) : **`build` vert du premier coup, 1 513 tests unitaires,
+  « All 330 required tests passed »**.
 - Signatures vérifiées avec `jp.ps1` : `TestInstanceBlockEntity.getTestBounds` (padding), `GameTest.padding`,
   `ServerLevel.setChunkForced`, `ServerChunkCache.getChunkNow`, `ChunkPos.containing`, `DefaultAttributes.getSupplier`
   / `hasSupplier`, `AttributeSupplier.hasAttribute`, `AttributeInstance.getModifiers`, `AttributeModifier.id` /
