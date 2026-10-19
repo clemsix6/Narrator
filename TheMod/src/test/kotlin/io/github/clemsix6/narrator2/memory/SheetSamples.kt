@@ -9,7 +9,7 @@ import java.util.UUID
 
 /**
  * Sheets for the renderer's tests (M3-07): [reference], Bartok after three weeks of play, every section
- * filled as the Dreamer, the Chronicler and the code would fill it (no Jev: his signals are missing);
+ * filled as the Dreamer, the Chronicler and the code would fill it (no reflex model: his signals are missing);
  * [empty], a player just seen, with nothing written or computed; [maximal], every list and text at its cap.
  * [NOW] is the time they are rendered at.
  */

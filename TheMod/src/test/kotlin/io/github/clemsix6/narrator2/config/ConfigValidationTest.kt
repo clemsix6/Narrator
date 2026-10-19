@@ -46,7 +46,7 @@ class ConfigValidationTest {
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
         assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2), defaults.memory)
         assertEquals(MechanicsConfig(true, 2, 10, 8, 15, 120, 5, 10), defaults.mechanics, "M4 §17")
-        assertEquals(JevConfig(true, "https://api.typesafe.ai", "TYPESAFE_API_KEY", "jev-1.13.0", 1_500), defaults.jev)
+        assertEquals(ReflexConfig(true, "claude-haiku-5-5", "low", false, 3_000), defaults.reflex)
     }
 
     @Test
@@ -129,10 +129,10 @@ class ConfigValidationTest {
                 "safety.extraAllowedCommands[1]: give is forbidden by the built-in list and cannot be allowed",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("home"), extraAllowedCommands = listOf("home"))) to
                 "safety.extraAllowedCommands[0]: home is also in safety.extraForbiddenCommands",
-            defaults.copy(jev = JevConfig(baseUrl = "api.typesafe.ai")) to "jev.baseUrl must be an http:// or https:// URL with a host",
-            defaults.copy(jev = JevConfig(apiKeyEnv = " ")) to "jev.apiKeyEnv must name an environment variable",
-            defaults.copy(jev = JevConfig(model = "")) to "jev.model must not be empty",
-            defaults.copy(jev = JevConfig(timeoutMs = 200)) to "jev.timeoutMs must be between 300 and 10000",
+            defaults.copy(reflex = ReflexConfig(model = " ")) to "reflex.model must not be empty",
+            defaults.copy(reflex = ReflexConfig(effort = "xhigh")) to "reflex.effort must be one of low, medium, high",
+            defaults.copy(reflex = ReflexConfig(timeoutMs = 499)) to "reflex.timeoutMs must be between 500 and 10000",
+            defaults.copy(reflex = ReflexConfig(timeoutMs = 10_001)) to "reflex.timeoutMs must be between 500 and 10000",
         )
         cases.forEach { (config, message) -> assertRefused(config, message) }
     }
@@ -154,8 +154,8 @@ class ConfigValidationTest {
             defaults.copy(mechanics = MechanicsConfig(false, 1, 0, 1, 2, 30, 1, 2)),
             defaults.copy(mechanics = MechanicsConfig(true, 5, 120, 20, 60, 600, 15, 60)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
-            defaults.copy(jev = JevConfig(baseUrl = "http://localhost:9000", timeoutMs = 300)),
-            defaults.copy(jev = JevConfig(timeoutMs = 10_000)),
+            defaults.copy(reflex = ReflexConfig(effort = "high", timeoutMs = 500)),
+            defaults.copy(reflex = ReflexConfig(effort = "medium", timeoutMs = 10_000)),
         )
         edges.forEach { assertEquals(emptyList(), problems(it), "$it") }
     }
@@ -189,7 +189,7 @@ class ConfigValidationTest {
               "journal": { "timeZone": "Europe/Paris" },
               "director": { "heartbeatMinutes": [5, 12], "operatorChannel": "user_tag" },
               "safety": { "protectedPlayers": ["Mimosa"] },
-              "jev": { "enabled": false, "model": null }
+              "reflex": { "enabled": false, "model": null }
             }
             """.trimIndent(),
         )
@@ -200,7 +200,7 @@ class ConfigValidationTest {
         assertEquals(DirectorConfig(heartbeatMinutes = listOf(5, 12), operatorChannel = "user_tag"), config.director)
         assertEquals(OperatorChannelMode.USER_TAG, config.director.channelMode)
         assertEquals(listOf("Mimosa"), config.safety.protectedPlayers)
-        assertEquals(JevConfig(enabled = false), config.jev, "a null value takes its default")
+        assertEquals(ReflexConfig(enabled = false), config.reflex, "a null value takes its default")
     }
 
     @Test
@@ -246,21 +246,13 @@ class ConfigValidationTest {
     }
 
     @Test
-    fun `a Jev key in the file is ignored with a warning and never logged`() {
+    fun `a leftover jev section is ignored with a warning, its key never logged`() {
         dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "jev": { "apiKey": "ts-leftover-7b7b" } }""")
         val logs = LogCapture()
         val config = logs.use { ConfigStore.load(dir) }
 
-        assertEquals(JevConfig(), config.jev)
-        assertContains(logs.text, "jev.apiKey is ignored, remove it from the file: the Jev key is read only from the environment variable named by jev.apiKeyEnv")
+        assertEquals(NarratorConfig(), config)
+        assertContains(logs.text, "unknown setting jev is ignored")
         assertFalse("ts-leftover-7b7b" in logs.text)
-    }
-
-    @Test
-    fun `plain http to Jev on another machine is accepted with a warning`() {
-        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "jev": { "baseUrl": "http://192.168.1.30:8080" } }""")
-        val logs = LogCapture()
-        logs.use { ConfigStore.load(dir) }
-        assertContains(logs.text, "jev.baseUrl sends the Jev key unencrypted (http://) to 192.168.1.30")
     }
 }

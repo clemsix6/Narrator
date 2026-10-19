@@ -5,7 +5,7 @@ import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.Prompts
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.llm.ClaudeClient
-import io.github.clemsix6.narrator2.reflex.JevClient
+import io.github.clemsix6.narrator2.reflex.ReflexClient
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
 
@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
  * never keep a copy (except a Director chapter, whose prompt and tools are frozen).
  *
  * @property claude null when the LLMGW key is missing: the Director stays asleep.
- * @property jev null when Jev is disabled or its key is missing: the reflexes use their heuristic.
+ * @property reflex null when the reflexes are disabled or the LLMGW key is missing: they use their heuristic.
  * @property loadError why these are the default settings: the configuration could not be loaded when
  *   the server started. Null for settings loaded from the files.
  */
@@ -24,19 +24,19 @@ class Settings(
     val prompts: Prompts,
     val ui: UiTexts,
     val claude: ClaudeClient?,
-    val jev: JevClient?,
+    val reflex: ReflexClient?,
     val loadError: String? = null,
 ) {
     /** Closes the clients once their calls in flight are over: these settings were replaced. */
     fun closeWhenIdle() {
         claude?.closeWhenIdle()
-        jev?.closeWhenIdle()
+        reflex?.closeWhenIdle()
     }
 
     /** Closes the clients now: the server is stopping and their callers were cancelled. */
     fun close() {
         claude?.close()
-        jev?.close()
+        reflex?.close()
     }
 }
 
@@ -77,13 +77,13 @@ object SettingsLoader {
         val ui = UiTexts.load(config.language, configDir.resolve(UI_DIR))
         val key = env(config.gateway.apiKeyEnv)?.trim()?.ifEmpty { null }
         val claude = key?.let { ClaudeClient(config, it) }
-        val jev = try {
-            JevClient.create(config.jev, env)
+        val reflex = try {
+            ReflexClient.create(config, key)
         } catch (e: Exception) {
             claude?.close()
             throw e
         }
-        return Settings(config, prompts, ui, claude, jev)
+        return Settings(config, prompts, ui, claude, reflex)
     }
 
     /**
@@ -93,7 +93,7 @@ object SettingsLoader {
      */
     fun fallback(error: String): Settings {
         val config = NarratorConfig()
-        return Settings(config, Prompts.bundled(), UiTexts.load(config.language), claude = null, jev = null, loadError = error)
+        return Settings(config, Prompts.bundled(), UiTexts.load(config.language), claude = null, reflex = null, loadError = error)
     }
 
     /** Where the LLMGW key comes from, for operators (never the key itself). */

@@ -311,7 +311,7 @@ internal data class Said(val at: Instant, val turnId: Long?, val to: List<String
  * - **Tools of the Director**: `say` (the real arguments; the line is journaled as the real tool does, nobody
  *   reads it), the real `sql`, `remind_me` and the five memory tools. The world's tools need a server: they are
  *   not there, and the model only sees tools that work.
- * - **The reflexes** answer what the test says of each message ([chat]), as Jev would; no heartbeat.
+ * - **The reflexes** answer what the test says of each message ([chat]), as the reflex model would; no heartbeat.
  * - **The clock** is real time, moved by [clock]'s offset: history placed in the past, or the twenty minutes
  *   of an empty server skipped before a dream.
  */
@@ -493,9 +493,9 @@ internal class LiveWorld(val name: String, key: String, val zone: ZoneId = PARIS
         private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("MMdd-HHmmss").withZone(ZoneId.systemDefault())
         private val MAPPER = ObjectMapper()
 
-        /** A verdict of the reflexes, as Jev gives it. */
+        /** A verdict of the reflexes, as the reflex model gives it. */
         fun verdict(toNarrator: Double, tone: Tone, intent: ChatIntent, manipulation: Double = 0.0) =
-            ChatVerdict(toNarrator, tone, 0.85, manipulation, intent, personality = null, source = "jev:jev-1.13.0", latencyMs = 120)
+            ChatVerdict(toNarrator, tone, 0.85, manipulation, intent, personality = null, source = "reflex:claude-haiku-5-5", latencyMs = 120)
 
         /** The text blocks of a message, joined; a string content as it is. */
         fun textOf(message: JsonNode): String {

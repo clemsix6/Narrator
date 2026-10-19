@@ -187,7 +187,7 @@ class ChapterScenariosTest {
 
         val overrides = Files.createDirectories(dir.resolve("prompts"))
         Files.writeString(overrides.resolve("director.md"), "Tu es un autre Narrateur.")
-        val changed = Settings(old.config, Prompts.load(overrides), old.ui, h.client, jev = null)
+        val changed = Settings(old.config, Prompts.load(overrides), old.ui, h.client, reflex = null)
         h.director.post(DirectorSignal.SettingsChanged(old, changed))
         h.runCurrent()
         assertEquals("chapter 1, reload: the director prompt changed", h.decisions(DecisionRecord.Kind.CHAPTER, "marked").single().reason)

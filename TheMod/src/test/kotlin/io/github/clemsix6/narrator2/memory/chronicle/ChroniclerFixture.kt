@@ -130,8 +130,8 @@ internal class ChroniclerFixture : AutoCloseable {
     fun narrator(time: String, text: String, to: List<PlayerRef>? = null, turn: Long? = 40, operator: String? = null): Long =
         publish(time, NarratorSpoke(if (operator == null) NarratorChannel.NARRATOR else NarratorChannel.OPERATOR, text, to, turn, operator))
 
-    /** The triage of the message [eventId] (Jev unless [source] says otherwise). */
-    fun signal(eventId: Long, time: String, player: PlayerRef, toNarrator: Double, tone: Tone?, confidence: Double, intent: ChatIntent?, source: String = "jev:jev-1.13.0") =
+    /** The triage of the message [eventId] (the reflex model unless [source] says otherwise). */
+    fun signal(eventId: Long, time: String, player: PlayerRef, toNarrator: Double, tone: Tone?, confidence: Double, intent: ChatIntent?, source: String = "reflex:claude-haiku-5-5") =
         journal.journal.chatSignals(
             ChatSignalsRecord(
                 eventId, at(time), player.uuid, source, toNarrator, tone, confidence, intent, 0.05,

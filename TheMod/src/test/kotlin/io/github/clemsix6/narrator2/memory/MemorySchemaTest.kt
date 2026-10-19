@@ -123,6 +123,25 @@ class MemorySchemaTest {
     }
 
     @Test
+    fun `no comment of the schema names Jev any more - V3 says the reflexes are a Claude role`() {
+        DuckDatabase.openInMemory(options).use { db ->
+            val comments = db.writer.strings(
+                "SELECT comment FROM duckdb_tables() WHERE comment IS NOT NULL UNION ALL SELECT comment FROM duckdb_columns() WHERE comment IS NOT NULL",
+            )
+            assertEquals(emptyList(), comments.filter { it.orEmpty().contains("jev", ignoreCase = true) && "older than" !in it.orEmpty() })
+            assertEquals(
+                listOf("One row per Claude call, role reflex included"),
+                db.writer.strings("SELECT comment FROM duckdb_tables() WHERE table_name = 'llm_calls'"),
+            )
+            val reflex = db.writer.strings(
+                "SELECT comment FROM duckdb_columns() WHERE (table_name = 'llm_calls' AND column_name = 'role') OR (table_name = 'chat_signals' AND column_name = 'source')",
+            )
+            assertEquals(2, reflex.size)
+            reflex.forEach { assertTrue(it.orEmpty().contains("reflex") && it.orEmpty().none { c -> c == '<' || c == '>' }, "comment: $it") }
+        }
+    }
+
+    @Test
     fun `V3 applies to a world at version 2 whose views already exist, and keeps its rows`() {
         val file = dir.resolve(DuckDatabase.FILE_NAME)
         DuckDatabase.open(file, options).use { db ->

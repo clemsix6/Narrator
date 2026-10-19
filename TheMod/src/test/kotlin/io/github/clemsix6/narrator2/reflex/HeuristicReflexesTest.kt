@@ -18,7 +18,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The French chat heuristic: the evaluation set of `docs/research/jev-eval/`, and the rules one by one. */
+/** The French chat heuristic: the 20 cases it was written against (`docs/research/jev-eval/`, an archive), and the rules one by one. */
 class HeuristicReflexesTest {
     private val heuristic = HeuristicReflexes.forLanguage("fr")
 
@@ -119,7 +119,7 @@ class HeuristicReflexesTest {
     }
 
     @Test
-    fun `a heartbeat is always worth a wake-up without Jev`() {
+    fun `a heartbeat is always worth a wake-up for the heuristic`() {
         val verdict = runBlocking { heuristic.heartbeat(5, listOf("Bartok: mined 3 stone"), listOf("Bartok")) }
 
         assertEquals(HeartbeatVerdict(1.0, null, HeuristicReflexes.SOURCE, 0), verdict)
@@ -179,7 +179,7 @@ class HeuristicReflexesTest {
     private companion object {
         const val DATASET = "docs/research/jev-eval/chat-triage-dataset.json"
 
-        /** The dataset's intents are the French names of JEV.md §2.1. */
+        /** The dataset's intents are French names (the archived `docs/research/JEV.md` §2.1). */
         val DATASET_INTENTS = mapOf(
             "question" to ChatIntent.QUESTION,
             "demande" to ChatIntent.REQUEST,

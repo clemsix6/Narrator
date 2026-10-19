@@ -35,7 +35,7 @@ data class NarratorConfig(
     val memory: MemoryConfig = MemoryConfig(),
     val mechanics: MechanicsConfig = MechanicsConfig(),
     val safety: SafetyConfig = SafetyConfig(),
-    val jev: JevConfig = JevConfig(),
+    val reflex: ReflexConfig = ReflexConfig(),
     val logging: LoggingConfig = LoggingConfig(),
 ) {
     /** Settings of [role]. A loaded configuration has every role: the loader fills in the missing ones. */
@@ -47,6 +47,9 @@ data class NarratorConfig(
             OutputConfig.Effort.LOW, OutputConfig.Effort.MEDIUM, OutputConfig.Effort.HIGH,
             OutputConfig.Effort.XHIGH, OutputConfig.Effort.MAX,
         ).map { it.asString() }
+
+        /** Effort levels of `reflex.effort`: the API refuses disabled thinking above `high`. */
+        val REFLEX_EFFORTS: List<String> = listOf(OutputConfig.Effort.LOW, OutputConfig.Effort.MEDIUM, OutputConfig.Effort.HIGH).map { it.asString() }
 
         /** `gateway.cacheTtl` value that sends no cache marker at all. */
         const val NO_CACHE_MARKER = "off"
@@ -271,18 +274,22 @@ data class SafetyConfig(
     val extraAllowedCommands: List<String> = emptyList(),
 )
 
-/** Jev (TypeSafe), the fast classifier behind the reflexes; a heuristic takes over without it. */
+/**
+ * The reflexes: a small Claude model, through LLMGW with the gateway's key, labels each public message,
+ * prayer and heartbeat. The chat heuristic takes over without it, and for any call it fails to answer.
+ */
 @Serializable
-data class JevConfig(
-    /** Jev is used when enabled and the environment variable [apiKeyEnv] is set. */
+data class ReflexConfig(
+    /** The model labels when enabled and the LLMGW key is set; the heuristic answers otherwise. */
     val enabled: Boolean = true,
-    val baseUrl: String = "https://api.typesafe.ai",
-    /** Environment variable holding the Jev key. The key itself never goes in this file. */
-    val apiKeyEnv: String = "TYPESAFE_API_KEY",
-    /** A versioned model id: thresholds are tuned for one version. */
-    val model: String = "jev-1.13.0",
-    /** Longest a Jev call may take, retries included; the heuristic answers after that. */
-    val timeoutMs: Long = 1_500,
+    /** A model that accepts disabled thinking and an effort, such as Haiku 5.5. */
+    val model: String = "claude-haiku-5-5",
+    /** low | medium | high: without thinking, the API refuses more than `high`. */
+    val effort: String = "low",
+    /** Lets the model think before it labels (adaptive thinking at [effort]): slower; raise [timeoutMs] with it. */
+    val thinking: Boolean = false,
+    /** Longest a call may take, never retried; the heuristic answers after that. */
+    val timeoutMs: Long = 3_000,
 )
 
 @Serializable
@@ -316,7 +323,7 @@ object ConfigStore {
     private val FREE_FORM = setOf("logging.levels")
 
     /** Keys an operator may be tempted to add, which must never be read from the file → what they hold. */
-    private val SECRETS = mapOf("gateway.apiKey" to "the LLMGW key", "jev.apiKey" to "the Jev key")
+    private val SECRETS = mapOf("gateway.apiKey" to "the LLMGW key")
 
     /** A command root, as players type it after `/`. */
     private val COMMAND_ROOT = Regex("[a-z0-9_.:-]+")
@@ -389,7 +396,6 @@ object ConfigStore {
             throw ConfigException("invalid configuration in $file:\n - ${problems.joinToString("\n - ")}")
         }
         warnIfUnencrypted("gateway.baseUrl", config.gateway.baseUrl, "the LLMGW key")
-        if (config.jev.enabled) warnIfUnencrypted("jev.baseUrl", config.jev.baseUrl, "the Jev key")
     }
 
     /**
@@ -496,11 +502,10 @@ object ConfigStore {
             }
         }
 
-        val jev = config.jev
-        if (!isHttpUrl(jev.baseUrl)) add("jev.baseUrl must be an http:// or https:// URL with a host")
-        if (jev.apiKeyEnv.isBlank()) add("jev.apiKeyEnv must name an environment variable")
-        if (jev.model.isBlank()) add("jev.model must not be empty")
-        range("jev.timeoutMs", jev.timeoutMs, 300, 10_000)
+        val reflex = config.reflex
+        if (reflex.model.isBlank()) add("reflex.model must not be empty")
+        if (reflex.effort !in NarratorConfig.REFLEX_EFFORTS) add("reflex.effort must be one of ${NarratorConfig.REFLEX_EFFORTS.joinToString()}")
+        range("reflex.timeoutMs", reflex.timeoutMs, 500, 10_000)
     }
 
     private fun MutableList<String>.range(setting: String, value: Long, min: Long, max: Long) {

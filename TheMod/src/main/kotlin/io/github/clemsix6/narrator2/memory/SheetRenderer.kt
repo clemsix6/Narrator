@@ -282,7 +282,7 @@ class SheetRenderer(private val zone: ZoneId) {
                     trait.note?.let { Item("$head: ", text(it), elastic = true) } ?: Item(head)
                 }, 6, ::more),
             )
-            add(ItemsPiece("Signals (Jev hints)", stats.signals().map(::Item), 2))
+            add(ItemsPiece("Signals (chat hints)", stats.signals().map(::Item), 2))
             add(TextPiece(docLabel("Playstyle", SheetSection.PLAYSTYLE), docText(SheetSection.PLAYSTYLE), 2))
             add(TextPiece(docLabel("Attitude", SheetSection.ATTITUDE), docText(SheetSection.ATTITUDE), 2))
             add(TextPiece(docLabel("Likes", SheetSection.LIKES), docText(SheetSection.LIKES), 2))
@@ -483,13 +483,13 @@ class SheetRenderer(private val zone: ZoneId) {
             together()?.let { add("Time together: $it") }
         }.ifEmpty { null }
 
-        /** Jev's signals, or why there are none (the heuristic measures none, M3 §6.3). */
+        /** The reflex model's signals, or why there are none (the heuristic measures none, M3 §6.3). */
         fun signals(): List<String> {
             val stat = stats["signals"] ?: return listOf("(not computed yet)")
             val measured = stat.value?.roundToLong() ?: 0
             val detail = stat.detail ?: return listOf(
-                if (measured == 0L) "none (no message of this player measured by Jev)"
-                else "none yet ($measured messages measured by Jev, ${Signals.MIN_MESSAGES} needed)",
+                if (measured == 0L) "none (no message of this player measured by the reflexes)"
+                else "none yet ($measured messages measured by the reflexes, ${Signals.MIN_MESSAGES} needed)",
             )
             return listOf("$measured messages, recent (mean)") + detail.entries.mapNotNull { (name, value) ->
                 val signal = value as? JsonObject ?: return@mapNotNull null

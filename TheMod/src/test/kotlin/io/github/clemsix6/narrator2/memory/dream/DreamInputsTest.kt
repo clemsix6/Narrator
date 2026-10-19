@@ -97,7 +97,7 @@ class DreamInputsTest {
         }
         repeat(40) { i ->
             val id = f.chat("20:4${i / 10}:${(10 + i).toString().take(2)}", f.bartok, "m".repeat(300))
-            f.journal.journal.chatSignals(ChatSignalsRecord(id, f.clock.instant(), bartok, "jev:jev-1.13.0", 0.9, Tone.HOSTILE, 0.9, ChatIntent.PROVOCATION, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 3))
+            f.journal.journal.chatSignals(ChatSignalsRecord(id, f.clock.instant(), bartok, "reflex:claude-haiku-5-5", 0.9, Tone.HOSTILE, 0.9, ChatIntent.PROVOCATION, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 3))
         }
         f.clock.now = at("21:55")
         TraitAxis.entries.forEach { axis -> store.setTrait(TraitDraft(bartok, axis.id, 1, null, 5, 0.85, memories.take(10), text(160, axis.ordinal)), dreamer) }
@@ -256,7 +256,7 @@ class DreamInputsTest {
         // M3-19: « non je mine, débrouille toi » answered Mimosa; read as an answer to the Narrator, it made a defiant trait.
         val answer = f.chat("20:40:00", f.bartok, "non je mine, débrouille toi")
         f.journal.journal.chatSignals(
-            ChatSignalsRecord(answer, at("20:40:00"), f.bartok.uuid, "jev:jev-1.13.0", 0.08, Tone.NEUTRAL_NO_TARGET, 0.9, ChatIntent.BANTER_BETWEEN_PLAYERS, 0.02, null, null, null, null, null, 3),
+            ChatSignalsRecord(answer, at("20:40:00"), f.bartok.uuid, "reflex:claude-haiku-5-5", 0.08, Tone.NEUTRAL_NO_TARGET, 0.9, ChatIntent.BANTER_BETWEEN_PLAYERS, 0.02, null, null, null, null, null, 3),
         )
         val now = at("22:10")
         f.clock.now = now

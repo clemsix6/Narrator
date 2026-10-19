@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.guard.DeathReport
+import io.github.clemsix6.narrator2.reflex.ClaudeReflexes
 import io.github.clemsix6.narrator2.trace.DeathLine
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.MessageFate
@@ -303,32 +304,30 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         return Report("why: ${report.player}'s last death · ${time(died)}, ${ago(died)}", lines)
     }
 
-    /** `/narrator usage [hours]`: model calls per provider and role. */
+    /** `/narrator usage [hours]`: model calls per role, the reflexes (`reflex`) included. */
     fun usage(rows: List<Usage>, hours: Int): Report {
         val lines = rows.map { row ->
             val failed = if (row.failed > 0) " · ${row.failed} failed" else ""
-            if (row.provider == "anthropic") {
-                Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
-            } else {
-                Out("${row.provider} (${row.role}): ${row.calls} ${plural(row.calls, "call")} · ${row.averageLatencyMs} ms avg$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
-            }
+            Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
         }
         return Report("usage over the last $hours h", lines.ifEmpty { listOf(Out("no model call")) })
     }
 
-    /** The consumption line of `/narrator status`: `Usage (24 h): Claude 48 calls · … · Jev 120 calls`. */
+    /**
+     * The consumption line of `/narrator status`: `Usage (24 h): Claude 48 calls · 250k in (98% cached) · 612 out ·
+     * reflexes 120 calls (1 failed)`. The conversations' calls first; the reflexes', many and small, apart.
+     */
     fun usageSummary(rows: List<Usage>, hours: Int): String {
-        val claude = rows.filter { it.provider == "anthropic" }
-        val others = rows.filter { it.provider != "anthropic" }.groupBy { it.provider }
+        val (reflexes, claude) = rows.partition { it.role == ClaudeReflexes.ROLE }
         val parts = buildList {
             if (claude.isNotEmpty()) {
                 val total = Usage("anthropic", "all", claude.sumOf { it.calls }, claude.sumOf { it.failed }, claude.sumOf { it.inputTokens }, claude.sumOf { it.cacheReadTokens }, claude.sumOf { it.cacheWriteTokens }, claude.sumOf { it.outputTokens }, 0)
                 add("Claude ${total.calls} ${plural(total.calls, "call")} · ${tokensIn(total)} · ${tokens(total.outputTokens)} out" + if (total.failed > 0) " · ${total.failed} failed" else "")
             }
-            others.forEach { (provider, list) ->
-                val calls = list.sumOf { it.calls }
-                val failed = list.sumOf { it.failed }
-                add("${provider.replaceFirstChar { it.uppercase() }} $calls ${plural(calls, "call")}" + if (failed > 0) " ($failed failed)" else "")
+            if (reflexes.isNotEmpty()) {
+                val calls = reflexes.sumOf { it.calls }
+                val failed = reflexes.sumOf { it.failed }
+                add("reflexes $calls ${plural(calls, "call")}" + if (failed > 0) " ($failed failed)" else "")
             }
         }
         return "Usage ($hours h): ${parts.joinToString(" · ").ifEmpty { "no model call" }}"

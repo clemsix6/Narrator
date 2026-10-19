@@ -16,10 +16,10 @@ import java.util.UUID
  */
 
 /**
- * One call to a model: an Anthropic call (successful or not) or a Jev call. Row of `llm_calls`.
+ * One call to a model, successful or not: a turn or a task of a conversation, or a reflex call. Row of `llm_calls`.
  *
- * @property role role id (`Role.id`) for an Anthropic call; `reflex` for Jev.
- * @property effort Anthropic effort; null for Jev.
+ * @property role role id (`Role.id`) of a conversation; `reflex` for a reflex call (no conversation).
+ * @property effort the effort the call asked for.
  * @property latencyMs whole call, retries included.
  * @property ttftMs time to the first streamed token of the last attempt.
  * @property attempts HTTP requests sent, retries included.
@@ -55,7 +55,7 @@ data class LlmCallRecord(
     val thinking: String?,
 ) {
     enum class Provider {
-        ANTHROPIC, JEV;
+        ANTHROPIC;
 
         val id: String get() = name.lowercase()
     }
@@ -70,10 +70,10 @@ data class LlmCallRecord(
         /** A request of a worker's task (the Analyst in M2). */
         WORKER,
 
-        /** Jev: is this chat message addressed to the Narrator, and how. */
+        /** Reflexes: is this chat message addressed to the Narrator, and how. */
         CHAT_TRIAGE,
 
-        /** Jev: is this heartbeat worth waking the Director. */
+        /** Reflexes: is this heartbeat worth waking the Director. */
         HEARTBEAT_FILTER,
 
         /** A request of the Chronicler (a batch or a nap, M3 §7). */
@@ -408,7 +408,7 @@ data class TaskRecord(
  * personality signals are kept for the player sheets of M3.
  *
  * @property eventId id of the chat message.
- * @property source `jev:<model>` or `heuristic`.
+ * @property source `reflex:<model>` or `heuristic`.
  */
 data class ChatSignalsRecord(
     val eventId: Long,

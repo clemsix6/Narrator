@@ -55,7 +55,7 @@ class ChatTriageTest {
     }
 
     @Test
-    fun `without Jev the heuristic answers and the row has no personality signals`() {
+    fun `without the reflex model the heuristic answers and the row has no personality signals`() {
         val services = TestServices()
         val reflexes = createReflexes(services)
         val row = runBlocking {
@@ -90,15 +90,20 @@ class ChatTriageTest {
     @Test
     fun `the thresholds of the design`() {
         val never = { error("the heuristic is only asked in the gray zone") }
-        fun jev(toNarrator: Double) = FakeReflexes.verdict(toNarrator).copy(source = "jev:jev-1.13.0")
+        fun model(toNarrator: Double) = FakeReflexes.verdict(toNarrator).copy(source = "reflex:claude-haiku-5-5")
 
-        assertTrue(ReflexThresholds.triage(jev(0.6), never).addressed)
-        assertFalse(ReflexThresholds.triage(jev(0.34), never).addressed)
-        assertEquals("jev:jev-1.13.0 0.34 < 0.35", ReflexThresholds.triage(jev(0.34), never).reason)
-        assertTrue(ReflexThresholds.triage(jev(0.35)) { 0.6 }.addressed)
-        assertFalse(ReflexThresholds.triage(jev(0.59)) { 0.59 }.addressed)
+        assertTrue(ReflexThresholds.triage(model(0.6), never).addressed)
+        assertFalse(ReflexThresholds.triage(model(0.34), never).addressed)
+        assertEquals("reflex:claude-haiku-5-5 0.34 < 0.35", ReflexThresholds.triage(model(0.34), never).reason)
+        assertTrue(ReflexThresholds.triage(model(0.35)) { 0.6 }.addressed)
+        assertFalse(ReflexThresholds.triage(model(0.59)) { 0.59 }.addressed)
         val heuristic = FakeReflexes.verdict(0.45).copy(source = HeuristicReflexes.SOURCE)
         assertFalse(ReflexThresholds.triage(heuristic, never).addressed, "the heuristic has no gray zone")
+
+        val injection = ReflexThresholds.triage(model(0.05).copy(manipulation = 0.97), never)
+        assertTrue(injection.addressed, "a manipulation is aimed at the Narrator, even without its name")
+        assertEquals("reflex:claude-haiku-5-5 0.05, manipulation 0.97 >= 0.50", injection.reason)
+        assertFalse(ReflexThresholds.triage(model(0.05).copy(manipulation = 0.49), never).addressed)
 
         val flagged = ReflexThresholds.triage(FakeReflexes.verdict(0.9, Tone.MOCKING_PLAYFUL, manipulation = 0.5).copy(toneConfidence = 0.59), never)
         assertTrue(flagged.manipulation)
@@ -107,12 +112,15 @@ class ChatTriageTest {
     }
 
     @Test
-    fun `a prayer is triaged like a public message`() {
+    fun `a prayer is triaged like a public message, and said to be one`() {
         val reflexes = FakeReflexes(chat = { FakeReflexes.verdict(0.97, Tone.MOCKING_PLAYFUL, ChatIntent.REQUEST) })
         val services = TestServices(reflexes = reflexes)
 
         assertTrue(triage(services, "rends-moi mes diamants", channel = ChatChannel.PRAY).addressed)
         assertEquals(1, services.traces.chatSignals.size)
+        assertTrue(reflexes.chatInputs.single().prayer)
+        triage(services, "rends-moi mes diamants")
+        assertFalse(reflexes.chatInputs.last().prayer)
     }
 
     @Test

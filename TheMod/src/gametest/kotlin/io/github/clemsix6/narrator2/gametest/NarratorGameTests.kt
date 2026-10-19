@@ -142,7 +142,7 @@ class NarratorGameTests {
         // send its turns to this test's fake gateway. DirectorEndToEndTests runs it, in a batch of its own.
         Files.writeString(
             NarratorRuntime.configFile,
-            """{ "gateway": { "baseUrl": "${fake.baseUrl}", "apiKeyEnv": "$KEY_ENV", "maxRetries": 0 }, "director": { "enabled": false } }""",
+            """{ "gateway": { "baseUrl": "${fake.baseUrl}", "apiKeyEnv": "$KEY_ENV", "maxRetries": 0 }, "director": { "enabled": false }, "reflex": { "enabled": false } }""",
         )
         val output = CommandOutput()
         val source = helper.level.server.createCommandSourceStack().withSource(output)

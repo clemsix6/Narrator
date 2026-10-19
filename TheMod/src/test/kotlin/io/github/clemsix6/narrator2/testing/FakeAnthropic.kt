@@ -25,8 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * A fake Anthropic Messages API for tests: no network, no real Claude.
  *
- * It serves `POST /v1/messages` as an SSE stream, exactly like the real API with `stream: true`,
- * answering each request with the next scripted [FakeResponse]: first from the queue of the request's
+ * It serves `POST /v1/messages` as an SSE stream, exactly like the real API with `stream: true` (and as one
+ * JSON message without it, as the reflexes ask), answering each request with the next scripted
+ * [FakeResponse]: first from the queue of the request's
  * conversation ([RecordedRequest.conversation], [enqueueFor]), else from the global queue ([enqueue]). Every request is recorded
  * (headers and JSON body) so tests can check what the client sent.
  *
@@ -140,8 +141,6 @@ class FakeAnthropic(
             val response = when {
                 request.method != "POST" || request.path != "/v1/messages" ->
                     httpError(404, message = "FakeAnthropic only serves POST /v1/messages (got ${request.method} ${request.path})")
-                !request.json.path("stream").asBoolean(false) ->
-                    httpError(400, message = "FakeAnthropic only serves stream=true requests")
                 violation != null -> {
                     rejections += violation
                     httpError(400, message = violation)
@@ -530,11 +529,42 @@ private class ReplyResponse(
     override fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         val holds = steps.filterIsInstance<Step.Pause>().map { it.hold }
         try {
-            write(openStream(exchange), request, succeeded)
+            if (request.json.path("stream").asBoolean(false)) write(openStream(exchange), request, succeeded) else writeWhole(exchange, request, succeeded)
             holds.forEach { it.finish(clientGone = false) }
         } catch (e: IOException) {
             holds.forEach { it.finish(clientGone = true) }
         }
+    }
+
+    /** The reply as one JSON message (`stream` absent or false); a [Step.Cut] closes the connection without a response. */
+    private fun writeWhole(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
+        val content = MAPPER.createArrayNode()
+        for (step in steps) {
+            when (step) {
+                is Step.Pause -> step.hold.pause()
+                Step.Cut -> return
+                is Step.Thinking -> content.add(obj("thinking").put("thinking", step.summary).put("signature", nextId("sig")))
+                is Step.Text -> content.add(obj("text").put("text", step.text))
+                is Step.ToolUse -> {
+                    val input = runCatching { MAPPER.readTree(step.input) }.getOrNull()
+                    content.add(obj("tool_use").put("id", step.id).put("name", step.name).also { it.set<JsonNode>("input", input) })
+                }
+            }
+        }
+        val message = obj("message")
+            .put("id", nextId("msg"))
+            .put("role", "assistant")
+            .put("model", request.json.path("model").asText("claude-opus-5-5"))
+            .put("stop_reason", stopReason)
+            .putNull("stop_sequence")
+        message.set<JsonNode>("content", content)
+        stopDetails?.let { message.set<JsonNode>("stop_details", it) }
+        message.set<JsonNode>("usage", usageNode(usage, output = usage.output))
+        if (isUsable(content)) succeeded(normalized(content))
+        val bytes = MAPPER.writeValueAsBytes(message)
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.write(bytes)
     }
 
     private fun write(sse: SseWriter, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {

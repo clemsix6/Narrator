@@ -144,9 +144,9 @@ internal class DreamerFixture : AutoCloseable {
     fun leave(time: String, player: PlayerRef, session: Long, seconds: Long) =
         publish(time, PlayerLeft(player, OW, session, seconds, LeaveReason.LEAVE))
 
-    /** Jev's triage of the message [eventId]. */
+    /** The reflex model's triage of the message [eventId]. */
     fun signal(eventId: Long, time: String, player: PlayerRef, tone: Tone?, intent: ChatIntent?) = journal.journal.chatSignals(
-        ChatSignalsRecord(eventId, at(time), player.uuid, "jev:jev-1.13.0", 0.9, tone, 0.85, intent, 0.05, null, null, null, null, null, 3),
+        ChatSignalsRecord(eventId, at(time), player.uuid, "reflex:claude-haiku-5-5", 0.9, tone, 0.85, intent, 0.05, null, null, null, null, null, 3),
     )
 
     /** An author of the past: the Director in chapter 13. */

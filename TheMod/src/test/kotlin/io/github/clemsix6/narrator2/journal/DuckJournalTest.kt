@@ -251,7 +251,7 @@ class DuckJournalTest {
             buildJsonObject { put("rule", "no_pile_on") },
         )
         val signals = ChatSignalsRecord(
-            77, t0, steve.uuid, "jev:jev-1.13.0", 0.92, Tone.MOCKING_PLAYFUL, 0.8, ChatIntent.PROVOCATION, 0.1,
+            77, t0, steve.uuid, "reflex:claude-haiku-5-5", 0.92, Tone.MOCKING_PLAYFUL, 0.8, ChatIntent.PROVOCATION, 0.1,
             0.2, 0.3, 0.4, 0.5, 0.6, 350,
         )
         journal.journal.llmCall(llm)
@@ -283,7 +283,7 @@ class DuckJournalTest {
             journal.values("SELECT id, ts, kind, decision, subject, reason, event_id, conversation_id, turn_id, detail::VARCHAR FROM engine_decisions"),
         )
         assertEquals(
-            listOf(listOf(77L, t0, steve.uuid, "jev:jev-1.13.0", 0.92, "mocking_playful", 0.8, "provocation", 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 350)),
+            listOf(listOf(77L, t0, steve.uuid, "reflex:claude-haiku-5-5", 0.92, "mocking_playful", 0.8, "provocation", 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 350)),
             journal.values("SELECT * FROM chat_signals"),
         )
     }
@@ -451,8 +451,8 @@ class DuckJournalTest {
             )
             journal.journal.llmCall(
                 LlmCallRecord(
-                    journal.journal.nextId(IdKind.LLM_CALL), LlmCallRecord.Provider.JEV, LlmCallRecord.Purpose.CHAT_TRIAGE, null, null,
-                    "reflex", "jev-1.13.0", null, Instant.EPOCH, Instant.EPOCH, 300, null, 1, null, null, null, null, null, null, null, null, null, null, null,
+                    journal.journal.nextId(IdKind.LLM_CALL), LlmCallRecord.Provider.ANTHROPIC, LlmCallRecord.Purpose.CHAT_TRIAGE, null, null,
+                    "reflex", "claude-haiku-5-5", "low", Instant.EPOCH, Instant.EPOCH, 300, null, 1, null, null, null, null, null, null, null, null, null, null, null,
                 ),
             )
         }

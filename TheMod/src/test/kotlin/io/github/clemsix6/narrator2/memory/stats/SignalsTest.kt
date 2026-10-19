@@ -17,7 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Jev's signals gathered (M3 §6.3): mean, moving average and count, never from the heuristic, nothing under 30 messages. */
+/** The reflex model's signals gathered (M3 §6.3): mean, moving average and count, never from the heuristic, nothing under 30 messages. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SignalsTest {
     private val fixture = MemoryDataset.journal()
@@ -31,14 +31,14 @@ class SignalsTest {
     }
 
     @Test
-    fun `Mimosa's thirty Jev verdicts, without her five heuristic ones`() {
+    fun `Mimosa's thirty measured verdicts, without her five heuristic ones`() {
         val stat = signals(mimosa.uuid)
         assertEquals(30.0, stat.value)
         val detail = stat.detail!!
         assertEquals(Signals.NAMES, detail.keys.toList())
         // Message i (oldest 0) has politeness (i % 5) / 4 and humor 0.2 then 0.8; the latest weighs 2^(-k/100), k from the newest.
         fun expected(value: (Int) -> Double): Pair<Double, Double> {
-            val values = (0 until MemoryDataset.MIMOSA_JEV).map(value)
+            val values = (0 until MemoryDataset.MIMOSA_MEASURED).map(value)
             val weights = values.indices.map { i -> 2.0.pow(-(values.lastIndex - i) / Signals.HALF_LIFE_MESSAGES) }
             return values.average() to values.indices.sumOf { values[it] * weights[it] } / weights.sum()
         }
@@ -64,7 +64,7 @@ class SignalsTest {
         assertEquals(0.0, heuristicOnly.value)
         assertNull(heuristicOnly.detail)
         val tooFew = signals(kelvin.uuid)
-        assertEquals(MemoryDataset.KELVIN_JEV.toDouble(), tooFew.value)
+        assertEquals(MemoryDataset.KELVIN_MEASURED.toDouble(), tooFew.value)
         assertNull(tooFew.detail)
     }
 }

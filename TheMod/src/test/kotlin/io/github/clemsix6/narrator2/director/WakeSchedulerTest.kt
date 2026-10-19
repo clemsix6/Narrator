@@ -138,11 +138,11 @@ class WakeSchedulerTest {
 
     @Test
     fun `a classifier's verdict counts, never below what waits`() {
-        val jev = HeartbeatVerdict(0.31, "comedy", "jev-1.13.0", 40)
-        assertEquals(WakeScheduler.HeartbeatWorth(0.31, "worth 0.31 by jev-1.13.0"), WakeScheduler.heartbeatWorth(jev, listOf(teleport(0))))
+        val model = HeartbeatVerdict(0.31, "comedy", "reflex:claude-haiku-5-5", 40)
+        assertEquals(WakeScheduler.HeartbeatWorth(0.31, "worth 0.31 by reflex:claude-haiku-5-5"), WakeScheduler.heartbeatWorth(model, listOf(teleport(0))))
         assertEquals(
-            WakeScheduler.HeartbeatWorth(0.5, "worth 0.50 by 2 salient items waiting (jev-1.13.0 said 0.31)"),
-            WakeScheduler.heartbeatWorth(jev, listOf(teleport(0), teleport(1))),
+            WakeScheduler.HeartbeatWorth(0.5, "worth 0.50 by 2 salient items waiting (reflex:claude-haiku-5-5 said 0.31)"),
+            WakeScheduler.heartbeatWorth(model, listOf(teleport(0), teleport(1))),
         )
     }
 
