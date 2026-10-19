@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.memory.chronicle
 import io.github.clemsix6.narrator2.event.LeaveReason
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.Author
@@ -16,6 +17,7 @@ import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerReplayTest.Compan
 import io.github.clemsix6.narrator2.testing.budgetExceeded
 import io.github.clemsix6.narrator2.testing.reply
 import io.github.clemsix6.narrator2.trace.ConversationRecord.EndReason
+import io.github.clemsix6.narrator2.trace.DecisionRecord
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -313,6 +315,26 @@ class ChroniclerTest {
         assertEquals(RunStatus.SKIPPED, outcome.status)
         assertEquals(emptyList(), outcome.conversations)
         assertEquals(0, f.fake.requests.size)
+    }
+
+    /** M4 §19: the engine's news alone is worth a batch: a challenge won while nobody spoke nor the Director acted. */
+    @Test
+    fun `a window whose only news is the engine's is chronicled`() = runBlocking<Unit> {
+        f.chapterRow()
+        f.publish("20:01:00", PlayerJoined(f.bartok, ChroniclerFixture.OW, 1, firstTime = false, isOp = false))
+        val won = "C-50 won by Bartok in 4m00s (turtle_egg 1/1) · reward: Bartok got 1x golden_apple"
+        f.journal.journal.decision(
+            DecisionRecord(f.journal.journal.nextId(IdKind.DECISION), at("20:05"), DecisionRecord.Kind.MECHANIC, "won", "C-50", won, null, "mechanics:C-50", null, null),
+        )
+        f.journal.sync()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Victoire de Bartok notée.") })
+
+        val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+
+        assertEquals(RunStatus.DONE, outcome.status, outcome.report)
+        val opening = text(f.fake.requests.single().json.path("messages").first())
+        assertContains(opening, "\n[20:05:00] ENGINE mechanic won C-50: $won\n")
     }
 
     @Test

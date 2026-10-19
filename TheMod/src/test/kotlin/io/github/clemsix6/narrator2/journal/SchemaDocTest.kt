@@ -72,14 +72,14 @@ class SchemaDocTest {
         }
     }
 
-    /** M3 §13: six views of the memory, in their own section, and none of the memory's tables. */
+    /** M3 §13: six views of the memory, in their own section, and none of the memory's tables; M4 §19: what the engine tracks. */
     @Test
     fun `the memory is described through its six views`() {
         val memory = sections.getValue(SchemaDoc.Section.MEMORY)
         assertEquals(
             listOf(
                 "mem_memories(ref, kind, occurred, title, content, players[], tags[], importance, valence, strength)",
-                "mem_canon(ref, kind, status, statement, quote, players[], due_at, resolved_at, resolution, created_at)",
+                "mem_canon(ref, kind, mechanic, status, statement, quote, players[], due_at, resolved_at, resolution, created_at)",
                 "mem_interactions(ref, ts, player, kind, valence, disrespect, summary, quote)",
                 "mem_favor(player, favor, trend, disrespect)",
                 "mem_stats(player, stat, value, detail JSON)",
