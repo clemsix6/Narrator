@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.memory.stats
 
+import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.memory.uuid
 import java.sql.Connection
@@ -18,10 +19,15 @@ import java.util.UUID
  * - **PvP kills** of each on the other, and **griefs**: blocks of one broken by the other.
  *
  * A pair has a row once they met, fought or griefed. [compute] recomputes every pair from the whole history
- * on a read connection; [write] stores them in a short `Journal.write` job.
+ * on a read connection; [store] writes them in short `Journal.write` jobs of [CHUNK] pairs each, so that the
+ * writer is never held long (M3-05: 100 ms at most): a server where hundreds of players crossed paths has
+ * thousands of pairs (1 506 on the GameTests' server, written in one job of 2 s before, FLAKY-2).
  */
 object PairStats {
     const val RADIUS = 32
+
+    /** Pairs written by one `Journal.write` job ([store]), in one statement. */
+    const val CHUNK = 100
 
     /** A row of `pair_stats`. */
     data class PlayerPair(
@@ -40,25 +46,42 @@ object PairStats {
     fun compute(connection: Connection, now: Instant): List<PlayerPair> =
         connection.query(SheetStats.bind(SQL, null, now), timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS) { pair(now) }
 
-    /** Writes [pairs] (inside a `Journal.write` job). */
+    /**
+     * Writes [pairs] in `Journal.write` jobs of [CHUNK] pairs each, one after the other: the event batches and the
+     * other jobs pass in between. Each job is whole; a job that fails stops the next ones, and the next refresh
+     * writes every pair again (they are recomputed from the whole history).
+     */
+    suspend fun store(journal: Journal, pairs: List<PlayerPair>, timeoutMs: Long) {
+        for (chunk in pairs.chunked(CHUNK)) journal.write(timeoutMs) { write(it, chunk) }
+    }
+
+    /**
+     * Writes [pairs] (inside a `Journal.write` job) in one statement per [CHUNK] pairs: one row at a time took
+     * about 1.3 ms a pair. No JDBC batch: DuckDB's would open a transaction inside the job's.
+     */
     fun write(connection: Connection, pairs: List<PlayerPair>) {
-        connection.prepareStatement(
-            "INSERT OR REPLACE INTO pair_stats VALUES (CAST(? AS UUID), CAST(? AS UUID), ?, ?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ))",
-        ).use { statement ->
-            for (pair in pairs) {
-                statement.setString(1, pair.a.toString())
-                statement.setString(2, pair.b.toString())
-                statement.setDouble(3, pair.minutesTogether)
-                statement.setDouble(4, pair.minutesTogether7d)
-                statement.setInt(5, pair.pvpAOnB)
-                statement.setInt(6, pair.pvpBOnA)
-                statement.setInt(7, pair.griefsAOnB)
-                statement.setInt(8, pair.griefsBOnA)
-                statement.setString(9, pair.computedAt.toString())
-                statement.executeUpdate() // no JDBC batch: DuckDB's would open a transaction inside the job's
+        for (chunk in pairs.chunked(CHUNK)) {
+            connection.prepareStatement("INSERT OR REPLACE INTO pair_stats VALUES " + chunk.joinToString(", ") { ROW }).use { statement ->
+                chunk.forEachIndexed { i, pair ->
+                    val at = i * COLUMNS
+                    statement.setString(at + 1, pair.a.toString())
+                    statement.setString(at + 2, pair.b.toString())
+                    statement.setDouble(at + 3, pair.minutesTogether)
+                    statement.setDouble(at + 4, pair.minutesTogether7d)
+                    statement.setInt(at + 5, pair.pvpAOnB)
+                    statement.setInt(at + 6, pair.pvpBOnA)
+                    statement.setInt(at + 7, pair.griefsAOnB)
+                    statement.setInt(at + 8, pair.griefsBOnA)
+                    statement.setString(at + 9, pair.computedAt.toString())
+                }
+                statement.executeUpdate()
             }
         }
     }
+
+    /** One row of `pair_stats` in an `INSERT`, [COLUMNS] parameters. */
+    private const val ROW = "(CAST(? AS UUID), CAST(? AS UUID), ?, ?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ))"
+    private const val COLUMNS = 9
 
     /** The stored pairs [player] is in (every pair when null), the most time together first. */
     fun read(connection: Connection, player: UUID? = null): List<PlayerPair> = connection.query(
