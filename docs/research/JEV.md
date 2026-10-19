@@ -1,5 +1,11 @@
 # Jev (TypeSafe AI) — référence API et conception des réflexes
 
+> **Archive (19/10/2026).** Jev n'a jamais eu de clé et n'est plus utilisé : les réflexes passent par Claude Haiku 5.5
+> via LLMGW (`docs/ARCHITECTURE.md` §7.6 et §17.5, passation `docs/design/handoff/REFLEX-HAIKU.md`). Le code de Jev
+> (`JevClient`, `JevQuestions`, `JevReflexes`), sa configuration (`jev.*`, `TYPESAFE_API_KEY`) et ses tests sont
+> supprimés. Ce document et `jev-eval/` restent pour mémoire ; les 20 cas de `jev-eval/` servent encore au test de
+> l'heuristique (`HeuristicReflexesTest`) et sont repris dans le jeu d'éval du réflexe.
+
 > Recherche vérifiée à partir de la documentation brute dans `.research/jev/` (non versionné). Ce document est la référence à lire avant de brancher Jev dans le mod ; il ne modifie aucun code. Voir `docs/ARCHITECTURE.md` §7.2 et §7.6, et `docs/MEMOIRE.md` §3 pour le contexte produit.
 
 ## 0. En bref
