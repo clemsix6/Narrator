@@ -194,9 +194,10 @@ object BlockRestorer {
     fun restoreAll(): Int = index.entries.toList().sumOf { (key, indexed) -> takeAway(key, indexed.level, "taken away at once") { true } }
 
     /** The traps holding [player], for `activeOn`: kind `trap`, harmful, by block (`22 minecraft:glass`). Any thread. */
-    fun activeOn(player: UUID): List<ActiveEffect> =
-        index.values.flatMap { it.entries }.filter { it.player == player }.groupBy { blockId(it.placed) }
-            .map { (block, entries) -> ActiveEffect("trap", "${entries.size} $block", entries.maxOf { it.until }, harmful = true) }
+    fun activeOn(player: UUID): List<ActiveEffect> = traps(index.values.flatMap { it.entries }.filter { it.player == player })
+
+    /** The traps of every player, in the chunks loaded, as [activeOn] gives them (`/narrator traps`). Any thread. */
+    fun byPlayer(): Map<UUID, List<ActiveEffect>> = index.values.flatMap { it.entries }.groupBy { it.player }.mapValues { (_, entries) -> traps(entries) }
 
     /** Blocks waiting to be taken away, in the chunks loaded. Any thread. */
     fun pending(): Int = index.values.sumOf { it.entries.size }
@@ -334,6 +335,10 @@ object BlockRestorer {
             Optional.empty()
         }
     }.orElse(null)
+
+    /** [entries] as the traps they make, one per block: `22 minecraft:glass` until the last one goes. */
+    private fun traps(entries: List<BlockSnapshot>): List<ActiveEffect> = entries.groupBy { blockId(it.placed) }
+        .map { (block, same) -> ActiveEffect("trap", "${same.size} $block", same.maxOf { it.until }, harmful = true) }
 
     /** The id of the block [snbt] stands for, from what [stateOf] already read. Any thread. */
     private fun blockId(snbt: String): String = states[snbt]?.orElse(null)?.block?.id ?: "unknown block"

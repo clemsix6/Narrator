@@ -226,6 +226,9 @@ class TrapGameTests {
         val hers = helper.absolutePos(BlockPos(4, 3, 1))
         helper.assertEquals(2, BlockRestorer.place(level, his, TrapShapes.cageBlock, until, bartok, null).getOrThrow(), "his")
         helper.assertEquals(1, BlockRestorer.place(level, listOf(hers), TrapShapes.webBlock, until, mimosa, null).getOrThrow(), "hers")
+        val listed = BlockRestorer.byPlayer()
+        helper.assertEquals(listOf(ActiveEffect("trap", "2 minecraft:glass", until, harmful = true)), listed[bartok], "his, listed")
+        helper.assertEquals(listOf(ActiveEffect("trap", "1 minecraft:cobweb", until, harmful = true)), listed[mimosa], "hers, listed")
 
         helper.assertEquals(2, BlockRestorer.restoreFor(bartok), "his blocks taken away")
         helper.assertTrue(his.all { level.getBlockState(it).isAir }, "at once")
