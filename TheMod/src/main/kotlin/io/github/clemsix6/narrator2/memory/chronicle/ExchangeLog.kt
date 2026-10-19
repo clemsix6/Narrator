@@ -255,40 +255,14 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
                 }
                 else -> {
                     val pray = channel == "pray"
-                    val note = annotation(pray, if (getString(8) == null) null else signal())
+                    val note = annotation(pray, signal(this, 8))
                     Line(at, "$head ${if (pray) "PRAY" else "CHAT"} ${ModelText.name(player)} $note: ${ModelText.quote(text, CHAT_MAX)}", Kind.CHAT, setOf(player), id)
                 }
             }
         }
 
-    private class Signal(val source: String, val toNarrator: Double?, val tone: String?, val toneConfidence: Double?, val intent: String?, val manipulation: Double?)
-
-    private fun ResultSet.signal() = Signal(getString(8), doubleOrNull(9), getString(10), doubleOrNull(11), getString(12), doubleOrNull(13))
-
-    /**
-     * The triage of a message, for a reader who is not the one addressed: `(addressed 0.92, hostile,
-     * provocation)`, `(between players, banter_between_players)`; the tone only when the classifier was
-     * sure enough, `heuristic` when there was no classifier.
-     */
-    private fun annotation(pray: Boolean, signal: Signal?): String {
-        if (signal == null) return if (pray) "(prayer, not triaged)" else "(not triaged)"
-        val p = signal.toNarrator
-        val parts = mutableListOf(
-            when {
-                pray -> "addressed" + (p?.let { " ${number(it)}" } ?: "")
-                p == null -> "not triaged"
-                p >= ReflexThresholds.ADDRESSED -> "addressed ${number(p)}"
-                p >= ReflexThresholds.GRAY_ZONE -> "maybe addressed ${number(p)}"
-                else -> "between players"
-            },
-        )
-        val tone = signal.tone
-        if (tone != null && tone != NO_TARGET && (signal.toneConfidence ?: 0.0) >= ReflexThresholds.TONE_SHOWN) parts += tone
-        signal.intent?.let { parts += it }
-        signal.manipulation?.takeIf { it >= ReflexThresholds.MANIPULATION }?.let { parts += "manipulation ${number(it)}" }
-        if (signal.source == HeuristicReflexes.SOURCE) parts += "heuristic"
-        return "(${parts.joinToString()})"
-    }
+    /** The triage of a chat message (its latest `chat_signals` row), as [annotation] reads it. */
+    class Signal(val source: String, val toNarrator: Double?, val tone: String?, val toneConfidence: Double?, val intent: String?, val manipulation: Double?)
 
     // ── Tool calls ──────────────────────────────────────────────────────────────────────────────────
 
@@ -524,6 +498,39 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
         /** `21:06:42` in [zone]. */
         fun seconds(at: Instant, zone: ZoneId): String = SECONDS.withZone(zone).format(at)
+
+        /**
+         * The triage read from [row]'s columns `source, to_narrator, tone, tone_confidence, intent,
+         * manipulation` of `chat_signals`, from [column] on; null when the message was not triaged.
+         */
+        fun signal(row: ResultSet, column: Int): Signal? = row.getString(column)?.let { source ->
+            Signal(source, row.doubleOrNull(column + 1), row.getString(column + 2), row.doubleOrNull(column + 3), row.getString(column + 4), row.doubleOrNull(column + 5))
+        }
+
+        /**
+         * The triage of a message, for a reader who is not the one addressed: `(addressed 0.92, hostile,
+         * provocation)`, `(between players, banter_between_players)`; the tone only when the classifier was
+         * sure enough, `heuristic` when there was no classifier. The Dreamer's `<chat>` reads it too.
+         */
+        fun annotation(pray: Boolean, signal: Signal?): String {
+            if (signal == null) return if (pray) "(prayer, not triaged)" else "(not triaged)"
+            val p = signal.toNarrator
+            val parts = mutableListOf(
+                when {
+                    pray -> "addressed" + (p?.let { " ${number(it)}" } ?: "")
+                    p == null -> "not triaged"
+                    p >= ReflexThresholds.ADDRESSED -> "addressed ${number(p)}"
+                    p >= ReflexThresholds.GRAY_ZONE -> "maybe addressed ${number(p)}"
+                    else -> "between players"
+                },
+            )
+            val tone = signal.tone
+            if (tone != null && tone != NO_TARGET && (signal.toneConfidence ?: 0.0) >= ReflexThresholds.TONE_SHOWN) parts += tone
+            signal.intent?.let { parts += it }
+            signal.manipulation?.takeIf { it >= ReflexThresholds.MANIPULATION }?.let { parts += "manipulation ${number(it)}" }
+            if (signal.source == HeuristicReflexes.SOURCE) parts += "heuristic"
+            return "(${parts.joinToString()})"
+        }
 
         /** `promise → Mimosa`, `law`. */
         fun canonWhat(row: CanonEntry): String =

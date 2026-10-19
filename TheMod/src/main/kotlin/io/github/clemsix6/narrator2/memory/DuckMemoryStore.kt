@@ -592,12 +592,14 @@ class DuckMemoryStore(
         return row
     }
 
-    override suspend fun addNote(draft: NoteDraft, author: Author): Note {
-        val row = write("note ${draft.kind.id}", author) { job ->
+    override suspend fun addNote(draft: NoteDraft, author: Author): Added<Note> {
+        val what = "note ${draft.kind.id}"
+        val added = write<Added<Note>>(what, author) { job ->
             val max = if (draft.kind == NoteKind.DREAM_HINT) MemoryLimits.DREAM_HINT else MemoryLimits.NOTE_TEXT
             job.voice(draft.text, "text", max)
             val players = job.players(draft.players, "players")
             val refs = job.refs(draft.refs, "refs", RefKind.entries.toSet(), MAX_NOTE_REFS)
+            dedup.note(job.connection, draft.kind, players, refs)?.let { return@write Added.Duplicate(job.row<Note>(it, RefKind.NOTE, "a note")) }
             val ref = job.next(RefKind.NOTE)
             job.connection.update(
                 "INSERT INTO notes (id, created_at, kind, text, players, refs, status, source, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -605,10 +607,10 @@ class DuckMemoryStore(
                 author.source.id, author.runId,
             )
             job.logRow(ref, LogOp.INSERT, null)
-            job.row<Note>(ref, RefKind.NOTE, "a note")
+            Added.New(job.row<Note>(ref, RefKind.NOTE, "a note"))
         }
-        recordWrite("${row.ref}", "note ${draft.kind.id}", author, listOf(draft.text))
-        return row
+        recordAdd(added, what, author, listOf(draft.text))
+        return added
     }
 
     override suspend fun markNote(ref: Ref, status: NoteStatus, author: Author): Note {

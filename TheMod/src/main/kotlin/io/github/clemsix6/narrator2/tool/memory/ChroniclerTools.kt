@@ -146,7 +146,8 @@ data class NoteToDirectorArgs(
 /**
  * `note_to_director` (M3 §7.5, §12.4): a `coherence` note (`N-`) for the Director, about an incoherence
  * between its words and the canon. It reaches the Director at its next wake-up (a `NOTE` line, which does
- * not wake it), then in its next briefings.
+ * not wake it), then in its next briefings. The same note still shown (same players, same rows: the nap
+ * then the dream on one contradiction) is not written twice, and reaches the Director once.
  */
 class NoteToDirectorTool : MemoryTool<NoteToDirectorArgs>(
     name = "note_to_director",
@@ -161,7 +162,11 @@ class NoteToDirectorTool : MemoryTool<NoteToDirectorArgs>(
             Ref.parse(text) ?: refuse(ToolResult.invalid("refs: ${ModelText.quote(text, REF_MAX)} is not a row of the memory: cite C-45, M-812, I-512"))
         }.distinct()
         val players = ctx.knownPlayers(args.players.orEmpty(), "players")
-        val note = ctx.memory.store.addNote(NoteDraft(NoteKind.COHERENCE, args.text.trim(), players.map { it.uuid }, refs), ctx.author())
+        val added = ctx.memory.store.addNote(NoteDraft(NoteKind.COHERENCE, args.text.trim(), players.map { it.uuid }, refs), ctx.author())
+        val note = added.row
+        if (added is Added.Duplicate) {
+            return ToolResult.ok("ok: already noted as ${note.ref} for the Narrator (the same rows, still shown to it); nothing added", note.players)
+        }
         ctx.services.director.post(DirectorSignal.MemoryNote(note.ref, note.kind, note.text, ctx.clock.millis()))
         return ToolResult.ok("ok: noted ${note.ref} for the Narrator: it reads it at its next wake-up, then in its next briefings", note.players)
     }

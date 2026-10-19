@@ -18,6 +18,7 @@ import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryEntry
 import io.github.clemsix6.narrator2.memory.MemoryRejected
+import io.github.clemsix6.narrator2.memory.Quotes
 import io.github.clemsix6.narrator2.memory.RecallChannel
 import io.github.clemsix6.narrator2.memory.RecallContext
 import io.github.clemsix6.narrator2.memory.RecallPurpose
@@ -106,6 +107,9 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
  * Who may remember what (M3 review, finding 1), checked before the store: the Director anything; the
  * Chronicler what was told to the players ([RememberKind.told]) only with the Narrator's words in `quote`;
  * the Dreamer only [DREAMER_KINDS], never with a quote.
+ *
+ * The Director never sees the `e…` refs: a canon entry it remembers cites as its evidence the lines of its
+ * turn that hold its quote ([linesHolding]), so that a promise is tied to the words that made it.
  */
 class RememberTool : MemoryTool<RememberArgs>(
     name = "remember",
@@ -129,6 +133,8 @@ class RememberTool : MemoryTool<RememberArgs>(
         val place = args.atPlayer?.let { name -> ctx.players.byName(name)?.pos ?: refuse(ctx.notOnline(name)) }
         val due = args.dueInMinutes?.let { ctx.clock.instant().plusSeconds(it * 60L) }
         val planned = kind == CanonKind.ARC && ctx.caller.role == Role.DREAMER
+        val room = (EVIDENCE_MAX - evidence.events.size - evidence.tools.size).coerceAtLeast(0)
+        val said = ctx.linesHolding(args.quote).filter { it !in evidence.events }.take(room)
         val draft = CanonDraft(
             kind = kind,
             statement = args.what.trim(),
@@ -139,12 +145,13 @@ class RememberTool : MemoryTool<RememberArgs>(
             status = if (planned) CanonStatus.PLANNED else null,
             dueAt = due,
             place = place,
-            evidenceEvents = evidence.events,
+            evidenceEvents = evidence.events + said,
             evidenceTools = evidence.tools,
         )
         val added = ctx.memory.store.addCanon(draft, ctx.author())
         val row = added.row
         if (added is Added.Duplicate) return ToolResult.ok("ok: already remembered as ${row.ref} (${ctx.canonLine(row)}); nothing added", row.players)
+        if (said.isNotEmpty()) log.debug { "${row.ref} cites ${said.joinToString { "e$it" }} of turn ${ctx.caller.turnId}" }
         val replaced = row.replaces?.let { "; $it retired" }.orEmpty()
         val wake = when {
             row.dueAt == null -> ""
@@ -204,9 +211,30 @@ class RememberTool : MemoryTool<RememberArgs>(
     private fun memoryLine(row: MemoryEntry): String =
         if (row.players.isEmpty()) row.kind.id else "${row.kind.id} about ${names(row.players)}"
 
+    /**
+     * The lines in which the Narrator said [quote], its words, in the caller's turn (M3-POST, like the wake
+     * lines `note_interaction` cites): its own lines of the turn (`say`, a title, a book) and the lines of
+     * the Narrator, or of an operator in its name (« YOU SAID (through operator …) »), among the events that
+     * woke it. Nothing outside a Director's turn, and nothing without a quote: no other line says for sure
+     * what the entry is about. A line said later in the turn, or injected between two calls, is not found.
+     */
+    private suspend fun ToolContext.linesHolding(quote: String?): List<Long> {
+        val turn = caller.turnId ?: return emptyList()
+        if (quote.isNullOrBlank()) return emptyList()
+        services.journal.barrier() // the lines of the turn so far, and its row, are written
+        val lines = services.journal.read(READ_TIMEOUT_MS) { connection ->
+            connection.query(TURN_LINES_SQL, turn, turn) { getLong(1) to getString(2) }
+        }
+        return lines.filter { (_, text) -> Quotes.saidIn(quote, listOf(text)) }.map { it.first }
+    }
+
     private companion object {
         /** What the Dreamer remembers: it plans arcs, keeps lore and observes players; it never commits the Narrator. */
         val DREAMER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE, RememberKind.OBSERVATION)
+
+        /** The Narrator's lines said in a turn, and its or an operator's lines among the events that woke the turn. */
+        const val TURN_LINES_SQL = "SELECT id, text FROM chat WHERE channel IN ('narrator', 'operator') " +
+            "AND (turn_id = ? OR id IN (SELECT unnest(trigger_events) FROM turns WHERE turn_id = ?)) ORDER BY id"
     }
 }
 

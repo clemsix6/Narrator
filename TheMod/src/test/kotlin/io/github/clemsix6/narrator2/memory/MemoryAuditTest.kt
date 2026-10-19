@@ -185,7 +185,7 @@ class MemoryAuditTest {
         assertFalse(store.canon(row.ref)!!.archived)
         assertEquals(listOf(LogOp.INSERT, LogOp.ARCHIVE, LogOp.RESTORE), store.log(row.ref).map { it.op })
         assertEquals("operator restore", store.log(row.ref).last().reason)
-        val note = store.addNote(NoteDraft(NoteKind.OPERATOR, "Le serveur ferme dimanche."), f.operator)
+        val note = store.addNote(NoteDraft(NoteKind.OPERATOR, "Le serveur ferme dimanche."), f.operator).row
         assertContains(assertFailsWith<MemoryRejected> { store.archive(note.ref, true, "x", f.operator) }.message.orEmpty(), "cannot be archived")
     }
 }

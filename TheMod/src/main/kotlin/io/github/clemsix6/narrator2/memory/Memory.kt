@@ -260,7 +260,7 @@ class DisabledMemory(private val reason: String) : Memory {
 
         override suspend fun addChronicle(draft: ChronicleDraft, author: Author): ChronicleEntry = refuse()
 
-        override suspend fun addNote(draft: NoteDraft, author: Author): Note = refuse()
+        override suspend fun addNote(draft: NoteDraft, author: Author): Added<Note> = refuse()
 
         override suspend fun markNote(ref: Ref, status: NoteStatus, author: Author): Note = refuse()
 

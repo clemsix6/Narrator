@@ -64,6 +64,20 @@ internal class Dedup(private val indexer: Indexer) {
         ) { Ref(RefKind.MEMORY, getLong(1)) }.firstOrNull()
     }
 
+    /**
+     * A note not done yet of the same kind, about the same players and the same rows of the memory: the same
+     * incoherence noted twice, by the nap then by the dream (N-8 and N-12 on C-5 in M3-19). Null when the
+     * draft cites no row: a note without refs (an operator's word, a dream hint) is never the same as another.
+     */
+    fun note(connection: Connection, kind: NoteKind, players: List<UUID>, refs: List<Ref>): Ref? {
+        if (refs.isEmpty()) return null
+        return connection.query(
+            "SELECT id FROM notes WHERE kind = ? AND status <> 'done' AND list_sort(players) = list_sort(?) " +
+                "AND list_sort(list_distinct(refs)) = list_sort(?) ORDER BY id DESC LIMIT 1",
+            kind.id, uuidArray(players.distinct()), longArray(refs.map { it.id }.distinct()),
+        ) { Ref(RefKind.NOTE, getLong(1)) }.firstOrNull()
+    }
+
     /** The player's active, unarchived entry of a [CanonKind.onePerPlayer] kind (the nickname, the title); null when none. */
     fun active(connection: Connection, kind: CanonKind, player: UUID): Ref? = connection.query(
         "SELECT id FROM canon WHERE kind = ? AND status = 'active' AND NOT archived AND list_contains(players, ?) ORDER BY id DESC LIMIT 1",

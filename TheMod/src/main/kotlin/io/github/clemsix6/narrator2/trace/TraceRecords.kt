@@ -227,6 +227,9 @@ data class DecisionRecord(
         /** A tool set was built for a conversation. */
         TOOL_CATALOG,
 
+        /** A tool call: its arguments written as JSON text were read as the values they hold (`args_coerced`). */
+        TOOL,
+
         /**
          * The memory (M3 §18): a write (`written`, `duplicate`, `rejected`), the voice (`voice_warning`,
          * `voice_audit`), a commitment `due` or `expired`, a `cue`, a row `recalled`, a job (`batch`, `nap`,

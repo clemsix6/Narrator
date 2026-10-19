@@ -3,6 +3,8 @@ package io.github.clemsix6.narrator2.memory.chronicle
 import io.github.clemsix6.narrator2.event.LeaveReason
 import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.llm.ClaudeClient
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryKind
@@ -202,6 +204,33 @@ class ChroniclerTest {
         assertEquals(RunStatus.FAILED, spent.status)
         assertEquals(1, spent.conversations.size, "the next blocks would hit the same 402")
         assertEquals(Instant.parse("2026-10-01T21:00:00Z"), spent.budget?.resetAt)
+    }
+
+    /**
+     * M3-19 §21.3: a new conversation of the Chronicler read the tools from the gateway's cache, but wrote the
+     * system prompt again. Nothing of ours varies in that prefix: the batch, the nap's last batch and its
+     * consolidation send the same tools then the same system prompt, byte for byte, with the role's session.
+     */
+    @Test
+    fun `every conversation of the Chronicler sends the same tools and system prompt, byte for byte`() = runBlocking<Unit> {
+        closed(summary, EndReason.QUIET_LIMIT)
+        f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
+        f.clock.now = at("20:30:30")
+        f.journal.sync()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") })
+        f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+        f.runRow(12, RunKind.NAP, "20:10", "20:30")
+        f.fake.enqueue(reply { text("Rien.") }, reply { text("Chapitre consolidé.") })
+        f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
+
+        val openings = f.fake.requests.groupBy { it.conversation }.values.map { it.first() }
+        assertEquals(3, openings.size, "the batch, then the nap's last batch and its consolidation")
+        val prefixes = openings.map { listOf(it.raw("tools"), it.raw("system")) }
+        assertTrue(prefixes.first().all { !it.isNullOrEmpty() }, "tools and system are sent")
+        assertEquals(1, prefixes.toSet().size, "the same tools and system prompt in every conversation")
+        assertEquals(setOf(ClaudeClient.sessionOf(Role.CHRONICLER)), openings.map { it.session }.toSet())
+        assertTrue(openings.all { it.json.path("cache_control").isMissingNode }, "no cache marker of ours: LLMGW places its own")
     }
 
     @Test

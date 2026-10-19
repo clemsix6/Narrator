@@ -59,6 +59,24 @@ class TicsTest {
     }
 
     @Test
+    fun `of tics nested in one another, one is shown, the most frequent, the longest at equal count`() {
+        // M3-19: « Ministère de l'Aviation » ×5, « Ministère de l'Aviation Divine » ×5 and « … Divine guichet » ×3 were all listed.
+        val tics = Tics.find(
+            lines(
+                "Ministère de l'Aviation Divine, guichet 3 : vol refusé, Bartok.",
+                "Ministère de l'Aviation Divine, guichet des chutes : dossier classé.",
+                "Ministère de l'Aviation Divine, guichet fermé pour la nuit.",
+                "Ministère de l'Aviation Divine : altitude 68 avant, 68 après.",
+                "Ministère de l'Aviation Divine. Atterrissage noté, Mimosa.",
+            ),
+        )
+        assertEquals(listOf(Tic("Ministère de l'Aviation Divine", 5, start.plusSeconds(240))), tics)
+
+        val always = Tics.find(lines(*(1..4).map { "Ministère de l'Aviation Divine guichet $it : refusé." }.toTypedArray()))
+        assertEquals(listOf(Tic("Ministère de l'Aviation Divine guichet", 4, start.plusSeconds(180))), always)
+    }
+
+    @Test
     fun `the ellipsis is a tic past 40 percent of the lines`() {
         val many = Tics.find(lines("Tiens…", "Voyons... non.", "Hmm… peut-être.", "Non.", "Bon."))
         assertEquals(listOf(Tic("…", 3, start.plusSeconds(120), 0.6)), many)

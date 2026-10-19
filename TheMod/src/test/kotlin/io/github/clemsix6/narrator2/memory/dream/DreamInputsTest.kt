@@ -251,6 +251,34 @@ class DreamInputsTest {
     }
 
     @Test
+    fun `the chat says whom each message addressed, as the exchange log does`() = runBlocking<Unit> {
+        val e = f.evening()
+        // M3-19: « non je mine, débrouille toi » answered Mimosa; read as an answer to the Narrator, it made a defiant trait.
+        val answer = f.chat("20:40:00", f.bartok, "non je mine, débrouille toi")
+        f.journal.journal.chatSignals(
+            ChatSignalsRecord(answer, at("20:40:00"), f.bartok.uuid, "jev:jev-1.13.0", 0.08, Tone.NEUTRAL_NO_TARGET, 0.9, ChatIntent.BANTER_BETWEEN_PLAYERS, 0.02, null, null, null, null, null, 3),
+        )
+        val now = at("22:10")
+        f.clock.now = now
+        f.journal.sync()
+
+        val bartok = f.inputs.candidates(now, 8).first { it.player == f.bartok }
+        assertEquals(
+            listOf(
+                "<chat count=\"3\" order=\"latest first\">",
+                "- [10-01 20:40] e$answer CHAT (between players, banter_between_players): \"non je mine, débrouille toi\"",
+                "- [10-01 20:01] e${e.laugh} CHAT (not triaged): \"mdr ok\"",
+                "- [10-01 20:01] e${e.insult} CHAT (addressed 0.9, hostile, provocation): \"narrateur t'es nul\"",
+                "</chat>",
+            ),
+            blocks(f.inputs.player(12, bartok, now).text).getValue("chat").lines(),
+        )
+        val mimosa = f.inputs.candidates(now, 8).first { it.player == f.mimosa }
+        val prayer = blocks(f.inputs.player(12, mimosa, now).text).getValue("chat")
+        assertTrue("- [10-01 20:03] e${e.prayer} PRAY (addressed 0.9, respectful, request): \"rends-moi mes affaires stp\"" in prayer, prayer)
+    }
+
+    @Test
     fun `step 3 groups the chapters by server session over, and keeps the session still running for later`() = runBlocking<Unit> {
         val e = f.evening()
         assertNull(f.inputs.chronicle(12, at("22:00")), "the server has been empty for 15 minutes only")
