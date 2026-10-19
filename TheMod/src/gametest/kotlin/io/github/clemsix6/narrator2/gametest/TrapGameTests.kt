@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
+import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.floor
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.mockPlayer
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.removePlayers
@@ -7,33 +8,45 @@ import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.guard.BlockRestorer
 import io.github.clemsix6.narrator2.guard.ChunkRestorations
 import io.github.clemsix6.narrator2.mechanics.traps.TrapShapes
+import io.github.clemsix6.narrator2.observer.PlacedBlocks
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.core.registries.Registries
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.resources.ResourceKey
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.EntityTypes
 import net.minecraft.world.entity.decoration.ItemFrame
+import net.minecraft.world.entity.item.ItemEntity
+import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.enchantment.Enchantments
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.phys.Vec3
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * In-game tests of the [BlockRestorer] and the traps (M4 §9.1, §9.2, §21.2): blocks set only in the air no
  * entity is in, never in place of a block; the terrain a trap refuses; blocks taken away when due, but one a
- * player changed; and a chunk loaded again after its deadline, emptied the second after, never in the
- * `CHUNK_LOAD` call. Each test has its own player (a random UUID when no player is needed): the traps of the
- * tests running alongside are never touched.
+ * player changed, put back or pushed in place of a trap block; a trap block a player breaks drops nothing;
+ * and a chunk loaded again after its deadline, emptied the second after, never in the `CHUNK_LOAD` call. Each
+ * test has its own player (a random UUID when no player is needed): the traps of the tests running alongside
+ * are never touched.
  */
 class TrapGameTests {
 
@@ -187,7 +200,8 @@ class TrapGameTests {
 
     /**
      * What `place` refuses, all or nothing: a cell that is not air, a block other than glass or cobwebs, too many
-     * cells, the same cell twice, a cell that already holds a trap block (here broken by a player: it is air).
+     * cells, the same cell twice, a cell that already holds a trap block (here gone within the tick, before the
+     * restorer could see it: it is air).
      */
     @GameTest
     fun placeRefusesAllOrNothing(helper: GameTestHelper) {
@@ -207,7 +221,7 @@ class TrapGameTests {
         helper.assertTrue(level.getBlockState(air).isAir && many.all { level.getBlockState(it).isAir }, "nothing set by a refused call")
 
         helper.assertEquals(1, BlockRestorer.place(level, listOf(air), glass, until, player, null).getOrThrow(), "set")
-        helper.setBlock(1, 3, 1, Blocks.AIR) // a player broke it
+        helper.setBlock(1, 3, 1, Blocks.AIR) // gone without a player, who would make the restorer forget the cell
         refusedPlace(helper, BlockRestorer.place(level, listOf(air), glass, until, player, null), "already holds a trap block")
         helper.assertEquals(0, BlockRestorer.restoreFor(player), "nothing to take away: the glass is gone")
         helper.assertEquals(emptyList<ActiveEffect>(), BlockRestorer.activeOn(player), "its snapshot is gone too")
@@ -239,7 +253,7 @@ class TrapGameTests {
         helper.succeed()
     }
 
-    /** A block a player put in place of the glass stays when the trap ends; the others go. */
+    /** A block put in place of the glass stays when the trap ends (it is forgotten at the end of the tick); the others go. */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun aBlockChangedSinceItWasSetStays(helper: GameTestHelper) {
         val level = helper.level
@@ -247,7 +261,7 @@ class TrapGameTests {
         val changed = helper.absolutePos(BlockPos(5, 2, 5))
         val kept = helper.absolutePos(BlockPos(6, 2, 5))
         helper.assertEquals(2, BlockRestorer.place(level, listOf(changed, kept), TrapShapes.cageBlock, System.currentTimeMillis() + 1_000, player, null).getOrThrow(), "set")
-        helper.setBlock(5, 2, 5, Blocks.OAK_PLANKS) // a player broke the glass and put their own block
+        helper.setBlock(5, 2, 5, Blocks.OAK_PLANKS) // the glass replaced by planks, whatever did it
         helper.startSequence()
             .thenAwait {
                 helper.assertTrue(level.getBlockState(kept).isAir, "the glass goes away")
@@ -258,6 +272,151 @@ class TrapGameTests {
                 helper.setBlock(5, 2, 5, Blocks.AIR)
             }
             .thenSucceed()
+    }
+
+    /**
+     * Bartok breaks a pane of his cage with a silk touch pickaxe, and Mimosa puts her own glass in its place, by
+     * a real break and a real placement: at the end of the trap her glass stays, and only the pane still in
+     * place goes (M4 review, finding 2).
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aGlassAPlayerPutsInPlaceOfABrokenPaneStays(helper: GameTestHelper) {
+        floor(helper)
+        val level = helper.level
+        val bartok = TestPlayer(helper)
+        val mimosa = TestPlayer(helper)
+        val pane = BlockPos(3, 1, 2)
+        val cells = listOf(pane, BlockPos(3, 1, 4)).map(helper::absolutePos)
+        bartok.standAt(BlockPos(2, 1, 2))
+        bartok.makeVulnerable()
+        mimosa.standAt(BlockPos(5, 1, 2))
+        mimosa.makeVulnerable()
+        helper.assertEquals(2, BlockRestorer.place(level, cells, TrapShapes.cageBlock, System.currentTimeMillis() + 1_500, bartok.uuid, null).getOrThrow(), "set")
+
+        breakWith(bartok, cells[0], silkTouchPickaxe(helper))
+        helper.assertTrue(level.getBlockState(cells[0]).isAir, "Bartok breaks the pane")
+        mimosa.live.setItemInHand(InteractionHand.MAIN_HAND, ItemStack(Items.GLASS))
+        helper.placeAt(mimosa.live, mimosa.live.mainHandItem, pane.below(), Direction.UP)
+        helper.assertTrue(level.getBlockState(cells[0]).`is`(Blocks.GLASS), "Mimosa puts her glass in its place")
+        helper.assertEquals(mimosa.uuid, PlacedBlocks.placerAt(level, cells[0]), "placed by her")
+        helper.startSequence()
+            .thenAwait { helper.assertTrue(level.getBlockState(cells[1]).isAir, "the pane still in place goes") }
+            .thenExecute {
+                helper.assertTrue(level.getBlockState(cells[0]).`is`(Blocks.GLASS), "her glass stays")
+                helper.assertEquals(emptyList<ActiveEffect>(), BlockRestorer.activeOn(bartok.uuid), "nothing holds him")
+                helper.killAllEntitiesOfClass(ItemEntity::class.java)
+                helper.setBlock(pane, Blocks.AIR)
+                bartok.close()
+                mimosa.close()
+            }
+            .thenSucceed()
+    }
+
+    /**
+     * A pane gone without a player (blown up, say) and a player's glass put in its place within the same tick,
+     * before the restorer could see the cell empty: the index of the blocks placed says whose glass it is, and
+     * it stays (M4 review, finding 2).
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aGlassAPlayerPlacedInPlaceOfAPaneWithinTheTickStays(helper: GameTestHelper) {
+        val level = helper.level
+        val player = UUID.randomUUID()
+        val pane = BlockPos(2, 2, 2)
+        val cells = listOf(pane, BlockPos(4, 2, 2)).map(helper::absolutePos)
+        helper.assertEquals(2, BlockRestorer.place(level, cells, TrapShapes.cageBlock, System.currentTimeMillis() + 1_500, player, null).getOrThrow(), "set")
+        helper.setBlock(pane, Blocks.AIR)
+        helper.setBlock(pane, Blocks.GLASS)
+        PlacedBlocks.mark(level, cells[0], Blocks.GLASS.defaultBlockState(), UUID.randomUUID())
+        helper.startSequence()
+            .thenAwait { helper.assertTrue(level.getBlockState(cells[1]).isAir, "the pane still in place goes") }
+            .thenExecute {
+                helper.assertTrue(level.getBlockState(cells[0]).`is`(Blocks.GLASS), "the player's glass stays")
+                helper.assertEquals(emptyList<ActiveEffect>(), BlockRestorer.activeOn(player), "nothing pending")
+                helper.setBlock(pane, Blocks.AIR)
+            }
+            .thenSucceed()
+    }
+
+    /**
+     * A piston pushes a player's glass in place of a pane, and the pane one cell further: at the end of the trap
+     * the player's glass stays (M4 review, finding 2). The pushed pane stays too, for good: the restorer knows
+     * only the cells it set (finding 39).
+     */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aGlassPushedInPlaceOfAPaneByAPistonStays(helper: GameTestHelper) {
+        val level = helper.level
+        val player = UUID.randomUUID()
+        val piston = BlockPos(1, 2, 3)
+        val theirs = piston.east()
+        val pane = theirs.east()
+        val pushedTo = pane.east()
+        val cells = listOf(pane, BlockPos(3, 2, 6)).map(helper::absolutePos)
+        helper.setBlock(piston, Blocks.PISTON.defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST))
+        helper.setBlock(theirs, Blocks.GLASS)
+        PlacedBlocks.mark(level, helper.absolutePos(theirs), Blocks.GLASS.defaultBlockState(), UUID.randomUUID())
+        helper.assertEquals(2, BlockRestorer.place(level, cells, TrapShapes.cageBlock, System.currentTimeMillis() + 1_500, player, null).getOrThrow(), "set")
+        helper.setBlock(piston.west(), Blocks.REDSTONE_BLOCK)
+        helper.startSequence()
+            .thenAwait {
+                helper.assertTrue(helper.getBlockState(theirs).`is`(Blocks.PISTON_HEAD), "the piston pushes")
+                helper.assertTrue(helper.getBlockState(pane).`is`(Blocks.GLASS) && helper.getBlockState(pushedTo).`is`(Blocks.GLASS), "both glass blocks moved")
+            }
+            .thenAwait { helper.assertTrue(level.getBlockState(cells[1]).isAir, "the pane left in place goes") }
+            .thenExecute {
+                helper.assertTrue(helper.getBlockState(pane).`is`(Blocks.GLASS), "the player's glass stays")
+                helper.assertTrue(helper.getBlockState(pushedTo).`is`(Blocks.GLASS), "the pushed pane stays, for good")
+                helper.assertEquals(emptyList<ActiveEffect>(), BlockRestorer.activeOn(player), "nothing pending")
+                for (rel in listOf(piston.west(), piston, theirs, pane, pushedTo)) helper.setBlock(rel, Blocks.AIR)
+            }
+            .thenSucceed()
+    }
+
+    /**
+     * A trap block a player breaks drops nothing, and is forgotten: no glass with a silk touch pickaxe, no
+     * cobweb with shears, no string with a sword. An ordinary cobweb still drops (M4 review, finding 39).
+     */
+    @GameTest
+    fun aTrapBlockAPlayerBreaksDropsNothing(helper: GameTestHelper) {
+        val level = helper.level
+        val player = UUID.randomUUID()
+        val breaker = TestPlayer(helper)
+        try {
+            breaker.standAt(BlockPos(1, 1, 1))
+            breaker.makeVulnerable()
+            val glass = helper.absolutePos(BlockPos(3, 2, 3))
+            val webs = listOf(BlockPos(5, 2, 3), BlockPos(3, 2, 5)).map(helper::absolutePos)
+            val until = System.currentTimeMillis() + 600_000
+            helper.assertEquals(1, BlockRestorer.place(level, listOf(glass), TrapShapes.cageBlock, until, player, null).getOrThrow(), "glass set")
+            helper.assertEquals(2, BlockRestorer.place(level, webs, TrapShapes.webBlock, until, player, null).getOrThrow(), "cobwebs set")
+
+            breakWith(breaker, glass, silkTouchPickaxe(helper))
+            breakWith(breaker, webs[0], ItemStack(Items.SHEARS))
+            breakWith(breaker, webs[1], ItemStack(Items.IRON_SWORD))
+            helper.assertTrue((webs + glass).all { level.getBlockState(it).isAir }, "the three are broken")
+            helper.assertEquals(emptyList<ItemEntity>(), helper.getEntities(EntityTypes.ITEM), "nothing dropped")
+            helper.assertEquals(emptyList<ActiveEffect>(), BlockRestorer.activeOn(player), "forgotten")
+
+            helper.setBlock(5, 2, 5, Blocks.COBWEB)
+            breakWith(breaker, helper.absolutePos(BlockPos(5, 2, 5)), ItemStack(Items.SHEARS))
+            helper.assertTrue(helper.getEntities(EntityTypes.ITEM).any { it.item.`is`(Items.COBWEB) }, "an ordinary cobweb drops")
+            helper.killAllEntitiesOfClass(ItemEntity::class.java)
+        } finally {
+            breaker.close()
+        }
+        helper.succeed()
+    }
+
+    /** A trap block already gone when its trap ends (here, gone within the tick) is said gone, not changed (M4 review, finding 39). */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aTrapBlockAlreadyGoneIsSaidGone(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val player = UUID.randomUUID()
+        val pane = BlockPos(2, 2, 2)
+        helper.assertEquals(1, BlockRestorer.place(helper.level, listOf(helper.absolutePos(pane)), TrapShapes.cageBlock, System.currentTimeMillis() + 600_000, player, null).getOrThrow(), "set")
+        helper.setBlock(pane, Blocks.AIR)
+        helper.assertEquals(0, BlockRestorer.restoreFor(player), "nothing to take away")
+        val reasons = skippedReasons(runtime, player.toString())
+        helper.awaitAsync { helper.assertEquals(listOf("1 block already gone (lifted)"), reasons.get(), "the decision") }
     }
 
     /**
@@ -360,6 +519,40 @@ class TrapGameTests {
             cells.map { ChunkPos.containing(it) }.distinct().sumOf { pos ->
                 level.chunkSource.getChunkNow(pos.x(), pos.z())?.getAttached(BlockRestorer.TYPE)?.entries.orEmpty().count { it.player == player }
             }
+
+        /** [player] breaks the block at [pos] (absolute) with [tool] in hand, as the game does once mining is done. */
+        private fun breakWith(player: TestPlayer, pos: BlockPos, tool: ItemStack) {
+            player.live.setItemInHand(InteractionHand.MAIN_HAND, tool)
+            player.live.gameMode.destroyBlock(pos)
+        }
+
+        private fun silkTouchPickaxe(helper: GameTestHelper): ItemStack {
+            val silkTouch = helper.level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.SILK_TOUCH)
+            return ItemStack(Items.DIAMOND_PICKAXE).apply { enchant(silkTouch, 1) }
+        }
+
+        /** The reasons of [subject]'s `trap skipped` decisions, read from the Journal once it has written them (or why the read failed). */
+        private fun skippedReasons(runtime: NarratorRuntime, subject: String): AtomicReference<Any> {
+            val reasons = AtomicReference<Any>()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    runtime.journal.barrier()
+                    reasons.set(
+                        runtime.journal.read(5_000) { connection ->
+                            connection.prepareStatement(
+                                "SELECT reason FROM engine_decisions WHERE kind = 'guard' AND decision = 'trap skipped' AND subject = ? ORDER BY id",
+                            ).use { statement ->
+                                statement.setString(1, subject)
+                                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    reasons.set("read failed: $e")
+                }
+            }
+            return reasons
+        }
 
         private fun refused(helper: GameTestHelper, result: Result<List<BlockPos>>, expected: String) {
             val message = result.exceptionOrNull()?.message
