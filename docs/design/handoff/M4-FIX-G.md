@@ -178,8 +178,11 @@ datés (l'ordre de `openCanon` : échéance, puis importance).
   only for the same canon entry` et ceux des rappels de M4-10.
 - `PromptsTest`, `PromptToolMentionsTest`, `PersonaFrozenTest`, `SchemaDocTest`, `SqlViewsTest`,
   `ChroniclerReplayTest` : verts.
-- `git merge main` (lot E et le design de M5) : sans conflit.
-- `.\gradlew.bat build` sur l'état fusionné, trois fois :
+- `git merge main` deux fois, sans conflit : le lot E et le design de M5, puis le lot F (`b411ac5`, aucun fichier en
+  commun).
+- `.\gradlew.bat build` sur l'état final, fusionné avec le lot F : **vert**, **1 506 tests unitaires** (0 échec),
+  « **All 313 required tests passed** ».
+- Avant le lot F, sur l'état fusionné avec le lot E, trois lancements :
   - **vert** deux fois : **1 502 tests unitaires** (0 échec), « **All 306 required tests passed** » ;
   - **rouge** une fois, sur `mechanics_assembly_game_tests_a_duel_of_the_servers_engine_kills_nobody` (« rescued,
     alive, put out: 3.3333333 »). C'est l'instabilité connue du lot `assembly` et des duels (constats 3 et 22, lots C
