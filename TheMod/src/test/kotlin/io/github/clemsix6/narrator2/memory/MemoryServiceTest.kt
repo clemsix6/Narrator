@@ -238,14 +238,14 @@ class MemoryServiceTest {
         runBlocking {
             journal.journal.write(5_000) { connection ->
                 connection.createStatement().use {
-                    it.execute("DELETE FROM schema_version WHERE version = 2")
+                    it.execute("DELETE FROM schema_version WHERE version >= 2")
                     it.execute("DROP TABLE search_postings")
                 }
             }
         }
         val broken = createMemory(TestServices(journal = journal.journal))
         assertFalse(broken.available)
-        assertEquals("the Journal lacks the memory's schema (V2__memory.sql): schema version 1; tables missing: search_postings", broken.unavailableReason)
+        assertEquals("the Journal lacks the memory's schema (V3__mechanics.sql): schema version 1; tables missing: search_postings", broken.unavailableReason)
     }
 
     @Test

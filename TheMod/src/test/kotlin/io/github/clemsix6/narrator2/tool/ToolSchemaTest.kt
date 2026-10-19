@@ -7,6 +7,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertContains
@@ -53,6 +54,26 @@ class ToolSchemaTest {
     fun `no tool is strict`() {
         assertFalse("strict" in sent(everyTypeTool()))
     }
+
+    @Test
+    fun `a free JsonObject is an object without properties, in a list too (M4 §8-1)`() {
+        assertEquals(
+            """{"input_schema":{"type":"object","properties":{"effects":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object",""" +
+                """"properties":{"tool":{"type":"string","maxLength":20},"args":{"type":"object","description":"The tool's other arguments."}},""" +
+                """"required":["tool"],"additionalProperties":false}},"extra":{"type":"object"}},"required":["effects"],"additionalProperties":false},""" +
+                """"name":"free_args","description":"A tool with free objects."}""",
+            sent(TestTool("free_args", FreeArgs.serializer(), description = "A tool with free objects.")),
+        )
+    }
+
+    @Serializable
+    data class FreeEffect(@MaxLen(20) val tool: String, @Doc("The tool's other arguments.") val args: JsonObject = JsonObject(emptyMap()))
+
+    @Serializable
+    data class FreeArgs(@Items(1, 4) val effects: List<FreeEffect>, val extra: JsonObject? = null)
+
+    @Serializable
+    data class MaxLenOnFreeObjectArgs(@MaxLen(10) val args: JsonObject)
 
     @Serializable
     data class MapArgs(val scores: Map<String, Int>)
@@ -118,6 +139,7 @@ class ToolSchemaTest {
             tool(ItemsOnStringArgs.serializer()) to "broken.name: @Items only applies to lists (this is string)",
             tool(MaxLenOnObjectsArgs.serializer()) to "broken.enchantments[]: @MaxLen only applies to strings (this is object)",
             tool(InvertedRangeArgs.serializer()) to "broken.count: @Range min is above max",
+            tool(MaxLenOnFreeObjectArgs.serializer()) to "broken.args: @MaxLen only applies to strings (this is object)",
             tool(String.serializer()) to "broken: the arguments must be a non-null @Serializable class",
             tool(NoArgs.serializer(), description = " ") to "broken: the description is empty",
         )

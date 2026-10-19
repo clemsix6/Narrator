@@ -68,8 +68,10 @@ class ShutdownSequenceTest {
         journalGrace: Duration = Duration.ofSeconds(2),
         stopMemory: suspend () -> Unit = {},
         memoryTimeout: Duration = Duration.ofSeconds(5),
+        stopMechanics: () -> Unit = {},
     ) = ShutdownSequence(
         scope, bus, journal, settings, flushObserver, { steps += "phase $it" }, workTimeout, journalTimeout, journalGrace, stopMemory, memoryTimeout,
+        stopMechanics,
     )
 
     /** Starts a job that runs until it is cancelled, and waits until it runs. */
@@ -137,6 +139,22 @@ class ShutdownSequenceTest {
         stopping.begin()
 
         assertEquals(listOf("phase STOPPING", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `the mechanics stop first, before the memory (M4 §4-6)`() {
+        startWork("director")
+        sequence(stopMechanics = { steps += "mechanics stopped" }, stopMemory = { steps += "memory stopped" }).begin()
+        assertEquals(listOf("phase STOPPING", "mechanics stopped", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `mechanics that fail to stop stop nothing else`() {
+        startWork("worker")
+        val logs = LogCapture()
+        logs.use { sequence(stopMechanics = { error("boom") }, stopMemory = { steps += "memory stopped" }).begin() }
+        assertEquals(listOf("phase STOPPING", "memory stopped", "worker cancelled"), steps.toList())
+        assertContains(logs.text, "stopping: could not stop the mechanics")
     }
 
     @Test

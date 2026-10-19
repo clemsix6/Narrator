@@ -45,6 +45,7 @@ class ConfigValidationTest {
         }
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
         assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2), defaults.memory)
+        assertEquals(MechanicsConfig(true, 2, 10, 8, 15, 120, 5, 10), defaults.mechanics, "M4 §17")
         assertEquals(JevConfig(true, "https://api.typesafe.ai", "TYPESAFE_API_KEY", "jev-1.13.0", 1_500), defaults.jev)
     }
 
@@ -104,6 +105,20 @@ class ConfigValidationTest {
             defaults.copy(memory = MemoryConfig(dreamMinHours = 25)) to "memory.dreamMinHours must be between 0 and 24",
             defaults.copy(memory = MemoryConfig(catchUpDays = -1)) to "memory.catchUpDays must be between 0 and 30",
             defaults.copy(memory = MemoryConfig(catchUpDays = 31)) to "memory.catchUpDays must be between 0 and 30",
+            defaults.copy(mechanics = MechanicsConfig(maxChallenges = 0)) to "mechanics.maxChallenges must be between 1 and 5",
+            defaults.copy(mechanics = MechanicsConfig(maxChallenges = 6)) to "mechanics.maxChallenges must be between 1 and 5",
+            defaults.copy(mechanics = MechanicsConfig(challengeGapMinutes = -1)) to "mechanics.challengeGapMinutes must be between 0 and 120",
+            defaults.copy(mechanics = MechanicsConfig(challengeGapMinutes = 121)) to "mechanics.challengeGapMinutes must be between 0 and 120",
+            defaults.copy(mechanics = MechanicsConfig(maxRules = 0)) to "mechanics.maxRules must be between 1 and 20",
+            defaults.copy(mechanics = MechanicsConfig(maxRules = 21)) to "mechanics.maxRules must be between 1 and 20",
+            defaults.copy(mechanics = MechanicsConfig(judgeMinutes = 1)) to "mechanics.judgeMinutes must be between 2 and 60",
+            defaults.copy(mechanics = MechanicsConfig(judgeMinutes = 61)) to "mechanics.judgeMinutes must be between 2 and 60",
+            defaults.copy(mechanics = MechanicsConfig(duelInviteSeconds = 29)) to "mechanics.duelInviteSeconds must be between 30 and 600",
+            defaults.copy(mechanics = MechanicsConfig(duelInviteSeconds = 601)) to "mechanics.duelInviteSeconds must be between 30 and 600",
+            defaults.copy(mechanics = MechanicsConfig(betWindowMinutes = 0)) to "mechanics.betWindowMinutes must be between 1 and 15",
+            defaults.copy(mechanics = MechanicsConfig(betWindowMinutes = 16)) to "mechanics.betWindowMinutes must be between 1 and 15",
+            defaults.copy(mechanics = MechanicsConfig(offeringMinutes = 1)) to "mechanics.offeringMinutes must be between 2 and 60",
+            defaults.copy(mechanics = MechanicsConfig(offeringMinutes = 61)) to "mechanics.offeringMinutes must be between 2 and 60",
             defaults.copy(safety = SafetyConfig(protectedPlayers = listOf("Steve", "not a name"))) to
                 "safety.protectedPlayers[1] must be a player name",
             defaults.copy(safety = SafetyConfig(extraForbiddenCommands = listOf("scoreboard", "tell raw"))) to
@@ -136,6 +151,8 @@ class ConfigValidationTest {
             defaults.copy(workers = WorkersConfig(8, 40, 1_800)),
             defaults.copy(memory = MemoryConfig(false, 2, 5, 6, 1, 1, 0, 10, 10, 0, 0)),
             defaults.copy(memory = MemoryConfig(true, 60, 240, 168, 20, 60, 5, 1_440, 600, 24, 30)),
+            defaults.copy(mechanics = MechanicsConfig(false, 1, 0, 1, 2, 30, 1, 2)),
+            defaults.copy(mechanics = MechanicsConfig(true, 5, 120, 20, 60, 600, 15, 60)),
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(jev = JevConfig(baseUrl = "http://localhost:9000", timeoutMs = 300)),
             defaults.copy(jev = JevConfig(timeoutMs = 10_000)),
@@ -194,6 +211,17 @@ class ConfigValidationTest {
         dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "memory": { "recallPerWake": 9 } }""")
         val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
         assertContains(message, "memory.recallPerWake must be between 0 and 5")
+    }
+
+    @Test
+    fun `the mechanics section merges key by key and is validated`() {
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "mechanics": { "maxRules": 3, "enabled": false } }""")
+        assertEquals(MechanicsConfig(enabled = false, maxRules = 3), ConfigStore.load(dir).mechanics)
+
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "mechanics": { "offeringMinutes": 1, "maxChallenges": 9 } }""")
+        val message = assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty()
+        assertContains(message, "mechanics.maxChallenges must be between 1 and 5")
+        assertContains(message, "mechanics.offeringMinutes must be between 2 and 60")
     }
 
     @Test

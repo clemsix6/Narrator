@@ -4,6 +4,7 @@ import com.mojang.serialization.Codec
 import com.mojang.serialization.codecs.RecordCodecBuilder
 import net.fabricmc.fabric.api.attachment.v1.AttachmentRegistry
 import net.fabricmc.fabric.api.attachment.v1.AttachmentType
+import net.minecraft.core.UUIDUtil
 import net.minecraft.resources.Identifier
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.entity.player.Player
@@ -79,13 +80,48 @@ data class LedgerEffect(val effect: String, val level: Int, val expiresAt: Long,
 }
 
 /**
- * Items the Narrator took from a player, given back from [returnAt] on.
+ * Why the ledger holds items of a player (M4 §5.6, §7.2). Only [CONFISCATION] is a punishment: the others are
+ * shown apart by `activeOn`, never harmful, and a pardon gives back confiscations only.
+ */
+enum class LedgerPurpose {
+    /** The Narrator's punishment (`take_item`): given back at its due time. */
+    CONFISCATION,
+
+    /** A player's bet on a challenge (`/bet`): settled when it ends, given back at its fallback deadline otherwise. */
+    STAKE,
+
+    /** A player's offering (`/offer`): the Narrator's for good only with a favor granted for it, given back otherwise. */
+    OFFERING,
+
+    /** What the player is owed (winnings, a joker) and their inventory had no room for: given as soon as there is room. */
+    OWED,
+    ;
+
+    /** `stake`: its value in the player's file. */
+    val id: String get() = name.lowercase()
+
+    companion object {
+        /**
+         * The purpose saved as [id]. An unknown one (a purpose a later version added, then removed) reads as a
+         * [CONFISCATION]: its items still go back to their owner at their due time, the safe way.
+         */
+        fun of(id: String): LedgerPurpose = entries.firstOrNull { it.id == id } ?: CONFISCATION
+    }
+}
+
+/**
+ * Items the ledger holds for a player, given back from [returnAt] on: a confiscation of the Narrator, or,
+ * from M4, a stake, an offering or what is owed ([purpose]).
  *
- * @property id the id of its `ledger confiscated` decision.
+ * @property id the id of its `ledger confiscated` decision (`ledger held` for a stake or an offering:
+ *   an offering is `O-<id>`).
  * @property items the stacks still held, each an `ItemStack` in SNBT. A stack that no longer reads back
  *   (its item left the game) stays here: nothing is ever erased silently.
  * @property what the stacks still held, for people and the model: `6x minecraft:diamond`.
- * @property takenAt and [returnAt]: epoch milliseconds.
+ * @property takenAt and [returnAt]: epoch milliseconds. A stake's [returnAt] is its fallback deadline, never
+ *   `Long.MAX_VALUE`: nothing stays held for ever (M4 §5.6).
+ * @property canon a stake: the challenge or duel bet on, `C-<canon>`.
+ * @property owedTo a stake lost: the player it goes to, as soon as both are online.
  */
 data class Confiscation(
     val id: Long,
@@ -95,6 +131,9 @@ data class Confiscation(
     val returnAt: Long,
     val reason: String?,
     val turnId: Long?,
+    val purpose: LedgerPurpose = LedgerPurpose.CONFISCATION,
+    val canon: Long? = null,
+    val owedTo: UUID? = null,
 ) {
     companion object {
         val CODEC: Codec<Confiscation> = RecordCodecBuilder.create { instance ->
@@ -106,8 +145,12 @@ data class Confiscation(
                 Codec.LONG.fieldOf("return_at").forGetter(Confiscation::returnAt),
                 Codec.STRING.optionalFieldOf("reason").forGetter { Optional.ofNullable(it.reason) },
                 Codec.LONG.optionalFieldOf("turn_id").forGetter { Optional.ofNullable(it.turnId) },
-            ).apply(instance) { id, items, what, takenAt, returnAt, reason, turnId ->
-                Confiscation(id, items, what, takenAt, returnAt, reason.orElse(null), turnId.orElse(null))
+                Codec.STRING.xmap({ LedgerPurpose.of(it) }, { it.id })
+                    .optionalFieldOf("purpose", LedgerPurpose.CONFISCATION).forGetter(Confiscation::purpose),
+                Codec.LONG.optionalFieldOf("canon").forGetter { Optional.ofNullable(it.canon) },
+                UUIDUtil.CODEC.optionalFieldOf("owed_to").forGetter { Optional.ofNullable(it.owedTo) },
+            ).apply(instance) { id, items, what, takenAt, returnAt, reason, turnId, purpose, canon, owedTo ->
+                Confiscation(id, items, what, takenAt, returnAt, reason.orElse(null), turnId.orElse(null), purpose, canon.orElse(null), owedTo.orElse(null))
             }
         }
     }
@@ -117,15 +160,19 @@ data class Confiscation(
  * The last punishment opened against a player, kept so that `Episodes` can be rebuilt when they join
  * after a restart.
  *
+ * @property act the act that opened it (`Caller.act`: a Director turn, or minus an engine firing, M4 §4.3);
+ *   read from `turn_id` in a state saved before M4.
  * @property until epoch milliseconds.
  */
-data class OpenEpisode(val turnId: Long?, val until: Long) {
+data class OpenEpisode(val act: Long?, val until: Long) {
     companion object {
         val CODEC: Codec<OpenEpisode> = RecordCodecBuilder.create { instance ->
             instance.group(
-                Codec.LONG.optionalFieldOf("turn_id").forGetter { Optional.ofNullable(it.turnId) },
+                Codec.LONG.optionalFieldOf("act").forGetter { Optional.ofNullable(it.act) },
+                // Written before M4, when an episode was a turn's: read, never written again.
+                Codec.LONG.optionalFieldOf("turn_id").forGetter { Optional.empty() },
                 Codec.LONG.fieldOf("until").forGetter(OpenEpisode::until),
-            ).apply(instance) { turnId, until -> OpenEpisode(turnId.orElse(null), until) }
+            ).apply(instance) { act, turnId, until -> OpenEpisode(act.or { turnId }.orElse(null), until) }
         }
     }
 }
@@ -148,6 +195,11 @@ data class OpenEpisode(val turnId: Long?, val until: Long) {
  *   stat; [armedUntil] is the latest of them.
  * @property rescues when the death guard rescued the player beyond the quota, epoch milliseconds (real
  *   time), within the last [DeathGuard.RESCUE_WINDOW_MS]: too many is a warning for the operators.
+ * @property graceUntil the end of the Narrator's grace on the player (M4 §7.1), epoch milliseconds.
+ * @property lastGraceEnd when their last grace ended (or will end): a new one comes an hour after it at the earliest.
+ * @property jokersGivenAt when the Narrator gave them a joker within the last 24 hours, epoch milliseconds.
+ * @property lastOfferAt when they last made an offering (`/offer`), epoch milliseconds: one per
+ *   `mechanics.offeringMinutes` (M4 §7.2).
  */
 data class GuardState(
     val modifiers: List<LedgerModifier> = emptyList(),
@@ -160,11 +212,15 @@ data class GuardState(
     val lastDeathAt: Long? = null,
     val perils: Map<String, Long> = emptyMap(),
     val rescues: List<Long> = emptyList(),
+    val graceUntil: Long? = null,
+    val lastGraceEnd: Long? = null,
+    val jokersGivenAt: List<Long> = emptyList(),
+    val lastOfferAt: Long? = null,
 ) {
     companion object {
         val EMPTY = GuardState()
 
-        /** Every field is optional, so a state saved before a field existed still reads back. */
+        /** Every field is optional, so a state saved before a field existed still reads back. 14 fields of the 16 a record codec takes. */
         val CODEC: Codec<GuardState> = RecordCodecBuilder.create { instance ->
             instance.group(
                 LedgerModifier.CODEC.listOf().optionalFieldOf("modifiers", emptyList()).forGetter(GuardState::modifiers),
@@ -177,22 +233,29 @@ data class GuardState(
                 Codec.LONG.optionalFieldOf("last_death_at").forGetter { Optional.ofNullable(it.lastDeathAt) },
                 Codec.unboundedMap(Codec.STRING, Codec.LONG).optionalFieldOf("perils", emptyMap()).forGetter(GuardState::perils),
                 Codec.LONG.listOf().optionalFieldOf("rescues", emptyList()).forGetter(GuardState::rescues),
-            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, rescues ->
+                Codec.LONG.optionalFieldOf("grace_until").forGetter { Optional.ofNullable(it.graceUntil) },
+                Codec.LONG.optionalFieldOf("last_grace_end").forGetter { Optional.ofNullable(it.lastGraceEnd) },
+                Codec.LONG.listOf().optionalFieldOf("jokers_given_at", emptyList()).forGetter(GuardState::jokersGivenAt),
+                Codec.LONG.optionalFieldOf("last_offer_at").forGetter { Optional.ofNullable(it.lastOfferAt) },
+            ).apply(instance) { modifiers, effects, confiscations, episode, armedUntil, protectedDeath, narratorKills, lastDeathAt, perils, rescues,
+                                graceUntil, lastGraceEnd, jokersGivenAt, lastOfferAt ->
                 GuardState(
                     modifiers, effects, confiscations, episode.orElse(null), armedUntil, protectedDeath, narratorKills, lastDeathAt.orElse(null),
-                    perils, rescues,
+                    perils, rescues, graceUntil.orElse(null), lastGraceEnd.orElse(null), jokersGivenAt, lastOfferAt.orElse(null),
                 )
             }
         }
 
         /**
          * The persistent player attachment `narrator2:guard_state`, copied to the new player object after
-         * a death. Registered by `registerGuardHooks`, before any world loads.
+         * a death. Registered by `registerGuardHooks`, before any world loads. Lazy, so that the codec can be
+         * used without Fabric's registry (unit tests).
          */
-        val TYPE: AttachmentType<GuardState> =
+        val TYPE: AttachmentType<GuardState> by lazy {
             AttachmentRegistry.create(Identifier.fromNamespaceAndPath("narrator2", "guard_state")) { builder ->
                 builder.persistent(CODEC).copyOnDeath()
             }
+        }
     }
 }
 

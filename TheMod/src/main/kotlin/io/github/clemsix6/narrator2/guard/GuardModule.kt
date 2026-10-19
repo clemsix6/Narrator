@@ -25,7 +25,8 @@ private val AFTER_ATTACHMENTS: Identifier = Identifier.fromNamespaceAndPath("nar
  * death for the no-piling-on rule), the creature shield (`ALLOW_DAMAGE`), the fall cushion at the end of
  * the Narrator's levitation (`AFTER_REMOVE` of an effect), the ledgers on join and
  * respawn, the Narrator's creatures (entity load and unload, conversions and splits), the check once a
- * second of what is due, and the guards' persistent attachment types (guard state, creature expiry).
+ * second of what is due, the guards' persistent attachment types (guard state, creature expiry), and the
+ * [BlockRestorer]'s (its chunk attachment and hooks, M4 §9.1).
  * Once, at mod initialization; the handlers find the running server's guards through `NarratorRuntime.current`.
  *
  * Without a running Narrator (it failed to start), the keep-inventory mark still works: a marked player
@@ -35,6 +36,7 @@ fun registerGuardHooks() {
     // Touching a type registers it: persistent types must exist before the first world loads.
     val types = listOf(GuardState.TYPE, NarratorMob.TYPE)
     log.info("attachments: ${types.joinToString { it.identifier().toString() }}")
+    BlockRestorer.registerHooks()
 
     ServerLivingEntityEvents.ALLOW_DEATH.register { entity, source, _ ->
         if (entity !is ServerPlayer) return@register true

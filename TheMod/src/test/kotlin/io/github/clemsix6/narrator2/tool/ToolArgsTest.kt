@@ -2,6 +2,8 @@ package io.github.clemsix6.narrator2.tool
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.fail
@@ -197,5 +199,29 @@ class ToolArgsTest {
         assertEquals(OneOfArgs(add = 2.0), ok(OneOfArgs.serializer(), """{"add":2}"""))
         assertEquals("give exactly one of multiply or add", problem(OneOfArgs.serializer(), """{"multiply":1.5,"add":2}"""))
         assertEquals("give exactly one of multiply or add", problem(OneOfArgs.serializer(), "{}"))
+    }
+
+    @Serializable
+    data class EffectArgs(val tool: String, val args: JsonObject = JsonObject(emptyMap()))
+
+    @Serializable
+    data class EffectsArgs(@Items(1, 4) val effects: List<EffectArgs>)
+
+    @Test
+    fun `a free JsonObject takes any object as it is, in a list too, and nothing else (M4 §8-1)`() {
+        val args = ok(EffectsArgs.serializer(), """{"effects":[{"tool":"explosion","args":{"power":2,"hurts":false,"nested":{"x":[1,2]}}},{"tool":"say"}]}""")
+        assertEquals(
+            Json.parseToJsonElement("""{"power":2,"hurts":false,"nested":{"x":[1,2]}}"""),
+            args.effects[0].args,
+            "kept as written: the tool it is meant for checks it",
+        )
+        assertEquals(JsonObject(emptyMap()), args.effects[1].args, "the default")
+        assertEquals("effects[0].args must be an object (got 3)", problem(EffectsArgs.serializer(), """{"effects":[{"tool":"say","args":3}]}"""))
+        assertEquals("effects[0].args must be an object (got [])", problem(EffectsArgs.serializer(), """{"effects":[{"tool":"say","args":[]}]}"""))
+        // Written as the JSON text of an object: read as that object, like any object.
+        val coerced = ToolArgs.decode(EffectsArgs.serializer(), """{"effects":[{"tool":"explosion","args":"{\"power\":2}"}]}""")
+        if (coerced !is ToolArgs.Decoded.Ok) fail("expected valid arguments, got $coerced")
+        assertEquals(Json.parseToJsonElement("""{"power":2}"""), coerced.args.effects[0].args)
+        assertEquals(listOf("effects[0].args"), coerced.coerced)
     }
 }

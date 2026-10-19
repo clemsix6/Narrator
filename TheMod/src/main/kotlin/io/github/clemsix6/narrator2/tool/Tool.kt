@@ -132,11 +132,23 @@ data class ToolResult(val status: ToolStatus, val text: String, val targets: Lis
 /**
  * Who calls a tool.
  *
- * @property conversationId the conversation's id (`Conversation.id`).
+ * @property conversationId the conversation's id (`Conversation.id`); `mechanics:C-60` for an act of the
+ *   mechanics engine (M4 §4.3).
  * @property turnId the Director turn, for the Director.
  * @property taskId the task, for a worker.
+ * @property firingId an act of the mechanics engine (a rule's firing, a challenge's stakes): the id of its
+ *   `mechanic` decision (`EngineActions.open`, M4 §4.3); null for the Director and the workers.
  */
-data class Caller(val role: Role, val conversationId: String, val turnId: Long?, val taskId: Long?)
+data class Caller(val role: Role, val conversationId: String, val turnId: Long?, val taskId: Long?, val firingId: Long? = null) {
+    /**
+     * The act this call belongs to, for the guards (episodes, `already_punished`, the punishment
+     * categories) and the per-turn limits: the Director's turn, else minus the engine's firing. Negative
+     * for the engine because turns and decisions are two sequences of ids (`IdKind.TURN`,
+     * `IdKind.DECISION`): firing 812 must never pass for turn 812 (M4 review, finding 9). Null for a
+     * caller with neither (a worker's task): each of its hostile actions is an act of its own.
+     */
+    val act: Long? get() = turnId ?: firingId?.let { -it }
+}
 
 /**
  * What is wired when a conversation's tools are chosen: a tool that needs something missing is not
@@ -145,16 +157,24 @@ data class Caller(val role: Role, val conversationId: String, val turnId: Long?,
  * @property journalAvailable the Journal opened (`sql`, and `delegate` to the Analyst, need it).
  * @property workerRoles worker roles that accept tasks (the `delegate` tool lists only these).
  * @property memoryAvailable the memory runs (`Memory.available`): the memory tools need it (M3 §5).
+ * @property mechanicsAvailable the mechanics engine runs (`Mechanics.available`): every tool of M4 needs it,
+ *   `punish` and `favor` included (M4 §12.1).
  */
-data class ToolEnv(val journalAvailable: Boolean, val workerRoles: Set<Role>, val memoryAvailable: Boolean = false)
+data class ToolEnv(
+    val journalAvailable: Boolean,
+    val workerRoles: Set<Role>,
+    val memoryAvailable: Boolean = false,
+    val mechanicsAvailable: Boolean = false,
+)
 
 /**
  * A tool the model can call.
  *
  * Arguments are a `@Serializable` class [A] (or [NoArgs]): optional arguments have a Kotlin default
  * value, nullable ones `= null`; supported types are strings, numbers, booleans, enums (`@SerialName`
- * in snake_case), lists and nested `@Serializable` classes. The JSON schema is generated from [args]
- * and its annotations, so the schema and the decoding cannot drift apart.
+ * in snake_case), lists, nested `@Serializable` classes, and a free `JsonObject` (the arguments of another
+ * tool, M4 §8.1). The JSON schema is generated from [args] and its annotations, so the schema and the
+ * decoding cannot drift apart.
  *
  * @param name snake_case, at most 32 characters (the gateway prefixes tool names).
  * @param description English and static: no number that depends on the chaos level or the config
@@ -177,8 +197,22 @@ abstract class NarratorTool<A : Any>(
     open fun isAvailable(env: ToolEnv): Boolean = true
 
     /**
+     * The dry checks of a call (M4 §4.3): those that depend neither on the players online nor on the
+     * world (registry ids, the caps of the chaos level, arguments that contradict each other). Null when
+     * they pass; else what [run] would answer, [ToolResult.invalid] or [ToolResult.denied]. It never
+     * changes anything and never goes to the server thread.
+     *
+     * [run] starts with it, so every path to the tool gets the same answers. The mechanics engine calls
+     * it alone to refuse a rule's effect or a challenge's stake when they are created, with the
+     * Director's [ToolContext.caller] (`EngineActions.check`). A tool without such checks keeps this
+     * default.
+     */
+    open suspend fun check(ctx: ToolContext, args: A): ToolResult? = null
+
+    /**
      * Runs the call with decoded, bound-checked [args]. Tool-specific checks (registry ids, online
-     * players, caps) happen here and answer with [ToolResult.invalid] or [ToolResult.denied].
+     * players, caps) happen here and answer with [ToolResult.invalid] or [ToolResult.denied]; it starts
+     * with [check].
      */
     abstract suspend fun run(ctx: ToolContext, args: A): ToolResult
 
@@ -187,6 +221,22 @@ abstract class NarratorTool<A : Any>(
     private companion object {
         val NAME = Regex("[a-z][a-z0-9_]{0,31}")
     }
+}
+
+/**
+ * A tool of M4 (M4 §12.1): shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]), every
+ * one of them, `punish` and `favor` included (decision J): with `mechanics.enabled` false, the Director keeps
+ * the raw tools of M2 only. A chapter opened while the engine ran keeps the tool declared if the engine falls
+ * later: the tool then answers `FAILED: the mechanics are unavailable: …`.
+ */
+abstract class MechanicsTool<A : Any>(
+    name: String,
+    description: String,
+    args: KSerializer<A>,
+    effect: ToolEffect,
+    timeoutMs: Long = 5_000,
+) : NarratorTool<A>(name, description, args, effect, timeoutMs) {
+    final override fun isAvailable(env: ToolEnv): Boolean = env.mechanicsAvailable
 }
 
 /** What a running tool can use. */

@@ -33,6 +33,15 @@ object Rules {
 
     /** `run_command` refused a command. */
     const val FORBIDDEN_COMMAND = "forbidden_command"
+
+    /** Another act struck the player in the same category of punishment too recently (M4 §6.1). */
+    const val SAME_PUNISHMENT = "same_punishment"
+
+    /** The player is under the Narrator's grace (M4 §7.1). */
+    const val GRACE = "grace"
+
+    /** A favor's own limit: a grace too soon after the last one, a second joker within a day (M4 §7.1). */
+    const val FAVOR_LIMIT = "favor_limit"
 }
 
 /**
@@ -46,10 +55,12 @@ interface Guards {
 
     /**
      * Checks a hostile action of [caller] against [target] (protection, chaos 0, recent death, a
-     * punishment of another turn still running) and, when allowed, opens or extends the caller's
-     * episode against [target] until [until] (epoch milliseconds). Server thread only.
+     * punishment of another act still running, fairness, the player's grace, and the rest of [category]
+     * against them) and, when allowed, opens or extends the caller's episode against [target] until
+     * [until] (epoch milliseconds), its act being [Caller.act]. [category]: the kind of punishment (M4
+     * §6.1), deduced by the tool from its arguments; null for an action without one. Server thread only.
      */
-    fun hostile(target: ServerPlayer, caller: Caller, until: Long): Verdict
+    fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory? = null): Verdict
 
     /**
      * Deaths of [target] in the next [seconds] of their play time are attributed to the Narrator (any
@@ -101,7 +112,56 @@ interface Guards {
      * 0 for a protected player. For a player online (the full quota for one offline). Any thread.
      */
     fun deathsLeft(player: UUID): Int
+
+    /**
+     * Lifts now everything the Narrator inflicted on [player] (M4 §7.1): its harmful effects and changes,
+     * its confiscations (given back now; never a stake, an offering or what is owed), its harmful creatures
+     * summoned for them, the traps holding them, and the episode. What was lifted, readable (`slowness II
+     * lifted`, `3x diamond returned`); empty when there was nothing to pardon. Decision `guard pardoned`.
+     * Server thread.
+     */
+    fun pardon(player: ServerPlayer, caller: Caller): List<String>
+
+    /**
+     * The Narrator's grace on [player] until [until] (M4 §7.1): until then [hostile] refuses
+     * ([Rules.GRACE]) and the Narrator's creatures and explosions spare them. [Verdict.Denied] ([Rules.FAVOR_LIMIT])
+     * when a grace ended less than `MechanicsLimits.GRACE_GAP_MINUTES` ago. Decision `guard graced`. Server thread.
+     */
+    fun grace(player: ServerPlayer, until: Long, caller: Caller): Verdict
+
+    /**
+     * Whether the Narrator inflicts something on [player] now: an episode, a harmful effect or change, a
+     * confiscation, a harmful creature, a trap. A joker is played only then. Server thread.
+     */
+    fun isPunished(player: ServerPlayer): Boolean
+
+    /**
+     * Saves [player] from a death the engine refuses (a duel, M4 §5.5): the death guard's own rescue (out of
+     * the danger, to the respawn point or safe ground, fire out, air, health, no fall damage for a while),
+     * without counting the quota. Decision `death_guard rescued` with [why]. Server thread.
+     */
+    fun rescue(player: ServerPlayer, why: String)
+
+    /** What limits the Narrator with each of [players] now (M4 §4.5, the `Pacing` and `Offerings` lines), in the order given. Any thread. */
+    fun pacing(players: List<UUID>, now: Long): List<PlayerPacing>
 }
+
+/**
+ * What limits the Narrator with one player now (M4 §4.5).
+ *
+ * @property punishedThisHour new punishments in the last hour, against [perHour] (`fair_share`).
+ * @property resting the categories resting against them (`same_punishment`), until when (epoch milliseconds).
+ * @property graceUntil the end of their grace, if they are under it.
+ * @property offerings their offerings waiting for an answer (`O-<id>`: the confiscation's id).
+ */
+data class PlayerPacing(
+    val player: UUID,
+    val punishedThisHour: Int,
+    val perHour: Int,
+    val resting: Map<PunishmentCategory, Long>,
+    val graceUntil: Long?,
+    val offerings: List<Confiscation>,
+)
 
 /**
  * @property narrator the death is attributed to the Narrator.
@@ -112,7 +172,8 @@ data class DeathAttribution(val narrator: Boolean, val keptInventory: Boolean)
 /**
  * One of the Narrator's effects on a player.
  *
- * @property kind `effect`, `attribute`, `confiscation` or `mob`.
+ * @property kind `effect`, `attribute`, `confiscation` or `mob`; from M4 also `trap`, and the escrows that
+ *   are not punishments: `stake`, `offering`, `owed` (never [harmful]).
  * @property what e.g. `slowness II`, `scale x0.5`, `3x minecraft:diamond`, `4 minecraft:zombie`.
  * @property until when it ends, epoch milliseconds.
  * @property harmful part of a punishment (a hostile action).

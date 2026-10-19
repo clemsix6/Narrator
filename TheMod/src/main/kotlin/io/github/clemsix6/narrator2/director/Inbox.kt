@@ -24,15 +24,16 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
     }
 
     /**
-     * How soon it should reach the Director: task results, reminders and due commitments are like
-     * [Urgency.SOON], whispers like [Urgency.IMMEDIATE]; the memory's notes and cues never wake it
-     * ([Urgency.NEXT], M3 §11.3).
+     * How soon it should reach the Director: task results, reminders, due commitments and the mechanics' news
+     * are like [Urgency.SOON] (M4 §4.4), whispers like [Urgency.IMMEDIATE]; the memory's notes and cues never
+     * wake it ([Urgency.NEXT], M3 §11.3).
      */
     val urgency: Urgency
         get() = when (signal) {
             is DirectorSignal.Event -> signal.urgency
             is DirectorSignal.OperatorWhisper -> Urgency.IMMEDIATE
             is DirectorSignal.MemoryNote, is DirectorSignal.MemoryCue -> Urgency.NEXT
+            is DirectorSignal.Mechanic -> Urgency.SOON
             else -> Urgency.SOON
         }
 
@@ -72,6 +73,7 @@ data class Item(val signal: DirectorSignal, val at: Long, val failures: Int = 0)
             is DirectorSignal.MemoryDue -> signal.at
             is DirectorSignal.MemoryNote -> signal.at
             is DirectorSignal.MemoryCue -> signal.at
+            is DirectorSignal.Mechanic -> signal.at
             else -> error("not an inbox item: $signal")
         }
     }

@@ -53,6 +53,65 @@ class UiTexts private constructor(val language: String, private val texts: Map<S
             "items.recovered" to setOf("items"),
             // Author of the books the Narrator gives.
             "book.author" to emptySet(),
+            // Sent when what the player is owed (winnings, a joker) finally fits in their inventory (M4 §5.6).
+            "items.delivered" to setOf("items"),
+
+            // ── Mechanics (M4 §18.3) ──
+            // The players' commands (/duel, /bet, /offer) while the mechanics engine is off.
+            "mechanics.unavailable" to emptySet(),
+            // A challenge id given to /duel or /bet that is not open.
+            "command.unknown_challenge" to setOf("id"),
+            // A challenge's boss bar (80 characters at most once filled): its title, the player's progress, the time left (mm:ss).
+            "challenge.bar" to setOf("title", "progress", "time"),
+            "challenge.progress.count" to setOf("have", "need"),
+            "challenge.progress.done" to emptySet(),
+            "challenge.progress.out" to emptySet(),
+            "challenge.progress.alive" to emptySet(),
+            // A goal nothing measures (judged, an answer not given yet).
+            "challenge.progress.waiting" to emptySet(),
+            // In place of the time left while the Narrator judges.
+            "challenge.judging" to emptySet(),
+            // A duel's boss bar: its title and the time left.
+            "duel.bar" to setOf("title", "time"),
+            // The invitation, with two clickable buttons; {where} is duel.where.arena or duel.where.here.
+            "duel.invite" to setOf("opponent", "title", "seconds", "where"),
+            "duel.where.arena" to setOf("x", "y", "z"),
+            "duel.where.here" to emptySet(),
+            "duel.accept_button" to emptySet(),
+            "duel.decline_button" to emptySet(),
+            "duel.accepted" to setOf("player"),
+            "duel.declined" to setOf("player"),
+            // A title on screen when the duel starts.
+            "duel.start" to setOf("opponent"),
+            "duel.won" to emptySet(),
+            "duel.lost" to emptySet(),
+            "duel.draw" to emptySet(),
+            "duel.expired" to emptySet(),
+            "duel.cancelled" to emptySet(),
+            "duel.not_invited" to emptySet(),
+            // /bet; {on} is a participant's name or bet.on_nobody.
+            "bet.placed" to setOf("items", "on", "id"),
+            "bet.on_nobody" to emptySet(),
+            "bet.closed" to emptySet(),
+            "bet.no_item" to emptySet(),
+            "bet.already" to emptySet(),
+            "bet.unknown_option" to setOf("options"),
+            "bet.won" to setOf("items"),
+            "bet.lost" to setOf("items"),
+            "bet.returned" to setOf("items"),
+            // /offer.
+            "offer.sent" to setOf("items"),
+            "offer.accepted" to setOf("items"),
+            "offer.returned" to setOf("items"),
+            "offer.no_item" to emptySet(),
+            "offer.pending" to emptySet(),
+            "offer.too_soon" to setOf("time"),
+            // The joker (M4 §7.1): its name and lore on the paper, and what playing it says.
+            "joker.name" to emptySet(),
+            "joker.lore" to emptySet(),
+            "joker.given" to emptySet(),
+            "joker.played" to emptySet(),
+            "joker.nothing" to emptySet(),
         )
 
         /** Keys whose text is a color. */

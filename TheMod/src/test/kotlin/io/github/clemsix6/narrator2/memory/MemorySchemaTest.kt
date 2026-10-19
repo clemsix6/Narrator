@@ -36,15 +36,15 @@ class MemorySchemaTest {
     private fun DuckDBConnection.run(sql: String) = createStatement().use { it.execute(sql) }
 
     @Test
-    fun `V1 and V2 apply, once, and the schema is at version 2`() {
+    fun `V1, V2 and V3 apply, once, and the schema is at version 3`() {
         assertEquals(MemorySchema.MIGRATION, DuckDatabase.MIGRATIONS.last())
         val file = dir.resolve(DuckDatabase.FILE_NAME)
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(2, db.schemaVersion)
-            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(3, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
         }
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
+            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
         }
     }
 
@@ -97,6 +97,51 @@ class MemorySchemaTest {
             assertEquals(listOf("-1"), db.writer.strings("SELECT side FROM player_traits"), "one row per axis and player")
             assertEquals(listOf("done"), db.writer.strings("SELECT status FROM memory_runs"))
             assertEquals(listOf("0"), db.writer.strings("SELECT recalls FROM memories"), "defaults")
+        }
+    }
+
+    @Test
+    fun `V3 adds what the engine tracks and the arcs' themes to the canon, commented, and a plan fits`() {
+        DuckDatabase.openInMemory(options).use { db ->
+            val comments = db.writer.createStatement().use { statement ->
+                statement.executeQuery("SELECT column_name, comment FROM duckdb_columns() WHERE table_name = 'canon' AND column_name IN ('mechanic', 'theme')")
+                    .use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) } }
+            }
+            assertEquals(setOf("mechanic", "theme"), comments.keys)
+            comments.values.forEach { assertTrue(!it.isNullOrBlank() && it.length <= 120 && it.none { c -> c == '<' || c == '>' }, "comment: $it") }
+            db.writer.run(
+                """
+                INSERT INTO canon (id, kind, created_at, statement, players, importance, status, source, evidence_events, evidence_tools, mechanic)
+                VALUES (61, 'plan', now(), 'Le Narrateur a prévu un comité d''accueil pour Bartok.', [], 5, 'active', 'director', [], [], 'rule');
+                INSERT INTO canon (id, kind, created_at, statement, players, importance, status, source, evidence_events, evidence_tools, theme)
+                VALUES (70, 'arc', now(), 'La vengeance du Warden.', [], 7, 'planned', 'dreamer', [], [], 'vengeance_du_warden');
+                """.trimIndent(),
+            )
+            assertEquals(listOf("rule", null), db.writer.strings("SELECT mechanic FROM canon ORDER BY id"))
+            assertEquals(listOf(null, "vengeance_du_warden"), db.writer.strings("SELECT theme FROM canon ORDER BY id"))
+        }
+    }
+
+    @Test
+    fun `V3 applies to a world at version 2 whose views already exist, and keeps its rows`() {
+        val file = dir.resolve(DuckDatabase.FILE_NAME)
+        DuckDatabase.open(file, options).use { db ->
+            // Back to a world of M3: version 2, without the columns, its views created by an earlier opening.
+            db.writer.run(
+                """
+                INSERT INTO canon (id, kind, created_at, statement, players, importance, status, source, evidence_events, evidence_tools)
+                VALUES (45, 'promise', now(), 'Le Narrateur a promis des bottes.', [], 6, 'active', 'director', [], []);
+                ALTER TABLE canon DROP COLUMN mechanic;
+                ALTER TABLE canon DROP COLUMN theme;
+                DELETE FROM schema_version WHERE version = 3;
+                """.trimIndent(),
+            )
+        }
+        DuckDatabase.open(file, options).use { db ->
+            assertEquals(3, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(listOf("C-45 promise active"), db.writer.strings("SELECT ref || ' ' || kind || ' ' || status FROM mem_canon"), "the view still reads the canon")
+            assertEquals(listOf(null), db.writer.strings("SELECT mechanic FROM canon WHERE id = 45"))
         }
     }
 

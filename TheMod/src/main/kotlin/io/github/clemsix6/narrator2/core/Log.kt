@@ -55,6 +55,7 @@ class Log private constructor(val tag: String) {
         val jev = of("Jev")
         val worker = of("Worker")
         val memory = of("Memory")
+        val mechanics = of("Mechanics")
 
         /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
         fun applyLevels(levels: Map<String, String>) {

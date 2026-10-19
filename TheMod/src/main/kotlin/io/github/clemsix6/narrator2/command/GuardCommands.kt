@@ -120,7 +120,7 @@ object GuardCommands {
             val episode = state.episode?.takeIf { it.until > now }
             add(
                 detailLine(
-                    episode?.let { "Punishment running until ${time(it.until, zone)} (${left(it.until, now)})${it.turnId?.let { turn -> ", opened by turn #$turn" }.orEmpty()}" }
+                    episode?.let { "Punishment running until ${time(it.until, zone)} (${left(it.until, now)})${it.act?.let { act -> ", opened by ${actName(act)}" }.orEmpty()}" }
                         ?: "No punishment running",
                 ),
             )
@@ -163,6 +163,9 @@ object GuardCommands {
 
     /** `1m12s left`, or `due`. */
     private fun left(until: Long, now: Long): String = if (until <= now) "due" else "${ToolText.wait(until - now)} left"
+
+    /** An act (`Caller.act`): a Director turn, or minus a firing of the mechanics engine (M4 §4.3). */
+    private fun actName(act: Long): String = if (act >= 0) "turn #$act" else "the engine's act #${-act}"
 
     private fun time(epochMs: Long, zone: ZoneId): String = TIME.format(Instant.ofEpochMilli(epochMs).atZone(zone))
 

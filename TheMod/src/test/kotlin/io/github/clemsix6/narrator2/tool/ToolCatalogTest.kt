@@ -125,7 +125,7 @@ class ToolCatalogTest {
         assertEquals(
             Json.parseToJsonElement(
                 """{"tools":["list_players","remind_me","say"],"left_out":["delegate","note_interaction","player_profile","recall",""" +
-                    """"remember","resolve","sql"],"journal_available":false,"memory_available":false,"worker_roles":[]}""",
+                    """"remember","resolve","sql"],"journal_available":false,"memory_available":false,"mechanics_available":false,"worker_roles":[]}""",
             ) as JsonObject,
             decision.detail,
         )
@@ -139,5 +139,31 @@ class ToolCatalogTest {
         assertEquals("analyst", decision.subject)
         assertEquals("""["analyst"]""", decision.detail?.get("worker_roles").toString())
         assertEquals("true", decision.detail?.get("memory_available").toString())
+        assertEquals("false", decision.detail?.get("mechanics_available").toString())
+    }
+
+    @Test
+    fun `a tool of M4 is shown only while the mechanics engine runs, and the decision says whether it does`() {
+        val punish = object : MechanicsTool<NoArgs>("punish", "A tool of M4.", NoArgs.serializer(), ToolEffect.WORLD) {
+            override suspend fun run(ctx: ToolContext, args: NoArgs) = ToolResult.ok("ok")
+        }
+        val withEngine = everythingWired.copy(mechanicsAvailable = true)
+        val catalog = tools + punish
+
+        assertTrue("punish" in ToolCatalog.toolSetFor(Role.DIRECTOR, withEngine, catalog, decisions, jobs).names)
+        assertEquals("true", services.traces.decisions.last().detail?.get("mechanics_available").toString())
+        val without = ToolCatalog.toolSetFor(Role.DIRECTOR, everythingWired, catalog, decisions, jobs)
+        assertTrue("punish" !in without.names)
+        assertEquals("""["punish"]""", services.traces.decisions.last().detail?.get("left_out").toString())
+        assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).mechanicsAvailable, "off unless said otherwise")
+    }
+
+    @Test
+    fun `without the mechanics engine the Director keeps exactly its 37 tools of M3`() {
+        val names = ToolCatalog.toolSetFor(Role.DIRECTOR, everythingWired, services).names
+        assertEquals(37, names.size, "$names")
+        listOf("start_challenge", "end_challenge", "propose_duel", "create_rule", "remove_rule", "punish", "favor", "survey").forEach {
+            assertTrue(it !in names, "$it needs the engine, or is the scout's")
+        }
     }
 }
