@@ -88,9 +88,10 @@ interface GameView {
  *   opened by a message with `<events>`, `<memory>`, `<heartbeat>` and `<situation>`. Beyond
  *   `director.turnsPerHour` turns in the last hour ([TurnBudget]), only addressed chat, prayers, whispers,
  *   due commitments and the mechanics' priority news wake it ([WakeScheduler.pastBudget]), an offering only
- *   [WakeScheduler.PLAYER_NEWS_PER_HOUR] times an hour (M4 review, finding 6).
+ *   [WakeScheduler.PLAYER_NEWS_PER_HOUR] times an hour (M4 review, finding 6). Within it, the modules' news wake it
+ *   [WakeScheduler.MODULE_NEWS_PER_HOUR] times an hour at most (M5 §9.2): a talkative module cannot spend the tokens.
  * - **Mechanics** (M4 §4.4, §4.5): the engine's news ([DirectorSignal.Mechanic]) are lines of `<events>`
- *   (`CHALLENGE`, `JUDGE`, `DUEL`, `RULE`, `OFFERING`, `JOKER`) that wake it like salient events, with the
+ *   (`CHALLENGE`, `JUDGE`, `DUEL`, `RULE`, `OFFERING`, `JOKER`, `MODULE`) that wake it like salient events, with the
  *   trigger `mechanic`; its lines and the guards' pacing end `<situation>` and the briefing's `<engine_state>`
  *   ([MechanicsLines]); its tools are in a chapter when it runs at the chapter's opening.
  * - **Reminders** (`remind_me`, M4 §15.1): kept in the [GameView.reminders] store, read when the Director is
@@ -227,6 +228,15 @@ class Director(
                 )
             }
         }
+        if (signal is DirectorSignal.Mechanic && WakeScheduler.byModule(signal)) {
+            val now = clock.millis()
+            if (budget.moduleNewsSpent(now)) {
+                decisions.record(
+                    log, DecisionRecord.Kind.SALIENCE, "throttled", subject = mechanicHead(signal),
+                    reason = "the ${WakeScheduler.MODULE_NEWS_PER_HOUR} wake-ups for the modules' news this hour are spent: it waits for the next wake-up",
+                )
+            }
+        }
     }
 
     override fun scheduleReminder(inSeconds: Int, note: String, caller: Caller): Result<Long> {
@@ -346,7 +356,11 @@ class Director(
             return
         }
         val config = services.settings.get().config.director
-        val wakeAt = if (resumeWake) now else WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore, budget.spent(now), budget.playerNewsSpent(now))
+        val wakeAt = if (resumeWake) {
+            now
+        } else {
+            WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore, budget.spent(now), budget.playerNewsSpent(now), budget.moduleNewsSpent(now))
+        }
         if (wakeAt != null && wakeAt <= now) {
             wake(scope, null)
             return
@@ -608,12 +622,18 @@ class Director(
         }
         val notes = whispers(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
         val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
-        val byPlayers = !resumed && carry.isEmpty() && beat == null && budget.spent(now) && WakeScheduler.wokenByPlayers(items)
+        val alone = !resumed && carry.isEmpty() && beat == null
+        val byPlayers = alone && budget.spent(now) && WakeScheduler.wokenByPlayers(items)
+        val byModules = alone && !byPlayers && WakeScheduler.wokenByModules(items)
         carry = emptyList()
         val trigger = triggerOf(items, beat, resumed)
-        budget.started(now, byPlayers)
-        val pastBudget = if (byPlayers) "past the budget for the players' news (${budget.playerNewsUsed(now)} of ${WakeScheduler.PLAYER_NEWS_PER_HOUR} this hour)" else null
-        Turn(scope, open, trigger, items, skipped, beat, mark, pastBudget).run(opening)
+        budget.started(now, byPlayers, byModules)
+        val budgetNote = when {
+            byPlayers -> "past the budget for the players' news (${budget.playerNewsUsed(now)} of ${WakeScheduler.PLAYER_NEWS_PER_HOUR} this hour)"
+            byModules -> "for the modules' news (${budget.moduleNewsUsed(now)} of ${WakeScheduler.MODULE_NEWS_PER_HOUR} this hour)"
+            else -> null
+        }
+        Turn(scope, open, trigger, items, skipped, beat, mark, budgetNote).run(opening)
         afterTurn()
     }
 
@@ -662,8 +682,11 @@ class Director(
         private val beat: Beat?,
         /** What the chapter's memory held before the last request's items were attached: put back when they go back to the inbox. */
         private var mark: ChapterMemory.Mark,
-        /** Why the turn runs although the budget of turns is spent, when the players' news alone woke it; for the wake decision. */
-        private val pastBudget: String?,
+        /**
+         * What the turn spent of a sub-budget, when the players' news alone woke it past the budget of turns or the
+         * modules' news alone woke it; for the wake decision.
+         */
+        private val budgetNote: String?,
     ) {
         private val id = services.trace.nextId(IdKind.TURN)
         private val caller = Caller(Role.DIRECTOR, chapter.conversation.id, id, taskId = null)
@@ -947,9 +970,10 @@ class Director(
 
         /**
          * `chat Bartok + 2 items`, `mechanic CHALLENGE C-50`, for the log and the wake decision; `mechanic OFFERING O-812;
-         * past the budget for the players' news (2 of 4 this hour)` when an offering alone woke it past the budget.
+         * past the budget for the players' news (2 of 4 this hour)` when an offering alone woke it past the budget, `mechanic
+         * MODULE C-73; for the modules' news (3 of 6 this hour)` when a module's news alone woke it.
          */
-        private fun describe(): String = describeItems() + (pastBudget?.let { "; $it" } ?: "")
+        private fun describe(): String = describeItems() + (budgetNote?.let { "; $it" } ?: "")
 
         private fun describeItems(): String {
             val main = when (trigger) {
