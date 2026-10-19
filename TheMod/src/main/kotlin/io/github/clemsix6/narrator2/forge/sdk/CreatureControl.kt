@@ -200,23 +200,23 @@ class CreatureControl(private val services: NarratorServices, val deployment: Lo
                 creature.see(mob)
                 continue
             }
-            val last = creature.seen?.get()
-            val why = when {
-                last != null && (last.isDeadOrDying || last.removalReason == Entity.RemovalReason.KILLED) -> DIED
-                last?.removalReason in AWAY -> UNLOADED
-                else -> VANISHED
-            }
-            if (why == UNLOADED) {
+            // The fact as the bus's are translated (`Facts.gone`, one source); from what was last seen once the entity is collected.
+            val fact = creature.seen?.get()?.let(Facts::gone)
+                ?: GameFact.CreatureGone(null, creature.at, Who(creature.type, creature.uuid.toString(), creature.name), Facts.VANISHED)
+            if (fact.why() == Facts.UNLOADED) {
                 if (creature.away) continue
                 creature.away = true
             } else {
                 held.remove(creature.uuid)
                 ModuleCreatures.calm(creature.uuid)
             }
-            gone += GameFact.CreatureGone(null, creature.at, Who(creature.type, creature.uuid.toString(), creature.name), why)
+            gone += fact
         }
         return gone
     }
+
+    /** Whether [entity] is one of its creatures (`WorldView`'s `own`, `CreatureInfo.own`): its mark, loaded or not. */
+    fun owns(entity: Entity): Boolean = ModuleCreatures.ownerOf(entity) == deployment
 
     /**
      * The deployment ended: every creature of its own that is loaded is given back now ([ModuleCreatures.giveBack]);
@@ -416,14 +416,6 @@ class CreatureControl(private val services: NarratorServices, val deployment: Lo
     companion object {
         /** The tool of [Creature.attack] (`mechanics/module/ModuleOnlyTools.kt`). */
         const val CREATURE_ATTACK = "creature_attack"
-
-        /** How a creature of the deployment went ([GameFact.CreatureGone.why]). */
-        const val DIED = "died"
-        const val VANISHED = "vanished"
-        const val UNLOADED = "unloaded"
-
-        /** How a creature leaves the world and comes back: its chunk unloaded, or it went through a portal. */
-        private val AWAY = setOf(Entity.RemovalReason.UNLOADED_TO_CHUNK, Entity.RemovalReason.UNLOADED_WITH_PLAYER, Entity.RemovalReason.CHANGED_DIMENSION)
 
         /** A creature's effect, as `mob_effect`'s: 1 to 900 seconds, level 1 to 5. */
         private const val MAX_EFFECT_SECONDS = 900

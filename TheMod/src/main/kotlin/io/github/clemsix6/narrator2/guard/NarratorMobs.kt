@@ -34,8 +34,18 @@ import kotlin.math.floor
  * @property ownSlots the equipment slots ([net.minecraft.world.entity.EquipmentSlot] names) whose items the
  *   game already kept for good (guaranteed drop) when it was marked: its own gear, never taken for a
  *   player's ([Belongings]).
+ * @property punishment the punishment of the catalogue it came with (`guests`, `slime_rain`), if any: such a
+ *   creature is [player]'s alone (M4-POST). It goes for nobody else and hurts nobody else ([CreatureShield]),
+ *   it goes when [player] dies or leaves ([NarratorMobs.retirePunishments]), and its fatal blow is a rescue,
+ *   never a death ([GuardsImpl.allowDeath]): a punishment of the catalogue is a gag, not an execution.
  */
-data class NarratorMob(val expiresAt: Long, val player: UUID?, val harmful: Boolean, val ownSlots: List<String> = emptyList()) {
+data class NarratorMob(
+    val expiresAt: Long,
+    val player: UUID?,
+    val harmful: Boolean,
+    val ownSlots: List<String> = emptyList(),
+    val punishment: String? = null,
+) {
     companion object {
         val CODEC: Codec<NarratorMob> = RecordCodecBuilder.create { instance ->
             instance.group(
@@ -43,7 +53,10 @@ data class NarratorMob(val expiresAt: Long, val player: UUID?, val harmful: Bool
                 UUIDUtil.CODEC.optionalFieldOf("player").forGetter { Optional.ofNullable(it.player) },
                 Codec.BOOL.optionalFieldOf("harmful", false).forGetter(NarratorMob::harmful),
                 Codec.STRING.listOf().optionalFieldOf("own_slots", emptyList()).forGetter(NarratorMob::ownSlots),
-            ).apply(instance) { expiresAt, player, harmful, ownSlots -> NarratorMob(expiresAt, player.orElse(null), harmful, ownSlots) }
+                Codec.STRING.optionalFieldOf("punishment").forGetter { Optional.ofNullable(it.punishment) },
+            ).apply(instance) { expiresAt, player, harmful, ownSlots, punishment ->
+                NarratorMob(expiresAt, player.orElse(null), harmful, ownSlots, punishment.orElse(null))
+            }
         }
 
         /** Registered by `registerGuardHooks`, before any world loads. */
@@ -82,16 +95,17 @@ class NarratorMobs(private val items: ItemLedger? = null) {
 
     /**
      * Makes [entity] one of the Narrator's creatures until [expiresAt] (epoch milliseconds), summoned
-     * for [player]: tagged, persistent (a mob no longer despawns on its own), given its expiry, and
-     * calling no reinforcements (a zombie's would be ordinary zombies, outside every rule). Call it last,
-     * once the entity is equipped and `finalizeSpawn` has run, and before adding it to the level: the gear
-     * it holds then is its own, and the load event registers it. Server thread.
+     * for [player] (by [punishment] of the catalogue, if any: [NarratorMob.punishment]): tagged, persistent
+     * (a mob no longer despawns on its own), given its expiry, and calling no reinforcements (a zombie's
+     * would be ordinary zombies, outside every rule). Call it last, once the entity is equipped and
+     * `finalizeSpawn` has run, and before adding it to the level: the gear it holds then is its own, and the
+     * load event registers it. Server thread.
      */
-    fun mark(entity: Entity, expiresAt: Long, player: UUID?, harmful: Boolean) {
+    fun mark(entity: Entity, expiresAt: Long, player: UUID?, harmful: Boolean, punishment: String? = null) {
         entity.addTag(TAG)
         (entity as? Mob)?.setPersistenceRequired()
         noReinforcements(entity)
-        entity.setAttached(NarratorMob.TYPE, NarratorMob(expiresAt, player, harmful, Belongings.keptSlots(entity)))
+        entity.setAttached(NarratorMob.TYPE, NarratorMob(expiresAt, player, harmful, Belongings.keptSlots(entity), punishment))
     }
 
     /** The Narrator's creatures loaded now. Any thread. */
@@ -154,11 +168,23 @@ class NarratorMobs(private val items: ItemLedger? = null) {
      * their time is up ([retire]): riders set down, what players entrusted to them given back. What went, by
      * type (`2 minecraft:zombie`); those in unloaded chunks go at their own time. Server thread.
      */
-    fun retireFor(player: UUID, now: Long): List<String> {
-        val mine = loaded.values.filter { it.mob.player == player && it.mob.harmful && !it.entity.isRemoved }
+    fun retireFor(player: UUID, now: Long): List<String> = retireWhere(player, now, "sent away from $player") { it.harmful }
+
+    /**
+     * Sends away now the creatures of the punishments of the catalogue loaded that were summoned for [player]
+     * ([NarratorMob.punishment], M4-POST), as when their time is up ([retire]): they live no longer than their
+     * player's life and stay, and go when [player] dies, is rescued from a death or leaves ([why]: `died`). What
+     * went, by type; those in unloaded chunks go at their own time. Server thread.
+     */
+    fun retirePunishments(player: UUID, now: Long, why: String): List<String> =
+        retireWhere(player, now, "of a punishment of $player gone ($why)") { it.punishment != null }
+
+    /** Retires the creatures loaded that were summoned for [player] and that [which] picks; logs [what] went. */
+    private fun retireWhere(player: UUID, now: Long, what: String, which: (NarratorMob) -> Boolean): List<String> {
+        val mine = loaded.values.filter { it.mob.player == player && which(it.mob) && !it.entity.isRemoved }
         mine.forEach { retire(it.entity, now) }
         val gone = mine.groupBy { it.type }.map { (type, mobs) -> "${mobs.size} $type" }
-        if (gone.isNotEmpty()) log.info("the Narrator's creatures sent away from $player: ${gone.joinToString()}")
+        if (gone.isNotEmpty()) log.info("the Narrator's creatures $what: ${gone.joinToString()}")
         return gone
     }
 
