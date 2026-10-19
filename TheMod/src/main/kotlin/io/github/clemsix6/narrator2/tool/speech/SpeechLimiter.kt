@@ -68,8 +68,8 @@ class SpeechLimiter(private val clock: Clock) {
 
     /**
      * Forgets the lines and sounds of the sliding minute, as a restart does; the cooldowns per player and the counts
-     * per turn stay. For the in-game tests that run the server's own Director: its limits are the server's, shared
-     * by every batch of tests, and a batch must not find the minute spent by the one before it.
+     * per turn stay. For the in-game tests, whose every script starts with it (`runScript`): the server's limits are
+     * shared by every batch of tests, and a batch must not find the minute spent by the one before it.
      */
     @Synchronized
     fun forgetTheMinute() {
