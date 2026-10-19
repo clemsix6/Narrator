@@ -18,8 +18,10 @@ import kotlin.random.Random
  *   26): they go with the next wake-up, a heartbeat's included, or between two tool calls. Neither do
  *   items demoted after failed requests ([Item.waking]).
  * - Once the [TurnBudget] is spent (`throttled`), only [Urgency.IMMEDIATE] items wake it: addressed
- *   chat, prayers and operator whispers; and a commitment that comes due ([DirectorSignal.MemoryDue],
- *   M3 §11.3), rare and binding. The other items wait for a turn to leave the hour.
+ *   chat, prayers and operator whispers; and the items that wake it past the budget ([pastBudget]): a
+ *   commitment that comes due ([DirectorSignal.MemoryDue], M3 §11.3), rare and binding, and a mechanic's
+ *   priority news ([DirectorSignal.Mechanic.priority], M4 §4.4: a challenge or a duel that ends, a judged
+ *   challenge to judge, an offering). The other items wait for a turn to leave the hour.
  * - Heartbeats: a random time in `director.heartbeatMinutes` after the last turn ([nextHeartbeat]),
  *   worth what [heartbeatWorth] says.
  */
@@ -37,18 +39,29 @@ object WakeScheduler {
     /**
      * When the Director should wake up for [items], never before [notBefore] (after a refused reply);
      * null when none of them wakes it. [throttled]: the budget of turns is spent, only
-     * [Urgency.IMMEDIATE] items and due commitments wake it.
+     * [Urgency.IMMEDIATE] items and those that wake it [pastBudget] do.
      */
     fun wakeAt(items: List<Item>, debounceMs: Long, notBefore: Long? = null, throttled: Boolean = false): Long? {
         val waking = items.filter { it.waking }
         val immediate = waking.filter { it.urgency == Urgency.IMMEDIATE }.map { it.at }
-        val soon = waking.filter { it.urgency == Urgency.SOON && (!throttled || it.signal is DirectorSignal.MemoryDue) }.map { it.at }
+        val soon = waking.filter { it.urgency == Urgency.SOON && (!throttled || pastBudget(it)) }.map { it.at }
         val candidates = listOfNotNull(
             if (immediate.isEmpty()) null else minOf(immediate.max() + debounceMs, immediate.min() + IMMEDIATE_MAX_MS),
             if (soon.isEmpty()) null else minOf(soon.max() + SOON_QUIET_MS, soon.min() + SOON_MAX_MS),
         )
         val at = candidates.minOrNull() ?: return null
         return if (notBefore != null) maxOf(at, notBefore) else at
+    }
+
+    /**
+     * Whether [item] wakes the Director even when the hour's turns are spent (M2 review, finding 26): a
+     * commitment that comes due, and a mechanic's priority news (M4 §4.4). Both are rare: a duel's start, a
+     * rule's note or a joker played wait, and a player makes one offering per 10 minutes at most.
+     */
+    fun pastBudget(item: Item): Boolean = when (val signal = item.signal) {
+        is DirectorSignal.MemoryDue -> true
+        is DirectorSignal.Mechanic -> signal.priority
+        else -> false
     }
 
     /** The next heartbeat: a random whole second in [minutes] after [from]. */
@@ -97,8 +110,8 @@ object WakeScheduler {
 
 /**
  * The Director's budget of turns per hour (M2 review, finding 26), `director.turnsPerHour`: once that
- * many turns started within the last hour, only addressed chat, prayers, operator whispers and due
- * commitments wake the Narrator ([WakeScheduler.wakeAt]); salient events wait for a turn to leave the hour, or go with the
+ * many turns started within the last hour, only addressed chat, prayers, operator whispers, due commitments
+ * and the mechanics' priority news wake the Narrator ([WakeScheduler.wakeAt]); salient events wait for a turn to leave the hour, or go with the
  * next wake-up, and heartbeats are skipped. The Director counts its turns ([started]); the salience
  * reads the budget to write its `salience throttled` decisions. Any thread.
  */

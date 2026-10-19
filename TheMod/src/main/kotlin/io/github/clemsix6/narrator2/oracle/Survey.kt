@@ -123,11 +123,11 @@ object Survey {
         if (top < reader.level.minY) return UNFIT // the void: no ground at all
         val ground = chunk.getBlockState(pos.set(x, top, z))
         if (!ground.fluidState.isEmpty || EntityTypes.PLAYER.isBlockDangerous(ground)) return UNFIT
-        if (built && PlacedBlocks.placerAt(reader.level, pos) != null) return UNFIT
+        if (built && PlacedBlocks.placerAt(chunk, pos) != null) return UNFIT
         val above = chunk.getBlockState(pos.set(x, top + 1, z))
         if (!above.isAir) {
             if (EntityTypes.PLAYER.isBlockDangerous(above)) return UNFIT
-            if (built && PlacedBlocks.placerAt(reader.level, pos) != null) return UNFIT
+            if (built && PlacedBlocks.placerAt(chunk, pos) != null) return UNFIT
         }
         return if (chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z) > top) LEAVES else 0
     }

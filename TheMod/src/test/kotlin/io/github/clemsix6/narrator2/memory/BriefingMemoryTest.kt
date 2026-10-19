@@ -94,6 +94,45 @@ class BriefingMemoryTest {
         }
     }
 
+    /**
+     * M4 §3.3: the rows of the mechanics engine. Its plans are commitments; a challenge or a duel it follows
+     * is `tracked`, a law whose rule it applies `enforced`; a law the Director keeps himself has no mark. Rows
+     * without a due time (the engine holds it) come after the dated ones.
+     */
+    @Test
+    fun `the engine's plans are commitments, its challenges tracked and its laws enforced`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            f.put(MemorySamples.canon.copy(dueAt = Instant.parse("2026-10-03T21:00:00Z")))
+            f.put(
+                SheetSamples.canon(
+                    80, CanonKind.CHALLENGE, "Le Narrateur a défié tous les joueurs de rapporter un œuf de tortue.", quote = "Un œuf de tortue, et vite.",
+                    players = emptyList(), stakes = "reward 1x golden_apple · penalty tiny (2) · bets",
+                ).copy(mechanic = CanonMechanic.CHALLENGE),
+            )
+            f.put(SheetSamples.canon(81, CanonKind.CHALLENGE, "Le Narrateur a fait s'affronter Bartok et Mimosa en duel.", players = listOf(bartok, mimosa)).copy(mechanic = CanonMechanic.DUEL))
+            f.put(SheetSamples.canon(82, CanonKind.PLAN, "Un comité d'accueil attend Bartok à sa prochaine entrée dans le Nether.").copy(mechanic = CanonMechanic.RULE))
+            f.put(SheetSamples.canon(83, CanonKind.LAW, "Quiconque casse la construction d'un autre est rapetissé.", players = emptyList()).copy(mechanic = CanonMechanic.RULE))
+            f.put(SheetSamples.canon(84, CanonKind.LAW, "Nul ne creuse sous le village.", players = emptyList()))
+            f.put(SheetSamples.canon(85, CanonKind.PLAN, "Un piège attendait Mimosa au sommet de sa tour.", status = CanonStatus.FULFILLED).copy(mechanic = CanonMechanic.RULE))
+
+            val chapter = f.chapter()
+            val lines = f.briefing.sections(chapter, f.now).first { it.tag == "canon" }.lines
+            assertTrue(lines[0].startsWith("C-45 promise → Mimosa, due 21:00 (in 1h00m): "), lines[0])
+            assertEquals(
+                listOf(
+                    "C-82 plan → Bartok: Un comité d'accueil attend Bartok à sa prochaine entrée dans le Nether.",
+                    "C-81 challenge (tracked duel) → Bartok, Mimosa: Le Narrateur a fait s'affronter Bartok et Mimosa en duel.",
+                    "C-80 challenge (tracked) → all: « Un œuf de tortue, et vite. » — Le Narrateur a défié tous les joueurs de rapporter un œuf de tortue. " +
+                        "· stakes: reward 1x golden_apple · penalty tiny (2) · bets",
+                    "Laws: C-84 (since 09-28): Nul ne creuse sous le village. · C-83 (enforced, since 09-28): Quiconque casse la construction d'un autre est rapetissé.",
+                ),
+                lines.drop(1),
+            )
+            assertTrue(Ref(RefKind.CANON, 82) in chapter.shownRefs, "a plan shown is a row shown")
+            assertFalse(Ref(RefKind.CANON, 85) in chapter.shownRefs, "a plan fulfilled is no longer open")
+        }
+    }
+
     // ── Budgets ─────────────────────────────────────────────────────────────────────────────────────
 
     @Test
@@ -121,7 +160,7 @@ class BriefingMemoryTest {
 
             // The canon: the soonest commitment first, its quote whole, then a count of what is left out.
             val canon = sections.getValue("canon").lines
-            assertTrue(canon[0].startsWith("C-1001 challenge → "), canon[0])
+            assertTrue(canon[0].startsWith("C-1001 challenge (tracked duel) → "), canon[0])
             assertTrue(canon[0].contains("« " + filler(MemoryLimits.CANON_QUOTE, "Q1").replace('<', '‹').replace('>', '›').replace('«', '‹').replace('»', '›') + " »"), "the quote stays whole")
             val more = Regex("""\(\+(\d+) more: recall kinds=canon\)""").matchEntire(canon.last())
             assertNotNull(more, canon.last())
@@ -468,7 +507,7 @@ internal object BriefingSamples {
                     ++id, if (i % 3 == 0) CanonKind.CHALLENGE else CanonKind.PROMISE, filler(MemoryLimits.CANON_STATEMENT, "St${i + 1}"),
                     quote = filler(MemoryLimits.CANON_QUOTE, "Q${i + 1}"), players = everyone, due = NOW.plus(Duration.ofMinutes(10L * (i + 1))),
                     stakes = if (i % 3 == 0) filler(MemoryLimits.CANON_STAKES, "K$i") else null,
-                ),
+                ).copy(mechanic = if (i % 3 == 0) CanonMechanic.DUEL else null), // the longest mark
             )
         }
         val standing = listOf(
@@ -482,7 +521,7 @@ internal object BriefingSamples {
                     SheetSamples.canon(
                         ++id, kind, filler(MemoryLimits.CANON_STATEMENT, "${kind.id}$i"), quote = filler(MemoryLimits.CANON_QUOTE), players = listOf(everyone[i % 8]),
                         uses = 9, lastUsed = NOW, freshness = if (kind == CanonKind.RUNNING_GAG) GagState.WORN else null, status = status,
-                    ).copy(place = Pos("minecraft:the_nether", -12_345_678, 320, 12_345_678)),
+                    ).copy(place = Pos("minecraft:the_nether", -12_345_678, 320, 12_345_678), mechanic = CanonMechanic.RULE.takeIf { kind == CanonKind.LAW }),
                 )
             }
         }

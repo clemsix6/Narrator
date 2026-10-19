@@ -95,6 +95,19 @@ class WakeSchedulerTest {
     }
 
     @Test
+    fun `a mechanic's news wakes like a salient event, and its priority news even once the budget of turns is spent (M4 §4-4)`() {
+        val won = Item.of(DirectorSignal.Mechanic(MechanicSignal.CHALLENGE, "C-50 won by Mimosa", 0, priority = true))
+        val joker = Item.of(DirectorSignal.Mechanic(MechanicSignal.JOKER, "Bartok played a joker", 0, priority = false))
+        assertEquals(Urgency.SOON, won.urgency)
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(joker), debounce))
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(won), debounce, throttled = true))
+        assertNull(WakeScheduler.wakeAt(listOf(joker), debounce, throttled = true), "a joker played waits for a turn to leave the hour")
+        assertEquals(3_000, WakeScheduler.wakeAt(listOf(joker, won), debounce, throttled = true), "the joker goes with the challenge's end")
+        assertEquals(listOf(true, false), listOf(won, joker).map(WakeScheduler::pastBudget))
+        assertEquals(1.0, WakeScheduler.salience(listOf(joker)), "a mechanic's news is worth a heartbeat by itself")
+    }
+
+    @Test
     fun `the memory's notes and cues never wake the Director, a cue is worth a heartbeat like a next event and a note nothing`() {
         val note = Item.of(DirectorSignal.MemoryNote(Ref(RefKind.NOTE, 9), NoteKind.COHERENCE, "le Narrateur a dit…", 0))
         val cue = Item.of(DirectorSignal.MemoryCue(CueKind.RETURN, Ref(RefKind.MEMORY, 77), steve, "Steve is where M-77 happened", 0))

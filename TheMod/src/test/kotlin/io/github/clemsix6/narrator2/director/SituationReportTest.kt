@@ -6,12 +6,21 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.ActiveEffect
+import io.github.clemsix6.narrator2.guard.Confiscation
+import io.github.clemsix6.narrator2.guard.Guards
+import io.github.clemsix6.narrator2.guard.LedgerPurpose
+import io.github.clemsix6.narrator2.guard.PlayerPacing
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
+import io.github.clemsix6.narrator2.mechanics.Mechanics
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.FakeWorkers
 import io.github.clemsix6.narrator2.testing.TestClock
@@ -22,6 +31,8 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SituationReportTest {
     private val clock = TestClock(Instant.parse("2026-09-25T21:32:41Z"))
@@ -144,6 +155,129 @@ class SituationReportTest {
             override fun situationLines(now: Long): List<String> = throw IllegalStateException("the cache is not ready")
         }
         assertEquals(listOf("Memory: unavailable (the cache is not ready)", "</situation>"), render(failing).takeLast(2))
+    }
+
+    // ── Mechanics (M4 §4.5) ─────────────────────────────────────────────────────────────────────────
+
+    private val challengesLine =
+        "Challenges: C-50 obtain « Œuf de tortue » → all · Mimosa 0/1, Bartok 0/1 · ends in 12m · bets open 3m (2 bets) · next challenge possible in 6m"
+    private val rulesLine =
+        "Rules: C-60 law block_break grief → punish (2 fired, until 10-25 20:15) · C-61 plan once dimension_change Bartok → spawn, notify (until 21:40)"
+
+    /** Mimosa's offering O-812 of 10 diamonds, to answer by 21:42. */
+    private val offering = Confiscation(812, listOf("minecraft:diamond"), "10x minecraft:diamond", now - 60_000, now + 559_000, null, null, LedgerPurpose.OFFERING)
+
+    /**
+     * Bartok punished twice this hour, size and air resting, his offering O-790 past its time (it only waits for
+     * room to go back); Mimosa under grace until 21:45, with an offering.
+     */
+    private fun evening() {
+        players.put(live("Bartok", onlineFor = 72 * 60_000L))
+        players.put(live("Mimosa", onlineFor = 25 * 60_000L))
+        guards.pacingOf[ref("Bartok").uuid] = PlayerPacing(
+            ref("Bartok").uuid, 2, 4, mapOf(PunishmentCategory.AIR to now + 1_099_000, PunishmentCategory.SIZE to now + 379_000), null,
+            listOf(offering.copy(id = 790, returnAt = now - 1_000)),
+        )
+        guards.pacingOf[ref("Mimosa").uuid] = PlayerPacing(ref("Mimosa").uuid, 0, 4, emptyMap(), now + 739_000, listOf(offering))
+    }
+
+    private fun render(mechanics: Mechanics, memory: Memory = FakeMemory(clock), guards: Guards = this.guards) =
+        SituationReport(TestServices(clock = clock, players = players, guards = guards, memory = memory, mechanics = mechanics), digest, ZoneOffset.UTC)
+            .render(now, world, emptyList(), emptyList()).lines()
+
+    @Test
+    fun `the mechanics' lines follow the last actions, before the memory's (M4 §4-5)`() {
+        evening()
+        val mechanics = FakeMechanics(clock).apply { lines = listOf(challengesLine, rulesLine) }
+        val memory = FakeMemory(clock).apply { situation = listOf("Favor: Bartok -31 ↘ · Mimosa +22 ↗") }
+
+        assertEquals(
+            listOf(
+                "Your last actions: none",
+                challengesLine,
+                rulesLine,
+                "Pacing: punished this hour Bartok 2/4, Mimosa 0/4 · recent kinds Bartok size (again at 21:39), air (21:51) · grace Mimosa until 21:45",
+                "Offerings: O-812 Mimosa 10x diamond (answer by 21:42)",
+                "Favor: Bartok -31 ↘ · Mimosa +22 ↗",
+                "</situation>",
+            ),
+            render(mechanics, memory).takeLast(7),
+        )
+    }
+
+    @Test
+    fun `nothing to say, no line - without the engine, the guards' pacing is still there`() {
+        players.put(live("Bartok", onlineFor = 72 * 60_000L))
+        assertEquals(listOf("Your last actions: none", "</situation>"), render(FakeMechanics(clock)).takeLast(2), "nobody punished, nothing resting, no grace, no offering")
+
+        evening()
+        val off = FakeMechanics(clock).apply {
+            lines = listOf(challengesLine)
+            available = false
+        }
+        val lines = render(off)
+        assertFalse(lines.any { it.startsWith("Challenges:") }, "the engine is off: its lines are not read")
+        assertTrue(lines.any { it.startsWith("Pacing: punished this hour Bartok 2/4") }, "the categories and the grace are guards")
+        assertTrue(lines.any { it.startsWith("Offerings: O-812") })
+        assertEquals(lines, render(DisabledMechanics("not wired yet")))
+    }
+
+    @Test
+    fun `a source that fails says so on its line`() {
+        evening()
+        val failing = object : Mechanics by FakeMechanics(clock) {
+            override fun situationLines(now: Long): List<String> = throw IllegalStateException("the snapshot is not ready")
+        }
+        assertEquals("Mechanics: unavailable (the snapshot is not ready)", render(failing).first { it.startsWith("Mechanics") })
+        val noPacing = object : Guards by guards {
+            override fun pacing(players: List<UUID>, now: Long): List<PlayerPacing> = throw IllegalStateException("the episodes are locked")
+        }
+        val lines = render(FakeMechanics(clock), guards = noPacing)
+        assertEquals("Pacing: unavailable (the episodes are locked)", lines.single { it.startsWith("Pacing") })
+        assertFalse(lines.any { it.startsWith("Offerings") })
+    }
+
+    @Test
+    fun `the mechanics' lines keep to their budgets - 400 characters each, 1 200 together`() {
+        // Twelve players online, all punished, every category resting, all under grace, each with two offerings.
+        val names = (1..12).map { "Player_with_1${it.toString().padStart(2, '0')}" }
+        names.forEachIndexed { index, name ->
+            players.put(live(name, onlineFor = 60_000L))
+            val uuid = ref(name).uuid
+            guards.pacingOf[uuid] = PlayerPacing(
+                uuid, 4, 4, PunishmentCategory.entries.filter { it.rests }.associateWith { now + 600_000 }, now + 900_000,
+                listOf(offering.copy(id = 900L + index), offering.copy(id = 1_900L + index)),
+            )
+        }
+        val long = FakeMechanics(clock).apply { lines = listOf("Challenges: " + "c".repeat(700), "Rules: " + "<r>".repeat(300)) }
+        val shown = render(long).dropWhile { !it.startsWith("Your last actions") }.drop(1).dropLast(1)
+
+        assertEquals(listOf("Challenges", "Rules", "Pacing", "Offerings"), shown.map { it.substringBefore(':') })
+        shown.forEach { assertTrue(it.length <= MechanicsLimits.SITUATION_LINE, "${it.length} characters: $it") }
+        assertTrue(shown.sumOf { it.length } <= MechanicsLimits.SITUATION_TOTAL, "${shown.sumOf { it.length }} characters together")
+        assertEquals(shown[0].length, shown[1].length, "the engine's two long lines get the same share")
+        assertTrue(shown[0].length in 300 until MechanicsLimits.SITUATION_LINE, "all four are long: they share the total (${shown[0].length})")
+        assertTrue(Regex(" \\(\\+\\d+ more\\)$").containsMatchIn(shown[2]), shown[2])
+        assertTrue(Regex(" \\(\\+\\d+ more\\)$").containsMatchIn(shown[3]), shown[3])
+        assertFalse("<r>" in shown[1], "the engine's lines are escaped again")
+
+        // With only two of them, each takes its 400 characters.
+        val two = render(FakeMechanics(clock).apply { lines = listOf("Challenges: " + "c".repeat(700)) }, guards = FakeGuards())
+            .filter { it.startsWith("Challenges") }
+        assertEquals(MechanicsLimits.SITUATION_LINE, two.single().length)
+        val chunks = listOf("a".repeat(10), ", " + "b".repeat(10), ", " + "c".repeat(10))
+        assertEquals("Pacing: (+3 more)", LineBudget.fit("Pacing: ", chunks, 20))
+        assertEquals("Pacing: aaaaaaaaaa (+2 more)", LineBudget.fit("Pacing: ", chunks, 30))
+        assertEquals("Pacing: aaaaaaaaaa, bbbbbbbbbb, cccccccccc", LineBudget.fit("Pacing: ", chunks, 42))
+        assertEquals("Pacing: aaaaaaaaaa, bbbbbbbbbb, cccccccccc (+4 more)", LineBudget.fit("Pacing: ", chunks, 60, more = 4), "items left out already")
+        assertEquals("Pacing: aaaaaaaaaa, bbbbbbbbbb (+5 more)", LineBudget.fit("Pacing: ", chunks, 50, more = 4))
+        assertEquals(null, LineBudget.fit("Pacing: ", chunks, 10), "no room even for the count")
+        assertEquals(null, LineBudget.fit("Pacing: ", emptyList(), 400))
+        assertEquals(
+            listOf("a".repeat(10), "b".repeat(45), "c".repeat(44) + "…"),
+            LineBudget.share(listOf({ "a".repeat(10) }, { max -> "b".repeat(minOf(45, max)) }, { max -> "c".repeat(200).take(max) + "x" }), 100, 100),
+            "the short ones whole, the long ones share the rest (a line its builder cannot fit is cut)",
+        )
     }
 
     @Test
