@@ -422,8 +422,11 @@ object MechanicsLimits {
     /** Duelists start this many blocks from the arena's point, face to face. */
     const val ARENA_DISTANCE = 5
 
-    /** The loser of a fatal blow in a duel gets resistance V for this many seconds (a game effect, no ledger). */
-    const val DUEL_RESISTANCE_SECONDS = 5
+    /**
+     * After a duel, each duelist stays protected at least this many seconds, and as long as a danger lasts (M4 review,
+     * finding 3); the loser of a fatal blow gets resistance V as long (a game effect, no ledger).
+     */
+    const val DUEL_PROTECTION_SECONDS = 10
 
     /** A grace lasts this long at most; a new one comes this long after the last one ended. */
     const val GRACE_MAX_MINUTES = 60

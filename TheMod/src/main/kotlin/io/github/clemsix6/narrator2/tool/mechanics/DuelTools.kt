@@ -27,8 +27,8 @@ class ProposeDuelTool : MechanicsTool<DuelSpec>(
     description = "Proposes a duel between two players. Each gets a clickable invitation and must accept it in time: nobody is " +
         "ever made to fight. Optionally in an arena in their own dimension, such as a flat spot the scout found (they are " +
         "put back afterwards). Nobody dies in a duel: a fatal blow from the opponent ends it, the loser left at 1 health; " +
-        "any other deadly harm is a rescue, and a loss. DUEL events tell you whether it starts and who won. Recorded in " +
-        "your canon (C-…).",
+        "any other deadly harm is a rescue, and a loss, but one dealt from outside the duel (another player, you, your " +
+        "creatures) cancels it. DUEL events tell you whether it starts and who won. Recorded in your canon (C-…).",
     args = DuelSpec.serializer(),
     effect = ToolEffect.WORLD,
     timeoutMs = 15_000,
