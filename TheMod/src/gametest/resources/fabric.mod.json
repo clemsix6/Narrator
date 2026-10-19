@@ -13,6 +13,7 @@
       "io.github.clemsix6.narrator2.gametest.GuardGameTests",
       "io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests",
       "io.github.clemsix6.narrator2.gametest.GuardGapGameTests",
+      "io.github.clemsix6.narrator2.gametest.GuardFavorGameTests",
       "io.github.clemsix6.narrator2.gametest.OracleGameTests",
       "io.github.clemsix6.narrator2.gametest.SpeechGameTests",
       "io.github.clemsix6.narrator2.gametest.PlayerActionGameTests",
@@ -25,6 +26,7 @@
       "io.github.clemsix6.narrator2.gametest.MemoryCommandGameTests",
       "io.github.clemsix6.narrator2.gametest.MemoryGameTests",
       "io.github.clemsix6.narrator2.gametest.MemoryEndToEndTests",
+      "io.github.clemsix6.narrator2.gametest.BossbarGameTests",
       "io.github.clemsix6.narrator2.gametest.MechanicsEngineGameTests"
     ]
   },

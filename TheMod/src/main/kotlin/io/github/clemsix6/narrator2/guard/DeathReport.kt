@@ -24,7 +24,8 @@ import java.sql.Connection
  * @property armedUntil play time up to which the guard was armed, in ticks; 0 when it was not.
  * @property deathsLeft deaths the Narrator may still cause to the player in this played hour, after this one.
  * @property actions the Narrator's world actions on the player that started in the [WINDOW_MS] before
- *   the death, done or maybe done, oldest first; null when they could not be read ([actionsUnknown] says why).
+ *   the death, done or maybe done, oldest first, the engine's acts included (M4 §4.3); null when they could
+ *   not be read ([actionsUnknown] says why).
  */
 @Serializable
 data class DeathReport(
@@ -71,7 +72,14 @@ data class DeathReport(
         val window = "in the last ${ToolText.duration(WINDOW_MS)}"
         val done = actions ?: return "the Narrator's actions $window are unknown (${actionsUnknown ?: "not read"})"
         if (done.isEmpty()) return "no world action of the Narrator on $player $window"
-        return "the Narrator acted on $player $window: " + done.joinToString { "${it.tool} ${ToolText.duration(secondsBefore(it) * 1_000)} before${it.turnId?.let { turn -> " (turn $turn)" }.orEmpty()}" }
+        return "the Narrator acted on $player $window: " + done.joinToString { "${it.tool} ${ToolText.duration(secondsBefore(it) * 1_000)} before${by(it)}" }
+    }
+
+    /** ` (turn 42)` for the Director, ` (engine, mechanics:C-60)` for one of the engine's acts, nothing for an act without either. */
+    private fun by(action: NarratorAction): String = when {
+        action.engine != null -> " (engine, ${action.engine})"
+        action.turnId != null -> " (turn ${action.turnId})"
+        else -> ""
     }
 
     /** Seconds between [action]'s start and the death. */
@@ -101,28 +109,49 @@ data class DeathReport(
 
         /**
          * The Narrator's world actions on [player] (exact name) that started from [from] to [to], epoch
-         * milliseconds, oldest first: the `tool_calls` of effect `world` with the player among their
-         * targets, done (`ok`) or maybe done (`unknown`). Runs on a read connection of the Journal.
+         * milliseconds, oldest first, done (`ok`) or maybe done (`unknown`):
+         * - the Director's (and its assistants'): the `tool_calls` of effect `world` with the player among
+         *   their targets;
+         * - the engine's acts (a rule's firing, a challenge's stakes, M4 §4.3), which write no `tool_calls`
+         *   row: their `mechanic action` decisions whose `subject` is the player, or whose `detail.targets`
+         *   holds them, with `detail.tool`, `detail.status` (a `ToolStatus` id) and `detail.result` (the
+         *   decision's `reason` without it); a `detail.effect` other than `world` (speech) is left out. Their
+         *   [NarratorAction.engine] is the act's conversation (`mechanics:C-60`).
+         *
+         * Runs on a read connection of the Journal.
          */
         fun actionsOn(connection: Connection, player: String, from: Long, to: Long): List<NarratorAction> =
             connection.prepareStatement(
                 """
-                SELECT id, epoch_ms(ts), tool, turn_id, status, result FROM tool_calls
+                SELECT id, epoch_ms(ts) AS started, tool, turn_id, status, result, NULL AS engine FROM tool_calls
                 WHERE effect = 'world' AND status IN ('ok', 'unknown') AND list_contains(targets, ?)
                   AND ts >= to_timestamp(CAST(? AS DOUBLE) / 1000) AND ts <= to_timestamp(CAST(? AS DOUBLE) / 1000)
-                ORDER BY ts, id
+                UNION ALL
+                SELECT id, epoch_ms(ts) AS started, json_extract_string(detail, '$.tool'), turn_id, json_extract_string(detail, '$.status'),
+                       coalesce(json_extract_string(detail, '$.result'), reason), coalesce(conversation_id, 'engine')
+                FROM engine_decisions
+                WHERE kind = 'mechanic' AND decision = 'action'
+                  AND (subject = ? OR list_contains(json_extract_string(detail, '$.targets[*]'), ?))
+                  AND json_extract_string(detail, '$.status') IN ('ok', 'unknown')
+                  AND coalesce(json_extract_string(detail, '$.effect'), 'world') = 'world'
+                  AND ts >= to_timestamp(CAST(? AS DOUBLE) / 1000) AND ts <= to_timestamp(CAST(? AS DOUBLE) / 1000)
+                ORDER BY started, id
                 """.trimIndent(),
             ).use { statement ->
                 statement.queryTimeout = QUERY_TIMEOUT_SECONDS
                 statement.setString(1, player)
                 statement.setLong(2, from)
                 statement.setLong(3, to)
+                statement.setString(4, player)
+                statement.setString(5, player)
+                statement.setLong(6, from)
+                statement.setLong(7, to)
                 statement.executeQuery().use { rows ->
                     buildList {
                         while (rows.next()) {
                             val turn = rows.getLong(4).takeUnless { rows.wasNull() }
                             val result = rows.getString(6)?.let { if (it.length <= RESULT_CHARS) it else it.take(RESULT_CHARS - 1) + "…" }
-                            add(NarratorAction(rows.getLong(1), rows.getLong(2), rows.getString(3), turn, rows.getString(5), result))
+                            add(NarratorAction(rows.getLong(1), rows.getLong(2), rows.getString(3) ?: "?", turn, rows.getString(5), result, rows.getString(7)))
                         }
                     }
                 }
@@ -134,7 +163,11 @@ data class DeathReport(
     }
 }
 
-/** A world action of the Narrator on a player: one `tool_calls` row; [at] is when it started, epoch milliseconds. */
+/**
+ * A world action of the Narrator on a player: one `tool_calls` row, or one `mechanic action` decision of an
+ * engine's act ([engine] set: the act's conversation, `mechanics:C-60`; [id] is then the decision's). [at] is
+ * when it started, epoch milliseconds.
+ */
 @Serializable
 data class NarratorAction(
     val id: Long,
@@ -143,4 +176,5 @@ data class NarratorAction(
     @SerialName("turn_id") val turnId: Long?,
     val status: String,
     val result: String?,
+    val engine: String? = null,
 )

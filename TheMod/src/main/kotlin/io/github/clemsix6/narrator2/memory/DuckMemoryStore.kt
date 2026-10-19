@@ -1,15 +1,18 @@
 package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.memory.dream.DreamInputs
+import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
 import java.sql.Connection
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -23,6 +26,10 @@ import java.util.UUID
  * its `memory_log` row ([MemoryLog]). A broken rule throws [MemoryRejected] (nothing written) with a
  * message for the model; each write ends with a `memory` decision (`written`, `duplicate`, `rejected`).
  * Reads run on the Journal's read pool.
+ *
+ * Mechanics (M4 §3.3, §10): a row the engine tracks (`canon.mechanic`) is written by the Director's engine
+ * tools only, never deduplicated, never archived while open, and settled by the engine or an operator only;
+ * an arc has a theme that rests once its arc closed, two arcs at most are active, each due within 7 days.
  *
  * What the store computes, never the writer: ids ([IdKind.MEMORY]), times of writing, play clocks
  * ([playClock]; an interaction's from the sessions at its time, [DuckPlayClock.playerSecondsAt]), the
@@ -171,6 +178,86 @@ class DuckMemoryStore(
             }
         }
 
+        /**
+         * A row the mechanics engine tracks (M4 §3.3): only the engine's tools write one (as the Director,
+         * [Source.DIRECTOR]), of a kind of its [CanonMechanic.kinds], without due time (the engine holds its
+         * end); a plan exists only as such a row (`mechanic = rule`).
+         */
+        fun mechanic(draft: CanonDraft) {
+            val mechanic = draft.mechanic
+            if (mechanic == null) {
+                if (draft.kind == CanonKind.PLAN) reject("a plan exists only as a rule the engine runs: create it with create_rule")
+                return
+            }
+            if (author.source != Source.DIRECTOR) {
+                reject("only the engine's tools (start_challenge, propose_duel, create_rule) write a row the engine tracks")
+            }
+            if (draft.kind !in mechanic.kinds) {
+                reject("mechanic ${mechanic.id} goes with ${mechanic.kinds.joinToString(" or ") { an(it.id) }}, not ${an(draft.kind.id)}")
+            }
+            if (draft.dueAt != null) reject("a row the engine tracks has no due time: the engine holds its end")
+        }
+
+        /**
+         * An arc to write with [theme] and [status] (M4 §10), checked: its theme is [restedTheme]; an active one
+         * finds [arcRoom]. Returns its due time: [dueAt] for a planned arc; for an active one, [dueAt] or
+         * [MemoryLimits.ARC_MAX_DAYS] from now, never later.
+         */
+        fun arc(theme: String, status: CanonStatus, dueAt: Instant?): Instant? {
+            restedTheme(theme)
+            if (status != CanonStatus.ACTIVE) return dueAt
+            arcRoom()
+            val last = now.plus(ARC_MAX)
+            if (dueAt != null && dueAt.isAfter(last)) {
+                reject("an active arc ends within ${MemoryLimits.ARC_MAX_DAYS} days: due_in_minutes ${ARC_MAX.toMinutes()} at most")
+            }
+            return dueAt ?: last
+        }
+
+        /**
+         * A planned arc due [dueAt] starts ([arcRoom]); returns its due time: [dueAt] when it is in the next
+         * [MemoryLimits.ARC_MAX_DAYS] days, else that many days from now.
+         */
+        fun startArc(dueAt: Instant?): Instant {
+            arcRoom()
+            val last = now.plus(ARC_MAX)
+            return dueAt?.takeIf { it.isAfter(now) && !it.isAfter(last) } ?: last
+        }
+
+        /** Room for one more active arc: [MemoryLimits.ACTIVE_ARCS] at most (`arc_limit`, M4 §11). */
+        private fun arcRoom() {
+            val active = connection.query("SELECT id FROM canon WHERE kind = 'arc' AND status = 'active' AND NOT archived ORDER BY id") {
+                Ref(RefKind.CANON, getLong(1))
+            }
+            if (active.size >= MemoryLimits.ACTIVE_ARCS) {
+                deny(ARC_LIMIT, "${active.size} arcs are active (${active.joinToString()}); resolve or abandon one first")
+            }
+        }
+
+        /**
+         * [theme] is no open arc's, and rests no more: the last arc of this theme closed [MemoryLimits.THEME_REST_PLAY_HOURS]
+         * hours of world play ago at least (the sessions say how long the world was played since).
+         */
+        private fun restedTheme(theme: String) {
+            val arcs = connection.query(
+                "SELECT id, status, resolved_at FROM canon WHERE kind = 'arc' AND theme = ? AND NOT archived ORDER BY id DESC",
+                theme,
+            ) { Triple(Ref(RefKind.CANON, getLong(1)), getString(2), instantOrNull(3)) }
+            arcs.firstOrNull { (_, status) -> enumOfId<CanonStatus>(status)?.open == true }?.let { (ref, status) ->
+                reject("the theme « $theme » is $ref's, an arc still $status: pick another")
+            }
+            val (last, closedAt) = arcs.mapNotNull { (ref, _, at) -> at?.let { ref to it } }.maxByOrNull { it.second } ?: return
+            // The Journal closes at its opening the sessions a crash left open: an open session is being played.
+            val running = connection.query("SELECT session_id FROM sessions WHERE left_at IS NULL") { getLong(1) }.toSet()
+            val left = THEME_REST.seconds - DuckPlayClock.unionSeconds(connection, closedAt, now, running)
+            if (left <= 0) return
+            reject(
+                "the theme « $theme » rests until about ${shortTime.format(now.plusSeconds(left))} " +
+                    "(${ToolText.wait(left * 1_000)} of world play left: a theme rests ${MemoryLimits.THEME_REST_PLAY_HOURS}h of play " +
+                    "once its arc is closed, and $last closed ${shortTime.format(closedAt)}); pick another",
+            )
+        }
+
         /** The Chronicler's interaction [quote] is words [player] said in its job's window (public chat or prayer). */
         fun playerQuote(quote: String?, player: UUID) {
             if (quote == null || author.source != Source.CHRONICLER) return
@@ -273,24 +360,28 @@ class DuckMemoryStore(
             val players = job.players(draft.players, "players")
             if (kind.onePerPlayer && players.size != 1) reject("${an(kind.id)} is given to exactly one player: name one")
             if (kind == CanonKind.PLACE && draft.place == null) reject("a place needs where it is: give at_player")
+            job.mechanic(draft)
+            theme(kind, draft.theme)
             job.evidence(draft.evidenceEvents, draft.evidenceTools)
             job.canonSource(draft, status)
             val replaced = if (kind.onePerPlayer) dedup.active(job.connection, kind, players.single()) else null
-            val duplicate = if (replaced != null) {
-                replaced.takeIf { sameName(job.row(it, RefKind.CANON, "a canon entry"), draft) }
-            } else {
-                dedup.canon(job.connection, kind, players, draft.quote, canonText(draft.statement, draft.quote, kind))
+            val duplicate = when {
+                draft.mechanic != null -> null // the engine's rows are each their own (M4 §3.3)
+                replaced != null -> replaced.takeIf { sameName(job.row(it, RefKind.CANON, "a canon entry"), draft) }
+                else -> dedup.canon(job.connection, kind, players, draft.quote, canonText(draft.statement, draft.quote, kind))
             }
             if (duplicate != null) return@write Added.Duplicate(job.row<CanonEntry>(duplicate, RefKind.CANON, "a canon entry"))
+            val due = if (kind == CanonKind.ARC) job.arc(checkNotNull(draft.theme), status, draft.dueAt) else draft.dueAt
             val ref = job.next(RefKind.CANON)
             job.connection.update(
                 "INSERT INTO canon (id, kind, created_at, statement, quote, players, stakes, importance, status, due_at, replaces, " +
-                    "dim, x, y, z, freshness, source, run_id, turn_id, conversation_id, evidence_events, evidence_tools) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "dim, x, y, z, freshness, source, run_id, turn_id, conversation_id, evidence_events, evidence_tools, mechanic, theme) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ref.id, kind.id, job.now, draft.statement, draft.quote, uuidArray(players), draft.stakes, draft.importance, status.id,
-                draft.dueAt, replaced?.id, draft.place?.dim, draft.place?.x, draft.place?.y, draft.place?.z,
+                due, replaced?.id, draft.place?.dim, draft.place?.x, draft.place?.y, draft.place?.z,
                 if (kind == CanonKind.RUNNING_GAG) GagState.FRESH.id else null, author.source.id, author.runId, author.turnId,
                 author.conversationId, longArray(draft.evidenceEvents.distinct()), longArray(draft.evidenceTools.distinct()),
+                draft.mechanic?.id, draft.theme,
             )
             if (replaced != null) {
                 val before = job.connection.snapshot(replaced)
@@ -316,6 +407,11 @@ class DuckMemoryStore(
                 val since = old.resolvedAt?.let { " (${shortTime.format(it)})" }.orEmpty()
                 reject("$ref is already ${old.status.id}$since; remember a new entry instead")
             }
+            old.mechanic?.let { mechanic ->
+                if (author.source != Source.ENGINE && author.source != Source.OPERATOR) {
+                    reject("$ref is ${an(old.kind.id)} the engine tracks: end it with ${mechanic.endedBy}")
+                }
+            }
             if (author.source == Source.DREAMER && old.kind != CanonKind.ARC) {
                 reject("the Dreamer settles arcs only; $ref is ${an(old.kind.id)}, settled by the Narrator from what happens in game")
             }
@@ -333,7 +429,8 @@ class DuckMemoryStore(
             }
             val before = job.connection.snapshot(ref)
             if (status == CanonStatus.ACTIVE) {
-                job.connection.update("UPDATE canon SET status = 'active' WHERE id = ?", ref.id)
+                // Only a planned arc starts (CanonKind.allows): two at most are active, each due within 7 days (M4 §10).
+                job.connection.update("UPDATE canon SET status = 'active', due_at = ? WHERE id = ?", job.startArc(old.dueAt), ref.id)
             } else {
                 job.connection.update(
                     "UPDATE canon SET status = ?, resolved_at = ?, resolution = ?, winners = ?, " +
@@ -376,7 +473,8 @@ class DuckMemoryStore(
             job.playerQuote(draft.quote, player)
             val at = draft.at ?: job.facts(draft.evidenceEvents, emptyList()).first ?: job.facts(emptyList(), draft.toolCalls).first ?: job.now
             val text = interactionText(draft.summary, draft.quote, draft.kind)
-            dedup.interaction(job.connection, player, draft.kind, at, draft.evidenceEvents, draft.toolCalls, text)?.let { ref ->
+            val engine = author.source == Source.ENGINE
+            dedup.interaction(job.connection, player, draft.kind, at, draft.evidenceEvents, draft.toolCalls, text, draft.canon, engine)?.let { ref ->
                 return@write Added.Duplicate(job.row<Interaction>(ref, RefKind.INTERACTION, "an interaction"))
             }
             val ref = job.next(RefKind.INTERACTION)
@@ -705,6 +803,10 @@ class DuckMemoryStore(
                 else -> error("not archivable: $ref")
             }
             if (was == archived) reject("$ref is ${if (archived) "archived" else "not archived"} already")
+            if (archived && row is CanonEntry && row.mechanic != null && row.status.open) {
+                // Out of the open canon, the engine would drop its state at the next start without settling the row (M4 §4.6).
+                reject("$ref is ${an(row.kind.id)} the engine tracks, still ${row.status.id}: end it first (/narrator challenge cancel or rule remove)")
+            }
             val before = job.connection.snapshot(ref)
             job.connection.update("UPDATE ${ref.kind.table} SET archived = ? WHERE id = ?", archived, ref.id)
             job.logRow(ref, if (archived) LogOp.ARCHIVE else LogOp.RESTORE, before, reason)
@@ -897,6 +999,15 @@ class DuckMemoryStore(
 
         private val ARCHIVABLE = setOf(RefKind.MEMORY, RefKind.CANON, RefKind.INTERACTION)
 
+        /** The refusal of a third active arc (M4 §11): `DENIED (arc_limit): …`. */
+        const val ARC_LIMIT = "arc_limit"
+
+        /** An active arc is due within this (M4 §10). */
+        private val ARC_MAX: Duration = Duration.ofDays(MemoryLimits.ARC_MAX_DAYS.toLong())
+
+        /** How much world play a theme rests once its arc closed (M4 §10). */
+        private val THEME_REST: Duration = Duration.ofHours(MemoryLimits.THEME_REST_PLAY_HOURS.toLong())
+
         /** The authors whose texts are a model's: the passages they quote are bounded ([VoiceGuard.MAX_QUOTED]). */
         private val MODELS = setOf(Source.DIRECTOR, Source.CHRONICLER, Source.DREAMER)
 
@@ -915,6 +1026,24 @@ class DuckMemoryStore(
 }
 
 private fun reject(message: String): Nothing = throw MemoryRejected(message)
+
+/** A limit of the pace refuses the write: tools return `DENIED ([rule]): [message]`. */
+private fun deny(rule: String, message: String): Nothing = throw MemoryRejected(message, rule)
+
+/** An arc's [theme] (M4 §10): required, a slug ([MemoryLimits.THEME]); no other kind has one. */
+private fun theme(kind: CanonKind, theme: String?) {
+    if (kind != CanonKind.ARC) {
+        if (theme != null) reject("theme only goes with an arc: leave it out")
+        return
+    }
+    if (theme == null) reject("an arc needs its theme: a slug that names what it is about, like vengeance_du_warden")
+    if (!MemoryLimits.THEME.matches(theme)) {
+        reject("theme must be a slug of 2 to 40 lowercase letters, digits and _, like vengeance_du_warden (got ${ModelText.quote(theme, THEME_SHOWN)})")
+    }
+}
+
+/** How much of a refused theme its message shows. */
+private const val THEME_SHOWN = 60
 
 /** Someone's exact words: exempt from [VoiceGuard], but bounded. */
 private fun quote(quote: String?, max: Int) {
