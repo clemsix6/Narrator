@@ -47,6 +47,17 @@ class InboxTest {
         assertEquals(42, Item.of(DirectorSignal.TaskDone(1, Role.ANALYST, TaskRecord.Status.DONE, "ok", 42)).at)
         assertEquals(42, Item.of(DirectorSignal.ReminderDue(1, "note", 0, 42)).at)
         assertEquals(42, Item.of(DirectorSignal.OperatorWhisper("Clement", "hi", 42)).at)
+        assertEquals(42, Item.of(DirectorSignal.Mechanic(MechanicSignal.CHALLENGE, "C-50 won by Mimosa", 42, priority = true)).at)
+    }
+
+    @Test
+    fun `a mechanic's news is soon, whether it has priority or not (M4 §4-4)`() {
+        listOf(true, false).forEach { priority ->
+            val item = Item.of(DirectorSignal.Mechanic(MechanicSignal.RULE, "C-60 fired", 1, priority))
+            assertEquals(Urgency.SOON, item.urgency)
+            assertTrue(item.waking)
+            assertEquals("RULE", EventFormatter.kind(item))
+        }
     }
 
     @Test

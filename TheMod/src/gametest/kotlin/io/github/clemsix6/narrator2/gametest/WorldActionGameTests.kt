@@ -123,7 +123,7 @@ class WorldActionGameTests {
                 helper.assertEquals(1.0, zombie.y - helper.absolutePos(BlockPos.ZERO).y, "standing on the floor")
             }
             helper.assertTrue(guards(helper).activeOn(bob.uuid).any { it.what == "3 minecraft:zombie" && it.harmful }, "counted for ${bob.name}")
-            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
             helper.assertTrue(guards(helper).death.isArmed(bob.live), "the death guard is armed")
         } finally {
             zombies.forEach { it.discard() }
@@ -295,7 +295,7 @@ class WorldActionGameTests {
         try {
             val bear = call(helper, tool, SpawnArgs(entity = "polar_bear", near = bob.name, distance = 3))
             helper.assertTrue(bear.status == ToolStatus.OK && bear.text.endsWith("a punishment of ${bob.name}"), bear.text)
-            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
             val bees = call(helper, tool, SpawnArgs(entity = "bee", count = 2, near = bob.name, distance = 3), OTHER_TURN)
             helper.assertTrue(bees.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}):"), bees.text)
             val cows = call(helper, tool, SpawnArgs(entity = "cow", near = bob.name, distance = 3), OTHER_TURN)
@@ -425,7 +425,7 @@ class WorldActionGameTests {
         val result = call(helper, tool, LightningArgs(player = bob.name, damageHearts = 1.0))
         helper.assertEquals("ok: lightning struck ${bob.name} for 1 hearts (health 20 → 18)", result.text, "the tool's answer")
         helper.assertEquals(18f, bob.live.health, "1 heart of damage")
-        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "a punishment")
         helper.assertTrue(guards(helper).death.isArmed(bob.live), "the death guard is armed")
         val tooMuch = call(helper, tool, LightningArgs(player = bob.name, damageHearts = caps.lightningHearts + 1))
         helper.assertEquals(ToolStatus.INVALID, tooMuch.status, tooMuch.text)
@@ -457,7 +457,7 @@ class WorldActionGameTests {
             scene.assertUntouched("the explosion", monsterHurt = true)
             for (player in listOf(bob, alice)) {
                 helper.assertTrue(player.live.health < 20f, "${player.name} is hurt: ${player.live.health}")
-                helper.assertEquals(CALLER.turnId, GuardStates.read(player.live).episode?.turnId, "a punishment of ${player.name}")
+                helper.assertEquals(CALLER.turnId, GuardStates.read(player.live).episode?.act, "a punishment of ${player.name}")
                 helper.assertTrue(guards(helper).death.isArmed(player.live), "${player.name}'s death guard is armed")
             }
 

@@ -33,6 +33,7 @@ data class NarratorConfig(
     val director: DirectorConfig = DirectorConfig(),
     val workers: WorkersConfig = WorkersConfig(),
     val memory: MemoryConfig = MemoryConfig(),
+    val mechanics: MechanicsConfig = MechanicsConfig(),
     val safety: SafetyConfig = SafetyConfig(),
     val reflex: ReflexConfig = ReflexConfig(),
     val logging: LoggingConfig = LoggingConfig(),
@@ -230,6 +231,33 @@ data class MemoryConfig(
      * older ones never do. Raising it later naps older chapters at the next catch-up.
      */
     val catchUpDays: Int = 2,
+)
+
+/**
+ * The mechanics engine (design M4 §17): challenges, duels, bets, rules and offerings. The caps that depend
+ * on the chaos level are in `Caps`; the engine's fixed limits in `MechanicsLimits`.
+ */
+@Serializable
+data class MechanicsConfig(
+    /**
+     * False keeps the engine off: no tool of M4 is shown to the Director and `/offer`, `/bet`, `/duel` are
+     * refused. The guards' share (categories, a grace in progress, the escrows) goes on. Read at startup only.
+     */
+    val enabled: Boolean = true,
+    /** Challenges and duels at once, invitations included. */
+    val maxChallenges: Int = 2,
+    /** Minutes between the starts of two challenges (duels do not count). */
+    val challengeGapMinutes: Int = 10,
+    /** Laws and plans active at once. */
+    val maxRules: Int = 8,
+    /** Minutes the Director has to judge a `judged` challenge once it ended; past them, it expires without stakes. */
+    val judgeMinutes: Int = 15,
+    /** Seconds the two players have to accept a duel. */
+    val duelInviteSeconds: Int = 120,
+    /** The bets stay open this many minutes after the start at most (a third of the challenge at most). */
+    val betWindowMinutes: Int = 5,
+    /** Minutes before an offering not taken goes back; also the shortest time between two `/offer` of a player. */
+    val offeringMinutes: Int = 10,
 )
 
 /** Limits the engine enforces whatever the model asks. */
@@ -450,6 +478,15 @@ object ConfigStore {
         range("memory.attentionMinutes", memory.attentionMinutes.toLong(), 10, 600)
         range("memory.dreamMinHours", memory.dreamMinHours.toLong(), 0, 24)
         range("memory.catchUpDays", memory.catchUpDays.toLong(), 0, 30)
+
+        val mechanics = config.mechanics
+        range("mechanics.maxChallenges", mechanics.maxChallenges.toLong(), 1, 5)
+        range("mechanics.challengeGapMinutes", mechanics.challengeGapMinutes.toLong(), 0, 120)
+        range("mechanics.maxRules", mechanics.maxRules.toLong(), 1, 20)
+        range("mechanics.judgeMinutes", mechanics.judgeMinutes.toLong(), 2, 60)
+        range("mechanics.duelInviteSeconds", mechanics.duelInviteSeconds.toLong(), 30, 600)
+        range("mechanics.betWindowMinutes", mechanics.betWindowMinutes.toLong(), 1, 15)
+        range("mechanics.offeringMinutes", mechanics.offeringMinutes.toLong(), 2, 60)
 
         config.safety.protectedPlayers.forEachIndexed { index, name ->
             if (!PLAYER_NAME.matches(name)) {

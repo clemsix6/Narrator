@@ -68,7 +68,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     override fun caps(): Caps = Caps.of(services.settings.get().config.chaos)
 
-    override fun hostile(target: ServerPlayer, caller: Caller, until: Long): Verdict {
+    // M4-01: the category is not used yet; M4-04 adds same_punishment and the grace.
+    override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?): Verdict {
         val name = target.plainTextName
         val verdict = when {
             protection.isProtected(target.uuid, name) ->
@@ -85,11 +86,11 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
             )
             return verdict
         }
-        episodes.open(target.uuid, caller.turnId, until)
+        episodes.open(target.uuid, caller.act, until)
         // Saved with the player, so that the episode can be rebuilt when they join after a restart.
         val now = clock.millis()
-        val same = states.of(target).episode?.takeIf { it.until > now && it.turnId == caller.turnId }
-        val episode = OpenEpisode(caller.turnId, maxOf(until, same?.until ?: until))
+        val same = states.of(target).episode?.takeIf { it.until > now && it.act == caller.act }
+        val episode = OpenEpisode(caller.act, maxOf(until, same?.until ?: until))
         states.update(target) { it.copy(episode = episode) }
         decisions.record(
             log, DecisionRecord.Kind.GUARD, "allowed", name, reason = "hostile action; the punishment runs until ${clockTime(clock, episode.until)}",
@@ -139,6 +140,25 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         return (caps().narratorKillsPerHour - states.snapshot(player).narratorKills.size).coerceAtLeast(0)
     }
 
+    // The favors and the pace of M4, safe until M4-04 writes them (M4 §13.2): nothing to pardon, no grace,
+    // a punishment is its episode, the pace is fairness alone, and a rescue only leaves the player alive.
+
+    override fun pardon(player: ServerPlayer, caller: Caller): List<String> = emptyList()
+
+    override fun grace(player: ServerPlayer, until: Long, caller: Caller): Verdict =
+        Verdict.Denied(NOT_READY, "the grace is not wired yet.")
+
+    override fun isPunished(player: ServerPlayer): Boolean = episodes.active(player.uuid) != null
+
+    override fun rescue(player: ServerPlayer, why: String) {
+        if (player.health < 1f) player.health = 1f
+        log.warn("${player.plainTextName} kept alive at ${player.health} health ($why); the full rescue is not wired yet")
+    }
+
+    override fun pacing(players: List<UUID>, now: Long): List<PlayerPacing> = players.map { uuid ->
+        PlayerPacing(uuid, episodes.recentPunishments(uuid).size, TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR, emptyMap(), null, emptyList())
+    }
+
     /**
      * Whether the Narrator's creatures and explosions leave [player] alone now ([CreatureShield]):
      * protected, dead, or died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago (the death is
@@ -172,7 +192,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         val episode = states.of(player).episode
         when {
             episode == null -> Unit
-            episode.until > now -> episodes.open(player.uuid, episode.turnId, episode.until)
+            episode.until > now -> episodes.open(player.uuid, episode.act, episode.until)
             else -> states.update(player) { it.copy(episode = null) }
         }
         items.giveBack(player, now)
@@ -280,6 +300,9 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     companion object {
         /** `/narrator protect`'s list, in `world/narrator2/`. */
         const val PROTECTED_FILE = "protected.json"
+
+        /** The rule of a favor that is not wired yet (until M4-04). */
+        const val NOT_READY = "not_ready"
 
         private const val CHECK_INTERVAL_MS = 1_000L
 

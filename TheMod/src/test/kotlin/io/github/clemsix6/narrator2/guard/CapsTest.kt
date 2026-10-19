@@ -23,13 +23,23 @@ class CapsTest {
         assertEquals(listOf(0, 50, 200, 1_000, 3_000, 5_000), levels.map { it.teleportBlocks }, "teleport blocks")
         assertEquals(listOf(0, 8, 16, 32, 64, 128), levels.map { it.confiscatedItems }, "confiscated items")
         assertEquals(listOf(0, 0, 0, 1, 1, 2), levels.map { it.narratorKillsPerHour }, "kills per played hour")
+        assertEquals(listOf(0, 2, 3, 4, 5, 5), levels.map { it.maxSeverity }, "severity of a punishment (M4 §6.2)")
+        assertEquals(listOf(0, 60, 45, 30, 20, 10), levels.map { it.categoryCooldownMinutes }, "rest of a category, minutes (M4 §6.2)")
     }
 
     @Test
     fun `chaos 0 allows nothing hostile`() {
         val calm = Caps.of(0)
         assertFalse(calm.hostileAllowed)
-        assertEquals(Caps(false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0), calm, "every cap is zero")
+        assertEquals(Caps(false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0), calm, "every cap is zero")
+    }
+
+    @Test
+    fun `the severity grows and the rest of a category shortens with the chaos`() {
+        levels.drop(1).zipWithNext().forEach { (lower, higher) ->
+            assertTrue(lower.maxSeverity <= higher.maxSeverity, "$lower -> $higher")
+            assertTrue(lower.categoryCooldownMinutes > higher.categoryCooldownMinutes, "$lower -> $higher")
+        }
     }
 
     @Test

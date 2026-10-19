@@ -27,7 +27,9 @@ import kotlinx.serialization.json.longOrNull
  * 1200)`. Then the strict [json] decodes the arguments; an `init { require(…) }` in the arguments class
  * can check rules that span several arguments, its message reaching the model the same way.
  *
- * Checks that need the game (registry ids, online players, caps) belong to the tool's `run`.
+ * Checks that need the game (registry ids, online players, caps) belong to the tool's `check` and `run`.
+ * A free `JsonObject` argument (a rule effect's `args`, M4 §8.1) is only checked to be an object: the
+ * tool it is meant for decodes it later, with this same function.
  *
  * One leniency (M3-POST): at a low effort, the model sometimes writes a list, an object, a number or a
  * boolean as the JSON text of it (`"players": "[\"Mimosa\"]"`, `"valence": "1"`), and lost a turn on the
@@ -110,7 +112,7 @@ object ToolArgs {
         val literal = (element as? JsonPrimitive)?.takeUnless { it.isString || it is JsonNull }
         val fits = when (type) {
             ArgType.LIST -> element is JsonArray
-            ArgType.OBJECT -> element is JsonObject
+            ArgType.OBJECT, ArgType.FREE_OBJECT -> element is JsonObject
             ArgType.INTEGER -> literal?.longOrNull != null
             ArgType.NUMBER -> literal?.doubleOrNull != null
             ArgType.BOOLEAN -> literal?.booleanOrNull != null
@@ -177,6 +179,8 @@ object ToolArgs {
             } else {
                 checkObject(d, value, path, problems)
             }
+            // Any object: the tool it is meant for decodes and checks it later (M4 §8.5).
+            ArgType.FREE_OBJECT -> if (value !is JsonObject) problems += "$path must be an object (got ${shown(value)})"
         }
     }
 

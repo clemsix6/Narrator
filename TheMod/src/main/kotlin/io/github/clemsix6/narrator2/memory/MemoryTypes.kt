@@ -20,7 +20,11 @@ inline fun <reified E : Enum<E>> enumOfId(id: String): E? = enumValues<E>().firs
 
 /** The tables of the memory schema (`V2__memory.sql`), readable by `sql` but not described to the model. */
 object MemorySchema {
-    const val MIGRATION = "V2__memory.sql"
+    /**
+     * The latest migration the memory reads: `V3__mechanics.sql` adds `canon.mechanic` and `canon.theme` (M4
+     * §3.3) to the tables of `V2__memory.sql`. A Journal below it leaves the memory off.
+     */
+    const val MIGRATION = "V3__mechanics.sql"
 
     val TABLES: List<String> = listOf(
         "memory_state", "memories", "canon", "interactions", "player_traits", "player_skills", "player_relations",
@@ -64,6 +68,18 @@ object MemoryLimits {
 
     /** A skill score. */
     val SKILL_SCORE = 0..10
+
+    /** Arcs active at once, at most (M4 §10): a third is refused (`arc_limit`). */
+    const val ACTIVE_ARCS = 2
+
+    /** An active arc always ends within this many days; without `due_in_minutes`, it is due then (M4 §10). */
+    const val ARC_MAX_DAYS = 7
+
+    /** A theme rests this many hours of world play once its arc closed (M4 §10). */
+    const val THEME_REST_PLAY_HOURS = 20
+
+    /** An arc's theme (`canon.theme`): lowercase letters, digits and `_`, 2 to 40 characters. */
+    val THEME = Regex("[a-z0-9_]{2,40}")
 }
 
 /** The tables whose rows the model can cite, with the prefix of their reference (M3 §3.1). */
@@ -157,7 +173,14 @@ enum class CanonStatus {
  */
 enum class CanonKind(val dueAllowed: Boolean) {
     PROMISE(true), THREAT(true), PROPHECY(true), CHALLENGE(true), ARC(true),
-    LAW(false), NICKNAME(false), TITLE(false), PLACE(false), LORE(false), OPINION(false), RUNNING_GAG(false), CLAIM(false);
+    LAW(false), NICKNAME(false), TITLE(false), PLACE(false), LORE(false), OPINION(false), RUNNING_GAG(false), CLAIM(false),
+
+    /**
+     * The Narrator's secret intention, a rule the mechanics engine runs (M4 §3.3, §8): a trap, a welcome, a
+     * reaction prepared in advance. It exists only with `mechanic = rule`; the engine holds its deadline.
+     */
+    PLAN(false),
+    ;
 
     val id: String get() = name.lowercase()
 
@@ -167,6 +190,8 @@ enum class CanonKind(val dueAllowed: Boolean) {
             PROMISE, THREAT, PROPHECY -> setOf(CanonStatus.FULFILLED, CanonStatus.BROKEN, CanonStatus.EXPIRED, CanonStatus.CANCELLED)
             CHALLENGE -> setOf(CanonStatus.WON, CanonStatus.LOST, CanonStatus.ABANDONED, CanonStatus.EXPIRED, CanonStatus.CANCELLED)
             ARC -> setOf(CanonStatus.RESOLVED, CanonStatus.ABANDONED)
+            // Fulfilled once it fired (a plan of one use), expired at its end, cancelled by remove_rule.
+            PLAN -> setOf(CanonStatus.FULFILLED, CanonStatus.EXPIRED, CanonStatus.CANCELLED)
             else -> setOf(CanonStatus.RETIRED)
         }
 
@@ -183,6 +208,30 @@ enum class CanonKind(val dueAllowed: Boolean) {
 
     /** At most one open entry of this kind per player: a new one retires the previous one (`replaces`). */
     val onePerPlayer: Boolean get() = this == NICKNAME || this == TITLE
+}
+
+/**
+ * What the mechanics engine tracks among the canon (`canon.mechanic`, M4 §3.3): such a row is written by an
+ * engine's tool (`Source.DIRECTOR`), changes status only through `Source.ENGINE` or `Source.OPERATOR`, is never
+ * deduplicated, and has no `due_at` (the engine holds the deadline).
+ *
+ * @property kinds the canon kinds a row of this mechanic may have.
+ * @property endedBy the Director's tool that ends it, for the store's refusal: `C-50 is a challenge the engine
+ *   tracks: end it with end_challenge`.
+ */
+enum class CanonMechanic(val kinds: Set<CanonKind>, val endedBy: String) {
+    CHALLENGE(setOf(CanonKind.CHALLENGE), "end_challenge"),
+    DUEL(setOf(CanonKind.CHALLENGE), "end_challenge"),
+    RULE(setOf(CanonKind.LAW, CanonKind.PLAN), "remove_rule"),
+    ;
+
+    /** `challenge`: the value of `canon.mechanic`. */
+    val id: String get() = name.lowercase()
+
+    companion object {
+        /** The mechanic stored as [id]; null for anything else (a row the engine does not track). */
+        fun of(id: String?): CanonMechanic? = id?.let { enumOfId<CanonMechanic>(it) }
+    }
 }
 
 /**
@@ -473,7 +522,11 @@ data class MemoryEntry(
     val mergedInto: Ref?,
 ) : MemoryRow
 
-/** A row of `canon`. [winners]: the players who won a challenge; [replaces]: the entry it superseded. */
+/**
+ * A row of `canon`. [winners]: the players who won a challenge; [replaces]: the entry it superseded;
+ * [mechanic]: what the mechanics engine tracks it as (M4 §3.3), null for a row it does not track; [theme]: an
+ * arc's theme (M4 §10).
+ */
 data class CanonEntry(
     override val ref: Ref,
     val kind: CanonKind,
@@ -495,6 +548,8 @@ data class CanonEntry(
     val freshness: GagState?,
     val source: Source,
     val archived: Boolean,
+    val mechanic: CanonMechanic? = null,
+    val theme: String? = null,
 ) : MemoryRow
 
 /**
@@ -649,6 +704,8 @@ data class MemoryDraft(
 /**
  * A canon entry to write. [status]: null for the kind's start ([CanonStatus.ACTIVE]; an arc may start
  * [CanonStatus.PLANNED]). [place]: where a `place` is (required for that kind), else where it was said.
+ * [mechanic]: a row the mechanics engine tracks (M4 §3.3), written only by its tools (`Source.DIRECTOR`) with a
+ * kind of [CanonMechanic.kinds]; [theme]: an arc's theme ([MemoryLimits.THEME], M4 §10).
  */
 data class CanonDraft(
     val kind: CanonKind,
@@ -662,6 +719,8 @@ data class CanonDraft(
     val place: Pos? = null,
     val evidenceEvents: List<Long> = emptyList(),
     val evidenceTools: List<Long> = emptyList(),
+    val mechanic: CanonMechanic? = null,
+    val theme: String? = null,
 )
 
 /**

@@ -17,8 +17,10 @@ import java.time.Duration
  * and are bounded in time; a step that fails is logged and the next ones still run.
  *
  * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players. No new work
- * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The memory
- * stops first ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
+ * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The mechanics
+ * engine stops first ([stopMechanics], on the server thread, without waiting: no new act, its queue
+ * dropped, its boss bars taken down; its state stays in the world, which the stopping save writes). Then
+ * the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
  * cancelled and the world play clock saved, while the Journal still writes. Then the work in flight is
  * cancelled: every coroutine of [scope] (Director, workers, model calls, which close their streams
  * without appending anything, SQL reads, reloads), waited for at most [workTimeout]. The
@@ -41,17 +43,19 @@ class ShutdownSequence(
     private val journalGrace: Duration = JOURNAL_GRACE,
     private val stopMemory: suspend () -> Unit = {},
     private val memoryTimeout: Duration = MEMORY_TIMEOUT,
+    private val stopMechanics: () -> Unit = {},
 ) {
     private val log = Log.main
 
     @Volatile
     private var begun = false
 
-    /** `SERVER_STOPPING`: takes no new work, stops the memory, then cancels the work in flight. */
+    /** `SERVER_STOPPING`: takes no new work, stops the mechanics engine, then the memory, then cancels the work in flight. */
     fun begin() {
         if (begun) return
         begun = true
         setPhase(Phase.STOPPING)
+        step("stop the mechanics") { stopMechanics() }
         step("stop the memory") {
             val start = System.nanoTime()
             val stopped = runBlocking { withTimeoutOrNull(memoryTimeout.toMillis()) { stopMemory() } } != null

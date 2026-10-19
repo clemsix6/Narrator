@@ -3,13 +3,19 @@ package io.github.clemsix6.narrator2.tool
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.tool.action.favorTools
 import io.github.clemsix6.narrator2.tool.action.playerActionTools
+import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
 import io.github.clemsix6.narrator2.tool.command.commandTools
+import io.github.clemsix6.narrator2.tool.mechanics.challengeTools
+import io.github.clemsix6.narrator2.tool.mechanics.duelTools
+import io.github.clemsix6.narrator2.tool.mechanics.ruleTools
 import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
 import io.github.clemsix6.narrator2.tool.memory.dreamerTools
 import io.github.clemsix6.narrator2.tool.memory.memoryTools
 import io.github.clemsix6.narrator2.tool.oracle.oracleTools
+import io.github.clemsix6.narrator2.tool.oracle.surveyTools
 import io.github.clemsix6.narrator2.tool.pacing.pacingTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
 import io.github.clemsix6.narrator2.tool.sql.sqlTools
@@ -48,7 +54,11 @@ object ToolCatalog {
      */
     private val DREAMER_SHARED = setOf("remember", "resolve", "recall", "note_to_director")
 
-    /** Every tool, family by family, built for the running server's [services]. */
+    /**
+     * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1)
+     * are listed once and for all here; each is filled by its own task, and each of its Director's tools is
+     * shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]).
+     */
     fun allTools(services: NarratorServices): List<NarratorTool<*>> = listOf(
         speechTools(services),
         oracleTools(services),
@@ -61,6 +71,12 @@ object ToolCatalog {
         memoryTools(services),
         chroniclerTools(services),
         dreamerTools(services),
+        punishTools(services),
+        favorTools(services),
+        challengeTools(services),
+        duelTools(services),
+        ruleTools(services),
+        surveyTools(services),
     ).flatten()
 
     /**
@@ -99,6 +115,7 @@ object ToolCatalog {
                 putJsonArray("left_out") { leftOutNames.forEach { add(JsonPrimitive(it)) } }
                 put("journal_available", env.journalAvailable)
                 put("memory_available", env.memoryAvailable)
+                put("mechanics_available", env.mechanicsAvailable)
                 putJsonArray("worker_roles") { env.workerRoles.map { it.id }.sorted().forEach { add(JsonPrimitive(it)) } }
             },
         )

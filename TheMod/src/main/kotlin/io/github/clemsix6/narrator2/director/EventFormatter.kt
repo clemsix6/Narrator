@@ -24,6 +24,7 @@ import io.github.clemsix6.narrator2.event.PlayerRespawned
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.event.Teleported
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.tool.ToolText.dimension
 import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.trace.TaskRecord
@@ -35,7 +36,8 @@ import java.util.Locale
 /**
  * Writes what the Director reads about the game (M1_M2 §12.6): English, compact, one line per event,
  * dated relative to the `now` of the block that holds it (`[-36s]`). The memory's signals have theirs
- * (M3 §11.3): `DUE C-45 promise → …`, `NOTE N-9 coherence: …`, `RETURN …`, `ANNIVERSARY …`.
+ * (M3 §11.3): `DUE C-45 promise → …`, `NOTE N-9 coherence: …`, `RETURN …`, `ANNIVERSARY …`; the mechanics'
+ * too (M4 §4.4): `CHALLENGE C-50 won by …`, `JUDGE …`, `DUEL …`, `RULE …`, `OFFERING …`, `JOKER …`.
  *
  * Whatever a player or a model wrote goes through the common escape, `core/ModelText`, so that no one
  * can forge an `<operator>` or `<engine>` tag nor start a line of their own: texts are quoted ([quote]:
@@ -90,6 +92,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             is DirectorSignal.MemoryDue -> "DUE ${memory(signal.line)}"
             is DirectorSignal.MemoryNote -> "NOTE ${signal.ref} ${signal.kind.id}: ${memory(signal.text)}"
             is DirectorSignal.MemoryCue -> "${signal.kind.name} ${memory(signal.line)}"
+            is DirectorSignal.Mechanic -> "${signal.kind.name} ${mechanic(signal.line)}"
             else -> return null
         }
         return "[-${duration(now - item.at)}] $body"
@@ -100,6 +103,9 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
      * all the same (escaping twice changes nothing) and cut to [MEMORY_LINE_MAX] characters.
      */
     private fun memory(text: String): String = ModelText.escape(ModelText.cut(text, MEMORY_LINE_MAX))
+
+    /** A line written by the mechanics engine (M4 §4.4): like [memory], cut to [MECHANIC_LINE_MAX] characters. */
+    private fun mechanic(text: String): String = ModelText.escape(ModelText.cut(text, MECHANIC_LINE_MAX))
 
     /** One event, without its date. [annotation] comes from the salience: the chat triage, or a grief's count. */
     fun event(envelope: Envelope, annotation: String?): String = when (val event = envelope.event) {
@@ -211,6 +217,9 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
         /** Longest line of the memory after its keyword (`DUE`, `NOTE`, `RETURN`, `ANNIVERSARY`); a note holds 300 characters at most. */
         const val MEMORY_LINE_MAX = 600
 
+        /** Longest line of the mechanics engine after its keyword (`CHALLENGE`, `DUEL`…): a challenge's end, its stakes and bets. */
+        const val MECHANIC_LINE_MAX = MechanicsLimits.EVENT_LINE
+
         /** Longest task result given to the Director (a worker's report is at most 3 000 characters). */
         const val TASK_RESULT_MAX = 3_000
 
@@ -265,6 +274,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             is DirectorSignal.MemoryDue -> "DUE"
             is DirectorSignal.MemoryNote -> "NOTE"
             is DirectorSignal.MemoryCue -> signal.kind.name
+            is DirectorSignal.Mechanic -> signal.kind.name
             else -> "OTHER"
         }
 

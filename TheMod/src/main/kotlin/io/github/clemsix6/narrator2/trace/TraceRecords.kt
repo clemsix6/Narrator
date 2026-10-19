@@ -194,13 +194,16 @@ data class DecisionRecord(
         /** A heartbeat woke the Director or was skipped. */
         HEARTBEAT,
 
-        /** A guard refused or allowed an action. */
+        /** A guard refused or allowed an action; from M4 also a pardon (`pardoned`), a grace (`graced`) and the traps (`trap`, M4 §19). */
         GUARD,
 
         /** A death: attributed to the Narrator and counted, refused beyond the quota and the player rescued, or explained (`died`). */
         DEATH_GUARD,
 
-        /** An attribute modifier or a confiscation was applied, expired, reapplied or returned. */
+        /**
+         * An attribute modifier or a confiscation was applied, expired, reapplied or returned; from M4 also a stake
+         * or an offering `held`, `released`, `transferred` or `offered` (M4 §19).
+         */
         LEDGER,
 
         /** A chapter was opened, marked for closing, closed or summarized. */
@@ -236,6 +239,14 @@ data class DecisionRecord(
          * `dream`, `stats`), the gateway's `budget`, `paused`, `resumed`, `reverted`, `rolled_back`, `archived`.
          */
         MEMORY,
+
+        /**
+         * The mechanics engine (M4 §19): a challenge or a duel (`started`, `invited`, `accepted`, `declined`,
+         * `won`, `lost`, `expired`, `cancelled`, `judging`), a `stake`, a `bet` and its `settled`, a rule (`fired`,
+         * `throttled`, `skipped`, `failed`, `disabled`, `removed`), each tool call of an act (`action`), an
+         * entry of the state that could not be read (`unreadable`), the startup's `reconciled`, a `joker`.
+         */
+        MECHANIC,
         ;
 
         val id: String get() = name.lowercase()
@@ -268,6 +279,9 @@ data class TurnRecord(
 
         /** A canon commitment came due (`DirectorSignal.MemoryDue`, M3 §6.6). */
         DUE,
+
+        /** A mechanic's news woke the Director (`DirectorSignal.Mechanic`, M4 §4.4). */
+        MECHANIC,
         ;
 
         val id: String get() = name.lowercase()

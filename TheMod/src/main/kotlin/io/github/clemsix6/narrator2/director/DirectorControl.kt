@@ -70,6 +70,16 @@ sealed interface DirectorSignal {
      */
     data class MemoryCue(val kind: CueKind, val ref: Ref, val player: PlayerRef?, val line: String, val at: Long) : DirectorSignal
 
+    /**
+     * A mechanic's news (M4 §4.4): a challenge or a duel that ends, a judged challenge to judge, a rule's
+     * `notify`, an offering, a joker played. Urgency [Urgency.SOON]. [priority]: it wakes the Director even when
+     * the hour's turn budget is spent, like `DUE` (M2 review, finding 26): the ends of challenges and duels,
+     * the judging, the offerings. [line]: what follows the kind in `<events>`, English, the names and quotes
+     * already escaped by the engine, e.g. `C-50 won by Mimosa in 9m12s (turtle_egg 1/1) · reward: …`. [at]:
+     * when it happened, epoch milliseconds.
+     */
+    data class Mechanic(val kind: MechanicSignal, val line: String, val at: Long, val priority: Boolean) : DirectorSignal
+
     /** `/narrator pause`: the running turn ends first, then the Director stays silent. */
     data object Pause : DirectorSignal
 
@@ -81,6 +91,27 @@ sealed interface DirectorSignal {
 
     /** `/narrator reload` installed new settings. */
     data class SettingsChanged(val old: Settings, val new: Settings) : DirectorSignal
+}
+
+/** What the mechanics engine tells the Director (M4 §4.4): the keyword of its line in `<events>`. */
+enum class MechanicSignal {
+    /** A challenge ended (won, lost, expired, cancelled by an operator), with its stakes and bets. Priority. */
+    CHALLENGE,
+
+    /** A judged challenge reached its end: name the winners (`end_challenge`). Priority. */
+    JUDGE,
+
+    /** A duel started, was declined, its invitation expired (no priority), or it ended (priority). */
+    DUEL,
+
+    /** A rule's `notify`, or a rule disabled or over. No priority. */
+    RULE,
+
+    /** A player made an offering (priority), or one went back without being taken (no priority). */
+    OFFERING,
+
+    /** A player played a joker. No priority. */
+    JOKER,
 }
 
 /** What brought a memory back by itself (M3 §10.5). */

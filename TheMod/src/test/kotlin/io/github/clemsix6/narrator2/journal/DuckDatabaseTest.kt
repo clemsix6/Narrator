@@ -44,16 +44,16 @@ class DuckDatabaseTest {
     @Test
     fun `creates the file and applies the migrations once`() {
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(2, db.schemaVersion)
+            assertEquals(3, db.schemaVersion)
             assertEquals(2, db.readers.size)
             assertEquals(tables.sorted(), db.writer.strings("SELECT table_name FROM duckdb_tables() ORDER BY 1"))
-            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             db.writer.run("INSERT INTO events (id, ts, game_time, type) VALUES (1, now(), 0, 'join')")
         }
         assertTrue(Files.isRegularFile(file))
 
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1", "2"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
+            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
             assertEquals(listOf("1"), db.readers[0].strings("SELECT count(*) FROM events"), "data kept")
         }
     }

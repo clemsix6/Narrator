@@ -82,7 +82,7 @@ class PlayerActionGameTests {
         helper.assertEquals(1 to 1_200, slowness.amplifier to slowness.duration, "level II for 60 s")
         val entry = GuardStates.read(bob.live).effects.single()
         helper.assertEquals("minecraft:slowness" to true, entry.effect to entry.harmful, "in the ledger, as a punishment")
-        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
         helper.assertTrue(guards(helper).death.isArmed(bob.live), "a harmful effect arms the death guard")
 
         // Weaker and shorter: addEffect alone would keep the stronger one.
@@ -251,7 +251,7 @@ class PlayerActionGameTests {
             otherTurn.text.startsWith("ok: ${bob.name} (in place of resistance I for 8m: a punishment) gets resistance II for 30s"),
             otherTurn.text,
         )
-        helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment is open")
+        helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.act, "a punishment is open")
         helper.assertTrue(
             guards.death.armedFor(bob.live, Peril.ANY) >= DeathGuard.playTime(bob.live) + (30 + 30) * 20,
             "the death guard covers the loss until the shorter effect has ended, and 30 s more",
@@ -315,7 +315,7 @@ class PlayerActionGameTests {
         helper.assertTrue(tiny.text.startsWith("ok: ${bob.name}'s scale 1 → 0.5 for 1m (until "), tiny.text)
         helper.assertEquals(0.5, bob.live.getAttributeValue(Attributes.SCALE), "half size")
         helper.assertTrue(GuardStates.read(bob.live).modifiers.single().harmful, "a punishment")
-        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
 
         // In the player's favor: not a punishment, not capped by the chaos level.
         val fast = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.MOVEMENT_SPEED, multiply = 1.5, seconds = 900))
@@ -360,7 +360,7 @@ class PlayerActionGameTests {
         val bouncy = run(helper, set, SetAttributeArgs(bob.name, AttributeKey.JUMP_STRENGTH, multiply = 3.0, seconds = 60))
         helper.assertTrue(bouncy.text.startsWith("ok: ${bob.name}'s jump_strength 0.57 → 1.26 for 1m"), bouncy.text)
         helper.assertTrue(GuardStates.read(bob.live).modifiers.single { it.attribute == "jump_strength" }.harmful, "above 0.6, a punishment")
-        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "the turn's punishment is open")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
         helper.assertTrue(
             guards.death.armedFor(bob.live, Peril.FALL) >= DeathGuard.playTime(bob.live) + (60 + 30) * 20,
             "armed for a fall, for the change and 30 s more",
@@ -438,7 +438,7 @@ class PlayerActionGameTests {
 
                         helper.assertEquals(ToolStatus.OK, up.get()!!.status, up.get()!!.text)
                         assertStandsAt(helper, bob.live, high)
-                        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment is open")
+                        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "a punishment is open")
 
                         helper.assertTrue(protected.get()!!.text.startsWith("DENIED (${Rules.PROTECTED}): "), protected.get()!!.text)
                         helper.assertEquals(start, alice.live.position(), "Alice did not move")
@@ -512,7 +512,7 @@ class PlayerActionGameTests {
             val cushion = GuardStates.read(bob.live).modifiers.single()
             helper.assertEquals("fall_damage_multiplier" to false, cushion.attribute to cushion.harmful, "the cushion is in the ledger, as a favor")
             helper.assertTrue(guards(helper).death.isArmed(bob.live), "armed")
-            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment")
+            helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "a punishment")
             helper.startSequence()
                 .thenWaitUntil {
                     val motion = bob.packets.filterIsInstance<ClientboundSetEntityMotionPacket>().firstOrNull { it.id() == bob.live.id }
@@ -646,7 +646,7 @@ class PlayerActionGameTests {
         helper.assertTrue(logs.text.startsWith("ok: took 1x minecraft:oak_log, 2x minecraft:birch_log (all they had) from ${bob.name}"), logs.text)
         val held = GuardStates.read(bob.live).confiscations
         helper.assertEquals(2, held.size, "two confiscations in the ledger")
-        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.turnId, "a punishment")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "a punishment")
         helper.assertTrue(guards(helper).death.isArmed(bob.live), "armed")
 
         guards(helper).items.giveBack(bob.live, held.maxOf { it.returnAt })

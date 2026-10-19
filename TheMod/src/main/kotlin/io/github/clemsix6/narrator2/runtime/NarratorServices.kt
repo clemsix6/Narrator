@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.director.DirectorControl
 import io.github.clemsix6.narrator2.event.EventBus
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.journal.Journal
+import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.Reflexes
@@ -77,6 +78,9 @@ interface NarratorServices {
 
     /** The Narrator's memory (design M3); `DisabledMemory` when it is off or could not start. */
     val memory: Memory
+
+    /** The mechanics engine (design M4): challenges, duels, bets, rules; `DisabledMechanics` when it is off or could not start. */
+    val mechanics: Mechanics
 
     /** The tools' limits that no new conversation resets (speech, gifts, weather and time, commands per turn). */
     val toolLimits: ToolLimits

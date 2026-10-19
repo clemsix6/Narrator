@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.tool.action
 import io.github.clemsix6.narrator2.guard.Caps
 import io.github.clemsix6.narrator2.guard.ExplosionGuard
 import io.github.clemsix6.narrator2.guard.Guards
+import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.tool.Caller
 import net.minecraft.core.BlockPos
@@ -76,11 +77,12 @@ class NarratorExplosionDamage private constructor(private val hurts: Boolean) : 
          * Checks a hurting explosion against each of [bystanders], for [caller] until [until] (epoch
          * milliseconds): the first refusal is returned (the whole explosion must then be refused or made
          * harmless, else a player who just died, standing next to the target, would be hit). When all are
-         * allowed, arms their death guard and returns [Verdict.Allowed]. Server thread.
+         * allowed, arms their death guard and returns [Verdict.Allowed]. [category]: the kind of punishment
+         * (M4 §6.1), `explosion` for an explosion that hurts. Server thread.
          */
-        fun allow(bystanders: List<ServerPlayer>, guards: Guards, caller: Caller, until: Long): Verdict {
+        fun allow(bystanders: List<ServerPlayer>, guards: Guards, caller: Caller, until: Long, category: PunishmentCategory? = null): Verdict {
             for (player in bystanders) {
-                val verdict = guards.hostile(player, caller, until)
+                val verdict = guards.hostile(player, caller, until, category)
                 if (verdict is Verdict.Denied) return verdict
             }
             bystanders.forEach { guards.armDeathGuard(it.uuid, GUARD_SECONDS) }

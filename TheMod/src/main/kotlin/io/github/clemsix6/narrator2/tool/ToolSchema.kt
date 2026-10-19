@@ -30,9 +30,11 @@ import kotlin.math.abs
  *
  * - `String` → `string`, `Int`/`Long` → `integer`, `Double`/`Float` → `number`, `Boolean` → `boolean`,
  *   an enum → `string` with `enum` (its serial names), `List<T>` → `array`, a nested `@Serializable`
- *   class → `object`.
+ *   class → `object`, a `JsonObject` → a free `object` (M4 §8.1: the arguments of another tool, which that
+ *   tool's own decoder checks later; the one exception to "no map", on purpose).
  * - Every object lists its properties in declaration order, `required` = the properties without a
- *   default value that are not nullable, and `additionalProperties: false`.
+ *   default value that are not nullable, and `additionalProperties: false`. A free object has neither
+ *   properties nor `additionalProperties`.
  * - [Doc] → `description`, [Range] → `minimum`/`maximum`, [MaxLen] → `maxLength`, [Items] →
  *   `minItems`/`maxItems`. On a list, [Range] and [MaxLen] bound each item.
  * - Anything else (maps, polymorphism, contextual or inline types, recursion, a misplaced annotation,
@@ -151,12 +153,19 @@ internal enum class ArgType(val schemaType: String) {
     ENUM("string"),
     LIST("array"),
     OBJECT("object"),
+
+    /** A `JsonObject`: any object, kept as it is (M4 §8.1). */
+    FREE_OBJECT("object"),
     ;
 
     companion object {
+        /** The serial name of `JsonObject` (its descriptor is a map's, which is refused otherwise). */
+        private val FREE_OBJECT_NAME = JsonObject.serializer().descriptor.serialName
+
         /** The type of [d]; fails on a type the schema cannot describe, naming [where]. */
         fun of(d: SerialDescriptor, where: String): ArgType {
             require(!d.isInline) { "$where: inline classes are not supported (${d.serialName})" }
+            if (d.serialName.removeSuffix("?") == FREE_OBJECT_NAME) return FREE_OBJECT
             return when (d.kind) {
                 PrimitiveKind.STRING -> STRING
                 PrimitiveKind.INT, PrimitiveKind.LONG -> INTEGER
