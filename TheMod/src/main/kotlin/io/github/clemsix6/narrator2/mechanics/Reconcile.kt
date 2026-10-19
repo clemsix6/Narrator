@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.mechanics.challenge.Ending
@@ -160,7 +161,7 @@ internal class Reconcile(private val services: NarratorServices) {
             }
             else -> {
                 val status = closing(row.kind)
-                services.memory.store.resolveCanon(ref, status, EngineActions.cut(note, MemoryLimits.RESOLUTION), emptyList(), ENGINE)
+                services.memory.store.resolveCanon(ref, status, ModelText.cut(note, MemoryLimits.RESOLUTION), emptyList(), ENGINE)
                 decisions.record(
                     log, DecisionRecord.Kind.MECHANIC, RECONCILED, "$ref", reason = "${status.id} in the canon: $note",
                     conversationId = EngineActions.conversationOf(ref),
@@ -235,15 +236,9 @@ internal class Reconcile(private val services: NarratorServices) {
         fun drop(state: MechanicsState, ids: Set<Long>): MechanicsState {
             val gone = state.challenges.filter { it.id in ids }
             if (gone.isEmpty() && state.rules.none { it.id in ids }) return state
-            val settlements = gone.flatMap { it.bets }.map { Settlement(owner = it.uuid, stake = it.stake) }
-                .filter { new -> state.settlements.none { it.owner == new.owner && it.stake == new.stake } }
-            val returns = gone.flatMap { it.arena }.filter { new -> state.returns.none { it.uuid == new.uuid } }
-            return state.copy(
-                challenges = state.challenges.filterNot { it.id in ids },
-                rules = state.rules.filterNot { it.id in ids },
-                settlements = state.settlements + settlements,
-                returns = state.returns + returns,
-            )
+            return state.copy(challenges = state.challenges.filterNot { it.id in ids }, rules = state.rules.filterNot { it.id in ids })
+                .givingBack(gone.flatMap { it.bets })
+                .puttingBack(gone.flatMap { it.arena })
         }
 
         /** When [challenge] ends: its end, or for a judged one waiting for its verdict, the end of the judging. */

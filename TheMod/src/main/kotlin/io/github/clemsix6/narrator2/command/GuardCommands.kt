@@ -1,8 +1,11 @@
 package io.github.clemsix6.narrator2.command
 
+import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import com.mojang.brigadier.context.CommandContext
+import com.mojang.brigadier.suggestion.SuggestionProvider
 import io.github.clemsix6.narrator2.NarratorRuntime
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.guard.AttributeLedger
 import io.github.clemsix6.narrator2.guard.Caps
 import io.github.clemsix6.narrator2.guard.Confiscation
@@ -20,8 +23,13 @@ import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.tool.ToolText
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
+import net.minecraft.commands.SharedSuggestionProvider
 import net.minecraft.commands.arguments.EntityArgument
 import net.minecraft.commands.arguments.GameProfileArgument
 import net.minecraft.network.chat.Component
@@ -33,14 +41,17 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * `/narrator protect <player> [on|off]` and `/narrator guards [player]` (M1_M2 §14.5, §10, M4 §18.1): who
- * the Narrator must leave alone, and what it did to the players that the engine will undo: effects,
- * attribute changes, confiscations, creatures, traps, running punishments, and the deaths it may still
- * cause; from M4, what limits it with each player (the pace the Director sees, the grace, the jokers) and
- * the items the guards hold for them (stakes, offerings, what they are owed). Runs on the server thread,
- * where the guards' state of a player lives.
+ * `/narrator protect <player> [on|off]`, `/narrator guards [player]` and `/narrator guards <player> release <id>`
+ * (M1_M2 §14.5, §10, M4 §18.1): who the Narrator must leave alone, and what it did to the players that the engine
+ * will undo: effects, attribute changes, confiscations, creatures, traps, running punishments, and the deaths it may
+ * still cause; from M4, what limits it with each player (the pace the Director sees, the grace, the jokers) and the
+ * items the guards hold for them (stakes, offerings, what they are owed), one of which an operator may give back now.
+ * Runs on the server thread, where the guards' state of a player lives.
  */
 object GuardCommands {
+    /** The `operator` decision of an entry of a player's ledger given back by an operator. */
+    const val LEDGER_RELEASE = "ledger_release"
+
     /** Adds this module's subcommands under `/narrator`. */
     fun attach(root: LiteralArgumentBuilder<CommandSourceStack>) {
         root.then(
@@ -54,8 +65,61 @@ object GuardCommands {
         root.then(
             Commands.literal("guards")
                 .executes { overview(it.source) }
-                .then(Commands.argument("player", EntityArgument.player()).executes { inspect(it.source, EntityArgument.getPlayer(it, "player")) }),
+                .then(
+                    Commands.argument("player", EntityArgument.player())
+                        .executes { inspect(it.source, EntityArgument.getPlayer(it, "player")) }
+                        .then(
+                            Commands.literal("release").then(
+                                Commands.argument("id", StringArgumentType.word()).suggests(HELD).executes {
+                                    release(it.source, EntityArgument.getPlayer(it, "player"), StringArgumentType.getString(it, "id"))
+                                },
+                            ),
+                        ),
+                ),
         )
+    }
+
+    /**
+     * Gives the entry [typed] (`812`, or `O-812` for an offering) of [player]'s ledger back to them now, whatever it is
+     * ([ItemLedger.returnNow]): a confiscation forgiven, an offering the Director will not answer, a stake whose
+     * challenge will never settle. Its bet, if any, stays in its challenge: its settlement then finds nothing more to
+     * move. An `operator` decision ([LEDGER_RELEASE]); the ledger's `returned` follows.
+     */
+    private fun release(source: CommandSourceStack, player: ServerPlayer, typed: String): Int {
+        val runtime = runningNarrator(source) ?: return 0
+        val ledger = runtime.guards.items
+        val name = player.plainTextName
+        val held = ledger.held(player)
+        val entry = Escrow.offeringId(typed)?.let { id -> held.firstOrNull { it.id == id } }
+        if (entry == null) {
+            source.sendFailure(errorLine("$name holds no entry $typed in the ledger; held: ${held.joinToString { Escrow.label(it) }.ifEmpty { "nothing" }}."))
+            return 0
+        }
+        val what = "${Escrow.label(entry)} of $name (${entry.what})"
+        if (ledger.returnNow(player, entry.id, runtime.clock.millis()) == null) {
+            source.sendFailure(errorLine("$what is due already: it comes back as soon as their inventory has room."))
+            return 0
+        }
+        val waiting = ledger.held(player).firstOrNull { it.id == entry.id }?.let { "; ${it.what} waits for room in their inventory" }.orEmpty()
+        Decisions(runtime.trace, runtime.clock).record(
+            Log.command, DecisionRecord.Kind.OPERATOR, LEDGER_RELEASE, name, reason = "${source.textName} gave $what back now$waiting",
+            detail = buildJsonObject {
+                put("operator", source.textName)
+                put("entry", entry.id)
+                put("purpose", entry.purpose.id)
+                put("items", entry.what)
+            },
+        )
+        source.sendSuccess({ narratorLine("$what goes back to them now$waiting.") }, true)
+        return 1
+    }
+
+    /** The entries of the ledger of the player typed, not due yet: those [release] can give back. */
+    private val HELD = SuggestionProvider<CommandSourceStack> { context, builder ->
+        val player = runCatching { EntityArgument.getPlayer(context, "player") }.getOrNull()
+        val now = NarratorRuntime.current?.clock?.millis() ?: Long.MAX_VALUE
+        val held = player?.let { NarratorRuntime.current?.guards?.items?.held(it) }.orEmpty().filter { it.returnAt > now }
+        SharedSuggestionProvider.suggest(held.map { if (it.purpose == LedgerPurpose.OFFERING) Escrow.ref(it.id) else it.id.toString() }, builder)
     }
 
     /**

@@ -7,7 +7,6 @@ import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.mechanics.ChallengeControl
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.memory.Ref
-import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.tool.speech.Speech
 import net.minecraft.commands.CommandSourceStack
@@ -53,16 +52,9 @@ object DuelCommand {
             source.sendFailure(errorLine("the Narrator is not running, or the server is stopping."))
             return 0
         }
-        val reply = refOf(id)?.let { challenges.answerDuel(player, it, accept) } ?: unknown(id)
+        val reply = Ref.canonOf(id)?.let { challenges.answerDuel(player, it, accept) } ?: unknown(id)
         source.sendSuccess({ reply }, false)
         return 1
-    }
-
-    /** `C-52`, `c52` or `52`: the canon row of a duel; null for anything else. */
-    internal fun refOf(id: String): Ref? {
-        val text = id.trim()
-        val ref = Ref.parse(if (text.all(Char::isDigit)) "C-$text" else text) ?: return null
-        return ref.takeIf { it.kind == RefKind.CANON }
     }
 
     /** `command.unknown_challenge` for an id that names no challenge at all. */

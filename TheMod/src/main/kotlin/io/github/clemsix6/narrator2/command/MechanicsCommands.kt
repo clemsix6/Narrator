@@ -20,7 +20,6 @@ import io.github.clemsix6.narrator2.mechanics.rule.RuleText
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.Ref
-import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.VoiceGuard
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -181,12 +180,6 @@ object MechanicsCommands {
         return "the mechanics are unavailable (${mechanics.unavailableReason ?: "no reason given"}): no challenge nor rule to show or change."
     }
 
-    /** `C-50`, `c50` or `50` → the canon row `C-50`; null for anything else. */
-    internal fun refOf(text: String): Ref? {
-        val ref = Ref.parse(text) ?: text.trim().toLongOrNull()?.takeIf { it > 0 }?.let { Ref(RefKind.CANON, it) }
-        return ref?.takeIf { it.kind == RefKind.CANON }
-    }
-
     /** An `operator` decision: [operator] did [decision] on [ref]. */
     private fun record(services: NarratorServices, decision: String, operator: String, reason: String, ref: Ref? = null) {
         Decisions(services.trace, services.clock).record(
@@ -231,7 +224,7 @@ object MechanicsCommands {
      */
     suspend fun cancel(services: NarratorServices, operator: String, id: String, note: String?): Reply {
         refusal(services.mechanics)?.let { return Reply.refused(it) }
-        val ref = refOf(id) ?: return Reply.refused("$id is not a challenge's reference (C-50, for instance).")
+        val ref = Ref.canonOf(id) ?: return Reply.refused("$id is not a challenge's reference (C-50, for instance).")
         val running = services.mechanics.challenges.list()
         if (running.none { it.ref == ref }) {
             return Reply.refused("$ref is not a challenge in progress; in progress: ${running.joinToString { it.ref.toString() }.ifEmpty { "none" }}.")
@@ -280,7 +273,7 @@ object MechanicsCommands {
      */
     suspend fun removeRule(services: NarratorServices, operator: String, id: String, note: String?): Reply {
         refusal(services.mechanics)?.let { return Reply.refused(it) }
-        val ref = refOf(id) ?: return Reply.refused("$id is not a rule's reference (C-60, for instance).")
+        val ref = Ref.canonOf(id) ?: return Reply.refused("$id is not a rule's reference (C-60, for instance).")
         val active = services.mechanics.rules.list()
         val rule = active.firstOrNull { it.ref == ref }
             ?: return Reply.refused("$ref is not an active rule; active: ${active.joinToString { it.ref.toString() }.ifEmpty { "none" }}.")

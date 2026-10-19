@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -102,6 +103,19 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
     }
 
     /**
+     * Runs [instead] as the call of [tool] with [args] in [firing], in place of the tool's own run, once the tool's
+     * dry checks pass as [Firing.caller] ([check]): a stake the engine pays its own way (an item reward through the
+     * ledger, never on the ground: M4 review, finding 36). Its `mechanic action` decision is the one [run] records,
+     * with `detail.instead`. Never on the server thread.
+     */
+    suspend fun runInstead(firing: Firing, tool: String, args: JsonObject, instead: suspend () -> ToolResult): ToolResult {
+        val call = Call(firing, tool, byName[tool], args, services.clock.instant(), System.nanoTime(), instead = true)
+        val result = check(tool, args, firing.caller) ?: instead()
+        action(call, result)
+        return result
+    }
+
+    /**
      * The dry checks of a call of [tool] with [args] by [caller] (M4 §4.3): its arguments decoded and bounded
      * ([ToolArgs]), then the tool's own [NarratorTool.check] (registry ids, caps of the chaos level,
      * arguments that contradict each other). Null when they pass; else `INVALID` or `DENIED`, as a run would
@@ -125,8 +139,19 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
         ToolResult.failed(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
     }
 
-    /** One call of an act: [tool] ([found] when the engine has it) with [args], started at [at] ([nanos] for its duration). */
-    private class Call(val firing: Firing, val tool: String, val found: NarratorTool<*>?, val args: JsonObject, val at: Instant, val nanos: Long)
+    /**
+     * One call of an act: [tool] ([found] when the engine has it) with [args], started at [at] ([nanos] for its
+     * duration); [instead]: the engine's own way in place of the tool's run ([runInstead]).
+     */
+    private class Call(
+        val firing: Firing,
+        val tool: String,
+        val found: NarratorTool<*>?,
+        val args: JsonObject,
+        val at: Instant,
+        val nanos: Long,
+        val instead: Boolean = false,
+    )
 
     /**
      * The `mechanic action` decision of [call], `DEBUG` when it did what was asked, `INFO` otherwise. Stamped at
@@ -144,7 +169,7 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
             DecisionRecord.Kind.MECHANIC,
             ACTION,
             subject = targets.joinToString().ifEmpty { null },
-            reason = "${call.tool} ${result.status.id}: ${cut(result.text.lineSequence().first(), FIRST_LINE_MAX)}",
+            reason = "${call.tool} ${result.status.id}: ${ModelText.cut(result.text.lineSequence().first(), FIRST_LINE_MAX)}",
             conversationId = call.firing.caller.conversationId,
             detail = buildJsonObject {
                 put("firing", call.firing.id)
@@ -157,6 +182,7 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
                 putJsonArray("targets") { targets.forEach { add(it) } }
                 put("args", call.args)
                 put("result", ToolRunner.truncate(result.text, ToolCallRecord.RESULT_MAX_CHARS))
+                if (call.instead) put("instead", true)
             },
             level = if (result.status == ToolStatus.OK) Log.Level.DEBUG else Log.Level.INFO,
         )
@@ -174,13 +200,5 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
 
         /** The conversation of an act for [ref]: `mechanics:C-60`, or `mechanics:engine` for an act of no challenge nor rule. */
         fun conversationOf(ref: Ref?): String = CONVERSATION_PREFIX + (ref?.toString() ?: "engine")
-
-        /** [text] cut to [max] characters, ending with `…` when cut, never inside a character. */
-        internal fun cut(text: String, max: Int): String {
-            if (text.length <= max) return text
-            var end = max - 1
-            if (text[end - 1].isHighSurrogate()) end--
-            return text.take(end) + "…"
-        }
     }
 }

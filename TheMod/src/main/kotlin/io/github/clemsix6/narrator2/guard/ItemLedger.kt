@@ -256,6 +256,20 @@ class ItemLedger(
         return rest
     }
 
+    /**
+     * Gives entry [id] back to [player], its owner, now, whatever it is ([Escrow.returnNow]: an operator's
+     * `/narrator guards <player> release <id>`); what does not fit waits, as always, and an offering is told to the
+     * Director as one not taken. The entry as it was; null when [player] has no such entry, or it is due already
+     * (waiting for room in the inventory). Decision `ledger returned`, as any entry given back.
+     */
+    fun returnNow(player: ServerPlayer, id: Long, now: Long): Confiscation? {
+        val state = states.of(player)
+        val next = Escrow.returnNow(state, id, now) ?: return null
+        states.update(player) { next }
+        giveBack(player, now)
+        return state.confiscations.first { it.id == id }
+    }
+
     /** What the Narrator holds of [player]'s items: confiscations, stakes, offerings and what is owed. */
     fun held(player: ServerPlayer): List<Confiscation> = states.of(player).confiscations
 

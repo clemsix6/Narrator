@@ -28,12 +28,8 @@ import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
-import io.github.clemsix6.narrator2.memory.CanonStatus
-import io.github.clemsix6.narrator2.memory.MemoryLimits
-import io.github.clemsix6.narrator2.memory.MemoryRejected
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
-import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolText
@@ -47,7 +43,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import net.fabricmc.fabric.api.entity.FakePlayer
 import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
@@ -188,7 +183,7 @@ class Duels(
             settled.arena?.let { checkArena(it, duelists) }
             stakes.check(settled.reward, null, caller)
             services.journal.barrier() // the players' join rows, which the canon checks
-            val ref = writeCanon(settled, duelists, caller)
+            val ref = challenges.writeCanon(draft(settled, duelists), caller)
             withContext(NonCancellable) { settle(ref, settled, duelists, caller) }
         }
     }
@@ -198,7 +193,7 @@ class Duels(
         val (first, second) = spec.players.map { it.trim() }
         return when {
             first.equals(second, ignoreCase = true) -> "a duel needs two different players (got ${ModelText.name(first)} twice)"
-            Speech.clean(spec.title).isEmpty() -> "title has nothing to show once formatting codes and invisible characters are removed"
+            Speech.clean(spec.title).isEmpty() -> Challenges.EMPTY_TITLE
             else -> null
         }
     }
@@ -209,14 +204,7 @@ class Duels(
      * down, PvP off, the pace, an arena outside their dimension or the world. Server thread.
      */
     private fun prepare(spec: DuelSpec, server: MinecraftServer): Pair<List<Participant>, DuelSpec> {
-        val online = server.playerList.players.filter { it !is FakePlayer }
-        val found = spec.players.map { name -> name to online.firstOrNull { it.plainTextName.equals(name.trim(), ignoreCase = true) } }
-        val missing = found.filter { it.second == null }.map { ModelText.name(it.first) }
-        if (missing.isNotEmpty()) {
-            val who = if (missing.size == 1) "${missing.single()} is not online" else "${missing.joinToString(" and ")} are not online"
-            throw invalid("$who; online: ${online.joinToString { ModelText.name(it.plainTextName) }.ifEmpty { "nobody" }}")
-        }
-        val players = found.map { it.second!! }
+        val players = Challenges.online(server, spec.players)
         val duelists = players.map { Participant(it.uuid.toString(), it.plainTextName) }
         val state = store.get()
         busy(state, duelists)?.let { throw it }
@@ -298,23 +286,16 @@ class Duels(
         }
     }
 
-    /** Writes [spec]'s canon row as the Director (M4 §3.3): its ref. A text the memory refuses is [MechanicRejected]. */
-    private suspend fun writeCanon(spec: DuelSpec, duelists: List<Participant>, caller: Caller): Ref {
-        val draft = CanonDraft(
-            kind = CanonKind.CHALLENGE,
-            statement = spec.statement,
-            quote = spec.quote,
-            players = duelists.map { it.playerId },
-            stakes = ChallengeLines.stakes(spec.reward, null, spec.bets),
-            importance = spec.importance,
-            mechanic = CanonMechanic.DUEL,
-        )
-        return try {
-            services.memory.store.addCanon(draft, Author(Source.DIRECTOR, turnId = caller.turnId, conversationId = caller.conversationId)).row.ref
-        } catch (e: MemoryRejected) {
-            throw MechanicRejected(e.rule, e.message.orEmpty())
-        }
-    }
+    /** [spec]'s canon row (M4 §3.3): a challenge of mechanic `duel`. */
+    private fun draft(spec: DuelSpec, duelists: List<Participant>) = CanonDraft(
+        kind = CanonKind.CHALLENGE,
+        statement = spec.statement,
+        quote = spec.quote,
+        players = duelists.map { it.playerId },
+        stakes = ChallengeLines.stakes(spec.reward, null, spec.bets),
+        importance = spec.importance,
+        mechanic = CanonMechanic.DUEL,
+    )
 
     /**
      * Puts duel [ref], whose canon row is written, in the state and invites both: its view. A refusal at that moment, or
@@ -332,7 +313,7 @@ class Duels(
                 invalid("the duel could not be set up (${e.message ?: e.javaClass.simpleName}); try again")
             }
         }
-        refusal?.let { cancelRefused(ref, it) }
+        refusal?.let { challenges.cancelRefused(ref, it, "as it was proposed") }
         val duel = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it was proposed")
         return view(duel)
     }
@@ -362,19 +343,6 @@ class Duels(
         )
         players.forEachIndexed { i, player -> invite(player, duel, duelists[1 - i]) }
         return null
-    }
-
-    /** The canon row of a duel refused once written: cancelled by the engine, and the refusal thrown. */
-    private suspend fun cancelRefused(ref: Ref, refusal: MechanicRejected): Nothing {
-        try {
-            val note = ModelText.cut("refused as it was proposed: ${refusal.message}", MemoryLimits.RESOLUTION)
-            services.memory.store.resolveCanon(ref, CanonStatus.CANCELLED, note, emptyList(), Author(Source.ENGINE, conversationId = EngineActions.conversationOf(ref)))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log.warn("$ref was refused as it was proposed, and its canon row could not be cancelled", e)
-        }
-        throw refusal
     }
 
     /** `duel.invite` to [player], with its two buttons, `/duel accept C-52` and `/duel decline C-52`. */
@@ -416,7 +384,7 @@ class Duels(
         }
         if (!me.accepted) {
             val accepted = duel.copy(participants = duel.participants.map { if (it.uuid == me.uuid) it.copy(accepted = true) else it })
-            replace(accepted)
+            challenges.replace(accepted)
             val waiting = accepted.participants.filterNot { it.accepted }
             decisions.record(
                 log, DecisionRecord.Kind.MECHANIC, ACCEPTED, "${duel.ref}",
@@ -496,9 +464,9 @@ class Duels(
             startedAt = now,
             endsAt = now + spec.minutes * MINUTE,
             arena = arena,
-            betsCloseAt = if (spec.bets) now + betWindow(spec.minutes) else null,
+            betsCloseAt = if (spec.bets) now + Challenges.betWindow(config, spec.minutes) else null,
         )
-        replace(running)
+        challenges.replace(running)
         for (player in players) {
             val other = opponentOf(running, running.participant(player.uuid)!!)
             fighting[player.uuid] = Fight(duel.id, other.playerId)
@@ -508,10 +476,6 @@ class Duels(
         decisions.record(log, DecisionRecord.Kind.MECHANIC, Challenges.STARTED, "${duel.ref}", reason = line, conversationId = EngineActions.conversationOf(duel.ref))
         services.director.post(DirectorSignal.Mechanic(MechanicSignal.DUEL, line, now, priority = false))
     }
-
-    /** How long the bets stay open: `mechanics.betWindowMinutes`, a third of the duel at most, a minute at least (M4 §5.6). */
-    private fun betWindow(minutes: Int): Long =
-        maxOf(MechanicsLimits.MIN_BET_WINDOW_MINUTES * MINUTE, minOf(config.betWindowMinutes * MINUTE, minutes * MINUTE / 3))
 
     /**
      * Both duelists' spots in [arena], face to face [MechanicsLimits.ARENA_DISTANCE] blocks west and east of its
@@ -842,10 +806,6 @@ class Duels(
     private fun view(duel: ChallengeState) = ChallengeView(
         duel.ref, null, duel.duel, duel.status, duel.endsAt, duel.participants, duel.bets.size, ChallengeLines.item(duel, clock.millis(), clock),
     )
-
-    private fun replace(duel: ChallengeState) {
-        store.update { state -> state.copy(challenges = state.challenges.map { if (it.id == duel.id) duel else it }) }
-    }
 
     private fun opponentOf(duel: ChallengeState, duelist: Participant): Participant = duel.participants.first { it.uuid != duelist.uuid }
 

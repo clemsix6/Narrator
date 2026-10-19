@@ -68,6 +68,7 @@ import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.GameType
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -490,10 +491,15 @@ class ChallengeStakesGameTests {
     private companion object {
         val DIRECTOR = Caller(Role.DIRECTOR, "director-stakes-gametest", turnId = 4243, taskId = null)
 
-        /** Runs [test] with a [Rig] started on the server thread and [count] players who record their boss bars; all closed however it ends. */
+        /**
+         * Runs [test] with a [Rig] started on the server thread and [count] players in survival (one in creative makes no
+         * progress, M4 review, finding 26) who record their boss bars; all closed however it ends.
+         */
         suspend fun CoroutineScope.withRig(helper: GameTestHelper, count: Int, test: suspend (Rig, List<TestPlayer>) -> Unit) {
             val server = helper.level.server
-            val players = server.onServerThread { List(count) { TestPlayer(helper, "sk_", keep = { it is ClientboundBossEventPacket }) } }
+            val players = server.onServerThread {
+                List(count) { TestPlayer(helper, "sk_", keep = { it is ClientboundBossEventPacket }).also { it.live.setGameMode(GameType.SURVIVAL) } }
+            }
             val rig = Rig(helper)
             try {
                 rig.onServer { rig.engine.start(server) }

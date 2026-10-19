@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.challenge.BetSettlement
 import io.github.clemsix6.narrator2.mechanics.challenge.Bets
+import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
@@ -52,7 +53,7 @@ object BetCommand {
     fun bet(services: NarratorServices, player: ServerPlayer, id: String, on: String): Component {
         val texts = services.settings.get().ui
         if (!services.mechanics.available) return Bets.refused(texts["mechanics.unavailable"])
-        val ref = Bets.challengeRef(id) ?: return Bets.refused(texts.format("command.unknown_challenge", "id" to id.trim()))
+        val ref = Ref.canonOf(id) ?: return Bets.refused(texts.format("command.unknown_challenge", "id" to id.trim()))
         return services.mechanics.challenges.bet(player, ref, on)
     }
 
@@ -65,7 +66,7 @@ object BetCommand {
 
     /** What the player may bet on in the challenge typed: its participants then nobody, or themselves when they take part. */
     private val OPTIONS = SuggestionProvider<CommandSourceStack> { context, builder ->
-        val ref = Bets.challengeRef(StringArgumentType.getString(context, "id"))
+        val ref = Ref.canonOf(StringArgumentType.getString(context, "id"))
         val view = ref?.let { r -> NarratorRuntime.current?.mechanics?.challenges?.list()?.firstOrNull { it.ref == r } }
         SharedSuggestionProvider.suggest(BetSettlement.options(view?.participants.orEmpty(), context.source.player?.uuid?.toString()), builder)
     }

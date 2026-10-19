@@ -14,8 +14,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * When one of the Narrator's creatures looks for someone to attack (target goals, brain sensors, the
  * revenge of {@code HurtByTargetGoal}: all go through the combat conditions), a player the Narrator may
- * not act against does not count ({@link CreatureShield}): the creature picks another target rather than
- * the nearest one it would drop at once. Non-combat conditions (looking at a player) are left alone.
+ * not act against does not count, and nothing but a player counts for a creature it summoned: never a
+ * villager, a golem nor an animal ({@link CreatureShield#keepsAway}, M4 review, finding 17). The creature
+ * picks another target rather than the nearest one it would drop at once. Non-combat conditions (looking at
+ * a player) are left alone.
  */
 @Mixin(TargetingConditions.class)
 abstract class TargetingConditionsGuardMixin {

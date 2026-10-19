@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.journal.IdKind
+import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonKind
@@ -154,10 +155,10 @@ class ExchangeLogTest {
         f.chapterRow()
         val mechanic = DecisionRecord.Kind.MECHANIC
         fun ending(ending: String) = buildJsonObject { put("ending", ending) }
-        decision("20:01:00", mechanic, ExchangeLog.RULE_ENDED, "C-60", "C-60 law retired: 3 fired, 0 skipped; « its time ran out »", ending("expired"))
-        decision("20:02:00", mechanic, ExchangeLog.RULE_ENDED, "C-61", "C-61 plan cancelled by operator Clement: 0 fired; « trop cruel »", ending("removed"))
-        decision("20:03:00", mechanic, ExchangeLog.RULE_ENDED, "C-62", "C-62 law retired: disabled after 5 failures in a row: no air", ending("disabled"))
-        decision("20:04:00", mechanic, ExchangeLog.RULE_ENDED, "C-63", "C-63 plan fulfilled: 1 fired; « fired once: Bartok entered the_nether »", ending("fulfilled"))
+        decision("20:01:00", mechanic, RuleBook.ENDED, "C-60", "C-60 law retired: 3 fired, 0 skipped; « its time ran out »", ending("expired"))
+        decision("20:02:00", mechanic, RuleBook.ENDED, "C-61", "C-61 plan cancelled by operator Clement: 0 fired; « trop cruel »", ending("removed"))
+        decision("20:03:00", mechanic, RuleBook.ENDED, "C-62", "C-62 law retired: disabled after 5 failures in a row: no air", ending("disabled"))
+        decision("20:04:00", mechanic, RuleBook.ENDED, "C-63", "C-63 plan fulfilled: 1 fired; « fired once: Bartok entered the_nether »", ending("fulfilled"))
         decision("20:05:00", mechanic, "expired", "C-50", "C-50 expired: nobody brought a turtle egg", ending("expired"))
         decision("20:05:30", mechanic, "disabled", "C-64", "C-64 disabled after 5 failures: no air")
         decision("20:06:00", DecisionRecord.Kind.LEDGER, "returned", "Bartok", "confiscation 4001: 1x iron_sword given back")

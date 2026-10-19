@@ -406,6 +406,14 @@ class GoalsTest {
         assertTrue(ChallengeLines.started(running(MechanicsSamples.nether, bartok), clock).contains(" · everyone online (Bartok) and whoever joins · "))
     }
 
+    @Test
+    fun `the bets stay open a third of a challenge or a duel, the setting at most, a minute at least`() {
+        val config = MechanicsConfig(betWindowMinutes = 5)
+        assertEquals(5 * MINUTE, Challenges.betWindow(config, 30), "the setting")
+        assertEquals(4 * MINUTE, Challenges.betWindow(config, 12), "a third")
+        assertEquals(MINUTE, Challenges.betWindow(config, 2), "a minute at least")
+    }
+
     private companion object {
         const val MINUTE = 60_000L
 

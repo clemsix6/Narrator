@@ -62,11 +62,12 @@ object Escrow {
 
     /**
      * [state] with stake [id] ceded [to] a winner at [now]: it goes to them once both are online, or back to its owner
-     * at its new fallback deadline ([cededDeadline]); null when nothing changes: no such stake, or already ceded to them.
+     * at its new fallback deadline ([cededDeadline]); null when nothing changes: no such stake, already ceded to them,
+     * or settled for its owner already ([release], [returnNow]: what is left of it waits for room, and stays theirs).
      */
     fun forfeit(state: GuardState, id: Long, to: UUID, now: Long): GuardState? {
         val stake = stake(state, id) ?: return null
-        if (stake.owedTo == to) return null
+        if (stake.owedTo == to || stake.settledAt != null && stake.owedTo == null) return null
         return replace(state, stake.copy(owedTo = to, returnAt = cededDeadline(now), settledAt = now))
     }
 
@@ -104,6 +105,17 @@ object Escrow {
 
     /** [state] without entry [id]. */
     fun without(state: GuardState, id: Long): GuardState = state.copy(confiscations = state.confiscations.filterNot { it.id == id })
+
+    /**
+     * [state] with entry [id] due for its owner at [now], whatever it is: an operator gives it back
+     * (`/narrator guards <player> release <id>`). A confiscation before its time, an offering untaken, a stake even
+     * ceded to a winner, settled by it (no fallback). Null when there is no such entry, or it is due already.
+     */
+    fun returnNow(state: GuardState, id: Long, now: Long): GuardState? {
+        val entry = state.confiscations.firstOrNull { it.id == id && it.returnAt > now } ?: return null
+        val settledAt = if (entry.purpose == LedgerPurpose.STAKE) now else entry.settledAt
+        return replace(state, entry.copy(returnAt = now, owedTo = null, settledAt = settledAt))
+    }
 
     /** The offering [id] of [state] still waiting for the Narrator's answer at [now]; null when gone, or past its deadline (going back). */
     fun offering(state: GuardState, id: Long, now: Long): Confiscation? =
