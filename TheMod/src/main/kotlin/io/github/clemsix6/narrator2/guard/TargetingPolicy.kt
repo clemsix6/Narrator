@@ -8,24 +8,29 @@ import io.github.clemsix6.narrator2.tool.ToolText
 import java.time.Clock
 
 /**
- * Who a hostile action may target (M1_M2 §10.3), after the guards have ruled out protected players and
- * chaos 0. In order:
+ * Who a hostile action may target (M1_M2 §10.3, M4 §6.1), after the guards have ruled out protected
+ * players, chaos 0 and the player's grace. In order:
  * 1. no piling on a player who is dead, or died less than [NO_PILE_ON_MINUTES] minutes ago
  *    ([Rules.NO_PILE_ON]);
- * 2. one punishment at a time: a punishment opened by another turn is still running
- *    ([Rules.ALREADY_PUNISHED]); the hostile actions of the turn that opened it are part of it;
+ * 2. one punishment at a time: a punishment opened by another act is still running
+ *    ([Rules.ALREADY_PUNISHED]); the hostile actions of the act that opened it are part of it. An act is a
+ *    Director turn or an engine firing (`Caller.act`): turn 812 and firing 812 are two acts;
  * 3. fairness: a new punishment against a player who already had [MAX_PUNISHMENTS_PER_HOUR] in the
- *    last hour is refused ([FAIR_SHARE]), so that no player becomes the Narrator's only target.
+ *    last hour is refused ([FAIR_SHARE]), so that no player becomes the Narrator's only target;
+ * 4. variety: an action of a category that another act struck the player in less than
+ *    [Caps.categoryCooldownMinutes] ago is refused ([Rules.SAME_PUNISHMENT]); the actions of one act never
+ *    stand in each other's way (a composed punishment), and [PunishmentCategory.OTHER] never rests.
  *
- * Refusals say until when, in the time of day of [clock]'s zone.
+ * Refusals say until when, in the time of day of [clock]'s zone. [caps] is read at each check
+ * (`/narrator reload` may change the chaos level).
  */
-class TargetingPolicy(private val players: PlayerStates, private val clock: Clock) {
+class TargetingPolicy(private val players: PlayerStates, private val clock: Clock, private val caps: () -> Caps) {
     /**
-     * Whether [caller] may act against [target] now, given the running [episodes]. [diedAt] is the
-     * player's last death saved with them (`GuardState.lastDeathAt`, epoch milliseconds), which holds
-     * across a reconnection when the session's own record does not.
+     * Whether [caller] may act against [target] now with an action of [category] (null: none), given the
+     * running [episodes]. [diedAt] is the player's last death saved with them (`GuardState.lastDeathAt`,
+     * epoch milliseconds), which holds across a reconnection when the session's own record does not.
      */
-    fun check(target: PlayerRef, caller: Caller, episodes: Episodes, diedAt: Long? = null): Verdict {
+    fun check(target: PlayerRef, caller: Caller, episodes: Episodes, diedAt: Long? = null, category: PunishmentCategory? = null): Verdict {
         val now = clock.millis()
         val name = ModelText.name(target.name)
         val live = players.get(target.uuid)
@@ -41,19 +46,30 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
             )
         }
         val episode = episodes.active(target.uuid)
-        if (episode != null && (caller.turnId == null || episode.turnId != caller.turnId)) {
+        if (episode != null && (caller.act == null || episode.act != caller.act)) {
             return Verdict.Denied(
                 Rules.ALREADY_PUNISHED,
                 "$name is already being punished (an earlier punishment runs until ${at(episode.until)}, in ${ToolText.wait(episode.until - now)}); one punishment at a time.",
             )
         }
         if (episode == null) {
-            val recent = episodes.recentPunishments(target.uuid)
+            val recent = episodes.recentPunishments(target.uuid, now)
             if (recent.size >= MAX_PUNISHMENTS_PER_HOUR) {
                 val next = recent[recent.size - MAX_PUNISHMENTS_PER_HOUR] + Episodes.WINDOW_MS
                 return Verdict.Denied(
                     FAIR_SHARE,
                     "$name was punished ${recent.size} times in the last hour; the next punishment against them is allowed at ${at(next)} (in ${ToolText.wait(next - now)}). Mind the other players, or reward this one.",
+                )
+            }
+        }
+        if (category != null && category.rests) {
+            val strike = episodes.lastStrike(target.uuid, category)
+            val next = strike?.let { it.at + caps().categoryCooldownMinutes * 60_000L }
+            if (strike != null && next != null && next > now && (caller.act == null || strike.act != caller.act)) {
+                return Verdict.Denied(
+                    Rules.SAME_PUNISHMENT,
+                    "$name was already ${category.phrase} ${ToolText.duration(now - strike.at)} ago (${category.id}); another ${category.id} " +
+                        "punishment against them is allowed at ${at(next)} (in ${ToolText.wait(next - now)}). Vary the punishment.",
                 )
             }
         }

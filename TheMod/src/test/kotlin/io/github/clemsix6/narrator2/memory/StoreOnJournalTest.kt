@@ -53,6 +53,19 @@ class StoreOnJournalTest {
                 store.resolveCanon(added.row.ref, CanonStatus.FULFILLED, "Le Narrateur a rendu les bottes.", emptyList(), MemorySamples.director)
                 assertEquals(CanonStatus.FULFILLED, store.canon(added.row.ref)!!.status)
                 assertEquals(1, store.canon(CanonFilter(open = false)).size)
+
+                // The columns of V3 (M4 §3.3, §10), written and read back on the migrated database.
+                val tracked = CanonDraft(
+                    CanonKind.CHALLENGE, "Le Narrateur a défié Mimosa de rapporter un œuf de tortue.", players = listOf(mimosa.uuid),
+                    mechanic = CanonMechanic.CHALLENGE,
+                )
+                val challenge = store.addCanon(tracked, MemorySamples.director).row
+                val arc = store.addCanon(CanonDraft(CanonKind.ARC, "La vengeance du Warden contre Mimosa commence ce soir.", theme = "vengeance_du_warden"), MemorySamples.director).row
+                assertEquals(CanonMechanic.CHALLENGE, store.canon(challenge.ref)!!.mechanic)
+                assertEquals("vengeance_du_warden" to fixture.clock.instant().plus(Duration.ofDays(7)), store.canon(arc.ref)!!.let { it.theme to it.dueAt })
+                assertIs<Added.New<CanonEntry>>(store.addCanon(tracked, MemorySamples.director), "the engine's rows are never duplicates")
+                assertEquals(CanonStatus.WON, store.resolveCanon(challenge.ref, CanonStatus.WON, "won by Mimosa in 4m02s", listOf(mimosa.uuid), Author(Source.ENGINE)).status)
+                assertEquals(listOf(null, "challenge", null, "challenge"), fixture.rows("SELECT mechanic FROM canon ORDER BY id") { getString(1) })
             }
         }
     }

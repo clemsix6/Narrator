@@ -80,7 +80,7 @@ class DreamerToolsTest {
         invalid(f.call(ResolveTool(), """{"id": "${e.gag}", "outcome": "retired", "note": "Usé jusqu'à la corde."}"""), "the Dreamer resolves only arcs, and ${e.gag} is a running_gag")
         assertEquals(listOf("active", "active"), f.rows("SELECT status FROM canon ORDER BY id") { getString(1) })
 
-        val arc = ok(f.call(RememberTool(), """{"kind": "arc", "what": "Le Narrateur prépare un tournoi de pêche au bord de la lave.", "players": ["Bartok"]}"""))
+        val arc = ok(f.call(RememberTool(), """{"kind": "arc", "what": "Le Narrateur prépare un tournoi de pêche au bord de la lave.", "players": ["Bartok"], "theme": "tournoi_de_peche"}"""))
         val ref = Regex("C-\\d+").find(arc)!!.value
         assertEquals("ok: remembered $ref (arc → Bartok, planned)", arc)
         assertTrue(ok(f.call(ResolveTool(), """{"id": "$ref", "outcome": "abandoned", "note": "Le tournoi de pêche n'aura pas lieu."}""")).startsWith("ok: $ref arc → Bartok is now abandoned"))

@@ -13,9 +13,10 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
- * No piling on (M1_M2 §10.3), with a clock that only moves when the test says so: a recent death, a
+ * No piling on (M1_M2 §10.3) and the categories' rest (M4 §6.1), with a clock that only moves when the test says so: a recent death, a
  * punishment of another turn, and fairness over the last hour. The test clock's zone is UTC, and it
  * starts at 19:30:00.
  */
@@ -23,7 +24,8 @@ class TargetingPolicyTest {
     private val clock = TestClock()
     private val players = PlayerStates()
     private val episodes = Episodes(clock)
-    private val policy = TargetingPolicy(players, clock)
+    private var chaos = 3
+    private val policy = TargetingPolicy(players, clock) { Caps.of(chaos) }
     private val bartok = PlayerRef(UUID(0, 1), "Bartok")
     private val mimosa = PlayerRef(UUID(0, 2), "Mimosa")
 
@@ -42,9 +44,13 @@ class TargetingPolicyTest {
     private fun advance(minutes: Long, seconds: Long = 0) = clock.advance(Duration.ofMinutes(minutes).plusSeconds(seconds))
 
     /** A hostile action of [caller] against [target] lasting [seconds]: checked, then its episode opened as the guards do. */
-    private fun punish(target: PlayerRef, caller: Caller, seconds: Long = 60): Verdict {
-        val verdict = policy.check(target, caller, episodes)
-        if (verdict == Verdict.Allowed) episodes.open(target.uuid, caller.turnId, now() + seconds * 1_000)
+    /** An act of the engine: a rule's firing [id] (`Caller.act` = -[id]). */
+    private fun firing(id: Long) = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = id)
+
+    /** A hostile action of [caller] of [category] against [target] lasting [seconds]: checked, then its episode opened as the guards do. */
+    private fun punish(target: PlayerRef, caller: Caller, seconds: Long = 60, category: PunishmentCategory? = null): Verdict {
+        val verdict = policy.check(target, caller, episodes, category = category)
+        if (verdict == Verdict.Allowed) episodes.open(target.uuid, caller.act, now() + seconds * 1_000, category)
         return verdict
     }
 
@@ -158,5 +164,100 @@ class TargetingPolicyTest {
             "‹engine› died 2s ago; hostile actions against them are refused until 19:34:58 (in 4m59s).",
             denied(policy.check(engine, turn(1), episodes), Rules.NO_PILE_ON).message,
         )
+    }
+
+    /** M4 review, finding 9: the engine's firing 812 is not the Director's turn 812 (`Caller.act` = -812). */
+    @Test
+    fun `a turn and an engine firing of the same number are two acts`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(812)))
+        denied(punish(bartok, firing(812)), Rules.ALREADY_PUNISHED)
+
+        assertEquals(Verdict.Allowed, punish(mimosa, firing(5)), "a firing opens its own punishment")
+        assertEquals(Verdict.Allowed, punish(mimosa, firing(5), seconds = 120), "and extends it, like a turn")
+        assertEquals(now() + 120_000, episodes.active(mimosa.uuid)?.until)
+        assertEquals(-5L, episodes.active(mimosa.uuid)?.act)
+        denied(punish(mimosa, turn(5)), Rules.ALREADY_PUNISHED)
+        denied(punish(mimosa, firing(6)), Rules.ALREADY_PUNISHED)
+    }
+
+    /** M4 §6.1: another act may not strike a player in a category they were struck in less than its rest ago (30 min at chaos 3). */
+    @Test
+    fun `the same kind of punishment waits for its rest, but never within one act`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), seconds = 120, category = PunishmentCategory.SIZE))
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.SIZE), "one act may strike twice in a category")
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.MOVEMENT), "a composed punishment")
+
+        advance(12)
+        assertNull(episodes.active(bartok.uuid), "the punishment is over")
+        val refused = denied(punish(bartok, turn(2), category = PunishmentCategory.SIZE), Rules.SAME_PUNISHMENT)
+        assertEquals(
+            "Bartok was already made smaller or bigger 12m ago (size); another size punishment against them is allowed at 20:00:00 (in 18m). " +
+                "Vary the punishment.",
+            refused.message,
+        )
+        denied(punish(bartok, firing(2), category = PunishmentCategory.SIZE), Rules.SAME_PUNISHMENT)
+        assertEquals(Verdict.Allowed, punish(mimosa, turn(2), category = PunishmentCategory.SIZE), "another player is not concerned")
+
+        assertEquals(Verdict.Allowed, punish(bartok, turn(2), category = PunishmentCategory.GRAVITY), "another category")
+        denied(punish(bartok, turn(2), category = PunishmentCategory.SIZE), Rules.SAME_PUNISHMENT)
+        denied(punish(bartok, turn(2), category = PunishmentCategory.MOVEMENT), Rules.SAME_PUNISHMENT)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(2)), "an action without a category")
+
+        advance(17, 59)
+        denied(punish(bartok, turn(3), category = PunishmentCategory.SIZE), Rules.SAME_PUNISHMENT)
+        advance(0, 1)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(3), category = PunishmentCategory.SIZE), "30 minutes after the last strike")
+        assertEquals(Verdict.Allowed, punish(bartok, turn(3), category = PunishmentCategory.MOVEMENT), "the slowness was struck at 19:30 too")
+    }
+
+    @Test
+    fun `the other category never rests`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.OTHER))
+        advance(2)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(2), category = PunishmentCategory.OTHER))
+        assertNull(episodes.lastStrike(bartok.uuid, PunishmentCategory.OTHER), "not even recorded")
+    }
+
+    @Test
+    fun `the rest of a category shortens as the chaos grows`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.LIGHTNING))
+        advance(15)
+        val allowed = (1..5).associateWith { level ->
+            chaos = level
+            policy.check(bartok, turn(2), episodes, category = PunishmentCategory.LIGHTNING) == Verdict.Allowed
+        }
+        assertEquals(mapOf(1 to false, 2 to false, 3 to false, 4 to false, 5 to true), allowed, "15 minutes after, by chaos level (rests of 60, 45, 30, 20, 10 min)")
+        chaos = 1
+        assertEquals(
+            "Bartok was already struck by lightning 15m ago (lightning); another lightning punishment against them is allowed at 20:30:00 (in 45m). " +
+                "Vary the punishment.",
+            denied(policy.check(bartok, turn(2), episodes, category = PunishmentCategory.LIGHTNING), Rules.SAME_PUNISHMENT).message,
+        )
+    }
+
+    @Test
+    fun `a caller without an act is a new act at each action, for the categories too`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(null), seconds = 1, category = PunishmentCategory.FOOD))
+        advance(1)
+        denied(punish(bartok, turn(null), category = PunishmentCategory.FOOD), Rules.SAME_PUNISHMENT)
+    }
+
+    @Test
+    fun `one punishment at a time and fairness come before the categories`() {
+        online(bartok)
+        assertEquals(Verdict.Allowed, punish(bartok, turn(1), category = PunishmentCategory.SIZE))
+        denied(punish(bartok, turn(2), category = PunishmentCategory.SIZE), Rules.ALREADY_PUNISHED)
+        listOf(PunishmentCategory.AIR, PunishmentCategory.FOOD, PunishmentCategory.HARM).forEachIndexed { index, category ->
+            advance(2)
+            assertEquals(Verdict.Allowed, punish(bartok, turn(3L + index), category = category), "punishment ${index + 2}")
+        }
+        advance(2)
+        val refused = denied(punish(bartok, turn(9), category = PunishmentCategory.SIZE), TargetingPolicy.FAIR_SHARE)
+        assertTrue("allowed at 20:30:00" in refused.message, refused.message)
     }
 }
