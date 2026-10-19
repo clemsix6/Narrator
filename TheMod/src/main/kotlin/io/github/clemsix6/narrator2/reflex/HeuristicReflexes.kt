@@ -19,6 +19,9 @@ import java.util.concurrent.ConcurrentHashMap
  * - Intent: not addressed → chat between players; then offering, challenge, insult (provocation),
  *   manipulation (request), request, question, rude word (provocation), other.
  * - No personality signals; a heartbeat is always worth a wake-up (nothing is filtered without the model).
+ * - Boredom ([bored]), whatever the source of the verdicts: a player who says they are bored ("je m'ennuie", "on
+ *   fait quoi", "c'est mort ici") makes the next heartbeat worth a wake-up (`WakeScheduler.heartbeatWorth`,
+ *   M4-24, finding 5): the activity summary the reflex model reads holds no chat.
  *
  * Pure and fast: never throws, never suspends for real.
  */
@@ -28,6 +31,9 @@ class HeuristicReflexes(private val words: HeuristicWords) : Reflexes {
 
     override suspend fun heartbeat(windowMinutes: Int, summary: List<String>, online: List<String>): HeartbeatVerdict =
         HeartbeatVerdict(worth = 1.0, hook = null, source = SOURCE, latencyMs = 0)
+
+    /** Whether [text], a chat message, says its player is bored. */
+    fun bored(text: String): Boolean = words.matches(Category.BOREDOM, HeuristicWords.normalize(text))
 
     /** The verdict on [input], at once. */
     fun judge(input: ChatTriageInput): ChatVerdict {
@@ -99,7 +105,7 @@ class HeuristicReflexes(private val words: HeuristicWords) : Reflexes {
 
     /** The word lists, one per `[section]` of the file. */
     enum class Category {
-        ADDRESS, VOCATIVE, ARTICLE, SECOND_PERSON, HOSTILE, RUDE, LAUGHTER, POLITENESS, MANIPULATION, OFFERING, CHALLENGE, REQUEST, QUESTION;
+        ADDRESS, VOCATIVE, ARTICLE, SECOND_PERSON, HOSTILE, RUDE, LAUGHTER, POLITENESS, MANIPULATION, OFFERING, CHALLENGE, REQUEST, QUESTION, BOREDOM;
 
         /** Section name in the file, e.g. `second_person`. */
         val id: String get() = name.lowercase()

@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.reflex.HeartbeatVerdict
 import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
+import io.github.clemsix6.narrator2.reflex.ReflexThresholds
 import io.github.clemsix6.narrator2.testing.SampleEvents.here
 import io.github.clemsix6.narrator2.testing.SampleEvents.steve
 import io.github.clemsix6.narrator2.trace.TaskRecord
@@ -183,6 +184,29 @@ class WakeSchedulerTest {
         assertEquals(0.5, WakeScheduler.heartbeatWorth(heuristic, listOf(between(0), between(1), between(2), between(3))).value, "4 of them wake it")
         assertEquals(1.0, WakeScheduler.heartbeatWorth(null, listOf(death(0), teleport(0))).value, "capped at 1; no verdict: what waits alone")
         assertEquals(0.0, WakeScheduler.heartbeatWorth(heuristic, listOf(teleport(0).copy(failures = Item.DEMOTED))).value, "demoted items count for nothing")
+    }
+
+    /**
+     * M4-24, finding 5, the evening of the acceptance: three lines between players, one of them bored, were worth 0.38
+     * (the model said 0.15 of the activity) and the heartbeat was skipped. A bored line alone wakes the Director now.
+     */
+    @Test
+    fun `a player who says they are bored makes the heartbeat worth a wake-up`() {
+        val bored = HeuristicReflexes.forLanguage("fr")::bored
+        fun says(text: String) = event(0, Urgency.NEXT, ChatMessage(steve, ChatChannel.PUBLIC, text, emptyList()))
+        val evening = listOf(says("ah ça y est, j'ai fini ma maison"), says("Moi je m'ennuie un peu, on fait quoi après ?"), says("pareil"))
+        val model = HeartbeatVerdict(0.15, "other", "reflex:claude-haiku-5-5", 40)
+
+        val worth = WakeScheduler.heartbeatWorth(model, evening, bored)
+        assertEquals(
+            WakeScheduler.HeartbeatWorth(0.75, "worth 0.75 by 3 salient items waiting (1 saying a player is bored) (reflex:claude-haiku-5-5 said 0.15)"),
+            worth,
+        )
+        assertTrue(worth.value >= ReflexThresholds.HEARTBEAT_WORTH, "over the threshold")
+        assertEquals(0.5, WakeScheduler.heartbeatWorth(null, listOf(says("c'est mort ici")), bored).value, "one is enough")
+        assertEquals(0.375, WakeScheduler.heartbeatWorth(model, evening).value, "without the boredom words: banter, as before")
+        val addressed = event(0, Urgency.IMMEDIATE, ChatMessage(steve, ChatChannel.PUBLIC, "narrateur je m'ennuie", emptyList()))
+        assertEquals(1.0, WakeScheduler.salience(listOf(addressed), bored), "addressed: it wakes the Director by itself anyway")
     }
 
     @Test

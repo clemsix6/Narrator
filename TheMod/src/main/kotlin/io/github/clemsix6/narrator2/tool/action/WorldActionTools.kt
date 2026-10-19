@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -259,7 +260,14 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         args.equipment?.slots()?.forEach { (_, raw) -> equipmentItem(raw) }
     }
 
-    override suspend fun run(ctx: ToolContext, args: SpawnArgs): ToolResult = answer {
+    override suspend fun run(ctx: ToolContext, args: SpawnArgs): ToolResult = run(ctx, args, punishment = null)
+
+    /**
+     * [run], for the creatures of [punishment] of the catalogue (`punish`'s step; null for the Director's own
+     * `spawn`): marked with it ([io.github.clemsix6.narrator2.guard.NarratorMob.punishment]), they are the player's
+     * alone, and never kill (M4-POST).
+     */
+    suspend fun run(ctx: ToolContext, args: SpawnArgs, punishment: PunishmentId?): ToolResult = answer {
         check(ctx, args)?.let { return@answer it }
         val caps = ctx.guards.caps()
         val name = args.name?.let { Speech.clean(it) }
@@ -275,10 +283,10 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             )
         }
         val near = ctx.online(args.near)
-        ctx.onServer { server -> answer { summon(ctx, server, near, args, name) } }
+        ctx.onServer { server -> answer { summon(ctx, server, near, args, name, punishment) } }
     }
 
-    private fun summon(ctx: ToolContext, server: MinecraftServer, near: PlayerRef, args: SpawnArgs, name: String?): ToolResult {
+    private fun summon(ctx: ToolContext, server: MinecraftServer, near: PlayerRef, args: SpawnArgs, name: String?, punishment: PunishmentId?): ToolResult {
         val player = server.live(near)
         val level = player.level()
         val type = entityType(args.entity)
@@ -314,7 +322,7 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         }
         val added = mutableListOf<Mob>()
         for (mob in mobs) {
-            if (!enter(ctx.guards, level, mob, expiresAt, player.uuid, hostile)) continue
+            if (!enter(ctx.guards, level, mob, expiresAt, player.uuid, hostile, punishment?.id)) continue
             if (args.target) mob.target = player
             args.explode?.let { Fuses.light(ctx.services, ctx.caller, mob, it, added.size) }
             added += mob
@@ -496,15 +504,16 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         /**
          * Brings [mob] into the world with the mount and riders the game gave it (a spider jockey's
          * skeleton, a drowned's zombie nautilus, a strider's rider), all of them the
-         * Narrator's creatures until [expiresAt], summoned for [player]. Each is marked, the creature last,
+         * Narrator's creatures until [expiresAt], summoned for [player] (by [punishment] of the catalogue, if
+         * any). Each is marked, the creature last,
          * once it is equipped (T09c: the gear it holds then is its own); one the game already added to the
          * world (a jockey's mount made by `finalizeSpawn`) is registered at once, since its load event came
          * before its mark. Then [mob] enters with its riders. When the world refuses it, the mount and
          * riders are removed and the answer is false. Server thread.
          */
-        fun enter(guards: Guards, level: ServerLevel, mob: Mob, expiresAt: Long, player: UUID, harmful: Boolean): Boolean {
+        fun enter(guards: Guards, level: ServerLevel, mob: Mob, expiresAt: Long, player: UUID, harmful: Boolean, punishment: String? = null): Boolean {
             for (member in group(mob).filter { it !== mob } + mob) {
-                guards.mobs.mark(member, expiresAt, player, harmful)
+                guards.mobs.mark(member, expiresAt, player, harmful, punishment)
                 if (level.getEntity(member.uuid) === member) guards.mobs.onLoad(member)
             }
             if (level.tryAddFreshEntityWithPassengers(mob)) return true
