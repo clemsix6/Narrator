@@ -59,7 +59,7 @@ CREATE OR REPLACE VIEW narrator_actions AS
 SELECT id, ts, tool, targets, args, status, result, turn_id
 FROM tool_calls
 WHERE effect IN ('speech', 'world');
-COMMENT ON VIEW narrator_actions IS 'What the Narrator already did: its speech and world tool calls';
+COMMENT ON VIEW narrator_actions IS 'What the Narrator already did: its speech and world tool calls (the engine''s acts: engine_decisions)';
 COMMENT ON COLUMN narrator_actions.status IS 'ok, invalid, denied, failed, timeout or unknown';
 
 CREATE OR REPLACE VIEW mining AS
