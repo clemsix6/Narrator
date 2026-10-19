@@ -348,7 +348,7 @@ class InstrumenterTest {
     // ── What it refuses ─────────────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `a module's class may not be a collection, a map or a CharSequence, though the guard lets it be one`() {
+    fun `a module's class may not be a collection, a map or a CharSequence, refused by the guard and by the rewriting`() {
         val lying = "static final class Lie implements CharSequence { public int length() { return 500_000_000; } public char charAt(int i) { return 'x'; } " +
             "public CharSequence subSequence(int a, int b) { return this; } public String toString() { return \"x\"; } }"
         val modules = mapOf(
@@ -358,7 +358,9 @@ class InstrumenterTest {
         )
         modules.forEach { (name, source) ->
             val classes = Rewrites.compile(name, source)
-            assertEquals(emptyList(), BytecodeGuard().check(classes), "$name passes the guard: the rewriting is the barrier")
+            val violations = BytecodeGuard().check(classes)
+            assertTrue(violations.isNotEmpty() && violations.all { "may not be a collection, a map or a CharSequence" in it.reason }, "$name: $violations")
+            // Defense in depth: without the guard, the rewriting refuses it too.
             val refused = assertFailsWith<RewriteRefused> { Instrumenter.rewrite(name, classes) }
             assertTrue("may not be a" in refused.message!!, refused.message)
         }

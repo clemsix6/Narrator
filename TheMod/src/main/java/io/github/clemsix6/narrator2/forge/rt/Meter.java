@@ -29,6 +29,9 @@ import java.util.Objects;
  *       single call of the JDK, where no tick could stop it, is tripped all the same (without a throw).</li>
  *   <li>Outside {@link #arm} … {@link #disarm}, no module code may run: {@code enter} and {@code tick} throw a
  *       {@link ForgeLimit} (the host never calls a module's object outside an armed call, M5 §4.1).</li>
+ *   <li>{@link #revoke()}, from another thread, is final: when the host abandons a call that one long call of the JDK
+ *       holds past its budget (M5-05), the abandoned thread throws at the module's very next {@code enter} or
+ *       {@code tick}, armed or not, and the meter never runs module code again.</li>
  * </ul>
  */
 public final class Meter {
@@ -46,6 +49,9 @@ public final class Meter {
     private int ticks;
     private int depth;
     private String tripped;
+
+    /** Set once, by the host's thread, when it abandons a call: read at each enter and tick of the abandoned thread. */
+    private volatile boolean revoked;
 
     /** @param owner the module's class loader: the frames of its classes are the module's own. */
     public Meter(ClassLoader owner) {
@@ -94,8 +100,18 @@ public final class Meter {
         return armed ? allocatedNow() : allocatedAtDisarm;
     }
 
+    /**
+     * The host abandoned the call running now (M5-05): it ran past its budget inside one call of the JDK, and the
+     * server went on without it. Any thread; final. From now on, every {@code enter} and {@code tick} throws, so the
+     * abandoned thread ends at the module's next code instead of running it.
+     */
+    public void revoke() {
+        revoked = true;
+    }
+
     /** At each method entry of the module: one frame deeper, and one tick. */
     public void enter() {
+        if (revoked) throw abandoned();
         if (!armed) throw outside();
         if (tripped != null) throw new ForgeLimit(tripped);
         if (++depth > Limits.MAX_DEPTH) recount();
@@ -109,6 +125,7 @@ public final class Meter {
 
     /** Before each backward jump of the module's code, and at the entry of each of its exception handlers. */
     public void tick() {
+        if (revoked) throw abandoned();
         if (!armed) throw outside();
         if (tripped != null) throw new ForgeLimit(tripped);
         count();
@@ -152,6 +169,10 @@ public final class Meter {
 
     private static ForgeLimit outside() {
         return new ForgeLimit("module code ran outside a metered call");
+    }
+
+    private static ForgeLimit abandoned() {
+        return new ForgeLimit("the call was abandoned: it ran past its time budget");
     }
 
     private static com.sun.management.ThreadMXBean allocations() {

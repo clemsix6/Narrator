@@ -125,6 +125,60 @@ class BytecodeGuardTest {
     }
 
     @Test
+    fun `no class of a module may be a collection, a map or a CharSequence - the JDK trusts their size`() {
+        val cases = mapOf(
+            "LyingList" to "static abstract class Lie implements List<Integer> { }",
+            "LyingSet" to "static abstract class Lie implements java.util.NavigableSet<Integer> { }",
+            "LyingBag" to "interface Bag extends Collection<Integer> { } static abstract class Lie implements Bag { }",
+            "LyingTable" to "static abstract class Lie implements java.util.SequencedMap<Integer, Integer> { }",
+            "LyingText" to "static abstract class Lie implements CharSequence { }",
+        )
+        for ((name, members) in cases) {
+            val compiled = ForgeSamples.compile(name, Rewrites.source(name, members, ""))
+            assertTrue(compiled.ok, "$name: ${compiled.problems}")
+            val violations = BytecodeGuard().check(compiled.classes)
+            assertEquals(1, violations.size, "$name: $violations")
+            assertTrue("a module's class may not be a collection, a map or a CharSequence" in violations.single().reason, "$name: $violations")
+        }
+        // An iterable, an entry, a comparable record are not containers.
+        val fine = ForgeSamples.compile(
+            "FineShapes",
+            Rewrites.source(
+                "FineShapes",
+                "record Pair(String k, Integer v) implements Map.Entry<String, Integer>, Comparable<Pair> { public String getKey() { return k; } " +
+                    "public Integer getValue() { return v; } public Integer setValue(Integer x) { return v; } public int compareTo(Pair o) { return k.compareTo(o.k); } } " +
+                    "static final class Bag implements Iterable<String> { public Iterator<String> iterator() { return List.<String>of().iterator(); } }",
+                "",
+            ),
+        )
+        assertEquals(emptyList(), BytecodeGuard().check(fine.classes))
+    }
+
+    @Test
+    fun `the range views of sorted sets and maps are refused, in every form`() {
+        val views = listOf(
+            "TreeSet<Integer> s = new TreeSet<>(); s.subSet(1, 2).add(1);",
+            "TreeSet<Integer> s = new TreeSet<>(); s.subSet(1, true, 2, false);",
+            "TreeSet<Integer> s = new TreeSet<>(); s.headSet(1);",
+            "NavigableSet<Integer> s = new TreeSet<>(); s.tailSet(1, true);",
+            "SortedSet<Integer> s = new TreeSet<>(); s.headSet(1);",
+            "TreeMap<Integer, Integer> m2 = new TreeMap<>(); m2.subMap(1, 2);",
+            "NavigableMap<Integer, Integer> m2 = new TreeMap<>(); m2.headMap(1, false);",
+            "SortedMap<Integer, Integer> m2 = new TreeMap<>(); m2.tailMap(1);",
+            "BiFunction<TreeSet<Integer>, Integer, SortedSet<Integer>> f = TreeSet::headSet;",
+        )
+        views.forEachIndexed { i, body ->
+            val compiled = ForgeSamples.compile("Range$i", Rewrites.source("Range$i", "", body))
+            assertTrue(compiled.ok, "$body: ${compiled.problems}")
+            val violations = BytecodeGuard().check(compiled.classes)
+            assertTrue(violations.isNotEmpty() && violations.all { "range view of a sorted set or map" in it.reason }, "$body: $violations")
+        }
+        // Navigating a sorted set stays allowed.
+        val navigation = "TreeSet<Integer> s = new TreeSet<>(List.of(1, 5, 9)); m.log(s.ceiling(4) + \" \" + s.floor(4) + \" \" + s.higher(5) + \" \" + s.first());"
+        assertEquals(emptyList(), BytecodeGuard().check(ForgeSamples.compile("Navigate", Rewrites.source("Navigate", "", navigation)).classes))
+    }
+
+    @Test
     fun `a module cannot be named after a type it relies on`() {
         val violations = BytecodeGuard().check(
             ForgeSamples.compile("Thread", "public final class Thread implements io.github.clemsix6.narrator2.forge.api.ForgeModule { public void start(io.github.clemsix6.narrator2.forge.api.ModuleContext ctx) { } }").classes,
