@@ -103,6 +103,8 @@ class FavorGameTests {
         helper.assertEquals(listOf(UI["joker.lore"]), joker.get(DataComponents.LORE)?.lines()?.map { it.string }, "its lore")
         helper.assertTrue(joker.`is`(Items.PAPER) && joker.count == 1, "one paper: $joker")
         helper.assertEquals(listOf(now), GuardStates.read(player).jokersGivenAt, "dated with the player")
+        // Through the guards (Guards.jokerGiven): their copy readable from any thread knows it at once.
+        helper.assertEquals(listOf(now), favors.guards.states.snapshot(player.uuid).jokersGivenAt, "the guards' own copy")
         helper.assertTrue(favored.told("joker.given"), "the player is told: ${favored.lines()}")
         val second = favors.favor("""{"player": "$name", "favor": "joker"}""")
         helper.assertEquals(
@@ -246,7 +248,11 @@ class FavorGameTests {
         )
 
         favors.mechanics.available = false
+        // An instant punishment, done (a bolt): only its episode is left, nothing to lift (M4 review, finding 35).
         helper.assertEquals(Verdict.Allowed, favors.guards.hostile(player, turn(4), favors.clock.millis() + 60_000), "punished again")
+        helper.assertEquals(InteractionResult.PASS, Jokers.onUse(favors.services, player, InteractionHand.MAIN_HAND), "nothing a joker would lift")
+        helper.assertEquals(1, player.mainHandItem.count, "the joker is kept")
+        favors.guards.effects.apply(player, MobEffects.SLOWNESS, 1, 60, particles = false, turnId = 4)
         helper.assertEquals(InteractionResult.SUCCESS, Jokers.onUse(favors.services, player, InteractionHand.MAIN_HAND), "played with the mechanics off")
         helper.assertTrue(player.mainHandItem.isEmpty, "the last joker is gone")
         helper.assertFalse(favors.guards.isPunished(player), "nothing left")

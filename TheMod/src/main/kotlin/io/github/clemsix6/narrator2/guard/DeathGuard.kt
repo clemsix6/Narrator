@@ -55,6 +55,7 @@ class DeathGuard(
     private val clock: Clock,
     private val attributes: AttributeLedger,
     private val effects: EffectLedger,
+    private val shields: Shields,
 ) {
     private val log = Log.guard
 
@@ -122,7 +123,7 @@ class DeathGuard(
      */
     private fun rescueBeyondQuota(player: ServerPlayer, source: DamageSource, recent: List<Long>, cap: Int, now: Long) {
         val cause = source.typeHolder().registeredName
-        val saved = save(player)
+        val saved = save(player, "$cause beyond the Narrator's quota of deaths")
         val nextFree = recent.minOrNull()?.let { (it + HOUR_TICKS - now) / TICKS_PER_SECOND }
         decisions.record(
             log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
@@ -145,7 +146,7 @@ class DeathGuard(
      * or at any time. Server thread.
      */
     fun rescue(player: ServerPlayer, why: String) {
-        val saved = save(player)
+        val saved = save(player, why)
         decisions.record(
             log, DecisionRecord.Kind.DEATH_GUARD, "rescued", player.plainTextName,
             reason = "$why: ${saved.what(player)}; not counted against the Narrator's quota, nothing armed${saved.warning()}",
@@ -167,12 +168,16 @@ class DeathGuard(
         /** At the `WARN` level for the operators when the player is rescued too often. */
         val level: Log.Level get() = if (often) Log.Level.WARN else Log.Level.INFO
 
-        /** `taken to respawn point (x …), fire put out, air given, lifted slowness II, 6.0 health, no fall damage for 30s`. */
+        /**
+         * `taken to respawn point (x …), fire put out, air given, lifted slowness II, 6.0 health, no fall damage for 30s,
+         * nothing hostile against them for 5m`.
+         */
         fun what(player: ServerPlayer): String =
             (safety?.let { (how, spot) -> "taken to ${how.replace('_', ' ')} (${where(player, spot)})" } ?: "could not be moved") +
                 ", fire put out, air given" +
                 (if (lifted.isEmpty()) "" else ", lifted ${lifted.joinToString()}") +
-                ", ${"%.1f".format(Locale.ROOT, health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}"
+                ", ${"%.1f".format(Locale.ROOT, health)} health, no fall damage for ${ToolText.duration(CUSHION_SECONDS * 1_000L)}" +
+                ", nothing hostile against them for ${ToolText.duration(Guards.RESCUE_SHIELD_MS)}"
 
         fun warning(): String =
             if (often) "; rescued $rescues times in ${RESCUE_WINDOW_MS / 60_000} min: look at what keeps putting them in danger" else ""
@@ -194,11 +199,12 @@ class DeathGuard(
      * smaller scale changes where they fit); taken to safety ([moveToSafety]); their fall stopped, their fire
      * put out (again at the end of the tick, [afterTick]), air in their lungs, food if they were starving; no
      * fall damage for [CUSHION_SECONDS] (a favor in the attribute ledger); [RESCUE_HEALTH] health; the mark
-     * of a protected death cleared. Nothing is armed and nothing counted. Each rescue is remembered for
-     * [RESCUE_WINDOW_MS]: more than [RESCUES_BEFORE_WARNING] warn the operators that something keeps putting
-     * the player in mortal danger, or that they use the rescue as a way home.
+     * of a protected death cleared; and a shield of [Guards.RESCUE_SHIELD_MS] because [why]: nothing hostile
+     * of the Narrator's against them meanwhile (M4 review, finding 18). Nothing is armed and nothing counted.
+     * Each rescue is remembered for [RESCUE_WINDOW_MS]: more than [RESCUES_BEFORE_WARNING] warn the operators
+     * that something keeps putting the player in mortal danger, or that they use the rescue as a way home.
      */
-    private fun save(player: ServerPlayer): Saved {
+    private fun save(player: ServerPlayer, why: String): Saved {
         player.health = 1f
         val effectsLifted = effects.removeHarmful(player).map(EffectLedger::describe)
         val attributesLifted = attributes.resetHarmful(player).map { it.id }
@@ -215,6 +221,7 @@ class DeathGuard(
 
         val at = clock.millis()
         val state = states.update(player) { it.copy(protectedDeath = false, rescues = recentRescues(it.rescues, at) + at) }
+        shields.shield(player.uuid, at + Guards.RESCUE_SHIELD_MS, why)
         return Saved(safety, effectsLifted + attributesLifted, player.health, state.rescues.size)
     }
 

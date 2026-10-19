@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.core.runOnServerThread
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -32,11 +33,11 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
- * The engine's rules of a running server (M1_M2 §10, M4 §13): protection, chaos 0, the player's grace, no
- * piling on, fairness and the categories' rest before any hostile action, the death guard and its rescue,
- * the ledgers that undo what the Narrator does to players, and the favors it keeps (pardon, grace). Built
- * once per server by `createGuards`; the hooks of `registerGuardHooks` drive it: joins, respawns,
- * deaths, entity loads, and a check once a second of what is due.
+ * The engine's rules of a running server (M1_M2 §10, M4 §13): protection, chaos 0, the player's grace, a
+ * duel, no piling on (a death, a rescue's shield), fairness and the categories' rest before any hostile
+ * action, the death guard and its rescue, the ledgers that undo what the Narrator does to players, and the
+ * favors it keeps (pardon, grace). Built once per server by `createGuards`; the hooks of `registerGuardHooks`
+ * drive it: joins, respawns, deaths, entity loads, and a check once a second of what is due.
  *
  * @param clock the engine's wall clock; in-game tests give their own to move time.
  */
@@ -48,6 +49,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     val states = GuardStates()
 
     private val episodes = Episodes(clock)
+    private val shields = Shields(clock)
     private val targeting = TargetingPolicy(services.players, clock, ::caps)
     private val protection = ProtectedPlayers(
         services.dataDir.resolve(PROTECTED_FILE),
@@ -57,7 +59,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     override val attributes = AttributeLedger(states, decisions, clock)
     override val effects = EffectLedger(states, clock)
-    val death = DeathGuard(states, ::caps, decisions, clock, attributes, effects)
+    val death = DeathGuard(states, ::caps, decisions, clock, attributes, effects, shields)
     override val items = ItemLedger(states, decisions, clock) { services.settings.get().ui }
     override val mobs = NarratorMobs(items)
     override val commands = CommandPolicy(
@@ -65,6 +67,9 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         extra = { services.settings.get().config.safety.extraForbiddenCommands },
     )
     override val spawns: SpawnPolicy get() = SpawnPolicy
+
+    @Volatile
+    override var isDueling: (UUID) -> Boolean = { false }
 
     /** When [tick] last checked what is due, epoch milliseconds. Server thread. */
     private var lastCheck = 0L
@@ -74,14 +79,42 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
     override fun caps(): Caps = Caps.of(services.settings.get().config.chaos)
 
     /**
-     * In order: protection, chaos 0, the player's grace, then [TargetingPolicy] (no piling on, one punishment
-     * at a time, fairness, the categories' rest). Allowed: the act's episode opens or grows, and the strike of
-     * [category] is recorded. Every refusal is a `guard denied` decision.
+     * In order: protection, chaos 0, the player's grace, a duel, then [TargetingPolicy] (no piling on a recent
+     * death or rescue, one punishment at a time and one `punish` per act, fairness, the categories' rest).
+     * Allowed: the act's episode opens or grows, and the strike of [category] is recorded. Every refusal is a
+     * `guard denied` decision.
      */
-    override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?): Verdict {
+    override fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory?, punishment: PunishmentId?): Verdict {
+        val verdict = verdict(target, caller, category, punishment)
+        if (verdict is Verdict.Denied) return verdict
+        val now = clock.millis()
+        episodes.open(target.uuid, caller.act, until, category, punishment)
+        // Saved with the player, so that the episode can be rebuilt when they join after a restart.
+        val same = states.of(target).episode?.takeIf { it.until > now && caller.act != null && it.act == caller.act }
+        val episode = OpenEpisode(caller.act, maxOf(until, same?.until ?: until))
+        states.update(target) { it.copy(episode = episode) }
+        decisions.record(
+            log, DecisionRecord.Kind.GUARD, "allowed", target.plainTextName,
+            reason = "hostile action${category?.let { " (${it.id})" }.orEmpty()}${punishment?.let { ", punish ${it.id}" }.orEmpty()}; " +
+                "the punishment runs until ${clockTime(clock, episode.until)}",
+            conversationId = caller.conversationId, turnId = caller.turnId,
+            detail = buildJsonObject {
+                put("act", caller.act)
+                put("category", category?.id)
+                punishment?.let { put("punishment", it.id) }
+            },
+        )
+        return verdict
+    }
+
+    override fun vet(target: ServerPlayer, caller: Caller, category: PunishmentCategory?): Verdict = verdict(target, caller, category, punishment = null)
+
+    /** [hostile]'s verdict, changing nothing but the `guard denied` decision of a refusal. */
+    private fun verdict(target: ServerPlayer, caller: Caller, category: PunishmentCategory?, punishment: PunishmentId?): Verdict {
         val name = target.plainTextName
         val now = clock.millis()
-        val graceUntil = states.of(target).graceUntil?.takeIf { it > now }
+        val state = states.of(target)
+        val graceUntil = state.graceUntil?.takeIf { it > now }
         val verdict = when {
             protection.isProtected(target.uuid, name) ->
                 Verdict.Denied(Rules.PROTECTED, "${ModelText.name(name)} is protected by the operators; the Narrator does nothing hostile to them.")
@@ -93,7 +126,11 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                     "${ModelText.name(name)} is under your grace until ${clockTime(clock, graceUntil)} (in ${ToolText.wait(graceUntil - now)}); " +
                         "nothing hostile against them until then.",
                 )
-            else -> targeting.check(target.ref(), caller, episodes, diedAt = states.of(target).lastDeathAt, category = category)
+            isDueling(target.uuid) ->
+                Verdict.Denied(Rules.DUEL, "${ModelText.name(name)} is fighting a duel; nothing hostile against a duelist while the duel runs.")
+            else -> targeting.check(
+                target.ref(), caller, episodes, diedAt = state.lastDeathAt, category = category, shield = shields.active(target.uuid), punishment = punishment,
+            )
         }
         if (verdict is Verdict.Denied) {
             decisions.record(
@@ -105,23 +142,34 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                     put("category", category?.id)
                 },
             )
-            return verdict
         }
-        episodes.open(target.uuid, caller.act, until, category)
-        // Saved with the player, so that the episode can be rebuilt when they join after a restart.
-        val same = states.of(target).episode?.takeIf { it.until > now && caller.act != null && it.act == caller.act }
-        val episode = OpenEpisode(caller.act, maxOf(until, same?.until ?: until))
-        states.update(target) { it.copy(episode = episode) }
-        decisions.record(
-            log, DecisionRecord.Kind.GUARD, "allowed", name,
-            reason = "hostile action${category?.let { " (${it.id})" }.orEmpty()}; the punishment runs until ${clockTime(clock, episode.until)}",
-            conversationId = caller.conversationId, turnId = caller.turnId,
-            detail = buildJsonObject {
-                put("act", caller.act)
-                put("category", category?.id)
-            },
-        )
         return verdict
+    }
+
+    /** Puts the player's punishments back as before the act's `punish` ([Episodes.withdraw]), the saved episode with them. */
+    override fun withdraw(player: ServerPlayer, caller: Caller) {
+        if (!episodes.withdraw(player.uuid, caller.act)) return
+        val running = episodes.active(player.uuid)
+        states.update(player) { it.copy(episode = running?.let { episode -> OpenEpisode(episode.act, episode.until) }) }
+        decisions.record(
+            log, DecisionRecord.Kind.GUARD, "withdrawn", player.plainTextName,
+            reason = "the punish of this act did nothing at all: not counted, its categories not resting",
+            conversationId = caller.conversationId, turnId = caller.turnId,
+            detail = buildJsonObject { put("act", caller.act) },
+        )
+    }
+
+    override fun shield(player: ServerPlayer, until: Long, reason: String) {
+        val shield = shields.shield(player.uuid, until, reason)
+        decisions.record(
+            log, DecisionRecord.Kind.GUARD, "shielded", player.plainTextName,
+            reason = "${shield.reason}: nothing hostile against them, the Narrator's creatures and explosions spare them, until ${clockTime(clock, shield.until)}",
+            detail = buildJsonObject { put("until", shield.until) },
+        )
+    }
+
+    override fun jokerGiven(player: ServerPlayer, at: Long) {
+        states.update(player) { it.copy(jokersGivenAt = it.jokersGivenAt + at) }
     }
 
     override fun armDeathGuard(target: UUID, seconds: Int) = armDeathGuard(target, seconds, Peril.ANY)
@@ -255,10 +303,12 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         return verdict
     }
 
-    /** A running episode, or anything harmful of the Narrator's on [player]: an effect, a modifier, a confiscation still held, a creature, a trap. */
+    /**
+     * Anything harmful of the Narrator's on [player] that a pardon lifts: an effect, a modifier, a confiscation
+     * still held, a creature, a trap. A bare episode is not: what it was made of is done (a bolt, a shuffle).
+     */
     override fun isPunished(player: ServerPlayer): Boolean {
         val now = clock.millis()
-        if (episodes.active(player.uuid) != null) return true
         val state = states.of(player)
         return effects.on(player).any { it.harmful } ||
             state.modifiers.any { it.harmful && it.expiresAt > now } ||
@@ -287,11 +337,13 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     /**
      * Whether the Narrator's creatures and explosions leave [player] alone now ([CreatureShield]):
-     * protected, dead, died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago, or under the
-     * Narrator's grace (both saved with the player: they hold across a reconnection). Server thread.
+     * protected, dead, died less than [TargetingPolicy.NO_PILE_ON_MINUTES] minutes ago, under the
+     * Narrator's grace (both saved with the player: they hold across a reconnection), shielded after a rescue
+     * ([shield]), or fighting a duel ([isDueling]). Server thread.
      */
     fun spares(player: Player): Boolean {
         if (player.isDeadOrDying || protection.isProtected(player.uuid, player.plainTextName)) return true
+        if (shields.active(player.uuid) != null || isDueling(player.uuid)) return true
         val state = GuardStates.read(player)
         val now = clock.millis()
         if ((state.graceUntil ?: 0L) > now) return true
