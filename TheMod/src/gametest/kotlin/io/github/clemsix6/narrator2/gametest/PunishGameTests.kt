@@ -242,18 +242,25 @@ class PunishGameTests {
         )
     }
 
-    /** On top of the tree, to climb down by themselves; a fall would be the Narrator's. Nothing to undo at the end. */
+    /**
+     * On top of the tree, to climb down by themselves. Any death up there is the Narrator's (M4 review, finding 10:
+     * a skeleton or phantoms, not only the fall), so the player keeps their inventory; a fall stays covered longer,
+     * by the height of the climb. Nothing to undo at the end.
+     */
     @GameTest
     fun treeTopPutsThePlayerOnTheLeaves(helper: GameTestHelper) = bench(helper) { b ->
         val top = tree(helper)
         try {
             b.lifecycle(
-                PunishmentId.TREE_TOP, 2, listOf(Peril.FALL),
+                PunishmentId.TREE_TOP, 2, listOf(Peril.ANY, Peril.FALL),
                 ready = { b.bob.standAt(BlockPos(1, 1, 1)) },
                 applied = { result ->
                     helper.assertTrue("put on top of oak_leaves at x ${top.x}, y ${top.y + 1}, z ${top.z}, ${TREE_TOP} blocks above where they stood" in result.text, result.text)
                     helper.assertEquals(Vec3.atBottomCenterOf(top.above()), b.player.position(), "on the leaves")
-                    helper.assertFalse(b.guards.death.attributed(b.player, b.sources.drown()), "a fall, not drowning")
+                    helper.assertTrue(b.guards.death.attributed(b.player, b.sources.generic()), "any death on the tree top is the Narrator's")
+                    val climb = PunishmentCatalog.TREE_TOP_SECONDS + TREE_TOP * PunishmentCatalog.TREE_TOP_FALL_SECONDS_PER_BLOCK
+                    helper.assertTrue(b.guards.death.armedFor(b.player, Peril.FALL) >= DeathGuard.playTime(b.player) + climb * 20L, "a fall is covered for the climb down")
+                    helper.assertFalse(b.guards.isPunished(b.player), "nothing to lift on a tree top: a joker is kept")
                 },
                 ended = { helper.assertEquals(Vec3.atBottomCenterOf(top.above()), b.player.position(), "still up there: they climb down by themselves") },
             )
@@ -292,6 +299,8 @@ class PunishGameTests {
             applied = { result ->
                 helper.assertTrue("lightning struck ${b.name} for 2 hearts (health " in result.text, result.text)
                 helper.assertEquals(before - 4f, b.player.health, "two hearts")
+                // M4 review, finding 35: the bolt is done, only its episode is left; a joker would lift nothing.
+                helper.assertFalse(b.guards.isPunished(b.player), "nothing to lift after a bolt")
             },
             ended = { helper.assertEquals(before - 4f, b.player.health, "the wound stays, the punishment is over") },
         )
@@ -319,6 +328,54 @@ class PunishGameTests {
         helper.assertFalse(b.guards.death.isArmed(b.player), "nothing armed")
     }
 
+    /**
+     * One punish per act and player (M4 review, finding 16): the act that starved Bartok may not also strike him, nor
+     * pile a third punishment on; another player is not concerned.
+     */
+    @GameTest
+    fun anActPunishesAPlayerOnce(helper: GameTestHelper) = bench(helper) { b ->
+        b.bob.makeVulnerable()
+        val first = b.punish(PunishmentId.HUNGER, 1, act = 1)
+        helper.assertEquals(ToolStatus.OK, first.status, first.text)
+        b.player.damageCooldownTime = 0
+        val health = b.player.health
+        val smite = b.punish(PunishmentId.SMITE, 2, act = 1)
+        helper.assertEquals(
+            "DENIED (${Rules.ALREADY_PUNISHED}): this act already punished ${b.name} (hunger); one punish per act and player: compose it with the other tools, or let it run.",
+            smite.text, "a second punish of the same act",
+        )
+        helper.assertEquals(health, b.player.health, "not struck")
+        helper.assertTrue(b.punish(PunishmentId.TINY, 1, act = 1).text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): this act already punished "), "nor a third")
+        helper.assertEquals(1.0, b.player.getAttributeValue(Attributes.SCALE), "not made smaller")
+        val pacing = b.guards.pacing(listOf(b.bob.uuid), b.clock.millis()).single()
+        helper.assertEquals(1 to setOf(PunishmentCategory.FOOD), pacing.punishedThisHour to pacing.resting.keys, "one punishment, one category struck")
+    }
+
+    /**
+     * A punish that does nothing at all (here a bolt that finds only lightning rods above the player, whom it would
+     * change) counts nowhere (M4 review, finding 39): no episode, not among the hour's punishments, its category not
+     * resting; the same act may punish again.
+     */
+    @GameTest
+    fun aPunishThatDidNothingCountsNowhere(helper: GameTestHelper) = bench(helper) { b ->
+        val rod = Blocks.LIGHTNING_ROD.asList().first()
+        try {
+            for (y in 1..5) helper.setBlock(BlockPos(3, y, 3), rod)
+            b.stand()
+            val result = b.punish(PunishmentId.SMITE, 2, act = 1)
+            helper.assertEquals(ToolStatus.FAILED, result.status, result.text)
+            helper.assertTrue(result.text.startsWith("${b.name}'s smite failed: FAILED: copper or a lightning rod everywhere above"), result.text)
+            helper.assertEquals(null, GuardStates.read(b.player).episode, "no episode")
+            val pacing = b.guards.pacing(listOf(b.bob.uuid), b.clock.millis()).single()
+            helper.assertEquals(0 to emptySet<PunishmentCategory>(), pacing.punishedThisHour to pacing.resting.keys, "nothing counted, nothing resting")
+            helper.assertTrue(b.decisions().any { it.decision == "withdrawn" && it.subject == b.name }, "a withdrawn decision")
+        } finally {
+            for (y in 1..5) helper.setBlock(BlockPos(3, y, 3), Blocks.AIR)
+        }
+        b.stand()
+        helper.assertEquals(ToolStatus.OK, b.punish(PunishmentId.HUNGER, 1, act = 1).status, "the same act may punish once more")
+    }
+
     /** The severity is capped by the chaos level (M4 §6.2): beyond, an error; within, the caps still bound the values, and say so. */
     @GameTest
     fun theSeverityIsCappedByTheChaosLevel(helper: GameTestHelper) = bench(helper, chaos = 1) { b ->
@@ -329,7 +386,9 @@ class PunishGameTests {
         helper.assertTrue(capped.text.endsWith(", until ${clock(b, 60)} (in 1m); duration capped at 60s by the chaos level"), capped.text)
         helper.assertEquals(0.5, b.player.getAttributeValue(Attributes.SCALE), "the severity's value")
         helper.assertEquals(b.clock.millis() + 60_000, GuardStates.read(b.player).modifiers.single().expiresAt, "for 60 s, the chaos level's longest")
-        val guests = b.punish(PunishmentId.GUESTS, 2, act = 1)
+        // One punish per act and player: the guests come with another act, once the first punishment is over.
+        b.advance(Duration.ofSeconds(61))
+        val guests = b.punish(PunishmentId.GUESTS, 2, act = 2)
         helper.assertTrue(guests.text.startsWith("ok: ") && guests.text.endsWith("; zombies capped at 2 by the chaos level"), guests.text)
         helper.assertEquals(2, b.adopt().size, "two guests at chaos 1")
     }
@@ -402,6 +461,9 @@ class PunishGameTests {
         }
 
         fun plan(id: PunishmentId, severity: Int): PunishmentPlan = PunishmentCatalog.plan(id, severity, guards.caps(), bob.name)
+
+        /** The decisions of these guards, in order. */
+        fun decisions() = base.traces.decisions
 
         /** Moves the clock, then the guards undo what is due, as their check of each second does. */
         fun advance(duration: Duration) {

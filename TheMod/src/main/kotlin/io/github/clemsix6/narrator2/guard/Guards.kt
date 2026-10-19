@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.guard
 
+import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.tool.Caller
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.damagesource.DamageSource
@@ -25,11 +26,14 @@ object Rules {
     /** Chaos 0: no hostile action at all. */
     const val CHAOS_0 = "chaos_0"
 
-    /** The player died less than 5 minutes ago. */
+    /** The player died less than 5 minutes ago, or was saved from a death lately (`Guards.shield`). */
     const val NO_PILE_ON = "no_pile_on"
 
-    /** A punishment opened by another turn is still running against the player. */
+    /** A punishment opened by another act is still running against the player, or this act already used `punish` on them. */
     const val ALREADY_PUNISHED = "already_punished"
+
+    /** The player fights a duel: nothing hostile against a duelist while it runs (M4 review, finding 19). */
+    const val DUEL = "duel"
 
     /** `run_command` refused a command. */
     const val FORBIDDEN_COMMAND = "forbidden_command"
@@ -54,13 +58,54 @@ interface Guards {
     fun isProtected(uuid: UUID): Boolean
 
     /**
-     * Checks a hostile action of [caller] against [target] (protection, chaos 0, recent death, a
-     * punishment of another act still running, fairness, the player's grace, and the rest of [category]
-     * against them) and, when allowed, opens or extends the caller's episode against [target] until
+     * Checks a hostile action of [caller] against [target] (protection, chaos 0, the player's grace, a duel,
+     * a recent death or rescue, a punishment of another act still running, fairness, and the rest of
+     * [category] against them) and, when allowed, opens or extends the caller's episode against [target] until
      * [until] (epoch milliseconds), its act being [Caller.act]. [category]: the kind of punishment (M4
-     * §6.1), deduced by the tool from its arguments; null for an action without one. Server thread only.
+     * §6.1), deduced by the tool from its arguments; null for an action without one. [punishment]: the action
+     * is `punish` of the catalogue, which an act uses once per player (M4 review, finding 16). Every refusal is a
+     * `guard denied` decision. Server thread only.
      */
-    fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory? = null): Verdict
+    fun hostile(target: ServerPlayer, caller: Caller, until: Long, category: PunishmentCategory? = null, punishment: PunishmentId? = null): Verdict
+
+    /**
+     * The verdict [hostile] would give now to an action of [caller] of [category] against [target], changing
+     * nothing: no episode, nothing counted, no category struck. For an action that touches several players
+     * (an explosion) or that must not start before it knows (a far teleport, before its destination loads): vet
+     * first, then [hostile]. A refusal is a `guard denied` decision, as for [hostile]. Server thread only.
+     */
+    fun vet(target: ServerPlayer, caller: Caller, category: PunishmentCategory? = null): Verdict
+
+    /**
+     * The `punish` of [caller]'s act against [player] did nothing at all (every step failed): it is withdrawn
+     * (M4 review, finding 39), its episode, its place among the hour's punishments and the categories it struck
+     * put back as they were, and the act may punish them again. Decision `guard withdrawn`. Server thread only.
+     */
+    fun withdraw(player: ServerPlayer, caller: Caller)
+
+    /**
+     * Shields [player] from the Narrator until [until] (epoch milliseconds) because [reason] (M4 review, finding
+     * 18): [hostile] refuses every hostile action against them ([Rules.NO_PILE_ON], whatever the act) and the
+     * Narrator's creatures and explosions spare them, as just after a death. For a player saved from a death:
+     * [rescue] and the death guard's rescue beyond the quota shield for [RESCUE_SHIELD_MS] by themselves; a
+     * duel's fatal blow stopped (1 hp, the engine refusing the death) calls it with `now + RESCUE_SHIELD_MS`.
+     * A longer shield already running is kept. In memory: a restart forgets it. Decision `guard shielded`.
+     * Server thread only.
+     */
+    fun shield(player: ServerPlayer, until: Long, reason: String)
+
+    /**
+     * Dates the joker the Narrator gave [player] at [at] (epoch milliseconds) in their guards' state
+     * (`GuardState.jokersGivenAt`, kept a day: `MechanicsLimits.JOKERS_PER_DAY`). Server thread only.
+     */
+    fun jokerGiven(player: ServerPlayer, at: Long)
+
+    /**
+     * Whether a player fights a duel now (M4 review, finding 19): [hostile] refuses to target them while it
+     * runs ([Rules.DUEL]), and the Narrator's creatures and explosions spare them. Set by the mechanics engine
+     * once it runs; `{ false }` until then and with the engine off. Read on the server thread.
+     */
+    var isDueling: (UUID) -> Boolean
 
     /**
      * Deaths of [target] in the next [seconds] of their play time are attributed to the Narrator (any
@@ -130,20 +175,28 @@ interface Guards {
     fun grace(player: ServerPlayer, until: Long, caller: Caller): Verdict
 
     /**
-     * Whether the Narrator inflicts something on [player] now: an episode, a harmful effect or change, a
-     * confiscation, a harmful creature, a trap. A joker is played only then. Server thread.
+     * Whether the Narrator inflicts something on [player] now that a pardon would lift: a harmful effect or
+     * change, a confiscation still held, a harmful creature, a trap. What is left of an instant punishment (a
+     * bolt, a shuffle, a tree top) is only its episode, and lifts nothing: no (M4 review, finding 35). A joker is
+     * played only when this is true. Server thread.
      */
     fun isPunished(player: ServerPlayer): Boolean
 
     /**
      * Saves [player] from a death the engine refuses (a duel, M4 §5.5): the death guard's own rescue (out of
      * the danger, to the respawn point or safe ground, fire out, air, health, no fall damage for a while),
-     * without counting the quota. Decision `death_guard rescued` with [why]. Server thread.
+     * without counting the quota, then a [shield] of [RESCUE_SHIELD_MS]. Decision `death_guard rescued` with
+     * [why]. Server thread.
      */
     fun rescue(player: ServerPlayer, why: String)
 
     /** What limits the Narrator with each of [players] now (M4 §4.5, the `Pacing` and `Offerings` lines), in the order given. Any thread. */
     fun pacing(players: List<UUID>, now: Long): List<PlayerPacing>
+
+    companion object {
+        /** How long a player saved from a death is shielded ([shield]): as long as no piling on after a real death, 5 minutes. */
+        const val RESCUE_SHIELD_MS = TargetingPolicy.NO_PILE_ON_MS
+    }
 }
 
 /**
