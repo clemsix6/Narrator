@@ -44,8 +44,6 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 /** What the Director reads from the game and shows in it: the server in production, a fake in tests. */
@@ -70,6 +68,12 @@ interface GameView {
 
     /** Tells the operators online, in the chat, in English (`[Narrator] …`). Any thread. */
     fun tellOperators(text: String)
+
+    /**
+     * Where the reminders are kept from one run of the server to the next (M4 §15.1): the world's global
+     * attachment in production, memory in the fakes. The Director reads it once, when it is created.
+     */
+    val reminders: ReminderStore
 }
 
 /**
@@ -81,8 +85,16 @@ interface GameView {
  *   wake-ups; heartbeats come a few minutes after the last turn while players are online, when the
  *   reflexes find the activity worth it. Each wake-up is one turn of [AgentLoop] on the open chapter,
  *   opened by a message with `<events>`, `<memory>`, `<heartbeat>` and `<situation>`. Beyond
- *   `director.turnsPerHour` turns in the last hour ([TurnBudget]), only addressed chat, prayers, whispers
- *   and due commitments wake it.
+ *   `director.turnsPerHour` turns in the last hour ([TurnBudget]), only addressed chat, prayers, whispers,
+ *   due commitments and the mechanics' priority news wake it ([WakeScheduler.pastBudget]).
+ * - **Mechanics** (M4 §4.4, §4.5): the engine's news ([DirectorSignal.Mechanic]) are lines of `<events>`
+ *   (`CHALLENGE`, `JUDGE`, `DUEL`, `RULE`, `OFFERING`, `JOKER`) that wake it like salient events, with the
+ *   trigger `mechanic`; its lines and the guards' pacing end `<situation>` and the briefing's `<engine_state>`
+ *   ([MechanicsLines]); its tools are in a chapter when it runs at the chapter's opening.
+ * - **Reminders** (`remind_me`, M4 §15.1): kept in the [GameView.reminders] store, read when the Director is
+ *   created and saved each time one is set or given back, so that a restart keeps them and their numbers go
+ *   on. One that came due while the server was down is told at the first chance, marked late; one more than
+ *   [LATE_REMINDER_MAX_MS] late is dropped, with a decision. A disabled Director keeps them for later.
  * - **Memory** (M3 §11): a chapter's briefing holds the memory's sections; the memory's signals are lines
  *   of `<events>` (`DUE` wakes the Director, `NOTE`, `RETURN` and `ANNIVERSARY` wait for a wake-up); the
  *   memory attaches a `<memory>` block (the sheet of a player who joins, the memories the events bring
@@ -133,8 +145,15 @@ class Director(
     private val decisions = Decisions(services.trace, clock)
     private val indicator = ThinkingIndicator(game, ::thinkingText)
     private val actions = ArrayDeque<DirectorAction>() // guarded by itself
-    private val reminders = ConcurrentHashMap<Long, Reminder>()
-    private val reminderIds = AtomicLong(1)
+
+    // The reminders waiting and the number of the next one: guarded by reminderLock, saved under it in the order of the changes.
+    private val reminderLock = Any()
+    private val reminders = HashMap<Long, Reminder>()
+    private var nextReminderId = 1L
+
+    init {
+        restoreReminders()
+    }
 
     /** The turns of the last hour, against `director.turnsPerHour` (M2 review, finding 26). */
     private val budget = TurnBudget { services.settings.get().config.director.turnsPerHour }
@@ -199,13 +218,16 @@ class Director(
     override fun scheduleReminder(inSeconds: Int, note: String, caller: Caller): Result<Long> {
         if (services.phase != Phase.RUNNING) return Result.failure(IllegalStateException("the server is stopping"))
         if (state == DirectorState.DISABLED || state == DirectorState.STOPPED) return Result.failure(IllegalStateException("the Director is disabled"))
-        val id = reminderIds.getAndIncrement()
         val now = clock.millis()
-        val reminder = Reminder(id, note, now, now + inSeconds * 1_000L)
-        reminders[id] = reminder
-        log.info("reminder R-$id set by turn ${caller.turnId} for ${formatter.time(reminder.at)}: ${note.take(80)}")
+        val reminder = synchronized(reminderLock) {
+            Reminder(nextReminderId++, note, now, now + inSeconds * 1_000L, caller.turnId, missed = false).also {
+                reminders[it.id] = it
+                saveReminders()
+            }
+        }
+        log.info("reminder R-${reminder.id} set by turn ${caller.turnId} for ${formatter.time(reminder.at)}: ${note.take(80)}")
         inbox.changed()
-        return Result.success(id)
+        return Result.success(reminder.id)
     }
 
     override fun status(): DirectorStatus {
@@ -258,7 +280,6 @@ class Director(
     private suspend fun step(scope: CoroutineScope) {
         applyControls()
         val now = clock.millis()
-        releaseReminders(now)
         disabledReason()?.let { reason ->
             val dropped = inbox.discard { true }
             inbox.takeOverflow()
@@ -266,9 +287,11 @@ class Director(
             // A resume that reached a disabled Director has nothing to resume: a key that arrives later must not wake it for nothing.
             resumeWake = false
             publish(DirectorState.DISABLED, null, reason)
+            // The reminders wait in the world until the Director can hear them (M4 §15.1).
             inbox.await(null)
             return
         }
+        releaseReminders(now)
         if (paused) {
             mute()
             publish(DirectorState.PAUSED, null, "paused by an operator")
@@ -900,7 +923,7 @@ class Director(
             outcome = outcome,
         )
 
-        /** `chat Bartok + 2 items`, for the log and the wake decision. */
+        /** `chat Bartok + 2 items`, `mechanic CHALLENGE C-50`, for the log and the wake decision. */
         private fun describe(): String {
             val main = when (trigger) {
                 TurnRecord.Trigger.PRAY -> openingItems.firstOrNull { it.chat?.channel == ChatChannel.PRAY }
@@ -908,13 +931,15 @@ class Director(
                 else -> null
             }
             val due = if (trigger == TurnRecord.Trigger.DUE) openingItems.firstOrNull { it.signal is DirectorSignal.MemoryDue } else null
+            val news = if (trigger == TurnRecord.Trigger.MECHANIC) openingItems.firstOrNull { it.signal is DirectorSignal.Mechanic } else null
             val head = when {
                 main?.chat != null -> "${trigger.id} ${main.chat?.player?.name}"
                 due != null -> "${trigger.id} ${(due.signal as DirectorSignal.MemoryDue).ref}"
+                news != null -> "${trigger.id} ${mechanicHead(news.signal as DirectorSignal.Mechanic)}"
                 beat != null -> "${trigger.id} (${beat.summary.size} active ${if (beat.summary.size == 1) "player" else "players"})"
                 else -> trigger.id
             }
-            val more = openingItems.size - if (main == null && due == null) 0 else 1
+            val more = openingItems.size - if (main == null && due == null && news == null) 0 else 1
             return head + if (more > 0) " + $more ${if (more == 1) "item" else "items"}" else ""
         }
     }
@@ -956,15 +981,78 @@ class Director(
         return fresh
     }
 
-    private fun releaseReminders(now: Long) {
-        reminders.values.filter { it.at <= now }.sortedBy { it.at }.forEach { reminder ->
-            if (reminders.remove(reminder.id) != null) inbox.post(DirectorSignal.ReminderDue(reminder.id, reminder.note, reminder.setAt, reminder.at))
+    /**
+     * The reminders saved in the world ([GameView.reminders]), when the Director is created: those due already
+     * came due while the server was down ([Reminder.missed]). A store that cannot be read gives none.
+     */
+    private fun restoreReminders() {
+        val saved = try {
+            game.reminders.load()
+        } catch (e: Exception) {
+            log.error("the saved reminders cannot be read; the Director starts without them", e)
+            ReminderState.EMPTY
+        }
+        val now = clock.millis()
+        val restored = synchronized(reminderLock) {
+            saved.reminders.forEach { reminders[it.id] = Reminder(it.id, it.note, it.setAt, it.at, it.turnId, missed = it.at <= now) }
+            nextReminderId = maxOf(saved.nextId, (reminders.keys.maxOrNull() ?: 0) + 1)
+            reminders.values.sortedBy { it.at }
+        }
+        if (restored.isEmpty()) return
+        log.info(
+            "${restored.size} ${if (restored.size == 1) "reminder" else "reminders"} restored from the world: " +
+                restored.joinToString { "R-${it.id} at ${formatter.time(it.at)}${if (it.missed) " (came due while the server was down)" else ""}" } +
+                "; the next one is R-$nextReminderId",
+        )
+    }
+
+    /** Saves the reminders and the next number, in the order of the changes. Under [reminderLock]. */
+    private fun saveReminders() {
+        val state = ReminderState(nextReminderId, reminders.values.sortedBy { it.at }.map { SavedReminder(it.id, it.note, it.setAt, it.at, it.turnId) })
+        try {
+            game.reminders.save(state)
+        } catch (e: Exception) {
+            log.error("the reminders could not be saved (${state.reminders.size} waiting); a restart would lose the last changes", e)
         }
     }
 
-    private fun nextReminderAt(): Long? = reminders.values.minOfOrNull { it.at }
+    /**
+     * Gives back the reminders due at [now]: each goes to the inbox, the one that came due while the server was
+     * down dated [now] and marked late (it would otherwise take the chat since its due time out of a briefing);
+     * one more than [LATE_REMINDER_MAX_MS] late is dropped with a decision.
+     */
+    private fun releaseReminders(now: Long) {
+        val due = synchronized(reminderLock) {
+            val due = reminders.values.filter { it.at <= now }.sortedBy { it.at }
+            if (due.isEmpty()) return
+            due.forEach { reminders.remove(it.id) }
+            saveReminders()
+            due
+        }
+        due.forEach { reminder ->
+            if (now - reminder.at > LATE_REMINDER_MAX_MS) {
+                val why = if (reminder.missed) "while the server was down" else "while the Director was disabled"
+                decisions.record(
+                    log, DecisionRecord.Kind.WAKE, "dropped", subject = "R-${reminder.id}",
+                    reason = "reminder R-${reminder.id} came due ${duration(now - reminder.at)} ago, $why: more than " +
+                        "${duration(LATE_REMINDER_MAX_MS)} late, it is dropped (${EventFormatter.quote(reminder.note)})",
+                    turnId = reminder.turnId, level = Log.Level.WARN,
+                )
+                return@forEach
+            }
+            val signal = if (reminder.missed) {
+                DirectorSignal.ReminderDue(reminder.id, reminder.note, reminder.setAt, now, dueAt = reminder.at)
+            } else {
+                DirectorSignal.ReminderDue(reminder.id, reminder.note, reminder.setAt, reminder.at)
+            }
+            inbox.post(signal)
+        }
+    }
 
-    private fun pendingReminders(): List<PendingReminder> = reminders.values.map { PendingReminder(it.id, it.note, it.at) }.sortedBy { it.at }
+    private fun nextReminderAt(): Long? = synchronized(reminderLock) { reminders.values.minOfOrNull { it.at } }
+
+    private fun pendingReminders(): List<PendingReminder> =
+        synchronized(reminderLock) { reminders.values.map { PendingReminder(it.id, it.note, it.at) } }.sortedBy { it.at }
 
     private suspend fun worldTime(): Result<WorldTime> = try {
         Result.success(game.worldTime())
@@ -997,7 +1085,8 @@ class Director(
         this.why = why
     }
 
-    private data class Reminder(val id: Long, val note: String, val setAt: Long, val at: Long)
+    /** A reminder waiting; [missed]: it came due while the server was down, and is told late. */
+    private data class Reminder(val id: Long, val note: String, val setAt: Long, val at: Long, val turnId: Long?, val missed: Boolean)
 
     /** Silent until [until] (a reload when null), because [why]. */
     private data class Block(val until: Long?, val why: String)
@@ -1054,6 +1143,9 @@ class Director(
         /** How long the memory may take to attach sheets and memories to the items of a request (M3 §11.3). */
         const val ATTACH_TIMEOUT_MS = 3_000L
 
+        /** A reminder given back more than this long after it came due (the server was down) is dropped (M4 §15.1). */
+        const val LATE_REMINDER_MAX_MS = 24 * 3_600_000L
+
         private val ACTING = setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK)
         private const val HEARTBEAT = "heartbeat"
         private val NOTABLE_STATES = setOf(DirectorState.DISABLED, DirectorState.PAUSED, DirectorState.BACKOFF, DirectorState.BLOCKED, DirectorState.STOPPED)
@@ -1064,6 +1156,13 @@ class Director(
         /** [a] and [b] added kind by kind. */
         private fun merged(a: Map<String, Int>, b: Map<String, Int>): Map<String, Int> =
             if (b.isEmpty()) a else LinkedHashMap(a).apply { b.forEach { (kind, count) -> merge(kind, count, Int::plus) } }
+
+        /** `CHALLENGE C-50`, `OFFERING O-812`: the kind of [news], and the reference its line starts with, if any. */
+        private fun mechanicHead(news: DirectorSignal.Mechanic): String =
+            news.kind.name + (MECHANIC_REF.find(news.line)?.value?.let { " $it" } ?: "")
+
+        /** A reference that starts a mechanic's line: `C-50`, `O-812`. */
+        private val MECHANIC_REF = Regex("^[A-Z]-\\d+")
 
         /** The operator whispers among [items], as notes. */
         private fun whispers(items: List<Item>): List<OperatorNote> =
@@ -1077,6 +1176,7 @@ class Director(
             items.any { it.signal is DirectorSignal.TaskDone } -> TurnRecord.Trigger.TASK
             items.any { it.signal is DirectorSignal.ReminderDue } -> TurnRecord.Trigger.REMINDER
             items.any { it.signal is DirectorSignal.MemoryDue } -> TurnRecord.Trigger.DUE
+            items.any { it.signal is DirectorSignal.Mechanic } -> TurnRecord.Trigger.MECHANIC
             items.any { it.urgency == Urgency.SOON } -> TurnRecord.Trigger.SALIENT
             beat != null -> TurnRecord.Trigger.HEARTBEAT
             resumed -> TurnRecord.Trigger.RESUME

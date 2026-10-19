@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
+import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.memory.BriefingSection
 import io.github.clemsix6.narrator2.memory.ChapterMemory
 import io.github.clemsix6.narrator2.observer.LivePlayer
@@ -48,7 +49,8 @@ import java.util.UUID
  *   lines included (never a private message: it reads the `chat_log` view);
  * - `<your_recent_actions>`: the Narrator's last speech and world tool calls that took effect;
  * - `<engine_state>`: its effects on the players online, the protections, the deaths it may still cause
- *   each of them, its tasks and reminders.
+ *   each of them, its tasks and reminders; then the mechanics' lines of the situation (M4 §4.5,
+ *   [MechanicsLines]: challenges, rules, pacing, offerings), within [MechanicsLimits.ENGINE_STATE] characters.
  *
  * Every section is always there. A source that fails is never passed over in silence: its section says
  * `(unavailable: <reason>)` and an `ERROR` is logged; the other sections are still written. An empty
@@ -82,6 +84,7 @@ class Briefing(
     private val hours = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(zone)
     private val dated = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT).withZone(zone)
     private val day = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT).withZone(zone)
+    private val mechanics = MechanicsLines(services, zone)
 
     /**
      * The briefing of chapter [number] at [now].
@@ -366,17 +369,21 @@ class Briefing(
 
     // ── Engine state ────────────────────────────────────────────────────────────────────────────────
 
+    /**
+     * The engine's state: its own five lines within [ENGINE_STATE_OWN] characters together (the longest give up
+     * their last items first), then the mechanics' lines (M4 §4.5), [MechanicsLimits.SITUATION_TOTAL] at most:
+     * [MechanicsLimits.ENGINE_STATE] in all, line breaks included.
+     */
     private fun engineState(now: Long, reminders: List<PendingReminder>): List<String> {
         val online = services.players.online
-        return listOf(
-            line("Your active effects") {
-                val effects = online.flatMap { player ->
+        val own = listOf(
+            line("Your active effects", EFFECTS_MAX) {
+                online.flatMap { player ->
                     services.guards.activeOn(player.ref.uuid).map { "${who(player.ref)} ${ModelText.escape(it.what)} (${it.kind}) until ${time(it.until)}" }
                 }
-                list(effects, EFFECTS_MAX)
             },
-            line("Protected") {
-                val protected = online.mapNotNull { player ->
+            line("Protected", ONLINE_MAX) {
+                online.mapNotNull { player ->
                     val died = player.lastDeathAt?.let { it + SituationReport.NO_PILE_ON_MS }?.takeIf { it > now }
                     when {
                         services.guards.isProtected(player.ref.uuid) -> "${who(player.ref)} from every hostile action (operators)"
@@ -384,32 +391,39 @@ class Briefing(
                         else -> null
                     }
                 }
-                list(protected, ONLINE_MAX)
             },
-            line("Deaths you may still cause") { list(online.map { "${who(it.ref)} ${services.guards.deathsLeft(it.ref.uuid)}" }, ONLINE_MAX) },
-            line("Tasks") {
-                val open = services.workers.list().filter { !it.status.finished }.map { task ->
+            line("Deaths you may still cause", ONLINE_MAX) { online.map { "${who(it.ref)} ${services.guards.deathsLeft(it.ref.uuid)}" } },
+            line("Tasks", TASKS_MAX) {
+                services.workers.list().filter { !it.status.finished }.map { task ->
                     val state = if (task.status == TaskRecord.Status.RUNNING) "running ${duration(now - (task.startedAt ?: task.createdAt).toEpochMilli())}" else task.status.id
                     "T-${task.taskId} ${task.role.id} $state"
                 }
-                list(open, TASKS_MAX)
             },
-            line("Reminders") { list(reminders.sortedBy { it.at }.map { "R-${it.id} at ${time(it.at)} ${quote(it.note, REMINDER_QUOTE_MAX)}" }, REMINDERS_MAX) },
+            line("Reminders", REMINDERS_MAX) { reminders.sortedBy { it.at }.map { "R-${it.id} at ${time(it.at)} ${quote(it.note, REMINDER_QUOTE_MAX)}" } },
         )
+        return LineBudget.share(own, ENGINE_STATE_OWN, ENGINE_STATE_OWN) + mechanics.render(now)
     }
 
-    /** `<label>: <what>`, or `<label>: (unavailable: …)` when [what] fails. */
-    private fun line(label: String, what: () -> String): String = try {
-        "$label: ${what()}"
-    } catch (e: Exception) {
-        log.error("briefing: ${label.lowercase()} unavailable: ${reason(e)}")
-        "$label: (unavailable: ${reason(e)})"
-    }
-
-    private fun list(items: List<String>, max: Int): String = when {
-        items.isEmpty() -> "none"
-        items.size <= max -> items.joinToString(", ")
-        else -> items.take(max).joinToString(", ") + " (+${items.size - max} more)"
+    /**
+     * `<label>: a, b, c (+2 more)`, at most [max] items and the characters it is given; `<label>: none` without
+     * any; `<label>: (unavailable: …)` when [items] fails.
+     */
+    private fun line(label: String, max: Int, items: () -> List<String>): (Int) -> String {
+        val listed = try {
+            Result.success(items())
+        } catch (e: Exception) {
+            log.error("briefing: ${label.lowercase()} unavailable: ${reason(e)}")
+            Result.failure(e)
+        }
+        return { chars ->
+            listed.fold(
+                { all ->
+                    val chunks = all.take(max).mapIndexed { index, item -> if (index == 0) item else ", $item" }
+                    LineBudget.fit("$label: ", chunks, chars, more = (all.size - max).coerceAtLeast(0)) ?: "$label: none"
+                },
+                { "$label: (unavailable: ${reason(it)})" },
+            )
+        }
     }
 
     private fun time(ms: Long): String = hours.format(Instant.ofEpochMilli(ms))
@@ -451,8 +465,11 @@ class Briefing(
         }
 
     companion object {
-        /** The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token (M3 §11.1). */
-        const val MAX_CHARS = 70_000
+        /**
+         * The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token
+         * (M3 §11.1), and the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5).
+         */
+        const val MAX_CHARS = 71_200
 
         /** How far back the players and the chat go. */
         const val WINDOW_MS = 24 * 3_600_000L
@@ -493,6 +510,12 @@ class Briefing(
         const val TASKS_MAX = 6
         const val REMINDERS_MAX = 5
         const val REMINDER_QUOTE_MAX = 100
+
+        /**
+         * The engine state's own five lines together: [MechanicsLimits.ENGINE_STATE] (2,700) less the mechanics'
+         * lines (1,200) and the line breaks between the section's nine lines.
+         */
+        const val ENGINE_STATE_OWN = MechanicsLimits.ENGINE_STATE - MechanicsLimits.SITUATION_TOTAL - 8
 
         const val READ_TIMEOUT_MS = 5_000L
         const val BARRIER_TIMEOUT_MS = 2_000L
