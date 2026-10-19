@@ -22,13 +22,19 @@ import io.github.clemsix6.narrator2.mechanics.ChallengeStatus
 import io.github.clemsix6.narrator2.mechanics.ChallengeView
 import io.github.clemsix6.narrator2.mechanics.DuelSpec
 import io.github.clemsix6.narrator2.mechanics.Engine
+import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.MechanicPart
+import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
+import io.github.clemsix6.narrator2.mechanics.RewardKind
+import io.github.clemsix6.narrator2.mechanics.RewardSpec
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.mechanics.challenge.Bets
 import io.github.clemsix6.narrator2.mechanics.challenge.Challenges
 import io.github.clemsix6.narrator2.mechanics.challenge.Duels
+import io.github.clemsix6.narrator2.mechanics.challenge.Stakes
 import io.github.clemsix6.narrator2.memory.CanonEntry
+import io.github.clemsix6.narrator2.memory.CanonFilter
 import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
@@ -40,6 +46,7 @@ import io.github.clemsix6.narrator2.testing.FakeChallenges
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolCatalog
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
@@ -225,17 +232,33 @@ class DuelGameTests {
         }
     }
 
+    /** A reward its tool refuses is refused with the proposal (the stakes' dry checks), before anything is written. */
+    @GameTest(maxTicks = ASYNC_MAX_TICKS)
+    fun aRewardItsToolRefusesIsRefusedBeforeAnythingIsWritten(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
+        withRig(helper, 2) { rig, (bob, ann) ->
+            val forbidden = spec(bob, ann, "Interdit").copy(reward = RewardSpec(RewardKind.ITEM, item = "command_block"))
+            val refused = runCatching { rig.propose(forbidden) }.exceptionOrNull()
+            check(refused is MechanicRejected && refused.rule == "forbidden_item" && refused.message!!.startsWith("reward: give_item refuses 1x command_block")) {
+                "refused: $refused"
+            }
+            check(rig.store.snapshot.challenges.isEmpty() && rig.decisions(Duels.INVITED).isEmpty()) { "no state, no decision" }
+            val rows = rig.runtime.memory.store.canon(CanonFilter(open = null, player = bob.uuid)).filter { row -> row.players.any { it.uuid == bob.uuid } }
+            check(rows.isEmpty()) { "no canon row names Bob: $rows" }
+            check(bob.lines().none { "duel" in it } && ann.lines().none { "duel" in it }) { "no invitation: ${bob.lines()}" }
+        }
+    }
+
     // ── Nobody dies in a duel: one test per way to die ──
 
     /**
      * The opponent's fatal blow (M4 §5.5): stopped at 1 health where Bob stands, his fire out, the wither and the
-     * poison of the fight lifted, resistance V a few seconds; Ann wins, Bob is not rescued (nothing to rescue him
-     * from), and lives on with his diamonds.
+     * poison of the fight lifted, resistance V a few seconds; Ann wins and gets the duel's reward (the real `give_item`),
+     * Bob is not rescued (nothing to rescue him from), and lives on with his diamonds.
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun theOpponentsFatalBlowIsStoppedAtOneHealth(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
         withRig(helper, 2) { rig, (bob, ann) ->
-            val view = rig.fight(bob, ann, "Le coup fatal")
+            val view = rig.fight(bob, ann, "Le coup fatal", reward = RewardSpec(RewardKind.ITEM, item = "golden_apple"))
             rig.onServer {
                 val player = bob.live
                 val where = player.position()
@@ -253,10 +276,17 @@ class DuelGameTests {
                 check(GuardStates.read(player).rescues.isEmpty()) { "no rescue: nothing to take him out of" }
             }
             val end = rig.awaitEnd(view.ref)
-            check(Regex("^${view.ref} won by ${ann.name} in \\d+s: ${ann.name}'s fatal blow on ${bob.name} was stopped at 1 hp$").matches(end)) { "the end: $end" }
+            check(Regex("^${view.ref} won by ${ann.name} in \\d+s: ${ann.name}'s fatal blow on ${bob.name} was stopped at 1 hp · reward: ${ann.name} got 1x golden_apple$").matches(end)) {
+                "the end: $end"
+            }
             check(rig.mechanic().last().priority) { "the end wakes the Director" }
             rig.checkClosed(view.ref, CanonStatus.WON, listOf(ann), listOf(bob), end)
-            rig.onServer { rig.livesOn(bob, diamonds = 3) }
+            val gift = rig.runtime.memory.store.interactions(ann.uuid, 20).filter { it.canon == view.ref && it.kind == InteractionKind.GIFT }
+            check(gift.size == 1 && gift.single().summary.startsWith("duel reward: ")) { "the reward in Ann's history: $gift" }
+            rig.onServer {
+                check(count(ann.live, Items.GOLDEN_APPLE) == 1) { "Ann got her reward" }
+                rig.livesOn(bob, diamonds = 3)
+            }
         }
     }
 
@@ -536,8 +566,11 @@ class DuelGameTests {
         /** A ledger of the rig's own: it reads the same player attachments as the server's guards. */
         val ledger = ItemLedger(GuardStates(), Decisions(sink, clock), clock, tell = { _, _ -> }) { runtime.settings.get().ui }
         val bets = Bets(services, store, ledger, clock)
-        val challenges = Challenges(services, store, bars, bets = bets, clock = clock)
-        val duels = Duels(services, store, challenges, clock = clock)
+
+        /** The stakes, paid by the real tools: the same for the challenges and the duels, as the assembly does. */
+        val stakes = Stakes(services, EngineActions(services, ToolCatalog.allTools(services)))
+        val challenges = Challenges(services, store, bars, stakes, bets, clock)
+        val duels = Duels(services, store, challenges, stakes, clock)
         val engine = Engine(services, store, listOf(challenges, duels, bets, DrawnBars(bars, store, runtime.settings.get().ui)), clock)
 
         /** What `/duel` answers to: this engine's duels. */
@@ -551,8 +584,8 @@ class DuelGameTests {
         suspend fun propose(spec: DuelSpec): ChallengeView = duels.propose(spec, DIRECTOR)
 
         /** A duel of [bob] and [ann], both accepted, both able to take damage, Bob with 3 diamonds: running. */
-        suspend fun fight(bob: TestPlayer, ann: TestPlayer, title: String, minutes: Int = 5): ChallengeView {
-            val view = propose(spec(bob, ann, title, minutes = minutes))
+        suspend fun fight(bob: TestPlayer, ann: TestPlayer, title: String, minutes: Int = 5, reward: RewardSpec? = null): ChallengeView {
+            val view = propose(spec(bob, ann, title, minutes = minutes).copy(reward = reward))
             onServer {
                 bob.makeVulnerable()
                 ann.makeVulnerable()
