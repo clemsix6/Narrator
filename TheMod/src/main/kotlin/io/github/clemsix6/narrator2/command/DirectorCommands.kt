@@ -71,7 +71,7 @@ object DirectorCommands {
      * What a command answers: [lines] to its sender, in red when it did nothing ([done] false); the
      * first line of a command that did something also goes to the other operators.
      */
-    internal class Reply(val done: Boolean, val lines: List<Component>) {
+    class Reply(val done: Boolean, val lines: List<Component>) {
         companion object {
             fun done(vararg lines: Component) = Reply(true, lines.toList())
 
@@ -91,16 +91,17 @@ object DirectorCommands {
 
     /**
      * The running turn ends first; then the Director keeps only what someone waits for and says nothing.
-     * Refused while the Director is disabled or stopping: it is silent already, and a pause that would
-     * wait there for a key would surprise whoever adds one.
+     * Only the Director pauses (M4 §24.3, decision K): the laws, the challenges and the traps run on, and the
+     * answer says how to stop them. Refused while the Director is disabled or stopping: it is silent already,
+     * and a pause that would wait there for a key would surprise whoever adds one.
      */
     internal fun pause(services: NarratorServices, operator: String): Reply {
         val before = services.director.status()
         cannotHear(before)?.let { return Reply.refused("the Director is $it: nothing to pause.") }
-        if (before.state == DirectorState.PAUSED) return Reply.done(narratorLine("the Director is already paused; /narrator resume wakes it."))
+        if (before.state == DirectorState.PAUSED) return Reply.done(narratorLine("the Director is already paused; /narrator resume wakes it."), detailLine(STILL_RUNNING))
         services.director.post(DirectorSignal.Pause)
         record(services, "paused", operator, "the Director stays silent until /narrator resume")
-        return Reply.done(narratorLine("paused: the Director ends its current turn, if any, then stays silent until /narrator resume."))
+        return Reply.done(narratorLine("paused: the Director ends its current turn, if any, then stays silent until /narrator resume."), detailLine(STILL_RUNNING))
     }
 
     /** The Director wakes up with what waited, and tells the model how long it was silent. */
@@ -274,6 +275,10 @@ object DirectorCommands {
 
     private const val CHAOS = "chaos"
     private const val REASON_CHARS = 200
+
+    /** What a pause leaves running (decision K), and how to stop it. */
+    private const val STILL_RUNNING =
+        "The laws, challenges and traps run on: /narrator rule remove, /narrator challenge cancel and /narrator traps restore stop them."
 
     private val PRETTY = Json {
         prettyPrint = true

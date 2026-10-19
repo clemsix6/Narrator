@@ -279,7 +279,8 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
                 perHour = TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR,
                 resting = episodes.resting(uuid, rest, now),
                 graceUntil = state.graceUntil?.takeIf { it > now },
-                offerings = state.confiscations.filter { it.purpose == LedgerPurpose.OFFERING },
+                // Past its deadline, an offering only waits for room to go back: nobody can take it any more.
+                offerings = state.confiscations.filter { it.purpose == LedgerPurpose.OFFERING && it.returnAt > now },
             )
         }
     }
