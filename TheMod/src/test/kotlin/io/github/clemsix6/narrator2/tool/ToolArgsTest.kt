@@ -113,6 +113,57 @@ class ToolArgsTest {
         )
     }
 
+    private fun decoded(input: String): ToolArgs.Decoded.Ok<EveryTypeArgs> =
+        when (val decoded = ToolArgs.decode(EveryTypeArgs.serializer(), input)) {
+            is ToolArgs.Decoded.Ok -> decoded
+            is ToolArgs.Decoded.Invalid -> fail("expected valid arguments, got: ${decoded.problem}")
+        }
+
+    @Test
+    fun `a list written as the JSON text of a list is read as that list, and named`() {
+        // What Opus 5.5 at effort low sometimes sends (M3-19, §21.2): "players": "[\"Mimosa\"]".
+        val decoded = decoded("""{"text":"hi","seconds":1,"to":"[\"Bob\", \"Mimosa\"]"}""")
+        assertEquals(EveryTypeArgs(text = "hi", seconds = 1, to = listOf("Bob", "Mimosa")), decoded.args)
+        assertEquals(listOf("to"), decoded.coerced)
+        // Its items are checked as any list's.
+        assertEquals("to[0] is longer than 16 characters (got 20)", problem("""{"text":"hi","seconds":1,"to":"[\"${"b".repeat(20)}\"]"}"""))
+        assertEquals("to must have 1 to 8 items (got 0)", problem("""{"text":"hi","seconds":1,"to":"[]"}"""))
+    }
+
+    @Test
+    fun `an object written as JSON text is read as that object, inside a list too`() {
+        val decoded = decoded(
+            """{"text":"hi","seconds":1,"gear":"{\"head\": \"diamond_helmet\"}","enchantments":"[{\"id\":\"sharpness\",\"level\":\"5\"}]"}""",
+        )
+        assertEquals(
+            EveryTypeArgs(text = "hi", seconds = 1, gear = Gear(head = "diamond_helmet"), enchantments = listOf(Enchant("sharpness", 5))),
+            decoded.args,
+        )
+        assertEquals(listOf("gear", "enchantments", "enchantments[0].level"), decoded.coerced)
+        assertEquals("unknown argument \"gear.hat\" (expected: head, mainhand)", problem("""{"text":"hi","seconds":1,"gear":"{\"hat\":\"x\"}"}"""))
+    }
+
+    @Test
+    fun `numbers and booleans written as text are read as such`() {
+        val decoded = decoded("""{"text":"hi","seconds":"30","task_id":"-12","volume":"0.5","particles":"false"}""")
+        assertEquals(EveryTypeArgs(text = "hi", seconds = 30, taskId = -12, volume = 0.5, particles = false), decoded.args)
+        assertEquals(listOf("seconds", "task_id", "volume", "particles"), decoded.coerced)
+        assertEquals("seconds must be between 1 and 900 (got 1200)", problem("""{"text":"hi","seconds":"1200"}"""))
+        // Valid arguments coerce nothing; a string stays a string, an enum value an enum value.
+        assertEquals(emptyList(), decoded("""{"text":"[1, 2]","seconds":1,"shape":"star"}""").coerced)
+    }
+
+    @Test
+    fun `a string that does not hold a value of the expected type is still refused, saying what was expected`() {
+        assertEquals("to must be a list (got \"[\\\"Bob\\\"\")", problem("""{"text":"hi","seconds":1,"to":"[\"Bob\""}"""))
+        assertEquals("to must be a list (got \"{\\\"a\\\":1}\")", problem("""{"text":"hi","seconds":1,"to":"{\"a\":1}"}"""))
+        assertEquals("gear must be an object (got \"[]\")", problem("""{"text":"hi","seconds":1,"gear":"[]"}"""))
+        assertEquals("seconds must be an integer (got \"2.5\")", problem("""{"text":"hi","seconds":"2.5"}"""))
+        assertEquals("seconds must be an integer (got \"null\")", problem("""{"text":"hi","seconds":"null"}"""))
+        assertEquals("particles must be true or false (got \"1\")", problem("""{"text":"hi","seconds":1,"particles":"1"}"""))
+        assertEquals("shape must be one of: small_ball, star (got \"\\\"star\\\"\")", problem("""{"text":"hi","seconds":1,"shape":"\"star\""}"""))
+    }
+
     @Serializable
     data class CountArgs(val count: Int)
 

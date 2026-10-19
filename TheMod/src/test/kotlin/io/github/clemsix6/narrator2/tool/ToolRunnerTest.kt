@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -133,6 +134,27 @@ class ToolRunnerTest {
         )
         assertTrue(ran.isEmpty())
         assertEquals(ToolStatus.INVALID, services.traces.toolCalls.single().status)
+    }
+
+    @Test
+    fun `arguments written as JSON text run the tool, with a tool args_coerced decision`() = runTest {
+        val tool = TestTool("every_type", EveryTypeArgs.serializer(), ToolEffect.WORLD) { _, args -> ToolResult.ok("ok: ${args.to} for ${args.seconds}s") }
+
+        val result = runOne(tool, """{"text":"hi","seconds":"30","to":"[\"Bob\"]"}""")
+
+        assertEquals("ok: [Bob] for 30s", result.text)
+        assertEquals(ToolStatus.OK, services.traces.toolCalls.single().status)
+        assertEquals("""{"text":"hi","seconds":"30","to":"[\"Bob\"]"}""", services.traces.toolCalls.single().args, "the audit keeps what the model sent")
+        val decision = services.traces.decisions.single()
+        assertEquals(DecisionRecord.Kind.TOOL, decision.kind)
+        assertEquals(
+            listOf("args_coerced", "every_type", "seconds, to written as JSON text, read as the value it holds (director)"),
+            listOf(decision.decision, decision.subject, decision.reason),
+        )
+        assertEquals("director-0badcafe" to 7L, decision.conversationId to decision.turnId)
+
+        runOne(tool, """{"text":"hi","seconds":30,"to":["Bob"]}""")
+        assertEquals(1, services.traces.decisions.size, "arguments of the right types are no decision")
     }
 
     @Test
