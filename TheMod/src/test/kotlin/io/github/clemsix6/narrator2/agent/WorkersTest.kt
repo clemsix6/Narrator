@@ -33,6 +33,7 @@ import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.TestTool
 import io.github.clemsix6.narrator2.tool.ToolEffect
+import io.github.clemsix6.narrator2.tool.ToolEnv
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolRunner
 import io.github.clemsix6.narrator2.tool.ToolSet
@@ -117,6 +118,9 @@ class WorkersTest {
         /** Queries the fake `sql` got, in order. */
         val queries = CopyOnWriteArrayList<String>()
 
+        /** The role and environment each task's tools were chosen for, in order. */
+        val toolSets = CopyOnWriteArrayList<Pair<Role, ToolEnv>>()
+
         init {
             val defaults = testConfig(fake.baseUrl)
             val config = defaults.copy(workers = WorkersConfig(maxConcurrent, maxSteps, timeoutSeconds))
@@ -137,12 +141,12 @@ class WorkersTest {
                 override val workers get() = this@Rig.workers
             }
             val sql = TestTool("sql", QueryArgs.serializer(), body = { _, args -> queries += args.query; ToolResult.ok("n\n42") })
-            workers = Workers(services) { _, _ -> ToolSet.of(listOf(sql)) }
+            workers = Workers(services) { role, env -> toolSets += role to env; ToolSet.of(listOf(sql)) }
             rigs += this
         }
 
-        fun submit(brief: String = "Where does Bartok mine these days? Coordinates please."): Long =
-            workers.submit(Role.ANALYST, brief, DIRECTOR_CALLER).getOrThrow()
+        fun submit(brief: String = "Where does Bartok mine these days? Coordinates please.", role: Role = Role.ANALYST): Long =
+            workers.submit(role, brief, DIRECTOR_CALLER).getOrThrow()
 
         fun task(id: Long): TaskRecord = workers.list().firstOrNull { it.taskId == id } ?: fail("T-$id is not listed")
 
@@ -269,6 +273,41 @@ class WorkersTest {
         assertEquals(sessions[0], row.conversationId)
         assertEquals("Réponse : T-1.", row.result)
         assertNull(row.error)
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
+    /** The scout (M4 §14) is a worker like the Analyst: its own prompt, settings (effort low) and tools, the same line. */
+    @Test
+    fun `a scout task is its own conversation, with the scout's prompt, effort and tools`() {
+        val rig = Rig()
+        rig.base.players.put(online("Bartok"))
+        val id = rig.submit("Find a flat open square near Bartok for a duel, in the overworld.", Role.SCOUT)
+        val session = rig.session(id)
+        enqueueFor(session, sqlCall("SELECT * FROM sleep_spots('Bartok')"), reply { text("Réponse : une arène à 18 blocs au NE de Bartok.") })
+
+        rig.await("the scout's report") { rig.done().size == 1 }
+
+        assertTrue(session.startsWith("scout-"), session)
+        assertEquals(listOf(Role.SCOUT), rig.toolSets.map { it.first })
+        assertEquals(ToolEnv(journalAvailable = true, workerRoles = emptySet(), memoryAvailable = true), rig.toolSets.single().second)
+        val request = rig.requestsOf(id).first().json
+        assertContains(request.path("system")[0].path("text").asText(), "Tu es l'Éclaireur du Narrateur")
+        assertEquals("low", request.path("output_config").path("effort").asText())
+        assertEquals(
+            "<task id=\"T-$id\" from=\"director\">\nFind a flat open square near Bartok for a duel, in the overworld.\n</task>\n" +
+                "<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>",
+            request.path("messages")[0].path("content")[0].path("text").asText(),
+        )
+        assertEquals(listOf("SELECT * FROM sleep_spots('Bartok')"), rig.queries)
+        val conversation = assertNotNull(rig.traces.latestConversation(session))
+        assertEquals("Task T-$id (scout)", conversation.label)
+        assertEquals(Role.SCOUT, conversation.role)
+        assertTrue(rig.traces.toolCalls.all { it.role == Role.SCOUT && it.conversationId == session }, "${rig.traces.toolCalls}")
+        val done = rig.done().single()
+        assertEquals(Role.SCOUT, done.role)
+        assertEquals(Status.DONE, done.status)
+        assertEquals("Réponse : une arène à 18 blocs au NE de Bartok.", done.result)
+        assertEquals(Role.SCOUT, rig.traces.latestTask(id)!!.role)
         assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
@@ -486,14 +525,16 @@ class WorkersTest {
     // ── What is offered, and the server that stops ─────────────────────────────────────────────────
 
     @Test
-    fun `the Analyst takes tasks only with the Journal and while the server runs`() {
+    fun `the Analyst and the scout take tasks only with the Journal and while the server runs`() {
         val closed = Rig(journalAvailable = false)
         assertEquals(emptySet(), closed.workers.roles)
         assertEquals("no analyst can take a task: the Journal is unavailable", closed.workers.submit(Role.ANALYST, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
-        assertEquals("no scout can take a task: there is no scout yet", closed.workers.submit(Role.SCOUT, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no scout can take a task: the Journal is unavailable", closed.workers.submit(Role.SCOUT, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no forger can take a task: there is no forger yet", closed.workers.submit(Role.FORGER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
 
         val rig = Rig()
-        assertEquals(setOf(Role.ANALYST), rig.workers.roles)
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT), rig.workers.roles)
+        assertEquals("no forger can take a task: there is no forger yet", rig.workers.submit(Role.FORGER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
         rig.base.phase = Phase.STOPPING
         assertEquals(emptySet(), rig.workers.roles)
         val refused = rig.call(DelegateTool(), """{"role": "analyst", "brief": "Where does Bartok mine these days?"}""")

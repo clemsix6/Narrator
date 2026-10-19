@@ -24,11 +24,17 @@ import kotlinx.serialization.Serializable
 @Suppress("UNUSED_PARAMETER")
 fun taskTools(services: NarratorServices): List<NarratorTool<*>> = listOf(DelegateTool(), TasksTool())
 
-/** The worker roles `delegate` offers: those wired, the Analyst in M2. */
+/**
+ * The worker roles `delegate` offers: those wired, the Analyst (M2) and the scout (M4 §14). Both need the Journal
+ * (`Workers.roles`): without it, `delegate` is not shown at all.
+ */
 @Serializable
 enum class WorkerRole(val role: Role) {
     @SerialName("analyst")
     ANALYST(Role.ANALYST),
+
+    @SerialName("scout")
+    SCOUT(Role.SCOUT),
 }
 
 /** Whether a worker role that `delegate` offers is wired. */
@@ -36,7 +42,10 @@ private fun anyWorker(env: ToolEnv): Boolean = WorkerRole.entries.any { it.role 
 
 @Serializable
 data class DelegateArgs(
-    @Doc("analyst: questions on what the players did and are doing, answered from the Journal and the Oracle, read only.")
+    @Doc(
+        "analyst: questions on what the players did and are doing, answered from the Journal and the Oracle. " +
+            "scout: places in the world, for a duel arena, a challenge or a plan. Both read only.",
+    )
     val role: WorkerRole,
     @Doc(
         "Everything the worker needs, as it knows nothing else: the precise question, the players, the period, " +
@@ -61,7 +70,9 @@ class DelegateTool : NarratorTool<DelegateArgs>(
     description = "Hands a question to a worker that works in the background, with its own conversation and tools. " +
         "Returns at once with a task id: keep playing, or end your turn. The worker's report arrives later as a TASK " +
         "event, or why it failed. The analyst answers questions on the players' history and present state with dated " +
-        "figures and the queries behind them; it never speaks to players nor acts.",
+        "figures and the queries behind them. The scout finds exact places: flat open ground for an arena or a scene " +
+        "(which only it can survey), the structures, biomes and named places near the players, where they go. Neither " +
+        "speaks to players nor acts. What a single call of your own tools answers, ask it yourself.",
     args = DelegateArgs.serializer(),
     effect = ToolEffect.TASK,
 ) {
