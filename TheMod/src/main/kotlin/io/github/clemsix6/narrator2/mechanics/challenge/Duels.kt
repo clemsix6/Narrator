@@ -696,6 +696,13 @@ class Duels(
 
     // ── The engine's part ──
 
+    /**
+     * Whether [player] fights a duel now, from its start to its end (not while invited): what `Guards.isDueling` asks,
+     * once the engine wires it (M4 review, finding 19: nothing hostile of the Narrator's targets a duelist). A lookup,
+     * at every target a creature of the Narrator picks. Server thread.
+     */
+    fun isDueling(player: UUID): Boolean = fighting[player]?.let { it.over == null } == true
+
     override fun everyTick(server: MinecraftServer, now: Long) {
         follow(now)
         protect(server, now)
@@ -860,14 +867,6 @@ class Duels(
         /** The decisions of a duel (M4 §19), besides `started` and the endings. */
         const val INVITED = "invited"
         const val ACCEPTED = "accepted"
-
-        /**
-         * The duel [player] fights now, among [challenges] (what `ChallengeControl.list()` shows, any thread); null
-         * when none. Nothing hostile of the Narrator's aims at a duelist then (M4 review, finding 19: `Guards.hostile`
-         * refuses it). Pure.
-         */
-        fun runningDuelOf(challenges: List<ChallengeView>, player: UUID): ChallengeView? =
-            challenges.firstOrNull { it.duel != null && it.status == ChallengeStatus.RUNNING && it.participants.any { p -> p.uuid == player.toString() } }
 
         private const val MINUTE = 60_000L
         private const val TICKS_PER_SECOND = 20

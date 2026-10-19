@@ -107,14 +107,19 @@ import kotlin.math.abs
  * opponent's fatal blow (stopped at 1 health, put out, the fight's harmful effects lifted), lava, the void, fire, a
  * fall, a creature (each a rescue, out of the danger), and what is left once the duel is over (a fire, a wither, a
  * last blow). Each time the duelist is alive ticks later, with what they carried, and nothing is counted against the
- * Narrator's quota. An arena takes the duelists face to face and puts them back afterwards, even across a restart.
- * The bets open only once the duel starts, and a won duel pays them.
+ * Narrator's quota. Four tests let the server run 20 seconds after the blow, so that what the bench alone never
+ * inflicts does hurt (M4 review, finding 3): a sword's fire, lava, the void. A death decided from outside the duel
+ * (another player, the Narrator, its creature) cancels it and gives the bets back. An arena takes the duelists face to
+ * face and puts them back afterwards, even across a restart, never over the void nor far from where they stood, and
+ * not after a day. The bets open only once the duel starts, and a won duel pays them. Then the details: a proposal cut
+ * off once written, a duelist who cannot get hurt, a player who turned a duel down, a duel that cannot start, an
+ * invitation ended won, a duelist not back after a restart.
  *
  * Each test builds its own engine (the challenges', duels' and bets' parts, a ledger, the bars) on a store in memory, driven
  * by a clock of its own, with a fake Director; the canon, the interactions and the guards are the running
  * Narrator's. `/duel` runs on a dispatcher of the test's own, wired to its engine. The server's `ALLOW_DEATH` reaches
  * the tests' engines through [DeathHook], in the engine's own phase (before the guards'), as `MechanicsHooks` does
- * for the server's engine.
+ * for the server's engine. The players join able to get hurt (survival mode, their client loaded).
  */
 class DuelGameTests {
 
@@ -158,8 +163,10 @@ class DuelGameTests {
                 check(waiting.status == ChallengeStatus.INVITED && waiting.participants.map { it.accepted } == listOf(true, false)) { "one acceptance: $waiting" }
                 rig.second()
                 check(bars(bob).isEmpty()) { "an invitation has no bar" }
+                check(!rig.duels.isDueling(bob.uuid)) { "an invitation is no fight" }
                 rig.command(ann, "duel accept ${view.ref}")
                 check(rig.running(view.ref)) { "both accepted: it runs" }
+                check(rig.duels.isDueling(bob.uuid) && rig.duels.isDueling(ann.uuid) && !rig.duels.isDueling(cid.uuid)) { "Bob and Ann fight a duel, Cid does not" }
                 for ((player, opponent) in listOf(bob to ann, ann to bob)) {
                     check(player.titles() == listOf(ui.format("duel.start", "opponent" to opponent.name))) { "${player.name}'s title: ${player.titles()}" }
                 }
@@ -177,6 +184,7 @@ class DuelGameTests {
                 rig.at(rig.duel(view.ref)!!.endsAt)
                 check(rig.store.get().challenges.isEmpty() && bars(bob).isEmpty()) { "a draw at its deadline, bars down" }
                 check(bob.read(line(ui, ui["duel.draw"])) && ann.read(line(ui, ui["duel.draw"]))) { "both told" }
+                check(!rig.duels.isDueling(bob.uuid) && !rig.duels.isDueling(ann.uuid)) { "the duel is over" }
             }
             val end = rig.awaitEnd(view.ref)
             check(end == "${view.ref} lost: a draw, nobody won within 5m") { "the end: $end" }

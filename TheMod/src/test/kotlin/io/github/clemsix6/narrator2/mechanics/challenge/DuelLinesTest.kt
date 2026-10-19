@@ -93,18 +93,6 @@ class DuelLinesTest {
     }
 
     @Test
-    fun `a duelist is in a duel only while it runs`() {
-        val view = ChallengeView(running.ref, null, running.duel, running.status, running.endsAt, running.participants, 0, "")
-        val challenge = MechanicsSamples.runningChallenge
-        val notADuel = ChallengeView(challenge.ref, challenge.spec, null, challenge.status, challenge.endsAt, challenge.participants, 1, "")
-        assertEquals(view, Duels.runningDuelOf(listOf(notADuel, view), bartok.playerId))
-        assertEquals(view, Duels.runningDuelOf(listOf(view), mimosa.playerId))
-        assertEquals(null, Duels.runningDuelOf(listOf(view.copy(status = ChallengeStatus.INVITED)), bartok.playerId), "an invitation is no fight yet")
-        assertEquals(null, Duels.runningDuelOf(listOf(view), MechanicsSamples.josiane.uuid), "not a duelist")
-        assertEquals(null, Duels.runningDuelOf(listOf(notADuel), bartok.playerId), "a challenge is no duel")
-    }
-
-    @Test
     fun `a duel that never started is cancelled, and says why`() {
         assertEquals("cancelled: Mimosa declined", DuelLines.declined(mimosa))
         assertEquals("cancelled: Mimosa did not accept within 2m (Bartok did)", DuelLines.expired(invited))
