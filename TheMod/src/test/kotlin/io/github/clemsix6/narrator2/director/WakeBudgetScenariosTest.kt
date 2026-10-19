@@ -171,6 +171,48 @@ class WakeBudgetScenariosTest {
         h.assertInvariants()
     }
 
+    /**
+     * M4 review, finding 6: the players' offerings wake the Director past the budget, but 4 times an hour at most
+     * for them all; beyond, an offering waits like a salient event, and goes with the next wake-up.
+     */
+    @Test
+    fun `past the budget, the players' offerings wake the Director 4 times an hour, then wait`() = DirectorHarness(dir, turnsPerHour = 1).use { h ->
+        h.online("Bartok")
+        h.online("Mimosa")
+        repeat(7) { h.fake.enqueue(reply { text("…") }) }
+        h.died("Bartok")
+        h.advance(3_000)
+        h.awaitTurns(1)
+
+        fun offer(id: Int, who: String) =
+            h.director.post(DirectorSignal.Mechanic(MechanicSignal.OFFERING, "O-$id $who offers 1x dirt: take it within 10m", h.clock.millis(), priority = true))
+        listOf("Mimosa", "Bartok", "Mimosa", "Bartok").forEachIndexed { i, who ->
+            offer(800 + i, who)
+            h.advance(3_000)
+            h.awaitTurns(2 + i)
+            h.advance(60_000)
+        }
+        val woke = h.decisions(DecisionRecord.Kind.WAKE, "woke").drop(1).map { it.reason }
+        assertEquals((1..4).map { "mechanic OFFERING O-${799 + it}; past the budget for the players' news ($it of 4 this hour)" }, woke)
+
+        offer(804, "Mimosa")
+        h.advance(600_000)
+        assertEquals(5, h.startedTurns(), "the fifth offering of the hour waits")
+        assertEquals(
+            "the budget of 1 turn per hour is spent, and so are the 4 wake-ups past it for the players' news this hour: it waits for a turn to leave the hour",
+            h.decisions(DecisionRecord.Kind.SALIENCE, "throttled").single { it.subject == "OFFERING O-804" }.reason,
+        )
+
+        // A prayer still wakes the Director; the offering goes with it, and no wake-up of the players' news is spent.
+        h.chat("Mimosa", "narrateur, prends mon offrande", channel = ChatChannel.PRAY)
+        h.advance(1_500)
+        h.awaitTurns(6)
+        assertContains(h.wakeText(h.fake.requests.size - 1), "OFFERING O-804 Mimosa offers 1x dirt")
+        assertEquals(TurnRecord.Trigger.PRAY, h.endedTurns()[5].trigger)
+        assertEquals(6 to 1, h.director.status().let { it.turnsThisHour to it.turnsPerHour }, "the 4 offerings' turns count in the hour")
+        h.assertInvariants()
+    }
+
     @Test
     fun `a player who prays every 10 s cannot spend the turns of everyone`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")

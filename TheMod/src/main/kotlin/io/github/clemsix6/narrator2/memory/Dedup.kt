@@ -13,17 +13,20 @@ import java.util.UUID
  *
  * What the mechanics engine writes is precise (M4 §3.3): a row it tracks is never looked up here (the
  * store skips it), and its interactions without evidence are the same as another only for the same canon
- * entry ([interaction]).
+ * entry ([interaction]). What others note of them is the engine's already: a row it tracks is compared
+ * whatever its players ([canon]), and its challenge results take the others' ([interaction]).
  */
 internal class Dedup(private val indexer: Indexer) {
     /**
-     * An open, unarchived canon entry of the same kind about the same players that says the same: the
-     * same quote once normalized, or a statement at least [THRESHOLD] similar. Null when there is none.
+     * An open, unarchived canon entry of the same kind that says the same: the same quote once normalized, or
+     * a statement at least [THRESHOLD] similar. Null when there is none. It is about the same players, or it is
+     * a row the engine tracks, whoever its players (M4 review, finding 32): a challenge the engine runs for all
+     * has none, while the Chronicler names those it saw play.
      */
     fun canon(connection: Connection, kind: CanonKind, players: List<UUID>, quote: String?, text: String): Ref? {
         val candidates = connection.query(
             "SELECT id, quote FROM canon WHERE kind = ? AND NOT archived AND status IN ('planned', 'active') " +
-                "AND list_sort(players) = list_sort(?) ORDER BY id DESC",
+                "AND (list_sort(players) = list_sort(?) OR mechanic IS NOT NULL) ORDER BY id DESC",
             kind.id, uuidArray(players),
         ) { Ref(RefKind.CANON, getLong(1)) to getString(2) }
         if (candidates.isEmpty()) return null
@@ -40,8 +43,13 @@ internal class Dedup(private val indexer: Indexer) {
      *
      * The engine's interactions without evidence ([engine] for the draft, `source = engine` for a row: a
      * challenge's result, its stakes, a rule's punishment) cite no Journal fact, yet each is its own: two
-     * challenges won within ten minutes are two. One of them is the same as another only for the same
-     * [canon] entry (M4 §3.3, review finding 12).
+     * challenges won within ten minutes are two. One of them is the same as another of the engine only for the
+     * same [canon] entry (M4 §3.3, review finding 12). A challenge's result is the engine's to write: another's
+     * (the Chronicler's, the Director's, which cite no canon entry) is the same as the engine's, so that the
+     * favor moves once (M4 review, finding 32).
+     *
+     * Two offerings without evidence are each their own unless their texts say the same (M4 review, finding 41):
+     * each `favor` that takes one writes its own, and a player may make two within ten minutes.
      */
     fun interaction(
         connection: Connection,
@@ -57,23 +65,30 @@ internal class Dedup(private val indexer: Indexer) {
         val bare = events.isEmpty() && tools.isEmpty()
         val engineBare = engine && bare
         val candidates = connection.query(
-            "SELECT id, canon_id, source = 'engine' AND len(evidence_events) = 0 AND len(tool_calls) = 0, " +
-                "list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) OR (len(evidence_events) = 0 AND len(tool_calls) = 0) " +
+            "SELECT id, canon_id, source = 'engine', len(evidence_events) = 0 AND len(tool_calls) = 0, " +
+                "list_has_any(evidence_events, ?) OR list_has_any(tool_calls, ?) " +
                 "FROM interactions WHERE player_uuid = ? AND kind = ? AND NOT archived AND ts BETWEEN ? AND ? ORDER BY id DESC",
             longArray(events), longArray(tools), player, kind.id, at - INTERACTION_WINDOW, at + INTERACTION_WINDOW,
-        ) { Candidate(Ref(RefKind.INTERACTION, getLong(1)), longOrNull(2), getBoolean(3), getBoolean(4)) }
+        ) { Candidate(Ref(RefKind.INTERACTION, getLong(1)), longOrNull(2), getBoolean(3), getBoolean(4), getBoolean(5)) }
         // true: the same; false: another; null: their texts decide.
         fun Candidate.same(): Boolean? = when {
-            engineBare || this.engineBare -> canon != null && canonId == canon.id
-            bare || shared -> true
+            engineBare && this.engineBare -> canon != null && canonId == canon.id
+            engineBare || this.engineBare -> kind == InteractionKind.CHALLENGE_RESULT || (canon != null && canonId == canon.id)
+            bare && this.bare && kind == InteractionKind.OFFERING -> null
+            bare || this.bare || shares -> true
             else -> null
         }
         candidates.firstOrNull { it.same() == true }?.let { return it.ref }
         return mostSimilar(connection, text, candidates.filter { it.same() == null }.map { it.ref })
     }
 
-    /** An interaction an add may duplicate: its [canonId], whether it is the engine's without evidence, whether it shares the draft's evidence or has none. */
-    private class Candidate(val ref: Ref, val canonId: Long?, val engineBare: Boolean, val shared: Boolean)
+    /**
+     * An interaction an add may duplicate: its [canonId], whether it is the engine's, whether it has no evidence
+     * ([bare]), whether it shares an evidence with the draft.
+     */
+    private class Candidate(val ref: Ref, val canonId: Long?, val engine: Boolean, val bare: Boolean, val shares: Boolean) {
+        val engineBare: Boolean get() = engine && bare
+    }
 
     /** An unarchived memory that shares an evidence (event or tool call), a player and a tag with the draft; null when none. */
     fun memory(connection: Connection, players: List<UUID>, tags: List<String>, events: List<Long>, tools: List<Long>): Ref? {

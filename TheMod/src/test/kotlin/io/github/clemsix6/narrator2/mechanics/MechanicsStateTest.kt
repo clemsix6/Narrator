@@ -11,7 +11,15 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import net.minecraft.nbt.NbtIo
+import net.minecraft.nbt.NbtOps
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -62,11 +70,46 @@ class MechanicsStateTest {
         assertEquals(listOf(52L), read.challenges.map { it.id })
         assertEquals(listOf(61L), read.rules.map { it.id })
         assertEquals(sample.returns, read.returns)
-        assertEquals(sample.settlements, read.settlements)
+        assertEquals(sample.settlements + Settlement(MechanicsSamples.josiane.uuid.toString(), 812), read.settlements, "C-50's stake goes back")
         assertEquals(listOf("challenge" to 50L, "rule" to 60L), read.unreadable.map { it.what to it.id })
         assertContains(logs.text, "a challenge of the mechanics' state cannot be read and is dropped (C-50)")
         assertContains(logs.text, "a rule of the mechanics' state cannot be read and is dropped (C-60)")
         assertEquals(MechanicsState.EMPTY.unreadable, MechanicsState.decode(MechanicsState.encode(read)).unreadable, "never saved again")
+    }
+
+    @Test
+    fun `the stakes of an unreadable challenge or settlement go back to their owners, not a week later`() {
+        val written = json(sample).toMutableMap()
+        val challenges = written.getValue("challenges").jsonArray
+        // C-50, with Josiane's bet (stake 812), asks for a goal the code no longer knows.
+        val removedGoal = JsonObject(
+            challenges[0].jsonObject + ("spec" to JsonObject(challenges[0].jsonObject.getValue("spec").jsonObject + ("goal" to JsonPrimitive("dance")))),
+        )
+        written["challenges"] = JsonArray(listOf(removedGoal, challenges[1]))
+        // Stake 790 was ceded to Mimosa, but its winner no longer reads; a settlement with no stake at all is lost.
+        val settlement = written.getValue("settlements").jsonArray[0].jsonObject
+        written["settlements"] = JsonArray(listOf(JsonObject(settlement + ("to" to JsonPrimitive(3))), JsonObject(mapOf("owner" to JsonPrimitive("x")))))
+
+        val read = LogCapture().use { MechanicsState.decode(JsonObject(written).toString()) }
+
+        val josiane = MechanicsSamples.josiane.uuid.toString()
+        assertEquals(listOf(Settlement(josiane, 790), Settlement(josiane, 812)), read.settlements.sortedBy { it.stake }, "both given back")
+        assertEquals(listOf("challenge" to 50L, "settlement" to null, "settlement" to null), read.unreadable.map { it.what to it.id })
+        assertEquals(listOf(812L), sample.challenge(50)!!.bets.map { it.stake }, "the sample's bet")
+    }
+
+    @Test
+    fun `a state longer than an NBT string can hold goes to the world's file and back whole`() {
+        val long = "Une loi au texte interminable. ".repeat(3_000)
+        val state = sample.copy(rules = sample.rules.map { it.copy(spec = it.spec.copy(statement = long)) }, settlements = sample.settlements.map { it.copy(at = 5) })
+        assertTrue(MechanicsState.encode(state).length > 100_000)
+
+        val tag = CompoundTag()
+        tag.put("mechanics", MechanicsState.CODEC.encodeStart(NbtOps.INSTANCE, state).getOrThrow())
+        val bytes = ByteArrayOutputStream().also { NbtIo.write(tag, DataOutputStream(it)) }.toByteArray()
+        val read = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))).get("mechanics")!!
+        assertEquals(state, MechanicsState.CODEC.parse(NbtOps.INSTANCE, read).getOrThrow(), "nothing written as \"\"")
+        assertTrue(read is ListTag, "in chunks")
     }
 
     @Test

@@ -1,10 +1,13 @@
 package io.github.clemsix6.narrator2.guard
 
+import com.mojang.datafixers.DataFixer
+import com.mojang.serialization.Dynamic
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
+import io.github.clemsix6.narrator2.mixin.guard.PlayerListAccessor
 import io.github.clemsix6.narrator2.observer.dimensionId
 import io.github.clemsix6.narrator2.observer.id
 import io.github.clemsix6.narrator2.observer.typeId
@@ -14,6 +17,7 @@ import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.ChatFormatting
+import net.minecraft.SharedConstants
 import net.minecraft.core.component.DataComponents
 import net.minecraft.nbt.NbtOps
 import net.minecraft.nbt.Tag
@@ -24,10 +28,12 @@ import net.minecraft.network.chat.TextColor
 import net.minecraft.resources.RegistryOps
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.util.datafix.fixes.References
 import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.player.Inventory
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.component.ContainerComponent
 import java.time.Clock
 import java.time.Instant
 import java.time.format.DateTimeFormatter
@@ -38,7 +44,9 @@ import kotlin.math.abs
 /**
  * The ledger of the items the Narrator holds for players (M1_M2 §10.2, M4 §5.6, §7.2): an item is never lost for
  * good. Every entry is written in the player's [GuardState] in the same tick as the items leave the inventory, so
- * both reach the player's file at the same save, and a crash can only lose both or neither.
+ * both reach the player's file at the same save, and a crash can only lose both or neither. A stack of any size
+ * fits in the file (a full book, a shulker box of books: [GuardState]), and one held across an update of the game is
+ * brought up to date by its data fixer before it comes back.
  *
  * It holds, by [LedgerPurpose]:
  * - **confiscations**, the Narrator's punishment (`take_item`), given back at their due time;
@@ -109,7 +117,7 @@ class ItemLedger(
                 put("return_at", returnAt)
             },
         )
-        val confiscation = Confiscation(id, items, what, clock.millis(), returnAt, reason, turnId)
+        val confiscation = Confiscation(id, items, what, clock.millis(), returnAt, reason, turnId, dataVersion = DATA_VERSION)
         states.update(player) { it.copy(confiscations = it.confiscations + confiscation) }
         for ((slot, stack) in taken) inventory.removeItem(slot, stack.count)
         player.containerMenu.broadcastChanges()
@@ -121,11 +129,12 @@ class ItemLedger(
      * [canon], or a [LedgerPurpose.OFFERING] (`O-<id>`), which also dates their last `/offer`. Given back at
      * [returnAt] (epoch milliseconds) unless settled or taken before: a stake's is its fallback deadline
      * ([Escrow.stakeDeadline]), never `Long.MAX_VALUE`. Returns the entry, or null when the hand is empty or holds a
-     * joker (it is neither staked nor offered). The entry is written before the hand is emptied. Decision `ledger held`.
+     * joker, even inside a shulker box or a bundle ([holdsJoker]: it is neither staked nor offered). The entry is
+     * written before the hand is emptied. Decision `ledger held`.
      */
     fun hold(player: ServerPlayer, hand: InteractionHand, purpose: LedgerPurpose, returnAt: Long, canon: Long?, reason: String): Confiscation? {
         val stack = player.getItemInHand(hand)
-        if (stack.isEmpty || isJoker(stack)) return null
+        if (stack.isEmpty || holdsJoker(stack)) return null
         val items = listOf(encode(stack, ops(player)))
         val what = describe(listOf(stack))
         val id = decisions.record(
@@ -139,7 +148,7 @@ class ItemLedger(
                 put("return_at", returnAt)
             },
         )
-        val entry = Confiscation(id, items, what, clock.millis(), returnAt, reason, turnId = null, purpose = purpose, canon = canon)
+        val entry = Confiscation(id, items, what, clock.millis(), returnAt, reason, turnId = null, purpose = purpose, canon = canon, dataVersion = DATA_VERSION)
         states.update(player) { Escrow.hold(it, entry) }
         player.setItemInHand(hand, ItemStack.EMPTY)
         player.containerMenu.broadcastChanges()
@@ -212,7 +221,7 @@ class ItemLedger(
                 put("items", offering.what)
             },
         )
-        player.sendSystemMessage(line("offer.accepted", stacks(offering, ops(player)), offering.what))
+        player.sendSystemMessage(line("offer.accepted", stacks(offering, player), offering.what))
         return offering
     }
 
@@ -241,7 +250,7 @@ class ItemLedger(
             reason = "$what waits for room in the inventory: $reason",
             detail = buildJsonObject { put("items", what) },
         )
-        val entry = Confiscation(id, rest.map { encode(it, ops) }, what, now, now, reason, turnId = null, purpose = LedgerPurpose.OWED)
+        val entry = Confiscation(id, rest.map { encode(it, ops) }, what, now, now, reason, turnId = null, purpose = LedgerPurpose.OWED, dataVersion = DATA_VERSION)
         states.update(player) { it.copy(confiscations = it.confiscations + entry) }
         if (alive && toldNoRoom.add(id)) player.sendSystemMessage(line("items.no_room", rest))
         return rest
@@ -287,7 +296,7 @@ class ItemLedger(
                 put("creature", creature)
             },
         )
-        val entry = Confiscation(id, stacks.map { encode(it, ops) }, what, now, now, "entrusted to $creature", null)
+        val entry = Confiscation(id, stacks.map { encode(it, ops) }, what, now, now, "entrusted to $creature", null, dataVersion = DATA_VERSION)
         states.update(owner) { it.copy(confiscations = it.confiscations + entry) }
         deliver(owner, listOf(entry), now) { "items.recovered" }
     }
@@ -303,49 +312,61 @@ class ItemLedger(
         deliver(player, Escrow.due(states.of(player), now), now)
     }
 
-    /** The stakes [owner] ceded to a winner who is online and alive now, handed over ([transfer]). */
+    /** The stakes [owner] ceded to a winner who is online and alive now, handed over together ([transfer]). */
     private fun handOver(owner: ServerPlayer, now: Long) {
         val players = owner.level().server.playerList
-        for (stake in Escrow.ceded(states.of(owner), now)) {
-            val winner = players.getPlayer(stake.owedTo ?: continue) ?: continue
-            if (winner.isDeadOrDying || winner.isRemoved) continue
-            transfer(owner, stake, winner, now)
+        val handed = Escrow.ceded(states.of(owner), now).mapNotNull { stake ->
+            players.getPlayer(stake.owedTo ?: return@mapNotNull null)?.takeUnless { it.isDeadOrDying || it.isRemoved }?.let { stake to it }
+        }
+        if (handed.isNotEmpty()) transfer(owner, handed, now)
+    }
+
+    /**
+     * Hands the [handed] stakes over from [owner] to their winners, all online, so that a crash at any point loses
+     * nothing and a replay gives nothing twice (M4 §5.6):
+     * 1. the winnings go into each winner's ledger under the stake's own id, and the stake into their received stakes,
+     *    unless they received it already (a replay: [Escrow.receive]); each winner who got something has their file
+     *    written: it holds the winnings before the stakes leave the owner's;
+     * 2. the stakes leave the owner's ledger, and the owner's file is written: it no longer holds them before any
+     *    winner gets anything;
+     * 3. the winnings are delivered like anything owed: into the inventory, the rest waits in the winner's ledger.
+     *
+     * Only these players' files are written, once each ([save]): never every player online, on the server thread.
+     */
+    private fun transfer(owner: ServerPlayer, handed: List<Pair<Confiscation, ServerPlayer>>, now: Long) {
+        val replayed = handed.map { (stake, winner) ->
+            val received = Escrow.receive(states.of(winner), Escrow.winnings(stake, owner.plainTextName, now), now)
+            if (received != null) states.update(winner) { received }
+            received == null
+        }
+        handed.filterIndexed { i, _ -> !replayed[i] }.map { it.second }.distinctBy { it.uuid }.forEach(::save)
+        states.update(owner) { state -> handed.fold(state) { kept, (stake, _) -> Escrow.without(kept, stake.id) } }
+        save(owner)
+        handed.forEachIndexed { i, (stake, winner) ->
+            decisions.record(
+                log, DecisionRecord.Kind.LEDGER, "transferred", owner.plainTextName,
+                reason = "stake ${stake.id} (${stake.what}) lost" + (stake.canon?.let { " on C-$it" } ?: "") + ": handed over to ${winner.plainTextName}" +
+                    (if (replayed[i]) " (already received: a hand-over replayed)" else ""),
+                detail = buildJsonObject {
+                    put("stake", stake.id)
+                    put("items", stake.what)
+                    put("canon", stake.canon)
+                    put("to", winner.plainTextName)
+                    put("replayed", replayed[i])
+                },
+            )
+            owner.sendSystemMessage(line("bet.lost", stacks(stake, owner), stake.what))
+            deliver(winner, states.of(winner).confiscations.filter { it.id == stake.id && it.purpose == LedgerPurpose.OWED }, now)
         }
     }
 
     /**
-     * Hands [stake] over from [owner] to [winner], both online, so that a crash at any point loses nothing and a
-     * replay gives nothing twice (M4 §5.6):
-     * 1. the winnings go into the winner's ledger, under the stake's own id, unless already there (a replay), and the
-     *    players' files are saved: the winner's holds them before the stake leaves the owner's;
-     * 2. the stake leaves the owner's ledger, and the files are saved again: the owner's no longer holds it before
-     *    the winner gets anything;
-     * 3. the winnings are delivered like anything owed: into the inventory, the rest waits in the winner's ledger.
+     * Writes [player]'s file now: their `.dat` alone, which holds the ledger (no statistics, no advancements), a few
+     * milliseconds on the server thread. `PlayerList.save` is protected and writes those too: the storage is reached
+     * by an accessor.
      */
-    private fun transfer(owner: ServerPlayer, stake: Confiscation, winner: ServerPlayer, now: Long) {
-        val players = owner.level().server.playerList
-        val winnings = Escrow.winnings(stake, owner.plainTextName, now)
-        val received = Escrow.add(states.of(winner), winnings)
-        if (received != null) {
-            states.update(winner) { received }
-            players.saveAll()
-        }
-        states.update(owner) { Escrow.without(it, stake.id) }
-        players.saveAll()
-        decisions.record(
-            log, DecisionRecord.Kind.LEDGER, "transferred", owner.plainTextName,
-            reason = "stake ${stake.id} (${stake.what}) lost" + (stake.canon?.let { " on C-$it" } ?: "") + ": handed over to ${winner.plainTextName}" +
-                (if (received == null) " (already in their ledger: a hand-over replayed)" else ""),
-            detail = buildJsonObject {
-                put("stake", stake.id)
-                put("items", stake.what)
-                put("canon", stake.canon)
-                put("to", winner.plainTextName)
-                put("replayed", received == null)
-            },
-        )
-        owner.sendSystemMessage(line("bet.lost", stacks(stake, ops(owner)), stake.what))
-        deliver(winner, states.of(winner).confiscations.filter { it.id == stake.id && it.purpose == LedgerPurpose.OWED }, now)
+    private fun save(player: ServerPlayer) {
+        (player.level().server.playerList as PlayerListAccessor).`narrator2$playerIo`().save(player)
     }
 
     /**
@@ -356,10 +377,9 @@ class ItemLedger(
     private fun deliver(player: ServerPlayer, due: List<Confiscation>, now: Long, key: (Confiscation) -> String = Escrow::arrivalKey) {
         if (player.isDeadOrDying || player.isRemoved) return
         if (due.isEmpty()) return
-        val ops = ops(player)
         val outcomes = due.map { entry ->
             // Each entry changes right after its items go in: nothing can come between.
-            give(player, entry, ops).also { outcome ->
+            give(player, entry).also { outcome ->
                 if (outcome.given.isNotEmpty()) {
                     states.update(player) { state ->
                         state.copy(confiscations = state.confiscations.mapNotNull { if (it.id == entry.id) outcome.remaining else it })
@@ -402,15 +422,22 @@ class ItemLedger(
     /** What giving back one entry did: what went back, and what is still held (null: nothing). */
     private class Outcome(val entry: Confiscation, val given: List<ItemStack>, val remaining: Confiscation?)
 
-    private fun give(player: ServerPlayer, entry: Confiscation, ops: RegistryOps<Tag>): Outcome {
+    /**
+     * Gives [entry]'s stacks to [player] as far as they fit. What is still held is written again at the game's data
+     * version: the stacks that did not fit as they are now, those that no longer read back as the data fixer left them.
+     */
+    private fun give(player: ServerPlayer, entry: Confiscation): Outcome {
+        val ops = ops(player)
+        val fixer = player.level().server.fixerUpper
         val given = mutableListOf<ItemStack>()
         val kept = mutableListOf<String>()
         val waiting = mutableListOf<ItemStack>()
         var unreadable = 0
         for (snbt in entry.items) {
-            val stack = decode(snbt, ops)
+            val tag = upToDate(snbt, entry.dataVersion, fixer)
+            val stack = tag?.let { read(it, ops) }
             if (stack == null) {
-                kept += snbt
+                kept += tag?.toString() ?: snbt
                 unreadable++
                 continue
             }
@@ -426,7 +453,7 @@ class ItemLedger(
         if (waiting.isNotEmpty() && toldNoRoom.add(entry.id)) player.sendSystemMessage(line("items.no_room", waiting))
         if (given.isEmpty()) return Outcome(entry, given, entry)
         val what = listOfNotNull(describe(waiting).ifEmpty { null }, if (unreadable > 0) "$unreadable unreadable stacks" else null).joinToString(", ")
-        val remaining = if (kept.isEmpty()) null else entry.copy(items = kept, what = what)
+        val remaining = if (kept.isEmpty()) null else entry.copy(items = kept, what = what, dataVersion = DATA_VERSION)
         return Outcome(entry, given, remaining)
     }
 
@@ -449,8 +476,12 @@ class ItemLedger(
     private fun moment(at: Long): String =
         if (abs(at - clock.millis()) < DAY_MS) clockTime(clock, at) else DATE_TIME.format(Instant.ofEpochMilli(at).atZone(clock.zone))
 
-    /** [entry]'s stacks that still read back, for what the player reads. */
-    private fun stacks(entry: Confiscation, ops: RegistryOps<Tag>): List<ItemStack> = entry.items.mapNotNull { decode(it, ops) }
+    /** [entry]'s stacks that still read back, for what [player] reads. */
+    private fun stacks(entry: Confiscation, player: ServerPlayer): List<ItemStack> {
+        val ops = ops(player)
+        val fixer = player.level().server.fixerUpper
+        return entry.items.mapNotNull { snbt -> upToDate(snbt, entry.dataVersion, fixer)?.let { read(it, ops) } }
+    }
 
     /**
      * `[Narrator → you] <text with the items>`, from the UI text [key] and its `{items}` placeholder: each stack's
@@ -483,6 +514,13 @@ class ItemLedger(
             stack.get(DataComponents.CUSTOM_DATA)?.copyTag()?.getCompoundOrEmpty(Speech.CUSTOM_DATA_KEY)?.getBooleanOr(JOKER_KEY, false) == true
 
         /**
+         * Whether [stack] is a joker or holds one, however deep: in a shulker box, a bundle, any container of items.
+         * Such a stack is neither staked nor offered: an offering taken would take the joker with it.
+         */
+        fun holdsJoker(stack: ItemStack): Boolean =
+            isJoker(stack) || stack.components.any { component -> (component.value() as? ContainerComponent<*>)?.itemCopies()?.anyMatch { holdsJoker(it) } == true }
+
+        /**
          * Puts [stack] into [inventory] as far as it fits, and shrinks it by what went in. Unlike
          * `Inventory.add`, never destroys what does not fit (it does for a creative player).
          */
@@ -513,14 +551,28 @@ class ItemLedger(
             for (stack in stacks) at.spawnAtLocation(level, stack)?.setUnlimitedLifetime()
         }
 
+        /** The game's data version, written with the stacks ([Confiscation.dataVersion]). */
+        private val DATA_VERSION: Int by lazy { SharedConstants.getCurrentVersion().dataVersion().version() }
+
         private fun ops(player: ServerPlayer): RegistryOps<Tag> = player.registryAccess().createSerializationContext(NbtOps.INSTANCE)
 
         /** [stack] in SNBT, with its components. */
         private fun encode(stack: ItemStack, ops: RegistryOps<Tag>): String = ItemStack.CODEC.encodeStart(ops, stack).getOrThrow().toString()
 
-        /** The stack written by [encode]; null when it no longer reads back, whatever the reason. */
-        private fun decode(snbt: String, ops: RegistryOps<Tag>): ItemStack? = try {
-            ItemStack.CODEC.parse(ops, TagParser.parseCompoundFully(snbt)).result().orElse(null)
+        /**
+         * The stack written by [encode] at data [version], as a tag brought up to the game's data version by [fixer]
+         * (null [version]: as it is); null when it is not even a tag.
+         */
+        private fun upToDate(snbt: String, version: Int?, fixer: DataFixer): Tag? = try {
+            val tag = TagParser.parseCompoundFully(snbt)
+            if (version == null || version >= DATA_VERSION) tag else fixer.update(References.ITEM_STACK, Dynamic<Tag>(NbtOps.INSTANCE, tag), version, DATA_VERSION).value
+        } catch (e: Exception) {
+            null
+        }
+
+        /** The stack of [tag]; null when it no longer reads back, whatever the reason (its item left the game). */
+        private fun read(tag: Tag, ops: RegistryOps<Tag>): ItemStack? = try {
+            ItemStack.CODEC.parse(ops, tag).result().orElse(null)
         } catch (e: Exception) {
             null
         }

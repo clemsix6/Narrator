@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
+import io.github.clemsix6.narrator2.guard.CreatureShield
 import io.github.clemsix6.narrator2.mechanics.ArenaSpec
 import io.github.clemsix6.narrator2.mechanics.ChallengeOutcome
 import io.github.clemsix6.narrator2.mechanics.ChallengeState
@@ -40,11 +41,15 @@ import io.github.clemsix6.narrator2.tool.speech.Speech
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import net.fabricmc.fabric.api.entity.FakePlayer
 import net.minecraft.ChatFormatting
+import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.core.Holder
 import net.minecraft.core.SectionPos
 import net.minecraft.core.registries.Registries
@@ -57,6 +62,7 @@ import net.minecraft.resources.ResourceKey
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.tags.FluidTags
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.damagesource.DamageTypes
 import net.minecraft.world.effect.MobEffect
@@ -64,9 +70,12 @@ import net.minecraft.world.effect.MobEffectCategory
 import net.minecraft.world.effect.MobEffectInstance
 import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.Relative
+import net.minecraft.world.entity.player.Player
+import net.minecraft.world.level.portal.TeleportTransition
 import net.minecraft.world.phys.Vec3
 import java.time.Clock
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.floor
 
@@ -75,27 +84,33 @@ import kotlin.math.floor
  * [MechanicPart] that lives in the same state as the challenges ([Challenges] renders their situation line and
  * ends them through its common [Challenges.finish]).
  *
- * - **Proposal** ([propose], `propose_duel`): two different players online, PvP on in their world (the game rule
- *   `pvp`, which the Narrator never changes), neither already in a duel, room for one more ([Challenges.room]); an
- *   arena in their own dimension with safe ground on both sides. Then the canon row (`challenge`, mechanic
- *   `duel`), the state (`INVITED`) and a clickable invitation to each.
+ * - **Proposal** ([propose], `propose_duel`): two different players online, both able to get hurt (neither in
+ *   creative nor in spectator mode), PvP on in their world (the game rule `pvp`, which the Narrator never changes),
+ *   neither already in a duel nor having turned one down in the last [DECLINE_REST_MS] (`duel_declined`), room for
+ *   one more ([Challenges.room]); an arena in their own dimension with safe ground on both sides. Then the canon row
+ *   (`challenge`, mechanic `duel`), the state (`INVITED`) and a clickable invitation to each: once the row is
+ *   written, nothing cancels the rest, and a failure cancels the row.
  * - **Answers** ([answer], `/duel accept|decline`): an acceptance is acknowledged and wakes nobody; a refusal, or
  *   an invitation that runs out, cancels it (a `DUEL` event without priority).
  * - **Start** (both accepted): with an arena, where each stood is kept and both are taken face to face
  *   [MechanicsLimits.ARENA_DISTANCE] blocks from its point (its chunks loaded off the server thread first); a
- *   title, the boss bars (drawn from the state), a `DUEL` event without priority.
+ *   title, the boss bars (drawn from the state), a `DUEL` event without priority. One that cannot start within
+ *   [START_GRACE_MS] of its invitation's end is cancelled.
  * - **Nobody dies in a duel** ([allowDeath], before the guards' own `ALLOW_DEATH`): every death of a duelist is
- *   refused, but an operator's `/kill`. A blow of the opponent (or of what they shot) leaves the loser at 1
- *   health where they stand, put out, freed of the harmful effects of the fight, under resistance V for
- *   [MechanicsLimits.DUEL_RESISTANCE_SECONDS]; any other cause is the death guard's rescue (`Guards.rescue`). The
- *   duelist loses. Nothing is dropped, nothing counted. For [MechanicsLimits.DUEL_RESISTANCE_SECONDS] after the
- *   end, however it ended, a death of either duelist is refused the same way: what the fight left behind (a fire,
- *   a last blow) kills nobody either.
+ *   refused, but an operator's `/kill`. A blow of the opponent (or of what they shot) leaves the loser at 1 health
+ *   where they stand, put out, freed of the harmful effects of the fight, under resistance V for
+ *   [MechanicsLimits.DUEL_PROTECTION_SECONDS], unless where they stand would go on hurting them ([Hazard]: lava, the
+ *   void, a dangerous block); then, as for any other cause, the death guard's rescue (`Guards.rescue`). The duelist
+ *   loses; but a death decided from outside the duel ([outsider]: another player, the Narrator, one of its
+ *   creatures) cancels it, the bets going back. Nothing is dropped, nothing counted.
+ * - **Protection after the end** ([protect]): however the duel ended, each duelist is protected for
+ *   [MechanicsLimits.DUEL_PROTECTION_SECONDS] at least, and as long as a danger lasts (a fire, lava, the void, a fall
+ *   under way): each tick put out, given air, freed of the fight's harmful effects, taken out of lava or the void; a
+ *   death of either is refused the same way. A duelist offline keeps it for their return.
  * - **End**: the opponent's blow, a rescue or a departure (won), the deadline (lost: a draw), a refusal, an
- *   invitation run out, an operator's `/kill` (cancelled); or the Director or an operator ([end]). However the
- *   duel left the state, both duelists are put out and freed of the fight's harmful effects in the next tick
- *   (`aftercare`), and each one with a place to go back to ([MechanicsState.returns]: the arena's) is put back
- *   there on safe ground once alive and online, within a second.
+ *   invitation run out, an operator's `/kill`, a death decided from outside, a duelist who can no longer get hurt
+ *   (cancelled); or the Director or an operator ([end]). After a restart, a duelist not back within
+ *   [RESTART_GRACE_MS] has left. Each duelist with a place to go back to is put back there ([DuelReturns]).
  *
  * Server thread for the hooks and [answer]; [propose] and [end] from coroutines.
  *
@@ -114,31 +129,55 @@ class Duels(
     private val config: MechanicsConfig get() = services.settings.get().config.mechanics
     private val ui: UiTexts get() = services.settings.get().ui
 
+    /** Puts the duelists back where they stood before a duel in an arena. */
+    private val returns by lazy { DuelReturns(store, decisions, clock) }
+
     /** One proposal at a time: the pace and the duelists are checked again under it, just before the state is written. */
     private val proposing = Mutex()
 
-    /** Duels whose two duelists accepted and whose arena loads before they start. Server thread. */
-    private val starting = HashSet<Long>()
+    /** Duels whose two duelists accepted and whose arena loads before they start. Server thread, but emptied by the loading's coroutine. */
+    private val starting: MutableSet<Long> = ConcurrentHashMap.newKeySet()
 
-    /** Each duelist of a duel seen running, until its aftercare is over. Server thread. */
+    /** Each duelist of a duel seen running, until their protection after it is over. Server thread. */
     private val fighting = HashMap<UUID, Fight>()
+
+    /** When each player last turned a duel down (declined it, or let its invitation run out), epoch milliseconds. Server thread. */
+    private val turnedDown = HashMap<UUID, Long>()
+
+    /** When this engine started, epoch milliseconds: the duelists of a duel still running have [RESTART_GRACE_MS] to be back. Server thread. */
+    private var startedAt = 0L
 
     @Volatile
     private var stopped = false
 
-    /** A duelist of duel [duel] against [opponent]; [until]: the end of the aftercare, null while the duel runs. */
-    private class Fight(val duel: Long, val opponent: UUID, var until: Long? = null)
+    /** A duelist of duel [duel] against [opponent]; [over]: when the duel ended for them (their protection runs from it), null while it runs. */
+    private class Fight(val duel: Long, val opponent: UUID, var over: Long? = null)
 
     /** Where a duelist starts in the arena, and where they look. */
     private class Spot(val at: Vec3, val yaw: Float)
+
+    /**
+     * What would go on hurting a duelist where they are ([hazard]). [spot]: the place itself hurts, so a loser is
+     * rescued from it rather than spared on it. [fatal]: nothing outlasts it, so the protection takes the duelist out
+     * of it at once (the death guard's rescue); otherwise they are put out, or left to land or to step away.
+     */
+    private enum class Hazard(val id: String, val spot: Boolean, val fatal: Boolean) {
+        LAVA("lava", spot = true, fatal = true),
+        VOID("the void", spot = true, fatal = true),
+        BLOCK("a dangerous block", spot = true, fatal = false),
+        FIRE("fire", spot = false, fatal = false),
+        FALL("a fall", spot = false, fatal = false),
+    }
 
     // ── Proposal (ChallengeControl.proposeDuel) ──
 
     /**
      * Proposes [spec] for [caller] (M4 §5.5): validates it, writes its canon row, then invites both players.
      * Throws [MechanicRejected] with the fix: two players online and different, PvP off (`pvp_off`), a duelist
-     * already in a duel, the pace (`challenge_limit`), an arena out of their dimension or without safe ground, a
-     * reward its tool refuses, a text the memory refuses. Never on the server thread.
+     * already in a duel, in creative or spectator mode, or who turned a duel down lately (`duel_declined`), the pace
+     * (`challenge_limit`), an arena out of their dimension or without safe ground, a reward its tool refuses, a text
+     * the memory refuses. Once the canon row is written, a cancellation of the caller no longer stops it (M4 review,
+     * finding 25). Never on the server thread.
      */
     suspend fun propose(spec: DuelSpec, caller: Caller): ChallengeView {
         shape(spec)?.let { throw invalid(it) }
@@ -149,10 +188,7 @@ class Duels(
             stakes.check(settled.reward, null, caller)
             services.journal.barrier() // the players' join rows, which the canon checks
             val ref = writeCanon(settled, duelists, caller)
-            val refusal = server.onServerThread { insert(ref, settled, duelists, caller) }
-            refusal?.let { cancelRefused(ref, it) }
-            val duel = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it was proposed")
-            view(duel)
+            withContext(NonCancellable) { settle(ref, settled, duelists, caller) }
         }
     }
 
@@ -168,8 +204,8 @@ class Duels(
 
     /**
      * The duelists of [spec], online, and [spec] with its arena's dimension set to theirs; throws
-     * [MechanicRejected] for a player not online or already in a duel, PvP off, the pace, an arena outside
-     * their dimension or the world. Server thread.
+     * [MechanicRejected] for a player not online, already in a duel, unable to get hurt or resting from a duel turned
+     * down, PvP off, the pace, an arena outside their dimension or the world. Server thread.
      */
     private fun prepare(spec: DuelSpec, server: MinecraftServer): Pair<List<Participant>, DuelSpec> {
         val online = server.playerList.players.filter { it !is FakePlayer }
@@ -183,6 +219,8 @@ class Duels(
         val duelists = players.map { Participant(it.uuid.toString(), it.plainTextName) }
         val state = store.get()
         busy(state, duelists)?.let { throw it }
+        players.firstNotNullOfOrNull(::unableToFight)?.let { throw invalid("$it: a duelist must be able to get hurt (survival or adventure mode)") }
+        resting(players, clock.millis())?.let { throw it }
         if (players.any { !it.level().isPvpAllowed }) throw MechanicRejected(PVP_OFF, "PvP is off in this world (game rule pvp): no duel")
         challenges.room(state, clock.millis(), duel = true)?.let { throw it }
         val arena = spec.arena ?: return duelists to spec
@@ -194,6 +232,27 @@ class Duels(
         for (duelist in duelists) {
             val other = state.challenges.firstOrNull { it.isDuel && it.participant(duelist.playerId) != null } ?: continue
             return invalid("${name(duelist)} is already in duel ${other.ref}; one duel at a time")
+        }
+        return null
+    }
+
+    /** Why [player] cannot fight now (`Bartok is in creative mode`): nothing could hurt them; null when they can. */
+    private fun unableToFight(player: ServerPlayer): String? =
+        if (player.isCreative || player.isSpectator) "${player.shownName} is in ${player.gameMode().serializedName} mode" else null
+
+    /**
+     * The refusal of a duel with one of [players] who turned one down less than [DECLINE_REST_MS] ago (M4 review,
+     * finding 34): nobody is pressed to fight. Null when none did.
+     */
+    private fun resting(players: List<ServerPlayer>, now: Long): MechanicRejected? {
+        for (player in players) {
+            val at = turnedDown[player.uuid]?.takeIf { now - it < DECLINE_REST_MS } ?: continue
+            val next = at + DECLINE_REST_MS
+            return MechanicRejected(
+                DUEL_DECLINED,
+                "${player.shownName} turned a duel down ${ToolText.duration(now - at)} ago; nobody is pressed to fight: ask them again at " +
+                    "${ChallengeLines.hourMinute(next, clock)} (in ${ToolText.wait(next - now)})",
+            )
         }
         return null
     }
@@ -256,6 +315,27 @@ class Duels(
         }
     }
 
+    /**
+     * Puts duel [ref], whose canon row is written, in the state and invites both: its view. A refusal at that moment, or
+     * a failure (the server thread too slow or stopping), cancels the row and is thrown: the row never stays open
+     * without its duel. Called without cancellation.
+     */
+    private suspend fun settle(ref: Ref, spec: DuelSpec, duelists: List<Participant>, caller: Caller): ChallengeView {
+        val refusal = try {
+            services.server.onServerThread { insert(ref, spec, duelists, caller) }
+        } catch (e: Exception) {
+            if (store.snapshot.challenge(ref.id) != null) {
+                null // it went in as the wait gave up
+            } else {
+                log.warn("$ref could not be put in the state as it was proposed", e)
+                invalid("the duel could not be set up (${e.message ?: e.javaClass.simpleName}); try again")
+            }
+        }
+        refusal?.let { cancelRefused(ref, it) }
+        val duel = store.snapshot.challenge(ref.id) ?: throw IllegalStateException("$ref left the state as it was proposed")
+        return view(duel)
+    }
+
     /** Puts duel [ref] in the state and invites both, unless the pace or a duelist refuses it now: the refusal. Server thread. */
     private fun insert(ref: Ref, spec: DuelSpec, duelists: List<Participant>, caller: Caller): MechanicRejected? {
         val now = clock.millis()
@@ -316,9 +396,9 @@ class Duels(
 
     /**
      * `/duel accept|decline <id>` of [player] (M4 §5.5): what they are told. An acceptance is acknowledged (to
-     * the opponent too) and wakes nobody; once both accepted, the duel starts. A refusal cancels it at once. A
-     * duel that is not one of their invitations: `duel.not_invited`; no duel [ref]: `command.unknown_challenge`.
-     * Server thread.
+     * the opponent too) and wakes nobody; once both accepted, the duel starts. A refusal cancels it at once, and
+     * no duel is proposed to [player] for a while ([DECLINE_REST_MS]). A duel that is not one of their invitations:
+     * `duel.not_invited`; no duel [ref]: `command.unknown_challenge`. Server thread.
      */
     fun answer(player: ServerPlayer, ref: Ref, accept: Boolean): Component {
         val texts = ui
@@ -328,6 +408,7 @@ class Duels(
         if (duel.status != ChallengeStatus.INVITED || me == null) return private(texts["duel.not_invited"])
         val other = opponentOf(duel, me)
         if (!accept) {
+            turnedDown[player.uuid] = clock.millis()
             close(duel, Ending.CANCELLED, emptyList(), DuelLines.declined(me))
             tell(other, texts.format("duel.declined", "player" to me.name))
             return private(texts.format("duel.declined", "player" to me.name))
@@ -351,8 +432,8 @@ class Duels(
 
     /**
      * Both duelists of [duel] accepted: it starts now, once its arena is loaded, or it is cancelled when a duelist
-     * cannot fight any more (gone, dead, PvP off, out of the arena's dimension) or the arena has no safe ground.
-     * [afterLoading]: the arena was just loaded. Server thread.
+     * cannot fight any more (gone, dead, unable to get hurt, PvP off, out of the arena's dimension) or the arena has
+     * no safe ground. [afterLoading]: the arena was just loaded. Server thread.
      */
     private fun ready(duel: ChallengeState, afterLoading: Boolean) {
         val players = duel.participants.map { services.server.playerList.getPlayer(it.playerId) }
@@ -369,10 +450,9 @@ class Duels(
         val loading = Teleports.requestLoad(level, arena.x, arena.z)
         log.debug { "${duel.ref}: both accepted; loading the arena ${where(arena)} before it starts" }
         services.scope.launch {
-            val loaded = Teleports.awaitLoaded(loading)
             try {
+                val loaded = Teleports.awaitLoaded(loading)
                 services.server.onServerThread {
-                    starting.remove(duel.id)
                     val now = store.get().challenge(duel.id)?.takeIf { it.status == ChallengeStatus.INVITED }
                     if (now != null && !stopped) {
                         if (loaded) ready(now, afterLoading = true) else cancel(now, "the arena ${where(arena)} took too long to load")
@@ -382,6 +462,8 @@ class Duels(
                 throw e
             } catch (e: Exception) {
                 log.warn("${duel.ref}: its start after the arena loaded failed; the next second tries again", e)
+            } finally {
+                starting.remove(duel.id)
             }
         }
     }
@@ -393,6 +475,7 @@ class Duels(
             if (player.isDeadOrDying || player.isRemoved) return "${name(duelist)} was not alive when it would have started"
         }
         val fighters = players.map { it!! }
+        fighters.firstNotNullOfOrNull(::unableToFight)?.let { return it }
         if (fighters.any { !it.level().isPvpAllowed }) return "PvP is off in this world (game rule pvp)"
         val arena = duel.duel!!.arena ?: return null
         fighters.firstOrNull { it.level().dimension().identifier().toString() != arena.dimension }?.let {
@@ -405,8 +488,8 @@ class Duels(
     private fun begin(duel: ChallengeState, players: List<ServerPlayer>, spots: List<Spot>?) {
         val now = clock.millis()
         val spec = duel.duel!!
-        val arena = if (spots == null) emptyList() else players.map(::saved)
-        spots?.forEachIndexed { i, spot -> move(players[i], players[i].level(), spot.at, spot.yaw, 0f) }
+        val arena = if (spots == null) emptyList() else players.map { saved(it, now) }
+        spots?.forEachIndexed { i, spot -> moveTo(players[i], players[i].level(), spot.at, spot.yaw, 0f) }
         val running = duel.copy(
             status = ChallengeStatus.RUNNING,
             startedAt = now,
@@ -436,7 +519,7 @@ class Duels(
     private fun spots(level: ServerLevel, arena: ArenaSpec, players: List<ServerPlayer>): List<Spot>? = players.mapIndexed { i, player ->
         val west = i == 0
         val x = arena.x + if (west) -MechanicsLimits.ARENA_DISTANCE else MechanicsLimits.ARENA_DISTANCE
-        val at = Teleports.landing(level, player, x, arena.z, arena.y)?.takeIf { abs(it.y - arena.y) <= ARENA_HEIGHT_SLACK } ?: return null
+        val at = Teleports.landing(level, player, x, arena.z, arena.y)?.takeIf { abs(it.y - arena.y) <= HEIGHT_SLACK } ?: return null
         Spot(at, if (west) FACING_EAST else FACING_WEST)
     }
 
@@ -452,10 +535,12 @@ class Duels(
     // ── Nobody dies in a duel ──
 
     /**
-     * `ALLOW_DEATH` of [player] (M4 §5.5, before the guards'): a duelist's death is refused, health given back
-     * first, and they lose the duel; for [MechanicsLimits.DUEL_RESISTANCE_SECONDS] after the end, a death of
-     * either duelist is refused the same way. An operator's `/kill` (`generic_kill`) is allowed: a duel in
-     * progress is then cancelled. Server thread.
+     * `ALLOW_DEATH` of [player] (M4 §5.5, before the guards'): a duelist's death is refused, health given back first.
+     * The opponent's blow leaves them at 1 health where they stand ([spare]), unless that place would go on hurting
+     * them; then, as for any other cause, they are rescued. They lose the duel, unless the death was decided from
+     * outside it ([outsider]): then it is cancelled, the bets going back (M4 review, finding 19). Under the protection
+     * after a duel ([protect]), a death of either duelist is refused the same way, without ending anything. An
+     * operator's `/kill` (`generic_kill`) is allowed: a duel in progress is then cancelled. Server thread.
      */
     override fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean {
         val duel = store.get().challenges.firstOrNull { it.isDuel && it.status == ChallengeStatus.RUNNING && it.participant(player.uuid) != null }
@@ -465,33 +550,52 @@ class Duels(
             duel?.let { close(it, Ending.CANCELLED, emptyList(), DuelLines.killed(it.participant(player.uuid)!!)) }
             return true
         }
-        val now = clock.millis()
-        if (duel == null && fight!!.until?.let { now > it } == true) {
-            fighting.remove(player.uuid)
-            return true
-        }
         val loser = duel?.participant(player.uuid)
         val opponent = loser?.let { opponentOf(duel, it).playerId } ?: fight!!.opponent
         val ref = Ref(RefKind.CANON, duel?.id ?: fight!!.duel)
-        val byOpponent = source.entity?.uuid == opponent
-        if (byOpponent) spare(player) else services.guards.rescue(player, "duel $ref: ${DuelLines.cause(source, player)}")
-        log.info("$ref: the death of ${player.plainTextName} (${DuelLines.cause(source, player)}) is refused${if (duel == null) " (just after the duel)" else ""}")
-        if (duel != null && loser != null) {
-            val winner = opponentOf(duel, loser)
-            val how = if (byOpponent) DuelLines.blow(duel, winner, loser, now) else DuelLines.rescued(duel, winner, loser, DuelLines.cause(source, player), now)
-            close(duel, Ending.WON, listOf(winner), how)
-            tell(winner, ui["duel.won"])
-            tell(loser, ui["duel.lost"])
+        val cause = DuelLines.cause(source, player)
+        val outsider = if (loser != null) outsider(player, source, opponent) else null
+        val spared = source.entity?.uuid == opponent && hazard(player)?.spot != true
+        if (spared) spare(player) else services.guards.rescue(player, "duel $ref: $cause")
+        log.info("$ref: the death of ${player.plainTextName} ($cause) is refused${if (duel == null) " (after the duel)" else ""}")
+        if (duel == null || loser == null) return false
+        if (outsider != null) {
+            close(duel, Ending.CANCELLED, emptyList(), DuelLines.outside(duel, loser, cause, outsider))
+            duel.participants.forEach { tell(it, ui["duel.cancelled"]) }
+            return false
         }
+        val now = clock.millis()
+        val winner = opponentOf(duel, loser)
+        close(duel, Ending.WON, listOf(winner), if (spared) DuelLines.blow(duel, winner, loser, now) else DuelLines.rescued(duel, winner, loser, cause, now))
+        tell(winner, ui["duel.won"])
+        tell(loser, ui["duel.lost"])
         return false
     }
 
-    /** The opponent's fatal blow, stopped (M4 §5.5): 1 health, put out, the fight's harmful effects lifted, resistance V a few seconds. */
+    /**
+     * Who decided [player]'s death by [source] from outside their duel against [opponent] (M4 review, finding 19),
+     * as the model reads it: another player (their blow, or the last blow before lava, a fall or the void), one of
+     * the Narrator's creatures (`the Narrator's zombie`), or the Narrator (its death guard covers the cause); null
+     * when it is the duel's own doing (the opponent, the world, [player] themselves). Server thread.
+     */
+    private fun outsider(player: ServerPlayer, source: DamageSource, opponent: UUID): String? {
+        val by = source.entity?.takeIf { it !== player } ?: player.killCredit?.takeIf { it !== player }
+        val creature = by?.takeIf { CreatureShield.isNarratorsDoing(it) } ?: source.directEntity?.takeIf { CreatureShield.isNarratorsDoing(it) }
+        return when {
+            by?.uuid == opponent -> null
+            by is Player -> ModelText.name(by.plainTextName)
+            creature != null -> "the Narrator's ${Goals.label(creature.typeId)}"
+            services.guards.deathAttribution(player, source).narrator -> "the Narrator"
+            else -> null
+        }
+    }
+
+    /** The opponent's fatal blow, stopped (M4 §5.5): 1 health, put out, the fight's harmful effects lifted, resistance V for the protection's least. */
     private fun spare(player: ServerPlayer) {
         player.health = 1f
         aftercare(player)
         player.resetFallDistance()
-        player.addEffect(MobEffectInstance(MobEffects.RESISTANCE, MechanicsLimits.DUEL_RESISTANCE_SECONDS * TICKS_PER_SECOND, RESISTANCE_V, false, false, true))
+        player.addEffect(MobEffectInstance(MobEffects.RESISTANCE, MechanicsLimits.DUEL_PROTECTION_SECONDS * TICKS_PER_SECOND, RESISTANCE_V, false, false, true))
     }
 
     /**
@@ -508,6 +612,43 @@ class Duels(
     private fun harmful(player: ServerPlayer): List<Holder<MobEffect>> = player.activeEffects.map { it.effect }
         .filter { it.value().category == MobEffectCategory.HARMFUL && services.guards.effects.entryOf(player, it) == null }
 
+    /**
+     * What would go on hurting [player] where they are now: lava or a dangerous block (fire, magma, a cactus…) in or
+     * under them, the void (below the world, or nothing under them down to its bottom), a fire on them, a fall under
+     * way; null when nothing (always for a spectator; only the void hurts a player in creative mode). Read in the
+     * blocks themselves, not in what the last tick of the player saw. Server thread.
+     */
+    private fun hazard(player: ServerPlayer): Hazard? {
+        if (player.isSpectator) return null
+        val level = player.level()
+        if (player.y < level.minY) return Hazard.VOID
+        if (player.isCreative) return null
+        var dangerous = false
+        for (pos in BlockPos.betweenClosed(player.boundingBox.deflate(BOX_MARGIN).expandTowards(0.0, -FLOOR_DEPTH, 0.0))) {
+            val state = level.getBlockState(pos)
+            if (state.fluidState.`is`(FluidTags.LAVA)) return Hazard.LAVA
+            if (player.type.isBlockDangerous(state)) dangerous = true
+        }
+        val airborne = !player.onGround() && !player.isFallFlying && !player.abilities.flying
+        return when {
+            dangerous -> Hazard.BLOCK
+            airborne && nothingBelow(level, player) -> Hazard.VOID
+            player.isOnFire -> Hazard.FIRE
+            airborne && player.fallDistance > 0 -> Hazard.FALL
+            else -> null
+        }
+    }
+
+    /** Whether only air lies under [player]'s feet down to the bottom of [level]: a fall into the void. Server thread. */
+    private fun nothingBelow(level: ServerLevel, player: ServerPlayer): Boolean {
+        val pos = BlockPos.MutableBlockPos(player.blockX, player.blockY, player.blockZ)
+        while (pos.y >= level.minY) {
+            if (!level.getBlockState(pos).isAir) return false
+            pos.move(Direction.DOWN)
+        }
+        return true
+    }
+
     // ── End ──
 
     /**
@@ -517,10 +658,10 @@ class Duels(
     private fun close(duel: ChallengeState, ending: Ending, winners: List<Participant>, how: String) {
         challenges.finish(duel.id, ending, winners.map { it.playerId }, how = how) ?: return
         log.info("${duel.ref} ${ending.id}: $how")
-        watch(clock.millis())
+        follow(clock.millis())
     }
 
-    /** [duel] did not start: cancelled with [why], both told. Server thread. */
+    /** [duel] did not start, or cannot go on: cancelled with [why], both told. Server thread. */
     private fun cancel(duel: ChallengeState, why: String) {
         close(duel, Ending.CANCELLED, emptyList(), "cancelled: $why")
         duel.participants.forEach { tell(it, ui["duel.cancelled"]) }
@@ -528,10 +669,14 @@ class Duels(
 
     /**
      * Ends challenge or duel [ref] for the Director or an operator (`ChallengeControl.end`, M4 §5.2): [Challenges.end],
-     * then a duel's players are told how it ended. Throws [MechanicRejected]. Never on the server thread.
+     * then a duel's players are told how it ended. A duel still an invitation can only be cancelled: nobody won or
+     * lost a fight that never began (M4 review, finding 34). Throws [MechanicRejected]. Never on the server thread.
      */
     suspend fun end(ref: Ref, outcome: ChallengeOutcome, winners: List<UUID>, note: String, author: Author): ChallengeView {
         val duel = store.snapshot.challenge(ref.id)?.takeIf { it.isDuel }
+        if (duel?.status == ChallengeStatus.INVITED && outcome != ChallengeOutcome.CANCELLED) {
+            throw invalid("$ref is only an invitation, not accepted by both: nobody can win or lose it; end it cancelled")
+        }
         val view = challenges.end(ref, outcome, winners, note, author)
         if (duel != null) {
             services.server.onServerThread {
@@ -551,41 +696,73 @@ class Duels(
 
     // ── The engine's part ──
 
-    override fun everyTick(server: MinecraftServer, now: Long) = watch(now)
+    /**
+     * Whether [player] fights a duel now, from its start to its end (not while invited): what `Guards.isDueling` asks,
+     * once the engine wires it (M4 review, finding 19: nothing hostile of the Narrator's targets a duelist). A lookup,
+     * at every target a creature of the Narrator picks. Server thread.
+     */
+    fun isDueling(player: UUID): Boolean = fighting[player]?.let { it.over == null } == true
+
+    override fun everyTick(server: MinecraftServer, now: Long) {
+        follow(now)
+        protect(server, now)
+    }
 
     /**
      * Follows the duelists: each one of a duel running is fighting; once their duel left the state, however it
-     * ended, their aftercare is done and they stay protected [MechanicsLimits.DUEL_RESISTANCE_SECONDS]. Server thread.
+     * ended, their protection starts ([protect]) with a first aftercare at once. Server thread.
      */
-    private fun watch(now: Long) {
+    private fun follow(now: Long) {
         val running = store.get().challenges.filter { it.isDuel && it.status == ChallengeStatus.RUNNING }
         for (duel in running) {
             for (duelist in duel.participants) {
                 val fight = fighting[duelist.playerId]
-                if (fight == null || fight.duel != duel.id || fight.until != null) fighting[duelist.playerId] = Fight(duel.id, opponentOf(duel, duelist).playerId)
+                if (fight == null || fight.duel != duel.id || fight.over != null) fighting[duelist.playerId] = Fight(duel.id, opponentOf(duel, duelist).playerId)
             }
         }
-        val each = fighting.entries.iterator()
-        while (each.hasNext()) {
-            val (uuid, fight) = each.next()
-            val until = fight.until
-            when {
-                until == null && running.none { it.id == fight.duel } -> {
-                    services.server.playerList.getPlayer(uuid)?.let(::aftercare)
-                    fight.until = now + MechanicsLimits.DUEL_RESISTANCE_SECONDS * 1_000L
-                }
-                until != null && now > until -> each.remove()
-            }
+        for ((uuid, fight) in fighting) {
+            if (fight.over != null || running.any { it.id == fight.duel }) continue
+            fight.over = now
+            services.server.playerList.getPlayer(uuid)?.let(::aftercare)
         }
     }
 
-    /** Each second: invitations run out, duels reach their deadline (a draw), duelists go back where they were. */
+    /**
+     * One tick of each duelist's protection after their duel (M4 review, finding 3): put out, given air, freed of
+     * the fight's harmful effects, and taken out of lava or the void (the death guard's rescue). It lasts
+     * [MechanicsLimits.DUEL_PROTECTION_SECONDS] at least, and as long as a danger does ([PROTECTION_MAX_MS] at most:
+     * a duelist still in danger then is rescued); a death meanwhile is refused ([allowDeath]). A duelist offline keeps
+     * it for their return. Server thread.
+     */
+    private fun protect(server: MinecraftServer, now: Long) {
+        val ended = fighting.filterValues { it.over != null }
+        for ((uuid, fight) in ended) {
+            val player = server.playerList.getPlayer(uuid) ?: continue
+            val since = now - fight.over!!
+            val hazard = if (player.isDeadOrDying || player.isRemoved) null else hazard(player)
+            aftercare(player)
+            val capped = since > PROTECTION_MAX_MS
+            if (hazard != null && (hazard.fatal || capped)) services.guards.rescue(player, "after duel ${Ref(RefKind.CANON, fight.duel)}: ${hazard.id}")
+            if (capped || hazard == null && since > MechanicsLimits.DUEL_PROTECTION_SECONDS * 1_000L) fighting.remove(uuid)
+        }
+    }
+
+    /**
+     * Each second: invitations run out, duels reach their deadline (a draw), a duel both accepted that cannot start
+     * is cancelled, a duelist who can no longer get hurt cancels theirs, a duelist not back after a restart has left;
+     * then duelists go back where they were ([DuelReturns]).
+     */
     override fun everySecond(server: MinecraftServer, now: Long) {
+        turnedDown.values.removeIf { now - it >= DECLINE_REST_MS }
         for (duel in store.get().challenges) {
             if (!duel.isDuel) continue
             when {
-                duel.status == ChallengeStatus.INVITED && duel.participants.all { it.accepted } -> if (duel.id !in starting) ready(duel, afterLoading = false)
+                duel.status == ChallengeStatus.INVITED && duel.participants.all { it.accepted } -> when {
+                    now >= duel.endsAt + START_GRACE_MS -> cancel(duel, "both accepted, but it could not start within ${ToolText.duration(START_GRACE_MS)} of the invitation's end")
+                    duel.id !in starting -> ready(duel, afterLoading = false)
+                }
                 duel.status == ChallengeStatus.INVITED && now >= duel.endsAt -> {
+                    duel.participants.filterNot { it.accepted }.forEach { turnedDown[it.playerId] = now }
                     close(duel, Ending.CANCELLED, emptyList(), DuelLines.expired(duel))
                     duel.participants.forEach { tell(it, ui["duel.expired"]) }
                 }
@@ -593,40 +770,31 @@ class Duels(
                     close(duel, Ending.LOST, emptyList(), DuelLines.draw(duel))
                     duel.participants.forEach { tell(it, ui["duel.draw"]) }
                 }
+                duel.status == ChallengeStatus.RUNNING -> stillFit(server, duel, now)
             }
         }
-        putBack(server)
+        returns.putBack(server) { uuid -> fighting[uuid]?.let { it.over == null } == true }
     }
 
     /**
-     * Puts each duelist with a place to go back to ([MechanicsState.returns]) there, once online, alive and out of
-     * any duel: on safe ground in that column, else exactly where they stood; its chunk is loaded first (off the
-     * server thread), and they go at the next second. Server thread.
+     * [duel] runs: cancelled when a duelist can no longer get hurt (an operator put them in creative mode); after a
+     * restart, a duelist not back within [RESTART_GRACE_MS] has left (M4 review, finding 34): the other wins, or it is
+     * cancelled when neither is back. Server thread.
      */
-    private fun putBack(server: MinecraftServer) {
-        val returns = store.get().returns
-        if (returns.isEmpty()) return
-        val done = mutableListOf<SavedPosition>()
-        for (saved in returns) {
-            val player = server.playerList.getPlayer(UUID.fromString(saved.uuid)) ?: continue
-            val fight = fighting[player.uuid]
-            if (player.isDeadOrDying || player.isRemoved || fight != null && fight.until == null) continue // dead, or fighting again
-            val level = levelOf(server, saved.dimension) ?: server.overworld()
-            val x = floor(saved.x).toInt()
-            val z = floor(saved.z).toInt()
-            if (level.chunkSource.getChunkNow(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)) == null) {
-                Teleports.requestLoad(level, x, z)
-                continue
+    private fun stillFit(server: MinecraftServer, duel: ChallengeState, now: Long) {
+        val players = duel.participants.map { server.playerList.getPlayer(it.playerId) }
+        players.filterNotNull().firstNotNullOfOrNull(::unableToFight)?.let { return cancel(duel, it) }
+        if (now - startedAt < RESTART_GRACE_MS) return
+        val away = duel.participants.filterIndexed { i, _ -> players[i] == null }
+        when (away.size) {
+            0 -> Unit
+            1 -> {
+                val other = opponentOf(duel, away.single())
+                close(duel, Ending.WON, listOf(other), DuelLines.left(duel, other, away.single(), now))
+                tell(other, ui["duel.won"])
             }
-            val spot = Teleports.landing(level, player, x, z, floor(saved.y).toInt()) ?: Vec3(saved.x, saved.y, saved.z)
-            if (move(player, level, spot, saved.yaw, saved.pitch)) {
-                log.info("${player.plainTextName} is put back where they were before their duel (${DuelLines.at(spot)})")
-            } else {
-                log.warn("${player.plainTextName} could not be put back where they were before their duel (${DuelLines.at(spot)}); left where they are")
-            }
-            done += saved
+            else -> close(duel, Ending.CANCELLED, emptyList(), DuelLines.notBack(duel))
         }
-        if (done.isNotEmpty()) store.update { it.copy(returns = it.returns - done.toSet()) }
     }
 
     /** A player left: out of their duel, which they lose; an invitation is cancelled. */
@@ -649,9 +817,10 @@ class Duels(
 
     override fun started(server: MinecraftServer, now: Long) {
         stopped = false
+        startedAt = now
         fighting.clear()
         starting.clear()
-        watch(now)
+        follow(now)
     }
 
     override fun stopping() {
@@ -684,21 +853,16 @@ class Duels(
         player.connection.send(ClientboundSetTitleTextPacket(Speech.colored(ui, text)))
     }
 
-    private fun saved(player: ServerPlayer) = SavedPosition(
-        player.uuid.toString(), player.level().dimension().identifier().toString(), player.x, player.y, player.z, player.yRot, player.xRot,
+    private fun saved(player: ServerPlayer, now: Long) = SavedPosition(
+        player.uuid.toString(), player.level().dimension().identifier().toString(), player.x, player.y, player.z, player.yRot, player.xRot, savedAt = now,
     )
-
-    /** Moves [player] to [at] in [level], looking [yaw] and [pitch], off their mount, with no fall to finish. */
-    private fun move(player: ServerPlayer, level: ServerLevel, at: Vec3, yaw: Float, pitch: Float): Boolean {
-        player.stopRiding()
-        val moved = player.teleportTo(level, at.x, at.y, at.z, emptySet<Relative>(), yaw, pitch, true)
-        if (moved) player.resetFallDistance()
-        return moved
-    }
 
     companion object {
         /** The refusal of a duel while PvP is off (M4 §5.5). */
         const val PVP_OFF = "pvp_off"
+
+        /** The refusal of a duel with a player who turned one down lately (M4 review, finding 34). */
+        const val DUEL_DECLINED = "duel_declined"
 
         /** The decisions of a duel (M4 §19), besides `started` and the endings. */
         const val INVITED = "invited"
@@ -710,8 +874,23 @@ class Duels(
         /** Resistance V: no damage but the void's and an operator's. */
         private const val RESISTANCE_V = 4
 
-        /** A duelist's spot in the arena is at most this many blocks above or below its point. */
-        private const val ARENA_HEIGHT_SLACK = 8
+        /** No duel is proposed to a player for this long after they turned one down: nobody is pressed to fight. */
+        private const val DECLINE_REST_MS = 10 * MINUTE
+
+        /** A duel both accepted that has not started this long after its invitation's end is cancelled: its arena would not load. */
+        private const val START_GRACE_MS = 30_000L
+
+        /** After a restart, the duelists of a duel still running have this long to come back; past it, one away has left. */
+        private const val RESTART_GRACE_MS = 60_000L
+
+        /** The protection after a duel lasts at most this long, whatever the danger: a duelist still in it is then rescued. */
+        private const val PROTECTION_MAX_MS = 2 * MINUTE
+
+        /** The player's box is read this much smaller on each side: the blocks they only touch do not count. */
+        private const val BOX_MARGIN = 1.0E-3
+
+        /** How far under the player's feet [hazard] reads: the block they stand on. */
+        private const val FLOOR_DEPTH = 0.5
 
         /** Yaw looking east (+x) and west (−x): the two duelists face each other. */
         private const val FACING_EAST = -90f
@@ -728,12 +907,106 @@ class Duels(
         private val ServerPlayer.shownName: String get() = ModelText.name(plainTextName)
 
         private fun where(arena: ArenaSpec) = "(x ${arena.x} y ${arena.y} z ${arena.z})"
-
-        /** The level of dimension [id] (`minecraft:overworld`); null when the server has none. */
-        private fun levelOf(server: MinecraftServer, id: String): ServerLevel? =
-            Identifier.tryParse(id)?.let { server.getLevel(ResourceKey.create(Registries.DIMENSION, it)) }
     }
 }
+
+/**
+ * Puts each duelist with a place to go back to ([MechanicsState.returns]: where they stood before a duel in an arena,
+ * M4 §5.5) back there, once online, alive and not busy: on safe ground at most [HEIGHT_SLACK] blocks above or below
+ * where they stood, else at their respawn point, never over the void nor in lava (M4 review, finding 21). Its chunk
+ * is loaded first (off the server thread), and they go at the next call. A return older than [MAX_AGE_MS] is dropped
+ * instead, with a decision `mechanic return_dropped`: the place may have changed beyond recognition.
+ *
+ * [Duels] calls it each second; it needs no engine, and also serves when the engine does not run. Server thread.
+ */
+class DuelReturns(private val store: StateStore, private val decisions: Decisions, private val clock: Clock) {
+    private val log = Log.mechanics
+
+    /** Puts back each player of the returns now online and alive, but those [busy] (in a duel again). Server thread. */
+    fun putBack(server: MinecraftServer, busy: (UUID) -> Boolean = { false }) {
+        val returns = store.get().returns
+        if (returns.isEmpty()) return
+        val now = clock.millis()
+        val done = mutableListOf<SavedPosition>()
+        for (saved in returns) {
+            val player = server.playerList.getPlayer(UUID.fromString(saved.uuid)) ?: continue
+            if (player.isDeadOrDying || player.isRemoved || busy(player.uuid)) continue
+            val age = saved.savedAt?.let { now - it }
+            if (age != null && age > MAX_AGE_MS) {
+                decisions.record(
+                    log, DecisionRecord.Kind.MECHANIC, RETURN_DROPPED, player.plainTextName,
+                    reason = "not put back where they stood before their duel (${where(saved)}): that was ${ToolText.duration(age)} ago, " +
+                        "more than ${ToolText.duration(MAX_AGE_MS)}; left where they are",
+                )
+                done += saved
+                continue
+            }
+            val level = levelOf(server, saved.dimension)
+            val x = floor(saved.x).toInt()
+            val z = floor(saved.z).toInt()
+            if (level != null && level.chunkSource.getChunkNow(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)) == null) {
+                Teleports.requestLoad(level, x, z)
+                continue
+            }
+            val spot = if (level == null) null else near(level, player, x, z, floor(saved.y).toInt())
+            val moved = if (level != null && spot != null) moveTo(player, level, spot, saved.yaw, saved.pitch) else toRespawnPoint(player)
+            when {
+                !moved -> log.warn("${player.plainTextName} could not be put back where they were before their duel (${where(saved)}); left where they are")
+                spot != null -> log.info("${player.plainTextName} is put back where they were before their duel (${DuelLines.at(spot)})")
+                else -> log.info(
+                    "${player.plainTextName} is put back at their respawn point: no safe ground within $HEIGHT_SLACK blocks of where they stood before their duel (${where(saved)})",
+                )
+            }
+            done += saved
+        }
+        if (done.isNotEmpty()) store.update { it.copy(returns = it.returns - done.toSet()) }
+    }
+
+    /**
+     * Safe ground in column ([x], [z]) of [level] at most [HEIGHT_SLACK] blocks above or below [y]: the highest at or
+     * under [y], else the nearest above; null when there is none. Loaded columns only.
+     */
+    private fun near(level: ServerLevel, player: ServerPlayer, x: Int, z: Int, y: Int): Vec3? =
+        listOf(y, y + HEIGHT_SLACK).firstNotNullOfOrNull { from ->
+            Teleports.landing(level, player, x, z, from)?.takeIf { abs(it.y - y) <= HEIGHT_SLACK }
+        }
+
+    /** Takes [player] to their respawn point as the game finds it (their bed or anchor, without using a charge; the world spawn otherwise). */
+    private fun toRespawnPoint(player: ServerPlayer): Boolean {
+        val home = player.findRespawnPositionAndUseSpawnBlock(false, TeleportTransition.DO_NOTHING)
+        // Rebuilt without the "no respawn block" flag: the player is not respawning, and must not be told so.
+        val spot = TeleportTransition(home.newLevel(), home.position(), Vec3.ZERO, home.yRot(), home.xRot(), home.relatives(), TeleportTransition.DO_NOTHING)
+        player.stopRiding()
+        if (player.teleport(spot) == null) return false
+        player.resetFallDistance()
+        return true
+    }
+
+    private fun where(saved: SavedPosition): String = "${DuelLines.at(Vec3(saved.x, saved.y, saved.z))} in ${ToolText.dimension(saved.dimension)}"
+
+    companion object {
+        /** The decision of a return dropped for its age. */
+        const val RETURN_DROPPED = "return_dropped"
+
+        /** A return older than this is dropped: a day. */
+        const val MAX_AGE_MS = 24 * 60 * 60_000L
+    }
+}
+
+/** A duelist's spot in an arena, or where one goes back to, is at most this many blocks above or below the height asked. */
+private const val HEIGHT_SLACK = 8
+
+/** Moves [player] to [at] in [level], looking [yaw] and [pitch], off their mount, with no fall to finish. */
+private fun moveTo(player: ServerPlayer, level: ServerLevel, at: Vec3, yaw: Float, pitch: Float): Boolean {
+    player.stopRiding()
+    val moved = player.teleportTo(level, at.x, at.y, at.z, emptySet<Relative>(), yaw, pitch, true)
+    if (moved) player.resetFallDistance()
+    return moved
+}
+
+/** The level of dimension [id] (`minecraft:overworld`); null when the server has none. */
+private fun levelOf(server: MinecraftServer, id: String): ServerLevel? =
+    Identifier.tryParse(id)?.let { server.getLevel(ResourceKey.create(Registries.DIMENSION, it)) }
 
 /**
  * The duels' lines for the model (M4 §4.4, §12.3), in English, names escaped: the proposal, the start, and how a
@@ -782,9 +1055,20 @@ object DuelLines {
     fun rescued(duel: ChallengeState, winner: Participant, loser: Participant, cause: String, now: Long): String =
         "${wonBy(duel, winner, now)}: ${name(loser)} would have died ($cause) and was rescued instead${back(duel)}"
 
+    /**
+     * `cancelled: Cid interfered; Bartok would have died (player_attack by Cid) and was rescued instead`: a death decided
+     * from outside the duel. [by] is already as the model reads it (an escaped name, `the Narrator`, `the Narrator's zombie`).
+     */
+    fun outside(duel: ChallengeState, loser: Participant, cause: String, by: String): String =
+        "cancelled: $by interfered; ${name(loser)} would have died ($cause) and was rescued instead${back(duel)}"
+
     /** `won by Mimosa in 3m: Bartok left the server`. */
     fun left(duel: ChallengeState, winner: Participant, leaver: Participant, now: Long): String =
         "${wonBy(duel, winner, now)}: ${name(leaver)} left the server${back(duel)}"
+
+    /** `cancelled: neither Bartok nor Mimosa came back after the restart`. */
+    fun notBack(duel: ChallengeState): String =
+        "cancelled: neither ${duel.participants.joinToString(" nor ") { name(it) }} came back after the restart${back(duel)}"
 
     /** `lost: a draw, nobody won within 5m`. */
     fun draw(duel: ChallengeState): String =

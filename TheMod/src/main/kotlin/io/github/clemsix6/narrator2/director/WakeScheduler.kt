@@ -21,7 +21,9 @@ import kotlin.random.Random
  *   chat, prayers and operator whispers; and the items that wake it past the budget ([pastBudget]): a
  *   commitment that comes due ([DirectorSignal.MemoryDue], M3 §11.3), rare and binding, and a mechanic's
  *   priority news ([DirectorSignal.Mechanic.priority], M4 §4.4: a challenge or a duel that ends, a judged
- *   challenge to judge, an offering). The other items wait for a turn to leave the hour.
+ *   challenge to judge, an offering). The other items wait for a turn to leave the hour. A player's own
+ *   news ([byPlayer]: an offering) wakes it past the budget [PLAYER_NEWS_PER_HOUR] times an hour at most, all
+ *   players together (M4 review, finding 6): beyond, it waits like the others.
  * - Heartbeats: a random time in `director.heartbeatMinutes` after the last turn ([nextHeartbeat]),
  *   worth what [heartbeatWorth] says.
  */
@@ -37,14 +39,22 @@ object WakeScheduler {
     const val NEXT_WORTH = 0.25
 
     /**
+     * Wake-ups past the budget of turns that the players' own news ([byPlayer]) may cause in an hour, all players
+     * together (M4 review, finding 6): one player offering a block of dirt every few minutes must not spend the
+     * owner's tokens.
+     */
+    const val PLAYER_NEWS_PER_HOUR = 4
+
+    /**
      * When the Director should wake up for [items], never before [notBefore] (after a refused reply);
      * null when none of them wakes it. [throttled]: the budget of turns is spent, only
-     * [Urgency.IMMEDIATE] items and those that wake it [pastBudget] do.
+     * [Urgency.IMMEDIATE] items and those that wake it [pastBudget] do; [playerNewsSpent]: the players' news
+     * spent their wake-ups past the budget too.
      */
-    fun wakeAt(items: List<Item>, debounceMs: Long, notBefore: Long? = null, throttled: Boolean = false): Long? {
+    fun wakeAt(items: List<Item>, debounceMs: Long, notBefore: Long? = null, throttled: Boolean = false, playerNewsSpent: Boolean = false): Long? {
         val waking = items.filter { it.waking }
         val immediate = waking.filter { it.urgency == Urgency.IMMEDIATE }.map { it.at }
-        val soon = waking.filter { it.urgency == Urgency.SOON && (!throttled || pastBudget(it)) }.map { it.at }
+        val soon = waking.filter { it.urgency == Urgency.SOON && (!throttled || pastBudget(it, playerNewsSpent)) }.map { it.at }
         val candidates = listOfNotNull(
             if (immediate.isEmpty()) null else minOf(immediate.max() + debounceMs, immediate.min() + IMMEDIATE_MAX_MS),
             if (soon.isEmpty()) null else minOf(soon.max() + SOON_QUIET_MS, soon.min() + SOON_MAX_MS),
@@ -56,12 +66,32 @@ object WakeScheduler {
     /**
      * Whether [item] wakes the Director even when the hour's turns are spent (M2 review, finding 26): a
      * commitment that comes due, and a mechanic's priority news (M4 §4.4). Both are rare: a duel's start, a
-     * rule's note or a joker played wait, and a player makes one offering per 10 minutes at most.
+     * rule's note or a joker played wait, and the Director starts the challenges and duels whose end wakes it.
+     * A player's own news ([byPlayer]) no longer does once [playerNewsSpent].
      */
-    fun pastBudget(item: Item): Boolean = when (val signal = item.signal) {
+    fun pastBudget(item: Item, playerNewsSpent: Boolean = false): Boolean = when (val signal = item.signal) {
         is DirectorSignal.MemoryDue -> true
-        is DirectorSignal.Mechanic -> signal.priority
+        is DirectorSignal.Mechanic -> signal.priority && !(playerNewsSpent && byPlayer(signal))
         else -> false
+    }
+
+    /**
+     * Whether [signal] is a priority news that a player sends by an act of their own (M4 review, finding 6): an
+     * offering (`/offer`). Its wake-ups past the budget are counted ([TurnBudget.playerNewsSpent]).
+     */
+    fun byPlayer(signal: DirectorSignal): Boolean =
+        signal is DirectorSignal.Mechanic && signal.priority && signal.kind == MechanicSignal.OFFERING
+
+    /**
+     * Whether a wake-up for [items] while the budget of turns is spent is owed to the players' own news alone
+     * ([byPlayer]): one of them wakes the Director, and nothing else among [items] would (addressed chat, a prayer,
+     * a whisper, a due commitment, the engine's other priority news). Such a wake-up counts against
+     * [PLAYER_NEWS_PER_HOUR].
+     */
+    fun wokenByPlayers(items: List<Item>): Boolean {
+        val waking = items.filter { it.waking }
+        return waking.any { byPlayer(it.signal) } &&
+            waking.none { it.urgency == Urgency.IMMEDIATE || (it.urgency == Urgency.SOON && pastBudget(it) && !byPlayer(it.signal)) }
     }
 
     /** The next heartbeat: a random whole second in [minutes] after [from]. */
@@ -112,15 +142,24 @@ object WakeScheduler {
  * The Director's budget of turns per hour (M2 review, finding 26), `director.turnsPerHour`: once that
  * many turns started within the last hour, only addressed chat, prayers, operator whispers, due commitments
  * and the mechanics' priority news wake the Narrator ([WakeScheduler.wakeAt]); salient events wait for a turn to leave the hour, or go with the
- * next wake-up, and heartbeats are skipped. The Director counts its turns ([started]); the salience
- * reads the budget to write its `salience throttled` decisions. Any thread.
+ * next wake-up, and heartbeats are skipped. The players' own news (an offering) wake it past the budget
+ * [WakeScheduler.PLAYER_NEWS_PER_HOUR] times an hour at most ([playerNewsSpent], M4 review, finding 6). The
+ * Director counts its turns ([started]); the salience reads the budget to write its `salience throttled`
+ * decisions. Any thread.
  */
 class TurnBudget(private val perHour: () -> Int) {
     private val starts = ArrayDeque<Long>() // guarded by itself, oldest first
+    private val byPlayers = ArrayDeque<Long>() // guarded by starts, oldest first: the turns past the budget for the players' news
 
-    /** A turn started at [at], epoch milliseconds. */
-    fun started(at: Long) {
-        synchronized(starts) { starts.addLast(at) }
+    /**
+     * A turn started at [at], epoch milliseconds; [byPlayers]: past the budget, for the players' own news alone
+     * ([WakeScheduler.wokenByPlayers]).
+     */
+    fun started(at: Long, byPlayers: Boolean = false) {
+        synchronized(starts) {
+            starts.addLast(at)
+            if (byPlayers) this.byPlayers.addLast(at)
+        }
     }
 
     /** Whether [perHour] turns or more started within the hour before [now]. */
@@ -130,6 +169,15 @@ class TurnBudget(private val perHour: () -> Int) {
     fun used(now: Long): Int = synchronized(starts) {
         while (starts.isNotEmpty() && starts.first() <= now - HOUR_MS) starts.removeFirst()
         starts.size
+    }
+
+    /** Whether the players' news woke the Director past the budget [WakeScheduler.PLAYER_NEWS_PER_HOUR] times within the hour before [now]. */
+    fun playerNewsSpent(now: Long): Boolean = playerNewsUsed(now) >= WakeScheduler.PLAYER_NEWS_PER_HOUR
+
+    /** The turns started past the budget for the players' news within the hour before [now]. */
+    fun playerNewsUsed(now: Long): Int = synchronized(starts) {
+        while (byPlayers.isNotEmpty() && byPlayers.first() <= now - HOUR_MS) byPlayers.removeFirst()
+        byPlayers.size
     }
 
     /** `the budget of 30 turns per hour is spent`, for decisions. */

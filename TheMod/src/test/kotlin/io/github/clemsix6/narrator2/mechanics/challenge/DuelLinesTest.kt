@@ -80,6 +80,19 @@ class DuelLinesTest {
     }
 
     @Test
+    fun `a death decided from outside the duel, or nobody back after a restart, cancels it`() {
+        assertEquals(
+            "cancelled: Josiane interfered; Bartok would have died (player_attack by Josiane) and was rescued instead; both put back where they were",
+            DuelLines.outside(running, bartok, "player_attack by Josiane", "Josiane"),
+        )
+        assertEquals(
+            "cancelled: the Narrator's zombie interfered; Bartok would have died (mob_attack by zombie) and was rescued instead",
+            DuelLines.outside(running.copy(arena = emptyList()), bartok, "mob_attack by zombie", "the Narrator's zombie"),
+        )
+        assertEquals("cancelled: neither Bartok nor Mimosa came back after the restart; both put back where they were", DuelLines.notBack(running))
+    }
+
+    @Test
     fun `a duel that never started is cancelled, and says why`() {
         assertEquals("cancelled: Mimosa declined", DuelLines.declined(mimosa))
         assertEquals("cancelled: Mimosa did not accept within 2m (Bartok did)", DuelLines.expired(invited))
@@ -101,6 +114,8 @@ class DuelLinesTest {
         val longest = listOf(
             DuelLines.blow(them, them.participants[1], them.participants[1], running.endsAt),
             DuelLines.rescued(them, them.participants[1], them.participants[1], "mob_attack by $long", running.endsAt),
+            DuelLines.outside(them, them.participants[1], "mob_projectile by zombified_piglin", "the Narrator's zombified_piglin"),
+            DuelLines.notBack(them.copy(participants = listOf(Participant(bartok.uuid, long), Participant(mimosa.uuid, long)))),
             DuelLines.expired(invited.copy(participants = listOf(Participant(bartok.uuid, long, accepted = true), Participant(mimosa.uuid, long)))),
         )
         for (line in longest) {

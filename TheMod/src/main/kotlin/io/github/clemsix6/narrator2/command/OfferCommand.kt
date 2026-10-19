@@ -23,8 +23,9 @@ import net.minecraft.world.InteractionHand
  * into escrow in the player's ledger (`purpose = offering`, `O-<id>`) and the Director is told (`OFFERING`,
  * priority); the Narrator takes it only by granting a favor for it (`favor` with `offering`), else it goes
  * back after `mechanics.offeringMinutes`. One `/offer` per player per `mechanics.offeringMinutes`, taken or not, and
- * one offering waiting at a time: a player does not wake the Director at will. English literal, no alias
- * (decision F); forbidden to `run_command`. What the player reads comes from `UiTexts`.
+ * one offering waiting at a time: a player does not wake the Director at will. Only the player who sends it offers
+ * ([ownPlayer]: never through `execute as` nor a command block). English literal, no alias (decision F); forbidden
+ * to `run_command`. What the player reads comes from `UiTexts`.
  */
 object OfferCommand {
     private val log = Log.mechanics
@@ -35,11 +36,7 @@ object OfferCommand {
     }
 
     private fun offer(source: CommandSourceStack): Int {
-        val player = source.player
-        if (player == null) {
-            source.sendFailure(errorLine("only a player can make an offering."))
-            return 0
-        }
+        val player = ownPlayer(source, "make an offering") ?: return 0
         val runtime = runningNarrator(source) ?: return 0
         val offer = offer(runtime, runtime.guards.items, player)
         source.sendSuccess({ offer.reply }, false)
