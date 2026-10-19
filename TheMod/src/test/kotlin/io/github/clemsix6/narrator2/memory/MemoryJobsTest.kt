@@ -563,6 +563,34 @@ class MemoryJobsTest {
     }
 
     @Test
+    fun `departures during a refresh wait for that one only, then share the next, each player once, and samples never wait for it`() = runTest {
+        val h = Harness(this)
+        val josiane = MechanicsSamples.josiane
+        h.online(bartok)
+        h.jobs.start()
+        h.advance(Duration.ZERO)
+        h.stats.clear()
+        h.refreshTook = Duration.ofSeconds(2)
+
+        h.leave(mimosa)
+        assertEquals(listOf(listOf(mimosa.uuid) to "left"), h.stats, "a lone departure has its refresh at once, as before")
+
+        h.leave(josiane)
+        h.leave(bartok)
+        h.leave(josiane)
+        h.leave(mimosa) // back and gone again: the running refresh may have read the Journal before this departure
+        h.sample(bartok, Pos("minecraft:overworld", 100, 64, -300))
+        assertEquals(1, h.stats.size, "the departures wait for the running refresh, not one refresh each")
+        assertEquals(listOf("return Bartok at minecraft:overworld 100,64,-300 (online Bartok) at +0s"), h.asked.filter { it.startsWith("return") }, "the sample is asked during the refresh")
+
+        h.advance(Duration.ofSeconds(2))
+        assertEquals(listOf(josiane.uuid, bartok.uuid, mimosa.uuid) to "left", h.stats.last(), "every departure waiting, in one refresh, each player once")
+        assertEquals(2, h.stats.size)
+        h.advance(Duration.ofSeconds(2))
+        assertEquals(2, h.stats.size, "nothing left: no departure lost, none computed twice")
+    }
+
+    @Test
     fun `the housekeeping writes its run when it only closed notes, and none when it changed nothing`() = runTest {
         val h = Harness(this)
         h.jobs.start()
@@ -596,6 +624,9 @@ class MemoryJobsTest {
         val savedAt = mutableListOf<Long>()
         val tidied = mutableListOf<Long>()
         val stats = mutableListOf<Pair<List<UUID>, String>>()
+
+        /** How long each refresh of the stats takes, in virtual time. */
+        var refreshTook: Duration = Duration.ZERO
         val activeSince = mutableListOf<Instant>()
         var tidyReport = HygieneReport()
 
@@ -608,7 +639,10 @@ class MemoryJobsTest {
             saveClock = { saves++; savedAt += it },
             worldPlaySeconds = { world },
             tidy = { _, runId -> tidied += runId; tidyReport },
-            refreshStats = { players, why -> stats += players.toList() to why },
+            refreshStats = { players, why ->
+                stats += players.toList() to why
+                delay(refreshTook.toMillis())
+            },
             activeSince = { since -> activeSince += since; listOf(bartok.uuid, mimosa.uuid) },
             favorLines = { _, _ -> listOf("Favor: Bartok -31", "Attention: Mimosa has had nothing from you for 50m of play") },
             placeReturn = { player, pos, online, now ->
@@ -650,6 +684,11 @@ class MemoryJobsTest {
 
         fun sample(player: PlayerRef, pos: Pos) {
             services.bus.publish(PositionSampled(player, pos, "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.MOVED))
+            test.runCurrent()
+        }
+
+        fun leave(player: PlayerRef) {
+            services.bus.publish(PlayerLeft(player, Pos("minecraft:overworld", 0, 64, 0), 1, 1_500, LeaveReason.LEAVE))
             test.runCurrent()
         }
 

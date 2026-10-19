@@ -16,6 +16,7 @@ import net.minecraft.world.entity.Entity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.Blocks
+import org.slf4j.LoggerFactory
 import java.nio.file.Files
 
 /**
@@ -80,13 +81,13 @@ class MemoryEndToEndTests {
                 (broken ?: 0) >= 5 && (deaths ?: 0) >= 1
             }
 
-            // 3. They leave: their stats are computed again, and the sheet's stats follow.
+            // 3. They leave: their stats are computed again, and the sheet's stats follow (computed after the departure,
+            // not by an earlier refresh of the players online).
             server.onServerThread { joined.close() }
-            player = null
             awaitCondition("the stats of ${joined.name} after the departure", timeoutMs = 30_000) {
-                val mining = runCatchingJournal(runtime, "SELECT value FROM sheet_stats WHERE player_uuid = ? AND stat = 'mining'", joined.uuid)?.single()
-                val deaths = runCatchingJournal(runtime, "SELECT value FROM sheet_stats WHERE player_uuid = ? AND stat = 'deaths'", joined.uuid)?.single()
-                (mining?.toString()?.toDoubleOrNull() ?: 0.0) >= 5.0 && (deaths?.toString()?.toDoubleOrNull() ?: 0.0) >= 1.0
+                val mining = statAfterDeparture(runtime, joined, "mining")
+                val deaths = statAfterDeparture(runtime, joined, "deaths")
+                (mining ?: 0.0) >= 5.0 && (deaths ?: 0.0) >= 1.0
             }
             val ores = journalRow(runtime, "SELECT detail::VARCHAR FROM sheet_stats WHERE player_uuid = ? AND stat = 'mining'", joined.uuid).single().toString()
             check("\"iron\":2" in ores.replace(" ", "")) { "the iron ores of ${joined.name}: $ores" }
@@ -97,13 +98,7 @@ class MemoryEndToEndTests {
             check(output.lines.any { it.startsWith("Memory: available · jobs running · world clock ") }) { "memory status: ${output.lines}" }
 
             // 5. No chapter left open for the next test that wakes the Director: closed with its summary, then napped.
-            awaitQuiet(runtime, 30_000)
-            val chapter = runtime.director.status().conversationId
-            if (chapter != null) {
-                operatorCommands(helper, "narrator chapter close")
-                awaitCondition("the chapter $chapter is closed", timeoutMs = 45_000) {
-                    runCatchingJournal(runtime, "SELECT ended_at FROM conversations WHERE conversation_id = ?", chapter)?.single() != null
-                }
+            closeChapter(helper, runtime)?.let { chapter ->
                 awaitCondition("the nap of $chapter", timeoutMs = 45_000) {
                     val nap = runCatchingJournal(runtime, "SELECT status FROM memory_runs WHERE kind = 'nap' AND chapter = ? ORDER BY run_id DESC LIMIT 1", chapter)?.single()
                     nap != null && nap != "running"
@@ -112,14 +107,35 @@ class MemoryEndToEndTests {
 
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
         } finally {
-            // As found: no key, the Director asleep.
+            // As found, even after a failed step: no player, no chapter left open (the next test that wakes the Director
+            // would read its briefing), no key, the Director asleep. Closing the chapter needs the fake gateway and the key.
+            player?.let { left -> runCatching { server.onServerThread { left.close() } }.onFailure { cleanupLog.warn("could not remove ${left.name}", it) } }
+            runCatching { closeChapter(helper, runtime) }.onFailure { cleanupLog.warn("could not close the Director's chapter", it) }
             Files.writeString(NarratorRuntime.configFile, "{}")
             runCatching { runtime.reload() }
-            player?.let { server.onServerThread { it.close() } }
             fake.close()
         }
         awaitCondition("the Director sleeps again") { runtime.director.status().state == DirectorState.DISABLED }
     }
+
+    /** Closes the Director's open chapter, if any, with its summary: the chapter once closed, null when none was open. */
+    private suspend fun closeChapter(helper: GameTestHelper, runtime: NarratorRuntime): String? {
+        awaitQuiet(runtime, 30_000)
+        val chapter = runtime.director.status().conversationId ?: return null
+        operatorCommands(helper, "narrator chapter close")
+        awaitCondition("the chapter $chapter is closed", timeoutMs = 45_000) {
+            runCatchingJournal(runtime, "SELECT ended_at FROM conversations WHERE conversation_id = ?", chapter)?.single() != null
+        }
+        return chapter
+    }
+
+    /** The value of [player]'s [stat] in `sheet_stats` when it was computed after their last departure; null otherwise. */
+    private suspend fun statAfterDeparture(runtime: NarratorRuntime, player: TestPlayer, stat: String): Double? = runCatchingJournal(
+        runtime,
+        "SELECT value FROM sheet_stats WHERE player_uuid = ? AND stat = ? " +
+            "AND computed_at >= (SELECT max(left_at) FROM sessions WHERE player_uuid = sheet_stats.player_uuid)",
+        player.uuid, stat,
+    )?.single()?.toString()?.toDoubleOrNull()
 
     /** The model: a plain text for everyone (the Director, the Chronicler, the Dreamer): nothing to do. */
     private fun answer(request: RecordedRequest): FakeResponse =
@@ -131,3 +147,5 @@ const val MEMORY_ENVIRONMENT = "narrator2-gametest:memory"
 
 /** Budget of the script: at least two minutes of wall-clock time (see `runScript`). */
 private const val MEMORY_SCRIPT_MAX_TICKS = 120_000
+
+private val cleanupLog = LoggerFactory.getLogger("narrator2-gametest")
