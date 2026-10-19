@@ -415,11 +415,12 @@ class EscrowGameTests {
         val state = GuardStates.read(player)
         val bytes = ByteArrayOutputStream().also { NbtIo.write(GuardState.CODEC.encodeStart(ops, state).getOrThrow() as CompoundTag, DataOutputStream(it)) }.toByteArray()
         val read = GuardState.CODEC.parse(ops, NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))).getOrThrow()
-        helper.assertEquals(state, read, "the state reads back as it was written, no stack written as \"\"")
+        val lengths = { s: GuardState -> s.confiscations.map { entry -> entry.items.map { it.length } } }
+        helper.assertTrue(state == read, "the state reads back as it was written, no stack written as \"\": ${lengths(read)} characters, not ${lengths(state)}")
 
         // And the player's own file, through a reconnection.
         val back = reconnect(helper, player)
-        helper.assertEquals(listOf(stake, offering), GuardStates.read(back).confiscations, "both read back from the player's file")
+        helper.assertTrue(listOf(stake, offering) == GuardStates.read(back).confiscations, "both read back from the player's file: ${lengths(GuardStates.read(back))} characters")
         helper.assertTrue(escrow.ledger.release(back, stake.id, now + MINUTE), "the stake released")
         escrow.ledger.giveBack(back, now + 10 * MINUTE)
         helper.assertTrue(ItemStack.matches(book, find(back, Items.WRITABLE_BOOK)), "the book comes back whole")
