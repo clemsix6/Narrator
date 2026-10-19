@@ -9,6 +9,7 @@ import net.minecraft.world.RandomizableContainer
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.player.Player
+import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.entity.BaseContainerBlockEntity
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.SpawnerBlockEntity
@@ -22,9 +23,18 @@ data class Spot(val label: String, val pos: BlockPos)
 
 /**
  * The player-placed blocks of one loaded chunk, copied from [PlacedBlocks] on the server thread.
- * `positions[i]`, packed by [PlacedBlocks.pack], was placed by `placers[owners[i]]`.
+ * `positions[i]`, packed by [PlacedBlocks.pack], was placed by `placers[owners[i]]`, as `blocks[i]`
+ * (null when unknown: an entry from before M4).
  */
-class PlacedCopy(val chunkX: Int, val chunkZ: Int, val minY: Int, val placers: List<UUID>, val positions: IntArray, val owners: IntArray)
+class PlacedCopy(
+    val chunkX: Int,
+    val chunkZ: Int,
+    val minY: Int,
+    val placers: List<UUID>,
+    val positions: IntArray,
+    val owners: IntArray,
+    val blocks: Array<Block?>,
+)
 
 /**
  * Player-placed blocks still standing in an area.
@@ -90,24 +100,26 @@ object AreaScan {
         forEachChunk(center, radius) { cx, cz ->
             val chunk = reader.chunk(cx, cz) ?: return@forEachChunk
             val placements = chunk.getAttached(PlacedBlocks.TYPE) ?: return@forEachChunk
-            val positions = IntArray(placements.cells.size)
-            val owners = IntArray(placements.cells.size)
+            val positions = IntArray(placements.size)
+            val owners = IntArray(placements.size)
+            val blocks = arrayOfNulls<Block>(placements.size)
             var i = 0
-            val entries = placements.cells.int2IntEntrySet().fastIterator()
-            while (entries.hasNext()) {
-                val entry = entries.next()
-                positions[i] = entry.intKey
-                owners[i] = entry.intValue
+            placements.forEach { packed, placer, block ->
+                positions[i] = packed
+                owners[i] = placer
+                blocks[i] = block
                 i++
             }
-            copies += PlacedCopy(cx, cz, chunk.minY, placements.placers.toList(), positions, owners)
+            copies += PlacedCopy(cx, cz, chunk.minY, placements.placers.toList(), positions, owners, blocks)
         }
         return copies
     }
 
     /**
-     * The placed blocks of [placements] still standing (not air in [blocks]) within [radius] of [center]:
-     * per player, and the [maxClusters] densest 8×8×8 cells (a base). Any thread.
+     * The placed blocks of [placements] still standing (still the block placed, [PlacedBlocks.stillPlaced],
+     * in [blocks]) within [radius] of [center]: per player, and the [maxClusters] densest 8×8×8 cells (a
+     * base). Any thread: stale entries are only skipped here, the server thread removes them when it
+     * reads them ([PlacedBlocks.placerAt]).
      */
     fun countPlaced(placements: List<PlacedCopy>, blocks: SectionCopies, center: BlockPos, radius: Int, maxClusters: Int): PlacedCount {
         val radiusSq = radius.toLong() * radius
@@ -125,7 +137,7 @@ object AreaScan {
                 val dz = (z - center.z).toLong()
                 if (dx * dx + dy * dy + dz * dz > radiusSq) continue
                 val state = blocks.stateAt(x, y, z) ?: continue
-                if (state.isAir) continue // broken by something else than a player: the index keeps it (PlacedBlocks)
+                if (!PlacedBlocks.stillPlaced(copy.blocks[i], state)) continue // replaced since: a stale entry
                 val placer = copy.placers[copy.owners[i]]
                 total++
                 perPlacer.merge(placer, 1, Int::plus)
