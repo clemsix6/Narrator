@@ -7,7 +7,6 @@ import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.event.AsyncSubscription
-import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
@@ -85,7 +84,8 @@ class JobHooks(
  * - **The catch-up** naps the chapters closed since the memory first started on the world ([SINCE_KEY]),
  *   less `memory.catchUpDays`; older chapters never get a nap.
  * - **The bus**: the position samples, each a possible return to the place of a memory
- *   ([JobHooks.placeReturn]); the departures, whose player's stats are computed again.
+ *   ([JobHooks.placeReturn]); the departures, whose players' stats are computed again, every departure waiting
+ *   in one refresh ([refreshDepartures]).
  *
  * The cues (§10.5) are found by the reminiscence (M3-14); the jobs only ask for them when the Director
  * listens, and post them.
@@ -112,6 +112,10 @@ class MemoryJobs(
     private val queue = ArrayList<QueuedJob>() // guarded by lock
     private var current: QueuedJob? = null // guarded by lock
     private val wake = Channel<Unit>(Channel.CONFLATED)
+
+    /** The players whose departure waits for its stats, in the order they left; guarded by itself ([refreshDepartures]). */
+    private val leavers = LinkedHashSet<UUID>()
+    private val departures = Channel<Unit>(Channel.CONFLATED)
 
     @Volatile
     private var currentRun: MemoryRun? = null
@@ -167,6 +171,7 @@ class MemoryJobs(
                 recover()
                 launch { work() }
                 launch { follow(events) }
+                launch { refreshDepartures() }
                 timers()
             } finally {
                 events.close()
@@ -766,29 +771,35 @@ class MemoryJobs(
     // ── Cues (M3 §10.5) ─────────────────────────────────────────────────────────────────────────────
 
     /**
-     * The bus: a position sample may be a return to a place; a departure has its player's stats computed again. The
-     * departures already waiting behind one are computed with it: a refresh goes over every pair of players (about a
-     * second on a busy Journal), and one per departure fell behind when many players left one after the other.
+     * The bus: a position sample may be a return to a place; a departure waits for the stats of its player
+     * ([refreshDepartures]). Neither waits for the Journal here: the bus queue is never held up by a refresh.
      */
     private suspend fun follow(subscription: AsyncSubscription) {
         for (envelope in subscription.events) {
             when (val event = envelope.event) {
                 is PositionSampled -> attempt("place return") { placeReturn(event, envelope.ts) }
                 is PlayerLeft -> {
-                    val left = linkedSetOf(event.player.uuid)
-                    val samples = mutableListOf<Envelope>()
-                    while (true) {
-                        val next = subscription.events.tryReceive().getOrNull() ?: break
-                        when (val later = next.event) {
-                            is PlayerLeft -> left += later.player.uuid
-                            else -> samples += next
-                        }
-                    }
-                    attempt("stats of a departure") { hooks.refreshStats(left.toList(), "left") }
-                    for (sample in samples) (sample.event as? PositionSampled)?.let { attempt("place return") { placeReturn(it, sample.ts) } }
+                    synchronized(leavers) { leavers += event.player.uuid }
+                    departures.trySend(Unit)
                 }
                 else -> Unit
             }
+        }
+    }
+
+    /**
+     * The stats of the players who left, computed again (`left`), one refresh at a time. Every departure waiting when
+     * a refresh starts goes into it, each player once: a refresh goes over every pair of players (about a second on a
+     * busy Journal), and one per departure fell behind when many players left one after the other (the end of an
+     * evening, a restart). A departure waits for the refresh running, at most; a player who leaves again meanwhile is
+     * in the next refresh, which sees the new departure. Those still waiting when the jobs stop get their stats before
+     * the next dream ([refreshBeforeDream] covers every player active since the last one).
+     */
+    private suspend fun refreshDepartures() {
+        while (true) {
+            departures.receive()
+            val players = synchronized(leavers) { leavers.toList().also { leavers.clear() } }
+            if (players.isNotEmpty()) attempt("stats of the departures") { hooks.refreshStats(players, "left") }
         }
     }
 

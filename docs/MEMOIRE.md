@@ -64,7 +64,7 @@ Chaque joueur a une fiche vivante, en cinq sections. Chaque section a un **propr
 | **Identité** | code (+ surnoms et titres du canon) | en continu |
 | **Récap** | Rêveur ; « depuis la dernière fois » : Chroniqueur | à chaque rêve profond ; à chaque fin de chapitre pour les joueurs partis |
 | **Personnalité** | Rêveur, avec preuves et confiance | à chaque rêve profond |
-| **Stats** | code (SQL sur le Journal + stats vanilla) | toutes les 10 minutes pour les joueurs en ligne, à chaque départ, avant chaque rêve ; sans LLM |
+| **Stats** | code (SQL sur le Journal + stats vanilla) | toutes les 10 minutes pour les joueurs en ligne, à chaque départ (les départs qui attendent pendant un recalcul passent ensemble dans le suivant), avant chaque rêve ; sans LLM |
 | **Historique des interactions** | Directeur, Chroniqueur, code | en continu, jamais effacé |
 
 ### 3.1 Identité
