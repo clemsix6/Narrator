@@ -91,6 +91,8 @@ class DirectorHarness(
     reminders: InMemoryReminderStore = InMemoryReminderStore(),
     /** When set, the services have a `DisabledMechanics` with this reason instead of [mechanics]. */
     mechanicsOff: String? = null,
+    /** Real tools the Director gets besides the fake ones: a task's own tools in a scenario (M4-17). */
+    tools: List<NarratorTool<*>> = emptyList(),
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -155,7 +157,7 @@ class DirectorHarness(
         services = object : NarratorServices by base {
             override val director get() = this@DirectorHarness.director
         }
-        director = Director(services, game, { env -> toolEnvs += env; ToolSet.of(listOf(SayTool(), SqlTool(), SlowProbeTool())) }, Random(7))
+        director = Director(services, game, { env -> toolEnvs += env; ToolSet.of(listOf(SayTool(), SqlTool(), SlowProbeTool()) + tools) }, Random(7))
         director.start()
         runCurrent()
     }
