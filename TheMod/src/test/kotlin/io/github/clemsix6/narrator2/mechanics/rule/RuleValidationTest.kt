@@ -218,6 +218,94 @@ class RuleValidationTest {
         assertEquals(emptyList(), f.store.get().rules)
     }
 
+    /**
+     * No law kills the cattle nor the villagers (M4 code review, finding 8): no levitation nor jump that ends in a
+     * fall, no size that chokes them under a ceiling, no lighter gravity nor higher jump, no health lowered; whether
+     * the law changes them as they appear or once hit. Nor does a law lift a player.
+     */
+    @Test
+    fun `a rule never kills the cattle nor the villagers`() = runBlocking<Unit> {
+        fun mobEffect(effect: String, seconds: Int) = """{"tool":"mob_effect","at":"subject","args":{"effect":"$effect","seconds":$seconds,"level":2}}"""
+        fun attribute(attribute: String, multiply: Double) = """{"tool":"mob_attribute","at":"subject","args":{"attribute":"$attribute","multiply":$multiply}}"""
+        val refused = mapOf(
+            mobEffect("levitation", 300) to "DENIED (forbidden_effect): effect 1 (mob_effect): levitation is never put on a creature by a rule: it ends in a " +
+                "fall that kills: a rule never decimates the villagers or the players' animals.",
+            mobEffect("jump_boost", 300) to "DENIED (forbidden_effect): effect 1 (mob_effect): jump_boost is never put on a creature by a rule: a higher " +
+                "jump is a fall that hurts: a rule never makes a creature fall.",
+            attribute("scale", 4.0) to "Invalid arguments: effect 1 (mob_attribute): scale multiplies by 0.5 to 2 in a rule: a creature too big chokes " +
+                "under a low ceiling (asked 4)",
+            attribute("scale", 0.25) to "Invalid arguments: effect 1 (mob_attribute): scale multiplies by 0.5 to 2 in a rule: a creature too big chokes " +
+                "under a low ceiling (asked 0.25)",
+            attribute("jump_strength", 3.0) to "Invalid arguments: effect 1 (mob_attribute): jump_strength multiplies by 0 to 1 in a rule: a rule never " +
+                "makes a creature fall from higher (asked 3)",
+            attribute("gravity", 0.1) to "Invalid arguments: effect 1 (mob_attribute): gravity multiplies by 1 to 2 in a rule: a rule never makes a " +
+                "creature fall from higher (asked 0.1)",
+            attribute("max_health", 0.5) to "Invalid arguments: effect 1 (mob_attribute): max_health multiplies by 1 to 5 in a rule: a rule never lowers " +
+                "a creature's health (asked 0.5)",
+        )
+        for (entity in listOf("cow", "villager")) {
+            for ((effect, expected) in refused) {
+                assertEquals(expected, f.refusal(law("mob_spawn", effect, """{"entity":"$entity"}""")), "$entity appears: $effect")
+                assertEquals(expected, f.refusal(law("damage_dealt", effect, """{"entity":"$entity"}""")), "$entity hit: $effect")
+            }
+        }
+        assertEquals(
+            "DENIED (forbidden_effect): effect 1 (apply_effect): a rule never gives levitation: an effect that ends in a fall is yours to give, one call at " +
+                "a time, never a law's",
+            f.refusal(law("chat", """{"tool":"apply_effect","at":"actor","args":{"effect":"levitation","seconds":10}}""")),
+        )
+        assertEquals(emptyList(), f.store.get().rules)
+
+        // Within its bounds, a law still changes them.
+        val within = listOf(attribute("scale", 2.0), attribute("scale", 0.5), attribute("gravity", 2.0), attribute("jump_strength", 0.5), mobEffect("slowness", 60))
+        for (effect in within) f.book.create(f.spec(law("mob_spawn", effect, """{"entity":"villager"}""")), f.caller)
+        assertEquals(within.size, f.store.get().rules.size)
+    }
+
+    /**
+     * A law never sets the Narrator on the victim of a hit (M4 code review, finding 12): hitting a player would be
+     * enough to have them punished. Words only for a subject that may be a player; never a player brought to another.
+     */
+    @Test
+    fun `a rule never turns on a player hit by another`() = runBlocking<Unit> {
+        val smite = """{"tool":"punish","at":"subject","args":{"punishment":"smite","severity":3,"reason":"a été frappé"}}"""
+        val words = "say, actionbar, show_title, play_sound, notify"
+        assertEquals(
+            "Invalid arguments: effect 1 (punish): at subject may be a player hit by another for damage_dealt (no when.entity), and a rule never turns on the " +
+                "victim of a hit: aim at the actor, name a creature in when.entity, or only speak to the subject ($words)",
+            f.refusal(law("damage_dealt", smite)),
+        )
+        assertEquals(
+            "Invalid arguments: effect 1 (explosion): at subject may be a player hit by another for damage_dealt (when.entity player), and a rule never turns " +
+                "on the victim of a hit: aim at the actor, name a creature in when.entity, or only speak to the subject ($words)",
+            f.refusal(law("damage_dealt", """{"tool":"explosion","at":"subject","args":{"power":1}}""", """{"entity":"player"}""")),
+        )
+        assertEquals(
+            "Invalid arguments: effect 1 (teleport): to_player is not allowed in a rule: a law never brings a player to another; give x and z, or random_radius",
+            f.refusal(law("chat", """{"tool":"teleport","at":"actor","args":{"to_player":"Mimosa"}}""")),
+        )
+        assertEquals(emptyList(), f.store.get().rules)
+
+        // The one who hits may be punished; the one hit only spoken to; a creature hit may burst.
+        f.book.create(f.spec(law("damage_dealt", """{"tool":"punish","at":"actor","args":{"punishment":"tiny","severity":2,"reason":"a frappé"}}""")), f.caller)
+        f.book.create(f.spec(law("damage_dealt", """{"tool":"say","at":"subject","args":{"text":"Courage."}}""", """{"entity":"player"}""")), f.caller)
+        f.book.create(f.spec(law("damage_dealt", """{"tool":"explosion","at":"subject","args":{"power":1,"hurts":false}}""", """{"entity":"cow"}""")), f.caller)
+        assertEquals(3, f.store.get().rules.size)
+    }
+
+    /** A creature named (not a tag) must have the attribute a rule changes: a cow has no attack (M4 code review, finding 33). */
+    @Test
+    fun `a creature named has the attribute a rule changes`() = runBlocking<Unit> {
+        val attack = """{"tool":"mob_attribute","at":"subject","args":{"attribute":"attack_damage","multiply":2}}"""
+        assertEquals(
+            "Invalid arguments: effect 1 (mob_attribute): cow has no attack_damage; change another attribute, or name another creature in when.entity",
+            f.refusal(law("mob_spawn", attack, """{"entity":"cow"}""")),
+        )
+        f.book.create(f.spec(law("mob_spawn", attack, """{"entity":"zombie"}""")), f.caller)
+        f.book.create(f.spec(law("mob_spawn", attack, """{"entity":"#undead"}""")), f.caller) // a tag: a creature without it is skipped when it fires
+        assertEquals(2, f.store.get().rules.size)
+    }
+
     /** PvP is never forced: no rule proposes a duel, turns PvP on, or pays for a player killed. */
     @Test
     fun `a rule never makes players fight`() {
@@ -251,6 +339,13 @@ class RuleValidationTest {
         assertEquals(
             "Invalid arguments: effect 1: create_rule cannot be used in a rule; allowed: $ALLOWED",
             f.refusal(law("chat", """{"tool":"create_rule","at":"actor","args":{}}""")),
+        )
+        // One punish per target: an act punishes a player once (M4 code review, finding 16).
+        val tiny = """{"tool":"punish","at":"actor","args":{"punishment":"tiny","severity":2,"reason":"a parlé"}}"""
+        val hunger = """{"tool":"punish","at":"actor","args":{"punishment":"hunger","severity":2,"reason":"a parlé"}}"""
+        assertEquals(
+            "Invalid arguments: effect 3 (punish): effect 1 already punishes the actor, and an act punishes a player once: compose it with the other tools",
+            f.refusal(law("chat", "$tiny,$SAY,$hunger")),
         )
         // Eight laws against Bartok at most: the ninth is refused.
         repeat(8) { f.book.create(f.spec(law("chat", SAY, """{"players":["Bartok"]}""")), f.caller) }
