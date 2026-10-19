@@ -97,11 +97,12 @@ class DirectorCommandsTest {
     fun `pause and resume reach the Director and are recorded as the operator's`() {
         val paused = DirectorCommands.pause(services, "Clement")
         assertTrue(paused.done)
-        assertEquals(listOf("[Narrator] paused: the Director ends its current turn, if any, then stays silent until /narrator resume."), paused.text())
+        val running = "The laws, challenges and traps run on: /narrator rule remove, /narrator challenge cancel and /narrator traps restore stop them."
+        assertEquals(listOf("[Narrator] paused: the Director ends its current turn, if any, then stays silent until /narrator resume.", running), paused.text(), "only the Director pauses (decision K)")
         assertEquals(listOf<DirectorSignal>(DirectorSignal.Pause), director.signals)
 
         director.state = DirectorState.PAUSED
-        assertEquals(listOf("[Narrator] the Director is already paused; /narrator resume wakes it."), DirectorCommands.pause(services, "Clement").text())
+        assertEquals(listOf("[Narrator] the Director is already paused; /narrator resume wakes it.", running), DirectorCommands.pause(services, "Clement").text())
         val resumed = DirectorCommands.resume(services, "Clement")
         assertEquals(listOf("[Narrator] resumed: the Director wakes up with what waited."), resumed.text())
         assertEquals(listOf(DirectorSignal.Pause, DirectorSignal.Resume), director.signals)
