@@ -5,6 +5,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.observer.PlacedBlocks
 import io.github.clemsix6.narrator2.observer.id
 import io.github.clemsix6.narrator2.observer.typeId
 import io.github.clemsix6.narrator2.trace.DecisionRecord
@@ -17,6 +18,7 @@ import net.fabricmc.fabric.api.attachment.v1.AttachmentType
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
+import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
 import net.minecraft.core.BlockPos
 import net.minecraft.core.SectionPos
 import net.minecraft.core.UUIDUtil
@@ -28,6 +30,7 @@ import net.minecraft.resources.ResourceKey
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Block
@@ -91,8 +94,15 @@ data class BlockSnapshot(val packed: Int, val placed: String, val until: Long, v
  * mirrors it for the loaded chunks: `CHUNK_LOAD` only indexes the chunk's entries (`setBlock` would wait for
  * the very chunk being loaded, and the server would hang: M4 design review, finding 5), `CHUNK_UNLOAD` forgets
  * them, and once a second (wall clock) the blocks due in the loaded chunks are taken away. So a trap whose
- * chunk was unloaded, or whose server stopped, is taken away the second after its chunk loads again. A block
- * goes back to air only while it is still the one set: one a player put in its place stays (`trap skipped`).
+ * chunk was unloaded, or whose server stopped, is taken away the second after its chunk loads again.
+ *
+ * A cell stays the restorer's only while it holds the very block set there, untouched (M4 review, finding 2):
+ * the same state does not prove it, since a player's own glass or cobweb looks the same. So a cell is
+ * forgotten for good, never to be touched again, as soon as its block is no longer the one set: when a player
+ * breaks it (it drops nothing then: nobody gets the Narrator's glass, cobwebs or string, finding 39), and when
+ * anything else moves, blows up or replaces it (seen at the end of each tick, which a piston's moving block
+ * always lasts past). A block a player placed is never taken away either ([PlacedBlocks.placerAt]). A trap
+ * block a piston pushed out of its cell stays where it went, for good: the restorer knows only the cells it set.
  *
  * This runs without the Narrator too (it failed to start): the hooks are the mod's, and only the decisions
  * need the running Narrator (else the log alone says it). Server thread, but [activeOn] and [pending].
@@ -160,7 +170,7 @@ object BlockRestorer {
             save(level, chunk, chunk.getAttached(TYPE)?.entries.orEmpty() + added)
         }
         val set = positions.count { level.setBlock(it, block, FLAGS) }
-        if (set < positions.size) log.warn("${positions.size - set} of ${positions.size} ${block.block.id} did not change the world; their snapshots are skipped when due")
+        if (set < positions.size) log.warn("${positions.size - set} of ${positions.size} ${block.block.id} did not change the world; their snapshots are forgotten at the end of the tick")
         val reason = "$set ${block.block.id} until ${time(until)}" + (act?.let { " (act $it)" } ?: "")
         record(level, "trap set", player, reason, act, detail(block, set, until, act, positions))
         return Result.success(set)
@@ -204,9 +214,10 @@ object BlockRestorer {
 
     /**
      * Registers [TYPE] and the hooks: `CHUNK_LOAD` (indexes the chunk's entries; never a block change in that
-     * call), `CHUNK_UNLOAD` (forgets them: they stay in the chunk, saved with it), `END_SERVER_TICK` (once a
-     * second, takes away what is due) and `SERVER_STOPPED` (forgets everything). Once, at mod initialization
-     * (`registerGuardHooks`).
+     * call), `CHUNK_UNLOAD` (forgets them: they stay in the chunk, saved with it), `END_SERVER_TICK` (each tick,
+     * forgets the blocks no longer in place; once a second, takes away what is due), a player's block break
+     * (a trap block goes without a drop, and its cell is forgotten) and `SERVER_STOPPED` (forgets everything).
+     * Once, at mod initialization (`registerGuardHooks`).
      */
     fun registerHooks() {
         // Touching the type registers it: it must exist before the first chunk loads, or the chunk's entries are
@@ -215,10 +226,15 @@ object BlockRestorer {
         ServerChunkEvents.CHUNK_LOAD.register { level, chunk, _ -> hook("chunk_load") { onChunkLoad(level, chunk) } }
         ServerChunkEvents.CHUNK_UNLOAD.register { level, chunk -> hook("chunk_unload") { index.remove(keyOf(level, chunk.pos)) } }
         ServerTickEvents.END_SERVER_TICK.register { server -> hook("tick") { tick(server) } }
+        PlayerBlockBreakEvents.BEFORE.register { level, player, pos, state, _ ->
+            var goOn = true
+            hook("block_break") { goOn = onBreak(level, player, pos, state) }
+            goOn
+        }
         ServerLifecycleEvents.SERVER_STOPPED.register { index.clear() }
     }
 
-    /** The packing of [PlacedBlocks.pack][io.github.clemsix6.narrator2.observer.PlacedBlocks.pack]: `((y - minY) shl 8) or ((z and 15) shl 4) or (x and 15)`. */
+    /** The packing of [PlacedBlocks.pack]: `((y - minY) shl 8) or ((z and 15) shl 4) or (x and 15)`. */
     internal fun pack(minY: Int, pos: BlockPos): Int = ((pos.y - minY) shl 8) or ((pos.z and 15) shl 4) or (pos.x and 15)
 
     /** The position [packed] stands for in the chunk at [chunkX], [chunkZ] whose lowest block is at [minY]. */
@@ -235,12 +251,13 @@ object BlockRestorer {
         log.info("chunk ${chunk.pos.x()} ${chunk.pos.z()} of ${level.dimension().identifier()} loaded with ${entries.size} trap blocks ($due due): taken away from the next second on")
     }
 
-    /** Once a second (wall clock): takes away the blocks due in the loaded chunks of [server]. */
+    /** Each tick: forgets the blocks of [server] no longer in place. Once a second (wall clock): takes away the blocks due in its loaded chunks. */
     private fun tick(server: MinecraftServer) {
+        if (index.isEmpty()) return
+        forgetChanged(server)
         val now = System.currentTimeMillis()
         if (now - lastPass < PASS_MS) return
         lastPass = now
-        if (index.isEmpty()) return
         for ((key, indexed) in index.entries.toList()) {
             if (indexed.level.server !== server || indexed.entries.none { it.until <= now }) continue
             takeAway(key, indexed.level, "due") { it.until <= now }
@@ -248,9 +265,52 @@ object BlockRestorer {
     }
 
     /**
+     * Forgets, in the loaded chunks of [server], the cells whose block is no longer the one set: pushed by a
+     * piston, blown up, replaced (M4 review, finding 2). Each tick, so that a piston's moving block is seen
+     * before the block it pushes settles in the cell: a player's glass pushed in place of a pane is never taken
+     * away. The pane pushed out of its cell stays where it went, for good (finding 39).
+     */
+    private fun forgetChanged(server: MinecraftServer) {
+        for ((key, indexed) in index.entries.toList()) {
+            if (indexed.level.server !== server) continue
+            val chunk = indexed.level.chunkSource.getChunkNow(key.x, key.z) ?: continue
+            val (kept, changed) = chunk.getAttached(TYPE)?.entries.orEmpty().partition { stillSet(chunk, posOf(key, chunk, it), it) }
+            if (changed.isEmpty()) continue
+            save(indexed.level, chunk, kept)
+            skipped(indexed.level, changed.map { it to replacement(indexed.level, chunk, posOf(key, chunk, it)) }, "before due")
+        }
+    }
+
+    /**
+     * [player] breaks the block at [pos], [state]. A trap block still in place goes without dropping anything
+     * (M4 review, finding 39): the game's break is cancelled, and done here as the game does it but for the
+     * drops, the tool's wear and the statistics. The cell is forgotten whatever its block (finding 2). Whether
+     * the game's break goes on. Server thread.
+     */
+    private fun onBreak(level: Level, player: Player, pos: BlockPos, state: BlockState): Boolean {
+        if (level !is ServerLevel || index.isEmpty()) return true
+        val key = keyOf(level, ChunkPos.containing(pos))
+        if (!index.containsKey(key)) return true
+        val chunk = level.chunkSource.getChunkNow(key.x, key.z) ?: return true
+        val packed = pack(chunk.minY, pos)
+        val entries = chunk.getAttached(TYPE)?.entries.orEmpty()
+        val entry = entries.firstOrNull { it.packed == packed } ?: return true
+        val trap = stillSet(chunk, pos, entry)
+        save(level, chunk, entries.filter { it.packed != packed })
+        if (!trap) {
+            log.info("trap cell ${at(pos)} of ${nameOf(level, entry.player)} broken by ${player.plainTextName}: ${state.block.id} is not the block set, forgotten")
+            return true
+        }
+        state.block.playerWillDestroy(level, pos, state, player)
+        level.removeBlock(pos, false)
+        log.info("trap block ${state.block.id} at ${at(pos)} of ${nameOf(level, entry.player)} broken by ${player.plainTextName}: gone without a drop")
+        return false
+    }
+
+    /**
      * Takes away the blocks of the chunk at [key] that [pick] chooses, when the chunk is ready (a chunk still
-     * loading waits for a later pass): back to air while still the block set, else left as it is. Their entries
-     * go in both cases. How many went back to air. Server thread.
+     * loading waits for a later pass): back to air while still the block set ([stillSet]), else left as it is.
+     * Their entries go in both cases. How many went back to air. Server thread.
      */
     private fun takeAway(key: ChunkKey, level: ServerLevel, why: String, pick: (BlockSnapshot) -> Boolean): Int {
         // Null while CHUNK_LOAD runs (its FULL stage is not done): a block change would wait for it forever.
@@ -262,16 +322,14 @@ object BlockRestorer {
         }
         val air = Blocks.AIR.defaultBlockState()
         val restored = mutableListOf<BlockSnapshot>()
-        val changed = mutableListOf<Pair<BlockSnapshot, String>>()
+        val left = mutableListOf<Pair<BlockSnapshot, String?>>()
         for (entry in due) {
-            val pos = unpack(key.x, key.z, chunk.minY, entry.packed)
-            val current = chunk.getBlockState(pos)
-            val placed = stateOf(entry.placed)
-            if (placed != null && current == placed) {
+            val pos = posOf(key, chunk, entry)
+            if (stillSet(chunk, pos, entry)) {
                 level.setBlock(pos, air, FLAGS)
                 restored += entry
             } else {
-                changed += entry to "${current.block.id} at ${at(pos)}"
+                left += entry to replacement(level, chunk, pos)
             }
         }
         save(level, chunk, kept)
@@ -279,13 +337,48 @@ object BlockRestorer {
             val blocks = entries.groupBy { blockId(it.placed) }.entries.joinToString { (block, same) -> "${same.size} $block" }
             record(level, "trap restored", player, "$blocks taken away ($why)", entries.first().act, null)
         }
-        for ((player, entries) in changed.groupBy { it.first.player }) {
-            val named = entries.take(NAMED_MAX).joinToString { it.second } + if (entries.size > NAMED_MAX) ", …" else ""
-            val count = if (entries.size == 1) "1 block" else "${entries.size} blocks"
-            record(level, "trap skipped", player, "$count changed since set, left as it is ($why): $named", entries.first().first.act, null)
-        }
+        skipped(level, left, why)
         return restored.size
     }
+
+    /**
+     * Whether the block at [pos] of [chunk] is still the one [entry] set: the same state, which no player
+     * placed there since (a player's own glass looks just the same: M4 review, finding 2). Server thread.
+     */
+    private fun stillSet(chunk: LevelChunk, pos: BlockPos, entry: BlockSnapshot): Boolean {
+        val placed = stateOf(entry.placed) ?: return false
+        return chunk.getBlockState(pos) == placed && PlacedBlocks.placerAt(chunk, pos) == null
+    }
+
+    /** What is at [pos] of [chunk] instead of the block set: null for nothing (air), else the block, and who placed it if a player did. */
+    private fun replacement(level: ServerLevel, chunk: LevelChunk, pos: BlockPos): String? {
+        val current = chunk.getBlockState(pos)
+        if (current.isAir) return null
+        val placer = PlacedBlocks.placerAt(chunk, pos)?.let { " placed by ${nameOf(level, it)}" } ?: ""
+        return "${current.block.id} at ${at(pos)}$placer"
+    }
+
+    /**
+     * Records, by player, a `trap skipped` decision for the blocks [left] as they are, each with its
+     * [replacement]: `1 block already gone (due)`, `2 blocks changed since set, left as they are (due):
+     * minecraft:oak_planks at x y z, …`, or both.
+     */
+    private fun skipped(level: ServerLevel, left: List<Pair<BlockSnapshot, String?>>, why: String) {
+        for ((player, entries) in left.groupBy { it.first.player }) {
+            val gone = entries.count { it.second == null }
+            val changed = entries.mapNotNull { it.second }
+            val reason = buildString {
+                if (gone > 0) append("${blocks(gone)} already gone")
+                if (gone > 0 && changed.isNotEmpty()) append("; ")
+                if (changed.isNotEmpty()) append("${blocks(changed.size)} changed since set, left as ${if (changed.size == 1) "it is" else "they are"}")
+                append(" ($why)")
+                if (changed.isNotEmpty()) append(": ").append(changed.take(NAMED_MAX).joinToString()).append(if (changed.size > NAMED_MAX) ", …" else "")
+            }
+            record(level, "trap skipped", player, reason, entries.first().first.act, null)
+        }
+    }
+
+    private fun blocks(count: Int) = if (count == 1) "1 block" else "$count blocks"
 
     /** Why [positions] may not take [block] now, all or nothing; null when they may. */
     private fun refusal(level: ServerLevel, positions: List<BlockPos>, block: BlockState, player: UUID): String? {
@@ -319,6 +412,9 @@ object BlockRestorer {
     }
 
     private fun keyOf(level: ServerLevel, pos: ChunkPos) = ChunkKey(level.dimension(), pos.x(), pos.z())
+
+    /** Where [entry] stands in [chunk], the chunk at [key]. */
+    private fun posOf(key: ChunkKey, chunk: LevelChunk, entry: BlockSnapshot) = unpack(key.x, key.z, chunk.minY, entry.packed)
 
     /**
      * [state] in SNBT (`{id:"minecraft:glass"}`), as [BlockSnapshot.placed] keeps it. Never put in [states]
