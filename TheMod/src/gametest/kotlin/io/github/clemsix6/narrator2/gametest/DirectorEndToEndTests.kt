@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeResponse
 import io.github.clemsix6.narrator2.testing.RecordedRequest
 import io.github.clemsix6.narrator2.testing.reply
+import io.github.clemsix6.narrator2.tool.speech.SpeechLimiter
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,6 +136,10 @@ class DirectorEndToEndTests {
             val pause = operatorCommands(helper, "narrator pause")
             awaitCondition("the Director pauses") { runtime.director.status().state == DirectorState.PAUSED }
             check(pause.lines.any { it.startsWith("[Narrator] paused") }) { "pause: ${pause.lines}" }
+            // The resumed turn is the chapter's first turn after the pause, not its last: another one may follow before the
+            // check, woken by what an earlier batch left behind (a grief is told 10 s after the break and dated at the
+            // break, so it wakes the Director at once).
+            val lastBeforePause = journalRow(runtime, "SELECT max(turn_id) FROM turns WHERE conversation_id = ?", chapterSession)[0] as Long
             server.onServerThread { server.commands.performPrefixedCommand(speaker.player.createCommandSourceStack(), "pray Pitié, grand Narrateur ${model.prayer}") }
             val beforeResume = fake.requests.size
             delay(3_000)
@@ -145,8 +150,10 @@ class DirectorEndToEndTests {
             val note = resumed.json.path("messages").last()
             check(note.path("role").asText() == "system" && "(paused by an operator)" in note.path("content").asText()) { "the silence note: $note" }
             awaitQuiet(runtime)
-            val trigger = journalRow(runtime, "SELECT trigger FROM turns WHERE conversation_id = ? ORDER BY turn_id DESC LIMIT 1", chapterSession)
-            check(trigger == listOf("pray")) { "the resumed turn's trigger: $trigger" }
+            val resumedTurn = journalRow(
+                runtime, "SELECT turn_id, trigger FROM turns WHERE conversation_id = ? AND turn_id > ? ORDER BY turn_id LIMIT 1", chapterSession, lastBeforePause,
+            )
+            check(resumedTurn[1] == "pray") { "the resumed turn's trigger: $resumedTurn" }
 
             // 5. Chapter close: a summary on the same session at the quiet moment, carried by the next briefing.
             val close = operatorCommands(helper, "narrator chapter close")
@@ -252,8 +259,14 @@ private val scriptLog = LoggerFactory.getLogger("narrator2-gametest")
  * when it returns, failure with its first error (Kotlin's `check` is the assertion). Steps that touch the
  * game go through `server.onServerThread`. The test's budget is [maxTicks], at least as many
  * milliseconds: each tick that waits for the script sleeps 1 ms ([thenAwait]).
+ *
+ * The story starts with the minute of the server's speech limits forgotten ([SpeechLimiter.forgetTheMinute]): those
+ * limits are the server's, shared by every batch, and a story that waits for a line of the server's Director or engine
+ * must not find the minute spent by the batch before it. The limits themselves are those of production. A test that
+ * waits for a line through the server's limits is a script; any other one uses a [SpeechLimiter] of its own.
  */
 fun GameTestHelper.runScript(maxTicks: Int, script: suspend CoroutineScope.() -> Unit) {
+    narrator().toolLimits.speech.forgetTheMinute()
     val outcome = AtomicReference<Result<Unit>?>()
     val job = CoroutineScope(Dispatchers.IO + CoroutineName("narrator2-gametest-script")).launch {
         val result = runCatching { coroutineScope { script() } }
