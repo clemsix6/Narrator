@@ -21,6 +21,8 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import java.time.Clock
+import java.time.Instant
 
 /**
  * The acts of the mechanics engine (M4 §4.3): a rule's firing, a challenge's stakes. The engine acts through
@@ -79,19 +81,19 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
      * and some for the world (a chunk to load).
      */
     suspend fun run(firing: Firing, tool: String, args: JsonObject): ToolResult {
-        val start = System.nanoTime()
-        val found = byName[tool]
+        val call = Call(firing, tool, byName[tool], args, services.clock.instant(), System.nanoTime())
+        val found = call.found
         val result = when {
             found == null -> ToolResult.invalid("unknown tool \"$tool\" for the engine")
             services.phase != Phase.RUNNING -> ToolResult.failed("server is stopping")
             else -> try {
                 runner.invoke(found, firing.caller, args.toString())
             } catch (e: CancellationException) {
-                action(firing, tool, found, args, ToolRunner.interrupted(found), start)
+                action(call, ToolRunner.interrupted(found))
                 throw e
             }
         }
-        action(firing, tool, found, args, result, start)
+        action(call, result)
         return result
     }
 
@@ -119,33 +121,37 @@ class EngineActions(private val services: NarratorServices, tools: List<Narrator
         ToolResult.failed(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
     }
 
+    /** One call of an act: [tool] ([found] when the engine has it) with [args], started at [at] ([nanos] for its duration). */
+    private class Call(val firing: Firing, val tool: String, val found: NarratorTool<*>?, val args: JsonObject, val at: Instant, val nanos: Long)
+
     /**
-     * The `mechanic action` decision of one call of [tool] ([found] when the engine has it), `DEBUG` when it
-     * did what was asked, `INFO` otherwise. The guards' death report reads it (M4-04, `DeathReport.actionsOn`):
-     * `subject` the player the call affected (their names joined when several), `detail.targets` their names,
-     * `detail.tool`, `detail.status` (a `ToolStatus` id), `detail.result`, `detail.effect` (a `ToolEffect` id:
-     * speech is left out of the report), and the act's conversation (`mechanics:C-60`).
+     * The `mechanic action` decision of [call], `DEBUG` when it did what was asked, `INFO` otherwise. Stamped at
+     * the start of the call, like a `tool_calls` row: an act that kills is before the death. The guards' death
+     * report reads it (M4-04, `DeathReport.actionsOn`): `subject` the player the call affected (their names
+     * joined when several), `detail.targets` their names, `detail.tool`, `detail.status` (a `ToolStatus` id),
+     * `detail.result`, `detail.effect` (a `ToolEffect` id: speech is left out of the report), and the act's
+     * conversation (`mechanics:C-60`).
      */
-    private fun action(firing: Firing, tool: String, found: NarratorTool<*>?, args: JsonObject, result: ToolResult, start: Long) {
-        val ms = (System.nanoTime() - start) / 1_000_000
+    private fun action(call: Call, result: ToolResult) {
+        val ms = (System.nanoTime() - call.nanos) / 1_000_000
         val targets = result.targets.map { it.name }
-        Decisions(services.trace, services.clock).record(
+        Decisions(services.trace, Clock.fixed(call.at, services.clock.zone)).record(
             log,
             DecisionRecord.Kind.MECHANIC,
             ACTION,
             subject = targets.joinToString().ifEmpty { null },
-            reason = "$tool ${result.status.id}: ${cut(result.text.lineSequence().first(), FIRST_LINE_MAX)}",
-            conversationId = firing.caller.conversationId,
+            reason = "${call.tool} ${result.status.id}: ${cut(result.text.lineSequence().first(), FIRST_LINE_MAX)}",
+            conversationId = call.firing.caller.conversationId,
             detail = buildJsonObject {
-                put("firing", firing.id)
-                firing.caller.act?.let { put("act", it) }
-                firing.ref?.let { put("ref", it.toString()) }
-                put("tool", tool)
-                found?.let { put("effect", it.effect.id) }
+                put("firing", call.firing.id)
+                call.firing.caller.act?.let { put("act", it) }
+                call.firing.ref?.let { put("ref", it.toString()) }
+                put("tool", call.tool)
+                call.found?.let { put("effect", it.effect.id) }
                 put("status", result.status.id)
                 put("ms", ms)
                 putJsonArray("targets") { targets.forEach { add(it) } }
-                put("args", args)
+                put("args", call.args)
                 put("result", ToolRunner.truncate(result.text, ToolCallRecord.RESULT_MAX_CHARS))
             },
             level = if (result.status == ToolStatus.OK) Log.Level.DEBUG else Log.Level.INFO,

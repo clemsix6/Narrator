@@ -18,6 +18,10 @@ import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import io.github.clemsix6.narrator2.trace.TraceSink
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -35,6 +39,7 @@ import net.minecraft.world.level.block.Blocks
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * In-game tests of the mechanics engine's host (M4-02, M4 §21.2): its state lives in the world's global
@@ -43,7 +48,9 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * Each test that writes the world's attachment puts it back within the same tick: the tests running side
  * by side (and, from M4-23, the real engine) never see it change. The other tests build their engine on a
- * store in memory, which never reconciles with the server's canon.
+ * store in memory, which never reconciles with the server's canon. The tests that set off explosions run in
+ * their own batch ([MECHANICS_ENVIRONMENT]): the Observer tells an explosion with every player 32 blocks around, and other
+ * batches count the explosions near their own player.
  */
 class MechanicsEngineGameTests {
 
@@ -84,7 +91,7 @@ class MechanicsEngineGameTests {
      * second act is refused while that punishment runs. Each call is a `mechanic action` decision, never a
      * `tool_calls` row.
      */
-    @GameTest
+    @GameTest(environment = MECHANICS_ENVIRONMENT)
     fun anEngineActGoesThroughTheRealToolAndItsGuards(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         floor(helper)
         bob.standAt(BlockPos(4, 1, 4))
@@ -137,6 +144,60 @@ class MechanicsEngineGameTests {
         helper.assertEquals(bob.name, calls[2].subject, "the player the act affected")
         helper.assertEquals(-act.id, calls[2].detail!!.getValue("act").jsonPrimitive.long, "the act of the call")
         helper.assertEquals("mechanics:$RULE", calls[2].conversationId, "the rule's acts")
+    }
+
+    /**
+     * A death just after an act of the engine is explained by that act (M4-04's `DeathReport` reads the
+     * `mechanic action` decisions the acts write, M4 §4.3): the real `explosion`, run by the engine, then a
+     * fall; the `death_guard died` decision names the explosion and the rule's act.
+     */
+    @GameTest(environment = MECHANICS_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
+    fun aDeathAfterAnEngineActIsExplainedByIt(helper: GameTestHelper) {
+        val runtime = helper.narrator()
+        val victim = TestPlayer(helper, "me_")
+        val name = victim.name
+        try {
+            floor(helper)
+            victim.standAt(BlockPos(4, 1, 4))
+            victim.makeVulnerable()
+            val actions = EngineActions(runtime, ToolCatalog.allTools(runtime))
+            val blast = buildJsonObject {
+                put("player", name)
+                put("power", 1.0)
+                put("offset", 1)
+            }
+            val hit = runBlocking { actions.run(actions.open("fired", DEATH_RULE, name), "explosion", blast) }
+            helper.assertTrue(hit.status == ToolStatus.OK && "hurt: $name " in hit.text, hit.text)
+            victim.live.hurtServer(helper.level, helper.level.damageSources().fall(), 1_000f)
+            helper.assertTrue(victim.live.isDeadOrDying, "the player died")
+        } finally {
+            victim.close()
+        }
+
+        val reason = AtomicReference<String?>()
+        CoroutineScope(Dispatchers.IO).launch {
+            val deadline = System.currentTimeMillis() + 15_000
+            while (reason.get() == null && System.currentTimeMillis() < deadline) {
+                delay(200)
+                runtime.journal.barrier()
+                reason.set(
+                    runtime.journal.read(5_000) { connection ->
+                        connection.prepareStatement("SELECT reason FROM engine_decisions WHERE kind = 'death_guard' AND decision = 'died' AND subject = ?").use { statement ->
+                            statement.setString(1, name)
+                            statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                        }
+                    },
+                )
+            }
+        }
+        helper.awaitAsync {
+            val sentence = reason.get()
+            helper.assertTrue(sentence != null, "the death_guard died decision of $name")
+            helper.assertTrue(
+                Regex("the Narrator acted on $name in the last 1m: explosion \\d+s before \\(engine, mechanics:$DEATH_RULE\\)$").containsMatchIn(sentence!!),
+                "the engine's act explains the death: $sentence",
+            )
+        }
     }
 
     /** The server's ticks reach the parts with the server; the second runs once a second of the engine's clock, then the situation. */
@@ -212,6 +273,12 @@ class MechanicsEngineGameTests {
     private companion object {
         /** A rule of these tests, far from the ids of the server's canon. */
         val RULE = Ref(RefKind.CANON, 990_001)
+
+        /** The rule whose act comes before a death. */
+        val DEATH_RULE = Ref(RefKind.CANON, 990_002)
+
+        /** The batch of the tests that set off explosions (`test_environment/mechanics.json`). */
+        const val MECHANICS_ENVIRONMENT = "narrator2-gametest:mechanics"
 
         fun floor(helper: GameTestHelper) {
             for (x in 0..7) for (z in 0..7) helper.setBlock(x, 0, z, Blocks.STONE)

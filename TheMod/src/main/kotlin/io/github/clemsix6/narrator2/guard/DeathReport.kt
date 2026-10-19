@@ -118,6 +118,10 @@ data class DeathReport(
          *   decision's `reason` without it); a `detail.effect` other than `world` (speech) is left out. Their
          *   [NarratorAction.engine] is the act's conversation (`mechanics:C-60`).
          *
+         * The bounds are whole milliseconds: the rows are stamped to the microsecond, and an action that
+         * started in the very millisecond of the death (an engine's act, stamped at the start of its call like
+         * a `tool_calls` row) still counts.
+         *
          * Runs on a read connection of the Journal.
          */
         fun actionsOn(connection: Connection, player: String, from: Long, to: Long): List<NarratorAction> =
@@ -125,7 +129,7 @@ data class DeathReport(
                 """
                 SELECT id, epoch_ms(ts) AS started, tool, turn_id, status, result, NULL AS engine FROM tool_calls
                 WHERE effect = 'world' AND status IN ('ok', 'unknown') AND list_contains(targets, ?)
-                  AND ts >= to_timestamp(CAST(? AS DOUBLE) / 1000) AND ts <= to_timestamp(CAST(? AS DOUBLE) / 1000)
+                  AND epoch_ms(ts) BETWEEN ? AND ?
                 UNION ALL
                 SELECT id, epoch_ms(ts) AS started, json_extract_string(detail, '$.tool'), turn_id, json_extract_string(detail, '$.status'),
                        coalesce(json_extract_string(detail, '$.result'), reason), coalesce(conversation_id, 'engine')
@@ -134,7 +138,7 @@ data class DeathReport(
                   AND (subject = ? OR list_contains(json_extract_string(detail, '$.targets[*]'), ?))
                   AND json_extract_string(detail, '$.status') IN ('ok', 'unknown')
                   AND coalesce(json_extract_string(detail, '$.effect'), 'world') = 'world'
-                  AND ts >= to_timestamp(CAST(? AS DOUBLE) / 1000) AND ts <= to_timestamp(CAST(? AS DOUBLE) / 1000)
+                  AND epoch_ms(ts) BETWEEN ? AND ?
                 ORDER BY started, id
                 """.trimIndent(),
             ).use { statement ->

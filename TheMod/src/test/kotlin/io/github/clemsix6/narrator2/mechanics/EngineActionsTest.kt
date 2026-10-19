@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
+import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.MaxLen
@@ -32,6 +33,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.assertEquals
@@ -201,6 +203,25 @@ class EngineActionsTest {
         assertTrue(reason.startsWith("long ok: ok: 😀") && reason.endsWith("…"), reason)
         assertTrue(reason.length <= "long ok: ".length + EngineActions.FIRST_LINE_MAX, "${reason.length}")
         assertTrue(!reason.dropLast(1).last().isHighSurrogate())
+    }
+
+    @Test
+    fun `an action is stamped at the start of its call, like a tool_calls row, so an act that kills comes before the death`() = runTest {
+        val clock = services.clock as TestClock
+        val slow = object : NarratorTool<NoArgs>("slow", "Takes a while.", NoArgs.serializer(), ToolEffect.WORLD) {
+            override suspend fun run(ctx: ToolContext, args: NoArgs): ToolResult {
+                clock.advance(Duration.ofSeconds(3))
+                return ToolResult.ok("ok: done")
+            }
+        }
+        val engine = EngineActions(services, listOf(slow))
+        val firing = engine.open("fired", c60, null)
+        val begun = clock.instant()
+
+        engine.run(firing, "slow", args("{}"))
+
+        assertEquals(begun, decisions.last().ts)
+        assertEquals(begun + Duration.ofSeconds(3), clock.instant())
     }
 
     @Test
