@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.guard
 
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.effect.MobEffectCategory
 import net.minecraft.world.effect.MobEffectInstance
@@ -32,6 +33,8 @@ import net.minecraft.world.entity.player.Player
  *   player than their own is one for the creatures of a punishment ([boundTo]): the guests set on Bartok
  *   leave Mimosa alone, 20 blocks away, even once Bartok is out of their reach.
  * - **Explosions**: [ExplosionGuard.spares] spares the same players.
+ * - **A module's creatures** (M5 §4.5, `forge.sdk.ModuleCreatures`) aim at nobody but the player an act sent them to,
+ *   and their blows, projectiles and effects reach nobody else: a module's creatures never hurt a bystander.
  *
  * "The Narrator's doing": a creature carrying the `narrator2` tag, or what one of them owns (an arrow, a
  * potion, an effect cloud, evoker fangs, a vex). Without a running Narrator nobody is spared. Server
@@ -76,12 +79,12 @@ object CreatureShield {
 
     /**
      * `ALLOW_DAMAGE`: whether [victim] may take damage from [source]: never from the Narrator's creatures while
-     * spared, and never from a punishment's creatures summoned for another player, even by a blow meant for
-     * that player ([boundTo]).
+     * spared, never from a punishment's creatures summoned for another player, even by a blow meant for that
+     * player ([boundTo]), and never from a module's creature that does not aim at [victim] (M5 §4.5).
      */
     fun allowsDamage(victim: Player, source: DamageSource): Boolean {
         if (!isNarratorsDoing(source.entity) && !isNarratorsDoing(source.directEntity)) return true
-        val stranger = boundElsewhere(source.entity, victim) || boundElsewhere(source.directEntity, victim)
+        val stranger = boundElsewhere(source.entity, victim) || boundElsewhere(source.directEntity, victim) || ModuleCreatures.spares(victim, source)
         if (!stranger && !spares(victim)) return true
         log.debug { "spared ${victim.plainTextName} from ${source.typeHolder().registeredName} by ${(source.entity ?: source.directEntity)?.type}" }
         return false
@@ -89,26 +92,28 @@ object CreatureShield {
 
     /**
      * Whether [effect], from [source], must not reach [target]: a harmful or neutral effect of the Narrator's doing
-     * on a spared player, or of a punishment's creature summoned for another player.
+     * on a spared player, of a punishment's creature summoned for another player, or of a module's creature that
+     * does not aim at [target].
      */
     @JvmStatic
     fun blocksEffect(target: LivingEntity, effect: MobEffectInstance, source: Entity?): Boolean {
         if (target !is Player || target.level().isClientSide) return false
         if (effect.effect.value().category == MobEffectCategory.BENEFICIAL || !isNarratorsDoing(source)) return false
-        if (!boundElsewhere(source, target) && !spares(target)) return false
+        if (!boundElsewhere(source, target) && !ModuleCreatures.sparesFrom(target, source) && !spares(target)) return false
         log.debug { "spared ${target.plainTextName} from ${effect.effect.registeredName} by ${source?.type}" }
         return true
     }
 
     /**
      * Whether [attacker] must leave [target] alone: one of the Narrator's creatures and a spared player, a
-     * punishment's creature and another player than its own ([boundTo], M4-POST), or a creature it summoned and
-     * anything but a player (M4 review, finding 17: never a villager nor an animal).
+     * punishment's creature and another player than its own ([boundTo], M4-POST), a creature it summoned and
+     * anything but a player (M4 review, finding 17: never a villager nor an animal), or a module's creature and
+     * anyone but the player it aims at (M5 §4.5).
      */
     @JvmStatic
     fun keepsAway(attacker: LivingEntity?, target: LivingEntity?): Boolean = when (target) {
         null -> false
-        is Player -> isNarratorsDoing(attacker) && (boundElsewhere(attacker, target) || spares(target))
-        else -> isSummoned(attacker)
+        is Player -> isNarratorsDoing(attacker) && (boundElsewhere(attacker, target) || spares(target)) || ModuleCreatures.keepsAway(attacker, target)
+        else -> isSummoned(attacker) || ModuleCreatures.keepsAway(attacker, target)
     }
 }

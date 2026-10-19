@@ -45,6 +45,15 @@ class BlockRestorerCodecTest {
     }
 
     @Test
+    fun `a module's block away from every player is nobody's trap, and reads back so`() {
+        val nobody = ChunkRestorations(listOf(BlockSnapshot(7, "{id:\"minecraft:red_stained_glass\"}", 1, player = null, act = -70)))
+        val json = ChunkRestorations.CODEC.encodeStart(JsonOps.INSTANCE, nobody).getOrThrow()
+        assertEquals(setOf("packed", "placed", "until", "act"), json.asJsonObject.getAsJsonArray("entries")[0].asJsonObject.keySet(), "no player written")
+        assertEquals(nobody, ChunkRestorations.CODEC.parse(JsonOps.INSTANCE, json).getOrThrow())
+        assertEquals(nobody, ChunkRestorations.CODEC.parse(NbtOps.INSTANCE, ChunkRestorations.CODEC.encodeStart(NbtOps.INSTANCE, nobody).getOrThrow()).getOrThrow())
+    }
+
+    @Test
     fun `a position packs into its chunk and back, below zero and at the top of the world`() {
         val minY = -64
         val cases = listOf(BlockPos(0, -64, 0), BlockPos(15, 319, 15), BlockPos(-1, 70, -1), BlockPos(-17, -3, 33), BlockPos(30_000, 150, -29_999))
