@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.event.AsyncSubscription
+import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
@@ -764,12 +765,28 @@ class MemoryJobs(
 
     // ── Cues (M3 §10.5) ─────────────────────────────────────────────────────────────────────────────
 
-    /** The bus: a position sample may be a return to a place; a departure has its player's stats computed again. */
+    /**
+     * The bus: a position sample may be a return to a place; a departure has its player's stats computed again. The
+     * departures already waiting behind one are computed with it: a refresh goes over every pair of players (about a
+     * second on a busy Journal), and one per departure fell behind when many players left one after the other.
+     */
     private suspend fun follow(subscription: AsyncSubscription) {
         for (envelope in subscription.events) {
             when (val event = envelope.event) {
                 is PositionSampled -> attempt("place return") { placeReturn(event, envelope.ts) }
-                is PlayerLeft -> attempt("stats of a departure") { hooks.refreshStats(listOf(event.player.uuid), "left") }
+                is PlayerLeft -> {
+                    val left = linkedSetOf(event.player.uuid)
+                    val samples = mutableListOf<Envelope>()
+                    while (true) {
+                        val next = subscription.events.tryReceive().getOrNull() ?: break
+                        when (val later = next.event) {
+                            is PlayerLeft -> left += later.player.uuid
+                            else -> samples += next
+                        }
+                    }
+                    attempt("stats of a departure") { hooks.refreshStats(left.toList(), "left") }
+                    for (sample in samples) (sample.event as? PositionSampled)?.let { attempt("place return") { placeReturn(it, sample.ts) } }
+                }
                 else -> Unit
             }
         }

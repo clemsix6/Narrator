@@ -23,6 +23,7 @@ import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeMemoryState
 import io.github.clemsix6.narrator2.testing.FakeMemoryStore
 import io.github.clemsix6.narrator2.testing.LogCapture
+import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.testing.MemorySamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -539,6 +540,26 @@ class MemoryJobsTest {
         h.services.bus.publish(PlayerLeft(bartok, Pos("minecraft:overworld", 0, 64, 0), 1, 1_500, LeaveReason.LEAVE))
         h.advance(Duration.ZERO)
         assertEquals(listOf(bartok.uuid) to "left", h.stats.last())
+    }
+
+    @Test
+    fun `departures waiting together are computed in one refresh, and the samples between them are still asked`() = runTest {
+        val h = Harness(this)
+        val here = Pos("minecraft:overworld", 100, 64, -300)
+        h.online(bartok)
+        h.jobs.start()
+        h.advance(Duration.ZERO)
+        h.stats.clear()
+        h.asked.clear()
+
+        val gone = Pos("minecraft:overworld", 0, 64, 0)
+        h.services.bus.publish(PlayerLeft(mimosa, gone, 1, 1_500, LeaveReason.LEAVE))
+        h.services.bus.publish(PositionSampled(bartok, here, "minecraft:plains", null, false, 15, 0, 20.0, 20, null, SampleReason.MOVED))
+        h.services.bus.publish(PlayerLeft(MechanicsSamples.josiane, gone, 1, 1_500, LeaveReason.LEAVE))
+        h.advance(Duration.ZERO)
+
+        assertEquals(listOf(listOf(mimosa.uuid, MechanicsSamples.josiane.uuid) to "left"), h.stats, "one refresh for both departures")
+        assertEquals(listOf("return Bartok at minecraft:overworld 100,64,-300 (online Bartok) at +0s"), h.asked.filter { it.startsWith("return") }, "the sample between them is asked")
     }
 
     @Test
