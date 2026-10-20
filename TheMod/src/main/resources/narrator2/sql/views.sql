@@ -300,7 +300,7 @@ WHERE NOT c.archived;
 COMMENT ON VIEW mem_canon IS 'What the Narrator said or decided: promises, challenges, laws, nicknames, places, lore…; open: status active or planned';
 COMMENT ON COLUMN mem_canon.ref IS 'its reference for the memory tools, e.g. C-45';
 COMMENT ON COLUMN mem_canon.kind IS 'promise, threat, challenge, law, plan, prophecy, nickname, title, place, lore, opinion, running_gag, arc or claim';
-COMMENT ON COLUMN mem_canon.mechanic IS 'challenge, duel or rule: the mechanics engine tracks it and ends it (engine_decisions kind mechanic); NULL: not the engine''s';
+COMMENT ON COLUMN mem_canon.mechanic IS 'challenge, duel, rule or module: the mechanics engine tracks it and ends it (engine_decisions kind mechanic); NULL: not the engine''s';
 COMMENT ON COLUMN mem_canon.status IS 'planned or active (open); fulfilled, broken, expired, won, lost, abandoned, cancelled, resolved or retired';
 COMMENT ON COLUMN mem_canon.statement IS 'what it says, in French';
 COMMENT ON COLUMN mem_canon.quote IS 'the Narrator''s own words, when said to players';

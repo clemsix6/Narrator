@@ -214,7 +214,7 @@ class Built(val entry: ArsenalEntry, val mainClass: String, val classes: Map<Str
 data class ForgeStatus(val ecj: String?, val compiler: String)
 
 /**
- * The Forge when it does not run (M5 §11): [reason] says why (`forge.enabled is false`, `not wired yet`, `ECJ is
+ * The Forge when it does not run (M5 §11): [reason] says why (`forge.enabled is false`, `ECJ is
  * missing: …`, `it could not start: …`). Every call throws `ForgeRejected("forge_off", "the Forge is unavailable:
  * <reason>")`; the arsenal is empty.
  */
