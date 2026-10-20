@@ -17,7 +17,8 @@ import net.minecraft.world.entity.player.Player
  * player's grace, a rescue's shield and a duel), whatever they do: blows, arrows, potions, fangs, spit, thorns,
  * explosions, and the effects that come with them. [GuardsImpl.spares] says who is spared. And the creatures it
  * summons go for players only, never a villager, a golem or an animal (M4 review, finding 17). The creatures of
- * a punishment of the catalogue go for their own player only, and never hurt anyone else (M4-POST: [boundTo]).
+ * a punishment (of the catalogue, or a hostile `spawn`) go for their own player only, and never hurt anyone else
+ * (M4-POST, M4-LEFTOVERS: [boundTo]).
  *
  * - **Damage** (`ServerLivingEntityEvents.ALLOW_DAMAGE`, early in `LivingEntity.hurtServer`, before any
  *   knockback): refused when the source or the direct entity is the Narrator's doing. A blow refused
@@ -30,8 +31,8 @@ import net.minecraft.world.entity.player.Player
  *   go for someone else instead of pressing on a player they cannot hurt. Nor is anything but a player for
  *   the creatures it summoned ([isSummoned]): the guests set on a player in his village leave the villagers
  *   alone. A creature a rule only marked keeps its own targets (a golem still fights zombies). And no other
- *   player than their own is one for the creatures of a punishment ([boundTo]): the guests set on Bartok
- *   leave Mimosa alone, 20 blocks away, even once Bartok is out of their reach.
+ *   player than their own is one for the creatures of a punishment ([boundTo]): the guests (or the zombies of a
+ *   `spawn`) set on Bartok leave Mimosa alone, 20 blocks away, even once Bartok is out of their reach.
  * - **Explosions**: [ExplosionGuard.spares] spares the same players.
  * - **A module's creatures** (M5 §4.5, `forge.sdk.ModuleCreatures`) aim at nobody but the player an act sent them to,
  *   and their blows, projectiles and effects reach nobody else: a module's creatures never hurt a bystander.
@@ -58,11 +59,14 @@ object CreatureShield {
 
     /**
      * The mark of the punishment's creature that [entity] is, or that owns it ([NarratorMob.punishment]: the
-     * guests, the slimes of a rain); null for anything else. Such a creature is its player's alone (M4-POST).
+     * guests, the slimes of a rain, a hostile creature of `spawn`); null for anything else. Such a creature is its
+     * player's alone (M4-POST, M4-LEFTOVERS). A module's creature never is: its module aims it (M5 §4.5,
+     * [ModuleCreatures]), although `spawn` marked it when its act summoned it.
      */
     fun boundTo(entity: Entity?): NarratorMob? = bound(entity) ?: (entity as? TraceableEntity)?.let { bound(it.owner) }
 
-    private fun bound(entity: Entity?): NarratorMob? = entity?.getAttached(NarratorMob.TYPE)?.takeIf { it.punishment != null }
+    private fun bound(entity: Entity?): NarratorMob? =
+        entity?.getAttached(NarratorMob.TYPE)?.takeIf { it.punishment != null && !ModuleCreatures.isModules(entity) }
 
     /** Whether [entity] is a punishment's creature (or what one owns) summoned for another player than [player]. */
     private fun boundElsewhere(entity: Entity?, player: Player): Boolean = boundTo(entity)?.let { it.player != player.uuid } == true

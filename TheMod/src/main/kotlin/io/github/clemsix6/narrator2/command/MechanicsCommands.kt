@@ -329,7 +329,7 @@ object MechanicsCommands {
         return buildList {
             add(narratorLine("traps · $pending ${TraceText.plural(pending, "block")} pending in the loaded chunks"))
             players.take(MAX_TRAPPED).forEach { (player, effects) ->
-                add(detailLine("$player: " + effects.joinToString { "${it.what} until ${TraceText(zone, now).time(Instant.ofEpochMilli(it.until))} (${left(it.until, now)})" }))
+                add(detailLine("$player: " + effects.joinToString { it.what + it.until?.let { until -> " until ${TraceText(zone, now).time(Instant.ofEpochMilli(until))} (${left(until, now)})" }.orEmpty() }))
             }
             if (players.size > MAX_TRAPPED) add(detailLine("… and ${players.size - MAX_TRAPPED} more players"))
             add(detailLine("/narrator traps restore takes them all away now."))

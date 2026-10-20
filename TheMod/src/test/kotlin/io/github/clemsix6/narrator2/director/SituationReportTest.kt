@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.guard.Confiscation
+import io.github.clemsix6.narrator2.guard.Escrow
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.LedgerPurpose
 import io.github.clemsix6.narrator2.guard.PlayerPacing
@@ -99,6 +100,26 @@ class SituationReportTest {
             </situation>
             """.trimIndent(),
             report.render(now, world, reminders, actions),
+        )
+    }
+
+    /** A stake and what is owed tell their purpose, with no deadline (M4-LEFTOVERS); an effect keeps its own. */
+    @Test
+    fun `a stake and what is owed tell their purpose among the active effects`() {
+        players.put(live("Bartok", onlineFor = 60_000L))
+        val names = { _: UUID -> null }
+        guards.active[ref("Bartok").uuid] = listOf(
+            ActiveEffect("effect", "slowness II", now + 80_000, harmful = true),
+            Escrow.active(
+                Confiscation(812, emptyList(), "2x minecraft:emerald", now, now + 7 * 86_400_000L, "a bet that Mimosa wins", null, LedgerPurpose.STAKE, canon = 50), now, names,
+            ),
+            Escrow.active(Confiscation(813, emptyList(), "1x minecraft:golden_apple", now, now, "the reward of the challenge C-50", null, LedgerPurpose.OWED), now, names),
+        )
+        val line = report.render(now, world, emptyList(), emptyList()).lines().single { it.startsWith("Your active effects: ") }
+        assertEquals(
+            "Your active effects: Bartok slowness II until 21:34, Bartok 2x minecraft:emerald staked on C-50: a bet that Mimosa wins, " +
+                "Bartok 1x minecraft:golden_apple owed to them (given once their inventory has room): the reward of the challenge C-50",
+            line,
         )
     }
 

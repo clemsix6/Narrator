@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.tool.action
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.Guards
+import io.github.clemsix6.narrator2.guard.NarratorMob
 import io.github.clemsix6.narrator2.guard.NarratorMobs
 import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
@@ -224,8 +225,8 @@ class SpawnTool : NarratorTool<SpawnArgs>(
     description = "Summons creatures around a player: named, equipped, faster, bigger, targeting the player, raining from the " +
         "sky, thrown into the air, or set to explode. They vanish at the end of their lifetime and never break a block. " +
         "Every creature that can hurt (monsters, but also wolves, bees, bears, golems, goats, llamas, pufferfish…), and any " +
-        "creature sent at the player, is a punishment of that player; only harmless animals are not. Caps on how many, per " +
-        "call and alive at once, depend on the chaos level.",
+        "creature sent at the player, is a punishment of that player; only harmless animals are not. Those go for that " +
+        "player alone, and their blows never kill. Caps on how many, per call and alive at once, depend on the chaos level.",
     args = SpawnArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -263,9 +264,10 @@ class SpawnTool : NarratorTool<SpawnArgs>(
     override suspend fun run(ctx: ToolContext, args: SpawnArgs): ToolResult = run(ctx, args, punishment = null)
 
     /**
-     * [run], for the creatures of [punishment] of the catalogue (`punish`'s step; null for the Director's own
-     * `spawn`): marked with it ([io.github.clemsix6.narrator2.guard.NarratorMob.punishment]), they are the player's
-     * alone, and never kill (M4-POST).
+     * [run], for the creatures of [punishment] of the catalogue (`punish`'s step; null for a plain `spawn`). The
+     * creatures of a punishment, and those of a plain `spawn` that can hurt or are sent at the player, are marked with
+     * it ([NarratorMob.punishment], [NarratorMob.SPAWN]): they are the player's alone, and never kill (M4-POST,
+     * M4-LEFTOVERS).
      */
     suspend fun run(ctx: ToolContext, args: SpawnArgs, punishment: PunishmentId?): ToolResult = answer {
         check(ctx, args)?.let { return@answer it }
@@ -320,9 +322,11 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             }
             ctx.guards.armDeathGuard(player.uuid, args.lifetimeMinutes * 60)
         }
+        // A punishment's creatures, and the hostile ones of a plain spawn, are the player's alone and never kill.
+        val bound = punishment?.id ?: NarratorMob.SPAWN.takeIf { hostile }
         val added = mutableListOf<Mob>()
         for (mob in mobs) {
-            if (!enter(ctx.guards, level, mob, expiresAt, player.uuid, hostile, punishment?.id)) continue
+            if (!enter(ctx.guards, level, mob, expiresAt, player.uuid, hostile, bound)) continue
             if (args.target) mob.target = player
             args.explode?.let { Fuses.light(ctx.services, ctx.caller, mob, it, added.size) }
             added += mob
@@ -506,8 +510,8 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         /**
          * Brings [mob] into the world with the mount and riders the game gave it (a spider jockey's
          * skeleton, a drowned's zombie nautilus, a strider's rider), all of them the
-         * Narrator's creatures until [expiresAt], summoned for [player] (by [punishment] of the catalogue, if
-         * any). Each is marked, the creature last,
+         * Narrator's creatures until [expiresAt], summoned for [player] (by [punishment], if any: its
+         * [NarratorMob.punishment]). Each is marked, the creature last,
          * once it is equipped (T09c: the gear it holds then is its own); one the game already added to the
          * world (a jockey's mount made by `finalizeSpawn`) is registered at once, since its load event came
          * before its mark. Then [mob] enters with its riders. When the world refuses it, the mount and

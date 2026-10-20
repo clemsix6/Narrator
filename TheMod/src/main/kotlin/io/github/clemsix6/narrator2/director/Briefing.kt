@@ -383,7 +383,9 @@ class Briefing(
         val own = listOf(
             line("Your active effects", EFFECTS_MAX) {
                 online.flatMap { player ->
-                    services.guards.activeOn(player.ref.uuid).map { "${who(player.ref)} ${ModelText.escape(it.what)} (${it.kind}) until ${time(it.until)}" }
+                    services.guards.activeOn(player.ref.uuid).map {
+                        "${who(player.ref)} ${ModelText.escape(it.what)} (${it.kind})" + it.until?.let { until -> " until ${time(until)}" }.orEmpty()
+                    }
                 }
             },
             line("Protected", ONLINE_MAX) {
