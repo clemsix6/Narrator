@@ -14,8 +14,11 @@ package io.github.clemsix6.narrator2.testing
  *   the code would take without its limit (a module blocked for seconds, a JDK call of 75 ms or more).
  */
 object BusyMachine {
-    /** How many times longer a `ModuleHost`'s own limits are in a test whose subject is not time: a call 2 s, `start` 5 s, the margin and the gauge's clock 500 ms. */
-    const val TIME_SCALE = 100L
+    /**
+     * How many times longer a `ModuleHost`'s own limits are in a test whose subject is not time: a call 10 s, `start`
+     * 25 s, the margin and the gauge's clock 2.5 s (a saturated machine once held a call of 75 ms of work past 2 s).
+     */
+    const val TIME_SCALE = 500L
 
     /** A budget for code whose subject is not time, run by the meter, the gauge or the module threads directly. */
     const val PATIENT_NANOS = 10_000_000_000L

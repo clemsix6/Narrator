@@ -27,7 +27,7 @@ import kotlin.test.assertTrue
  * its faults counted (2 limits, 3 exceptions in ten minutes; at once in its constructor or `start`), its slowness, its
  * allocation, its retained memory; nothing but the text of an exception kept; unloaded and collected.
  *
- * The modules run with [BusyMachine.TIME_SCALE] (a call 2 s, the margin 500 ms): a busy machine never stops them before
+ * The modules run with [BusyMachine.TIME_SCALE] (a call 10 s, the margin 2.5 s): a busy machine never stops them before
  * the limit a test is about. A test of the meter's time gives its calls the game's budget ([ForgeLimits.CALL_NANOS]).
  */
 class ModuleHostTest {
@@ -145,7 +145,7 @@ class ModuleHostTest {
         val fake = FakeContext()
         val host = Hosts.host("Looper", Hosts.source("Looper", body = "m.timers().every(1, () -> { while (true) { } });"), threads, clock, faults, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
-        // The game's budget: the meter stops each loop at 20 ms, and the margin (500 ms here) lets it unwind unabandoned.
+        // The game's budget: the meter stops each loop at 20 ms, and the margin (2.5 s here) lets it unwind unabandoned.
         val loop = { host.call("timer", ForgeLimits.CALL_NANOS) { fake.timers[0].run() } }
         val first = loop()?.fault
         assertEquals(Fault.Kind.LIMIT, first?.kind)
@@ -219,7 +219,7 @@ class ModuleHostTest {
     fun `over 50 ms of its code a second, five seconds in a row, disables it`() {
         val fake = FakeContext()
         val busy = "m.timers().every(1, () -> { long end = System.nanoTime() + 18_000_000L; while (System.nanoTime() < end) { } });"
-        // Calls of 2 s: 18 ms of the module's code each is never stopped, however long a busy machine makes them.
+        // Calls of 10 s: 18 ms of the module's code each is never stopped, however long a busy machine makes them.
         val host = Hosts.host("Busy", Hosts.source("Busy", body = busy), threads, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
         host.second()
@@ -306,7 +306,7 @@ class ModuleHostTest {
             List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
             shared = new ArrayList<>(); for (int i = 0; i < 10_000; i++) shared.add(l0);
         """.trimIndent()
-        // The gauge's clock at 500 ms: a cold walk (about 1 µs an object) on a busy machine ends within it. Walked once
+        // The gauge's clock at 2.5 s: a cold walk (about 1 µs an object) on a busy machine ends within it. Walked once
         // each, the 10,000 lists are 11,000 to 22,000 objects; walked as often as they are held, a hundred million.
         val host = Hosts.host("Graph", Hosts.source("Graph", members, body), threads, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))

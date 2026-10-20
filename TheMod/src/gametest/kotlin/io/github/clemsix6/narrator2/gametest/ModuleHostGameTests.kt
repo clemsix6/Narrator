@@ -174,6 +174,10 @@ class ModuleHostGameTests {
                 }
                 val kinds = measures.associate { it.attack to it.called.fault?.kind }
                 helper.assertTrue(kinds["endless loop"] == Fault.Kind.LIMIT && kinds["indexOf loop"] == Fault.Kind.LIMIT && kinds["allocation loop"] == Fault.Kind.LIMIT, "$kinds")
+                // One indexOf (75 ms) outlasts the budget: the server gave the call up (or, on a saturated machine, did
+                // not even hand it over in time), never waited for its meter to stop it.
+                val indexOf = measures.first { it.attack == "indexOf loop" }.called.fault!!
+                helper.assertTrue("and was abandoned" in indexOf.cause || "did not start the call" in indexOf.cause, "the indexOf loop was given up: $indexOf")
                 // The shared-structure hash is now bounded by the guard (M5-18), and the growing list too: each a clean
                 // ForgeLimit of the guard, an exception, given time enough that the clock never stops it first — no abandon,
                 // no lost thread.

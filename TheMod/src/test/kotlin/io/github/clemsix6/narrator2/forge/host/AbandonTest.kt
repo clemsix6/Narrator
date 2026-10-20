@@ -133,12 +133,13 @@ class AbandonTest {
             m.timers().every(1, () -> { long t = System.nanoTime(); text.indexOf(pattern); m.log("one indexOf: " + (System.nanoTime() - t) / 1000 + " us"); });
             m.timers().every(1, () -> { while (true) { if (text.indexOf(pattern) < 0) m.log("never"); } });
         """.trimIndent()
-        // One indexOf, measured in a call with time to spare.
+        // One indexOf, measured in a call with time to spare (FLAKY-4 saw a saturated machine hold such a call past
+        // 2 s). Should even this one run past its ten seconds, one indexOf is longer still.
         val probe = attacked("Search", Hosts.source("Search", body = body), threads)
         assertTrue(probe.started(fake.context))
-        assertNull(probe.call("timer") { fake.timers[0].run() }?.fault)
-        val one = fake.logs.single()
-        val oneMillis = one.removePrefix("one indexOf: ").removeSuffix(" us").toLong() / 1e3
+        probe.call("timer", BusyMachine.PATIENT_NANOS) { fake.timers[0].run() }
+        val one = fake.logs.singleOrNull() ?: "one indexOf: over ${BusyMachine.PATIENT_NANOS / 1_000} us"
+        val oneMillis = one.removePrefix("one indexOf: ").removePrefix("over ").removeSuffix(" us").toLong() / 1e3
 
         val looping = FakeContext()
         val host = attacked("Search", Hosts.source("Search", body = body), threads)
@@ -179,8 +180,12 @@ class AbandonTest {
         }
     }
 
-    /** Waits for the lost threads to end: they run at the lowest priority, which a busy machine may starve for seconds. */
-    private fun awaitNoLostThread(millis: Long = 60_000): Boolean {
+    /**
+     * Waits for the lost threads to end. They run at the lowest priority: on a machine whose cores are all taken, one
+     * runs only when the system lifts a starved thread, a few tens of milliseconds every four seconds or so (measured:
+     * the 0.75 s hash of the bench's test took over a minute under 32 spinning threads on 16 cores).
+     */
+    private fun awaitNoLostThread(millis: Long = 300_000): Boolean {
         val deadline = System.currentTimeMillis() + millis
         while (threads.lost.alive() > 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
         return threads.lost.alive() == 0

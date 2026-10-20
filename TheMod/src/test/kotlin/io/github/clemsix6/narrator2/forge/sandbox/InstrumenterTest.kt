@@ -442,14 +442,25 @@ class InstrumenterTest {
         val rewritten = LoadedModule("Cost", rewrittenClasses, metered = true)
         val plain = LoadedModule("Cost", classes, metered = false)
 
-        fun cpu(module: LoadedModule, method: String, n: Int): Long {
-            var nanos = 0L
-            val call = module.call(budgetNanos = 60_000_000_000L, allocation = Long.MAX_VALUE) {
+        val minCpuNanos = 300_000_000L
+
+        /**
+         * The CPU time of one call of [method] with [n], averaged over as many calls as make [minCpuNanos] of CPU: the
+         * thread's CPU clock moves by steps of 15.6 ms on Windows, and a busy machine slices a thread finer than that, so
+         * a measure of a few steps can read zero (FLAKY-4: « x Infinity »).
+         */
+        fun cpu(module: LoadedModule, method: String, n: Int): Double {
+            var nanos = 0.0
+            val call = module.call(budgetNanos = 600_000_000_000L, allocation = Long.MAX_VALUE) {
                 val target = module.type.getMethod(method, Int::class.javaPrimitiveType)
                 repeat(5) { target.invoke(null, n) }
                 val before = threads.currentThreadCpuTime
-                repeat(10) { target.invoke(null, n) }
-                nanos = threads.currentThreadCpuTime - before
+                var calls = 0
+                while (threads.currentThreadCpuTime - before < minCpuNanos) {
+                    target.invoke(null, n)
+                    calls++
+                }
+                nanos = (threads.currentThreadCpuTime - before).toDouble() / calls
             }
             assertNull(call.error, "$call")
             return nanos
@@ -460,14 +471,14 @@ class InstrumenterTest {
         val meteredLoop = cpu(rewritten, "work", loops)
         val plainTypical = cpu(plain, "typical", 3_000)
         val meteredTypical = cpu(rewritten, "typical", 3_000)
-        val perCall = (meteredLoop - plainLoop) / (10.0 * loops)
-        val typicalRatio = meteredTypical.toDouble() / plainTypical
+        val perCall = (meteredLoop - plainLoop) / loops
+        val typicalRatio = meteredTypical / plainTypical
         println(
             "[overhead] rewriting the witness (9 classes, warm): ${"%.2f".format(witnessMillis)} ms, " +
                 "${ForgeSamples.classes.values.sumOf { it.size }} -> ${witness.values.sumOf { it.size }} bytes; " +
-                "loop with a call per turn: ${"%.1f".format(perCall)} ns per turn (x${"%.1f".format(meteredLoop.toDouble() / plainLoop)}); " +
+                "loop with a call per turn: ${"%.1f".format(perCall)} ns per turn (x${"%.1f".format(meteredLoop / plainLoop)}); " +
                 "typical code (lists, maps, streams, texts): x${"%.2f".format(typicalRatio)}, " +
-                "${"%.1f".format(meteredTypical / 30_000 / 1e3)} µs a round instead of ${"%.1f".format(plainTypical / 30_000 / 1e3)} (CPU time)",
+                "${"%.1f".format(meteredTypical / 3_000 / 1e3)} µs a round instead of ${"%.1f".format(plainTypical / 3_000 / 1e3)} (CPU time)",
         )
         assertTrue(perCall < 100, "a few nanoseconds per call: $perCall")
         assertTrue(typicalRatio < 5, "typical code is barely slower: x$typicalRatio")
