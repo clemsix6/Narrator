@@ -123,6 +123,8 @@ class DirectorForgeScenariosTest {
             assertContains(h.lastWake(), "\n[-3s] MODULE C-1 statues ended by itself: « Mimosa a gagné, Bartok a bougé »\n</events>")
             assertEquals(TurnRecord.Trigger.MECHANIC, h.endedTurns()[3].trigger)
             assertEquals("mechanic MODULE C-1; for the modules' news (1 of 6 this hour)", h.decisions(DecisionRecord.Kind.WAKE, "woke").last().reason)
+            // The real director.md, its section on the Forge included (M5-20), is the system prompt of every request.
+            h.fake.requests.forEach { assertContains(it.json.path("system").toString(), "### La Forge") }
             h.assertInvariants()
         }
 
