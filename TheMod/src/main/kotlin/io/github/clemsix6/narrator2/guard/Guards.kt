@@ -227,9 +227,11 @@ data class DeathAttribution(val narrator: Boolean, val keptInventory: Boolean)
  * One of the Narrator's effects on a player.
  *
  * @property kind `effect`, `attribute`, `confiscation` or `mob`; from M4 also `trap`, and the escrows that
- *   are not punishments: `stake`, `offering`, `owed` (never [harmful]).
- * @property what e.g. `slowness II`, `scale x0.5`, `3x minecraft:diamond`, `4 minecraft:zombie`.
- * @property until when it ends, epoch milliseconds.
+ *   are not punishments: `stake`, `owed` (never [harmful]; [Escrow.active]).
+ * @property what e.g. `slowness II`, `scale x0.5`, `3x minecraft:diamond`, `4 minecraft:zombie`; a stake or what is
+ *   owed under its purpose, `2x minecraft:emerald staked on C-50: a bet that Mimosa wins` (M4-LEFTOVERS).
+ * @property until when it ends, epoch milliseconds; null when nothing ends at a given time: a stake is settled with
+ *   its challenge, and what is owed comes as soon as there is room for it.
  * @property harmful part of a punishment (a hostile action).
  */
-data class ActiveEffect(val kind: String, val what: String, val until: Long, val harmful: Boolean)
+data class ActiveEffect(val kind: String, val what: String, val until: Long?, val harmful: Boolean)

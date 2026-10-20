@@ -173,7 +173,7 @@ object GuardCommands {
             if (guards.isProtected(player.uuid)) add("protected")
             state.graceUntil?.takeIf { it > now }?.let { add("under grace until ${time(it, runtime.clock.zone)}") }
             val active = guards.activeOn(player.uuid)
-            if (active.isEmpty()) add("nothing of the Narrator's") else add(active.joinToString { "${it.what} (${left(it.until, now)})" })
+            if (active.isEmpty()) add("nothing of the Narrator's") else add(active.joinToString { it.what + it.until?.let { until -> " (${left(until, now)})" }.orEmpty() })
             val cap = guards.caps().narratorKillsPerHour
             add("${DeathGuard.quotaLeft(state.narratorKills, DeathGuard.playTime(player), cap)} of $cap deaths left")
         }
@@ -210,9 +210,11 @@ object GuardCommands {
             val names = { uuid: UUID -> runtime.server.playerList.getPlayer(uuid)?.plainTextName ?: uuid.toString() }
             state.confiscations.forEach { add(detailLine(ledgerLine(it, now, zone, names))) }
             val active = guards.activeOn(player.uuid)
-            active.filter { it.kind == "mob" }.forEach { add(detailLine("Creatures: ${it.what}, until ${time(it.until, zone)}${tags(it.harmful, null)}")) }
-            // A trap's deadline is wall clock (BlockRestorer), like the runtime's clock in game.
-            active.filter { it.kind == "trap" }.forEach { add(detailLine("Trap: ${it.what}, until ${time(it.until, zone)} (${left(it.until, now)})")) }
+            // Creatures and traps always have a deadline (a stake and what is owed have none); a trap's is wall clock
+            // (BlockRestorer), like the runtime's clock in game.
+            val timed = active.mapNotNull { effect -> effect.until?.let { effect to it } }
+            timed.filter { it.first.kind == "mob" }.forEach { (mob, until) -> add(detailLine("Creatures: ${mob.what}, until ${time(until, zone)}${tags(mob.harmful, null)}")) }
+            timed.filter { it.first.kind == "trap" }.forEach { (trap, until) -> add(detailLine("Trap: ${trap.what}, until ${time(until, zone)} (${left(until, now)})")) }
             val confiscated = state.confiscations.any { it.purpose == LedgerPurpose.CONFISCATION }
             if (state.effects.isEmpty() && state.modifiers.isEmpty() && !confiscated && active.none { it.kind == "mob" || it.kind == "trap" }) {
                 add(detailLine("Nothing of the Narrator's on them."))

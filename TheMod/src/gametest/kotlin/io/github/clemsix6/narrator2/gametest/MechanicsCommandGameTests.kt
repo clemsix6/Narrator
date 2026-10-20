@@ -60,7 +60,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   offerings, the trap), the `Mechanics:` line of `/narrator status`, and `challenge` and `rule` on the server's
  *   engine; then an engine off by the configuration (`createMechanics`, `mechanics.enabled` false), which the commands
  *   refuse with its reason. `traps restore` takes away every trap of the server: that test runs in a batch of its own
- *   ([COMMANDS_ENVIRONMENT]).
+ *   ([COMMANDS_ENVIRONMENT]), and checks the reply against the traps pending when it ran, since other batches may
+ *   leave some, even in chunks no restore reaches (M4-LEFTOVERS).
  * - The commands' own functions on a real engine of the test's own (the challenges' part and a rule book on states
  *   in memory, the server's canon): list, cancel, remove, and the canon closed by the engine.
  *
@@ -126,14 +127,29 @@ class MechanicsCommandGameTests {
             check(inspected.any { it.startsWith("Trap: 2 minecraft:glass, until ") }) { "the trap: $inspected" }
             check("Nothing of the Narrator's on them." !in inspected) { "a trap is the Narrator's: $inspected" }
 
-            val restored = perform("narrator traps restore")
-            check(restored.size == 1 && Regex("^\\[Narrator] \\d+ trap blocks? taken away now\\.$").matches(restored.single())) { "restore: $restored" }
+            // `traps restore` takes away every trap of the server, and other batches may have left some, a few of them in
+            // chunks that are not ready (loading, or let go and not yet unloaded), which no restore reaches (M5-05: "2
+            // trap blocks taken away now; 3 in a chunk still loading"). So the reply is checked against the very state
+            // the command saw, read in the same task of the server thread, and the operator's trap on its own.
+            suspend fun restore(): Restore = server.onServerThread {
+                val before = BlockRestorer.pending()
+                val own = BlockRestorer.byPlayer()[operator.uuid].orEmpty()
+                output.lines.clear()
+                val source = operator.player.createCommandSourceStack().withSource(output).withPermission(LevelBasedPermissionSet.GAMEMASTER)
+                server.commands.performPrefixedCommand(source, "narrator traps restore")
+                Restore(output.lines.toList(), restoreReply(before, BlockRestorer.pending()), own.map { it.what }, before)
+            }
+            val restored = restore()
+            check(restored.ownBefore == listOf("2 minecraft:glass")) { "the operator's trap, pending: ${restored.ownBefore}" }
+            check(restored.reply == restored.expected) { "restore: ${restored.reply}, for ${restored.before} blocks pending (expected ${restored.expected})" }
             server.onServerThread {
                 check(cells.all { helper.level.getBlockState(it).isAir }) { "the glass is taken away at once" }
                 check(BlockRestorer.byPlayer()[operator.uuid] == null) { "nothing left against the operator" }
             }
             check(perform("narrator traps").none { it.startsWith(operator.name) }) { "the trap is gone from the list" }
-            check(perform("narrator traps restore") == listOf("[Narrator] no trap block pending in the loaded chunks: nothing to take away.")) { "a second restore" }
+            // Alone on the server, nothing to take away: `[Narrator] no trap block pending in the loaded chunks: nothing to take away.`
+            val again = restore()
+            check(again.ownBefore.isEmpty() && again.reply == again.expected) { "a second restore: ${again.reply}, for ${again.before} blocks pending (expected ${again.expected})" }
 
             // The server's engine runs (M4-23).
             check(runtime.mechanics.available) { "the server's engine: ${runtime.mechanics.unavailableReason}" }
@@ -159,7 +175,7 @@ class MechanicsCommandGameTests {
             check(MechanicsCommands.ruleList(withoutEngine, 1).text() == listOf(refusal)) { "rule list without the engine" }
             check(MechanicsCommands.cancel(withoutEngine, "gametest", "C-1", null).text() == listOf(refusal)) { "cancel without the engine" }
 
-            // The operator's decision, in the Journal.
+            // The operator's decisions, in the Journal: one for each restore that had something pending, with its reply.
             runtime.journal.barrier()
             val decisions = runtime.journal.read(5_000) { connection ->
                 connection.prepareStatement("SELECT decision, reason FROM engine_decisions WHERE kind = 'operator' AND subject = ? ORDER BY id").use { statement ->
@@ -167,9 +183,8 @@ class MechanicsCommandGameTests {
                     statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
                 }
             }
-            check(decisions.size == 1 && decisions.single().first == MechanicsCommands.TRAPS_RESTORE && decisions.single().second.endsWith(" taken away now.")) {
-                "one operator decision, the restore: $decisions"
-            }
+            val expected = listOf(restored, again).filter { it.before > 0 }.map { MechanicsCommands.TRAPS_RESTORE to it.reply.single().removePrefix("[Narrator] ") }
+            check(decisions == expected) { "the operator's decisions, the restores': $decisions (expected $expected)" }
         } finally {
             server.onServerThread { operator.close() }
         }
@@ -270,6 +285,12 @@ class MechanicsCommandGameTests {
         }
     }
 
+    /**
+     * One `/narrator traps restore`: its [reply], the one [expected] for the [before] blocks pending when it ran and
+     * those still pending after it ([restoreReply]), and the operator's traps when it ran ([ownBefore]).
+     */
+    private data class Restore(val reply: List<String>, val expected: List<String>, val ownBefore: List<String>, val before: Int)
+
     /** A trace sink that keeps the decisions it passes on to the Journal. */
     private class KeptDecisions(private val inner: TraceSink) : TraceSink by inner {
         val kept = CopyOnWriteArrayList<DecisionRecord>()
@@ -287,5 +308,16 @@ class MechanicsCommandGameTests {
         val CALLER = Caller(Role.DIRECTOR, "director-gametest-commands", turnId = 4343, taskId = null)
 
         fun DirectorCommands.Reply.text(): List<String> = lines.map { it.string }
+
+        /**
+         * What `traps restore` answers when [before] blocks were pending and [left] still are after it (in a chunk not
+         * ready): the others went, none changed meanwhile (the test changes none).
+         */
+        fun restoreReply(before: Int, left: Int): List<String> {
+            if (before == 0) return listOf("[Narrator] no trap block pending in the loaded chunks: nothing to take away.")
+            val gone = before - left
+            val notReady = if (left > 0) "; $left in a chunk still loading, taken away at the next pass" else ""
+            return listOf("[Narrator] $gone trap ${if (gone == 1) "block" else "blocks"} taken away now$notReady.")
+        }
     }
 }
