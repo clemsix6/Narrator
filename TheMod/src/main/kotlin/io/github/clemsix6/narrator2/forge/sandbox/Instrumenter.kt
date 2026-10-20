@@ -249,11 +249,31 @@ object Instrumenter {
         add(instance(BUILDER, "replace", "(IILjava/lang/String;)$text"))
         add(instance("java/util/StringJoiner", "add", "(Ljava/lang/CharSequence;)Ljava/util/StringJoiner;"))
         add(instance("java/util/StringJoiner", "merge", "(Ljava/util/StringJoiner;)Ljava/util/StringJoiner;"))
+        // Deep hashing and equality: a single JDK call the meter cannot see, bounded before the JDK does it (M5-05, M5-18).
+        add(instance(OBJECT, "hashCode", "()I"))
+        add(instance(OBJECT, "equals", "(Ljava/lang/Object;)Z"))
+        add(static("java/util/Objects", "hashCode", "(Ljava/lang/Object;)I", "hashCode"))
+        add(static("java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z", "equals"))
+        add(static("java/util/Objects", "hash", "([Ljava/lang/Object;)I", "hash"))
+        add(static("java/util/Objects", "deepEquals", "(Ljava/lang/Object;Ljava/lang/Object;)Z", "objectsDeepEquals"))
+        add(instance(COLLECTION, "containsAll", "(Ljava/util/Collection;)Z"))
+        add(instance(COLLECTION, "removeAll", "(Ljava/util/Collection;)Z"))
+        add(instance(COLLECTION, "retainAll", "(Ljava/util/Collection;)Z"))
+        add(instance(COLLECTION, "contains", "(Ljava/lang/Object;)Z"))
+        add(instance(MAP, "containsKey", "(Ljava/lang/Object;)Z"))
+        add(instance(MAP, "get", "(Ljava/lang/Object;)Ljava/lang/Object;"))
+        add(static(ARRAYS, "hashCode", "([Ljava/lang/Object;)I", "arraysHashCode"))
+        add(static(ARRAYS, "deepHashCode", "([Ljava/lang/Object;)I", "deepHashCode"))
+        add(static(ARRAYS, "equals", "([Ljava/lang/Object;[Ljava/lang/Object;)Z", "arraysEquals"))
+        add(static(ARRAYS, "deepEquals", "([Ljava/lang/Object;[Ljava/lang/Object;)Z", "arraysDeepEquals"))
     }
 
     private val CALLS_BY_SIGNATURE: Map<String, List<CallRule>> = CALLS.groupBy { it.member.name + it.member.descriptor }
 
-    /** `toString()` of these is the text the module built through the guards, or a short one: left alone. */
+    /** On the short types below, these members are left alone (no deep structure to walk). */
+    private val SHORT_MEMBERS = setOf("toString", "hashCode", "equals")
+
+    /** `toString()`/`hashCode()`/`equals()` of these is the text/hash/equality the module built through the guards, or a short one: left alone. */
     private val SHORT_TEXTS = setOf(
         STRING, BUILDER, "java/lang/Integer", "java/lang/Long", "java/lang/Short", "java/lang/Byte", "java/lang/Double", "java/lang/Float",
         "java/lang/Boolean", "java/lang/Character",
@@ -277,7 +297,8 @@ object Instrumenter {
 
     private fun callRule(opcode: Int, owner: String, name: String, descriptor: String, own: Set<String>): CallRule? {
         if (owner in own || !owner.startsWith("java/")) return null
-        if (name == "toString" && owner in SHORT_TEXTS) return null
+        // A string, a builder and the boxes have short texts, hashes and equality: no deep walk to bound.
+        if (name in SHORT_MEMBERS && owner in SHORT_TEXTS) return null
         val form = if (opcode == Opcodes.INVOKESTATIC) Form.STATIC else Form.INSTANCE
         return CALLS_BY_SIGNATURE[name + descriptor]?.firstOrNull { it.form == form && subtype(owner, it.member.owner) }
     }
@@ -513,7 +534,7 @@ object Instrumenter {
             when {
                 key == "java/lang/invoke/StringConcatFactory.makeConcatWithConstants$CONCAT_BOOTSTRAP" ->
                     return super.visitInvokeDynamicInsn(name, descriptor, Handle(Opcodes.H_INVOKESTATIC, GUARDED, "concatenation", CONCAT_BOOTSTRAP, false), *arguments)
-                key == "java/lang/runtime/ObjectMethods.bootstrap$RECORD_BOOTSTRAP" && name == "toString" ->
+                key == "java/lang/runtime/ObjectMethods.bootstrap$RECORD_BOOTSTRAP" && name in RECORD_METHODS ->
                     return super.visitInvokeDynamicInsn(name, descriptor, Handle(Opcodes.H_INVOKESTATIC, GUARDED, "record", RECORD_BOOTSTRAP, false), *arguments)
                 bootstrap.owner == "java/lang/invoke/LambdaMetafactory" && arguments.size > 1 -> {
                     val target = arguments[1]
@@ -529,4 +550,7 @@ object Instrumenter {
     }
 
     private val BRIDGED = setOf(Opcodes.H_INVOKESTATIC, Opcodes.H_INVOKEVIRTUAL, Opcodes.H_INVOKEINTERFACE, Opcodes.H_NEWINVOKESPECIAL)
+
+    /** A record's generated methods, all through `Guarded.record`: `toString` bounds the text, `hashCode`/`equals` the deep structure of a component. */
+    private val RECORD_METHODS = setOf("toString", "hashCode", "equals")
 }

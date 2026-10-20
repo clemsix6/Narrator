@@ -5,9 +5,10 @@ import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import kotlin.system.exitProcess
 
 /**
- * Finding 1 of M5-04 at its worst, in a JVM of its own (`AbandonTest` starts it): L2 = 10,000 × L1, hashed in one call
- * of the JDK — ten minutes of a thread that cannot be stopped. Prints how long the caller waited, the fault, and what
- * the lost thread does to the JVM's safepoints (`System.gc()` before and while it runs); then exits, which ends it.
+ * Finding 1 of M5-04 at its worst, in a JVM of its own (`AbandonTest` starts it): L2 = 10,000 × L1 fed to
+ * `Stream.distinct()` — a factory the guard does not wrap (M5-18's residual), which hashes it in one call of the JDK,
+ * ten minutes of a thread that cannot be stopped. Prints how long the caller waited, the fault, and what the lost
+ * thread does to the JVM's safepoints (`System.gc()` before and while it runs); then exits, which ends it.
  */
 object SharedStructureAttack {
     @JvmStatic
