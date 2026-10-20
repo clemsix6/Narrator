@@ -430,6 +430,8 @@ class ActQueueTest {
         assertEquals("C-75", game.id())
         assertEquals(listOf("Mimosa", "Bartok"), game.players())
         assertTrue(game.running())
+        challenges.views[0] = challengeView().copy(status = ChallengeStatus.JUDGING)
+        assertTrue(game.running(), "past its end, it waits for a verdict the module may still give")
 
         val outcomes = Callback()
         setup.queue.invocation("timer") {

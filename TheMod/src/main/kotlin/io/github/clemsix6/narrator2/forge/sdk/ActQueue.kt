@@ -536,7 +536,8 @@ class ModuleGame(private val challenge: Ref, private val deployment: Ref, privat
 
     override fun players(): List<String> = java.util.List.copyOf(view()?.participants?.map { it.name }.orEmpty())
 
-    override fun running(): Boolean = view()?.status == ChallengeStatus.RUNNING
+    /** Past its end, a judged challenge still waits for its verdict ([ChallengeStatus.JUDGING]): the module may give it. */
+    override fun running(): Boolean = view()?.status.let { it == ChallengeStatus.RUNNING || it == ChallengeStatus.JUDGING }
 
     override fun win(winners: List<String>?, note: String?): Pending {
         // Copied here, in the module's own call: a module may implement List.
