@@ -341,3 +341,14 @@ l'ordre n'importe pas, ils peuvent tous partir en parallèle.
 
 Ordre conseillé : A, B, D, E partent tout de suite (petits, sûrs). C dépend de la décision D1 ; F de la décision D2. A, B,
 C, D, E, F ne partagent aucun fichier et peuvent tourner en parallèle. Aucun ne touche un contrat figé du SDK.
+
+## Décisions du superviseur (21/10/2026)
+
+- **D1 : aligner.** Une créature invoquée par le Narrateur ne tue jamais, celles d'un module comprises : son coup fatal
+  devient un sauvetage sur place. Lot M5-FIX-C.
+- **D2 : fermer en partie, puis mesurer.** Les constructeurs de copie et les fabriques immuables sont bornés au site
+  d'appel. `Stream.distinct` et les collecteurs restent sur le chemin de l'hôte en v1, et l'on mesure leur coût sur le
+  ramasse-miettes avec les fils à la priorité normale. Lot M5-FIX-F.
+- **D3 : oui.** `tasks` est offert dès qu'un rôle peut travailler, Forgeron compris. Lot M5-FIX-A.
+- **Regroupement.** A, B, C, D et E forment un seul lot, **M5-FIX-1**, sur des fichiers disjoints. F devient **M5-FIX-2**.
+  Les deux lots tournent en parallèle.
