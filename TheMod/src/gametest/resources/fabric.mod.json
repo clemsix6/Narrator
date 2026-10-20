@@ -51,7 +51,8 @@
       "io.github.clemsix6.narrator2.gametest.ForgeCompilerGameTests",
       "io.github.clemsix6.narrator2.gametest.ModuleActsGameTests",
       "io.github.clemsix6.narrator2.gametest.ModuleHostGameTests",
-      "io.github.clemsix6.narrator2.gametest.ForgeCommandGameTests"
+      "io.github.clemsix6.narrator2.gametest.ForgeCommandGameTests",
+      "io.github.clemsix6.narrator2.gametest.EvilModulesGameTests"
     ]
   },
   "depends": {
