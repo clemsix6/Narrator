@@ -15,6 +15,8 @@ import java.time.Clock
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * A fault of a module (M5 §3.7): its [kind], the [call] it happened in (`constructor`, `start`, `timer`, `gauge`…), its
@@ -461,14 +463,24 @@ class ModuleHost(
             val started = System.nanoTime()
             val mod = ModuleHost::class.java.classLoader
             val failed = PRELOADED.filter { name -> runCatching { Class.forName(name, true, mod) }.isFailure }
+            // An act's JSON and its text, built once as the first act would build them (M5-16, FLAKY-4: the first act of
+            // the first module of a JVM paid 6 to 8 ms of loading in its call).
+            check(buildJsonObject { put("text", "x"); put("seconds", 0.5) }.toString().isNotEmpty())
             SdkBridge.interfaces().forEach { type -> java.lang.reflect.Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } }
             Log.forge.debug { "the modules' runtime and SDK loaded in ${(System.nanoTime() - started) / 1_000_000} ms" + if (failed.isEmpty()) "" else " (not here: $failed)" }
         }
 
-        /** Classes (binary names) that the module's first calls would load: the runtime, the SDK's values, its game side. */
+        /**
+         * Classes (binary names) that the module's first calls would load: the runtime, the SDK's values, its game side,
+         * the path of an act (FLAKY-4, read in a class-loading log of the bench's first module).
+         */
         private val PRELOADED = listOf(
             "io.github.clemsix6.narrator2.forge.rt.Meter", "io.github.clemsix6.narrator2.forge.rt.Guarded",
             "io.github.clemsix6.narrator2.forge.rt.Texts", "io.github.clemsix6.narrator2.forge.rt.Views",
+            "io.github.clemsix6.narrator2.forge.rt.Meter\$Nested", "io.github.clemsix6.narrator2.forge.rt.Guarded\$Handles",
+            "io.github.clemsix6.narrator2.forge.rt.Texts\$Out", "io.github.clemsix6.narrator2.core.ModelText",
+            "io.github.clemsix6.narrator2.forge.sdk.Act", "io.github.clemsix6.narrator2.forge.sdk.Act\$Kind",
+            "io.github.clemsix6.narrator2.forge.sdk.ActQueue\$Asked", "io.github.clemsix6.narrator2.forge.sdk.Scheduler\$Due",
             "io.github.clemsix6.narrator2.forge.rt.ForgeLimit", "io.github.clemsix6.narrator2.forge.api.Place",
             "io.github.clemsix6.narrator2.forge.api.Cell", "io.github.clemsix6.narrator2.forge.api.Outcome",
             "io.github.clemsix6.narrator2.forge.api.Text", "io.github.clemsix6.narrator2.forge.api.ForgeRefusal",
