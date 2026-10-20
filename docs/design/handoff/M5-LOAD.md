@@ -20,6 +20,7 @@ cette passation font foi** (`M5.md` a un encart « Passation M5-LOAD » au §3.7
 | `forge/rt/Meter.java` (**hors liste**, voir « Décisions », 1) | `worked()`, `cpu()`, `cpuAtArm()`, `UNARMED`, `RUN_GAP_NANOS`, `MIN_CPU_EVIDENCE_NANOS`, `cpuEvidence(budget)` ajoutés ; le record `Nested` a plus de composants | oui (le record n'est construit que par le compteur) |
 | `ModuleEngine` | `internal fun settle()` (pour les tests) ; `neutralNote(ending)` et `ENDED_ITSELF_NOTE` dans son compagnon | oui |
 | `ForgeLimits.GAUGE_MAX_NANOS` | n'est plus lu (fichier hors de ma liste) : à retirer par son propriétaire | — |
+| Priorités (comportement, sans signature) | le fil du compilateur (`narrator2-forge-compiler`) et les fils perdus (`ModuleThreads.lose`) passent de la priorité **minimale** à la priorité **normale** (voir « Les causes », dernier point) | oui |
 
 ## Les causes
 
@@ -37,6 +38,19 @@ Mesuré ici (Windows 11, JDK 25, 16 fils logiques) :
   par la machine dépasse ces bornes sans avoir calculé.
 - Le fil des modules tournait à la priorité normale, sous les fils de calcul ordinaires, alors que le thread serveur de
   Minecraft est à la priorité 8 dès qu'il y a plus de quatre cœurs (vérifié à javap : `MinecraftServer.spin`).
+- **Un fil à la priorité minimale fige toute la JVM sous charge.** Chaque pause de la JVM (une collecte du G1, `G1Remark`,
+  `G1Cleanup`…) attend d'abord que **chaque** fil qui exécute du Java atteigne un point d'arrêt (*safepoint*) ; une
+  machine saturée affame un fil à la priorité minimale (Windows ne le relève qu'au bout de secondes). Mesuré sous charge
+  (`-Xlog:safepoint`, `-XX:+SafepointTimeout`) dans le test « nothing heavy runs on the caller's thread » de
+  `ForgeServiceTest` : « Reaching safepoint » de **2,2 à 2,6 s** à chaque collecte pendant les compilations, le fil
+  fautif nommé par la JVM : `"narrator2-forge-compiler" prio=1 os_prio=-2` (et une fois un
+  `ForkJoinPool.commonPool-worker` à `prio=1` : un fil hérite de la priorité du fil qui le crée, et le premier
+  `CompletableFuture.delayedExecutor` du compilateur crée l'ordonnanceur du JDK et des fils du pool commun). L'appelant,
+  pourtant à la priorité 8, était figé 2,57 s ; en jeu, ce serait le thread serveur. Dans le serveur de GameTest sous
+  charge, la Forge mettait **67 à 75 s** à « construire » ses sept modules intégrés (0 ou 1 construit) et les deux
+  GameTests d'`ArsenalCreaturesGameTests` expiraient (tick 10 000). Un fil perdu à la priorité minimale qui calcule
+  ferait de même à chaque collecte, jusqu'à la fin de son appel du JDK (FLAKY-4 n'avait mesuré que la durée de la pause
+  elle-même, 4 à 5 ms, pas l'attente du point d'arrêt).
 
 ## Les règles retenues
 
@@ -61,7 +75,7 @@ Mesuré ici (Windows 11, JDK 25, 16 fils logiques) :
      ne désactive pas — c'est le cas de la boucle arrêtée qui se dénoue après la marge de 5 ms, problème 2) ; un arrêt
      par le temps CPU (étape du JDK) est un **abandon** ; sinon **personne** (`starved`, journal « nobody's fault ») ;
    - son fil vit encore et a calculé `cpuEvidence(budget)` : **abandonné** (`time budget: one call ran past 25 ms and was
-     abandoned`), désactivé, compteur révoqué, fil perdu (`ModuleThreads.lose` : priorité minimale, plafond de deux) ;
+     abandoned`), désactivé, compteur révoqué, fil perdu (`ModuleThreads.lose` : priorité normale, plafond de deux) ;
    - sinon, rien encore.
 4. **Lenteur** : plus de 50 ms **de son travail** par seconde (le travail de chaque appel : `max(worked, min(cpu, mur))`,
    plus le temps que l'appelant a passé à servir ses requêtes du SDK), cinq secondes de suite. `msPerSecond` reste le
@@ -95,11 +109,13 @@ calculé** (`cpuEvidence`), garé par tranches de 1 ms (le fil des modules le r�
 **Priorité** : le fil des modules prend la priorité de son appelant à chaque remise (8 pour le thread serveur, 5 au
 banc et dans les tests). Un appel est le travail du thread serveur, remis à un autre fil : les fils que le serveur
 devance ne le retiennent plus. Un fil lâché garde sa priorité jusqu'à son verdict (pour finir vite s'il est sain) ; un
-fil perdu passe à la priorité minimale.
+fil perdu passe à la priorité **normale**. **Aucun fil de la Forge ne tourne plus à la priorité minimale** (cause
+ci-dessus) : à la priorité normale, un fil partage le processeur avec les fils ordinaires et atteint un point d'arrêt en
+quelques tranches de temps ; le thread serveur (8) passe toujours devant lui.
 
 **ECJ** : ses limites (10 s, coincé à 60 s) comptent le **temps CPU de son fil**, lu toutes les 100 ms
-(`EcjCompiler.WATCH_MS`) et à chaque contrôle d'ECJ, jamais l'horloge murale : à la priorité minimale sur une machine
-saturée, une compilation de 40 ms de travail a pris 13,8 s (M5-15). Le fil reste à la priorité minimale.
+(`EcjCompiler.WATCH_MS`) et à chaque contrôle d'ECJ, jamais l'horloge murale : sur une machine saturée, une compilation
+de 40 ms de travail a pris 13,8 s (M5-15, à la priorité minimale). Le fil passe à la priorité **normale**.
 
 ## Le moteur (`ModuleEngine`)
 
@@ -135,14 +151,99 @@ saturée, une compilation de 40 ms de travail a pris 13,8 s (M5-15). Le fil rest
    moins de travail sous charge), il boucle un nombre de tours étalonné une fois par JVM (`Hosts.rounds`, mesuré par le
    compteur sur des appels de 100 ms : l'horloge CPU y pèse peu).
 6. **`busy()` est une fonction** (elle règle l'appel lâché, ce qui peut compter une faute), pas une propriété.
+7. **Les priorités du compilateur et des fils perdus** (décisions de M5-02 et M5-05, que je change) : priorité normale
+   au lieu de minimale. `EcjCompiler.kt` ne m'était ouvert que pour sa limite ; la priorité de son fil en fait partie
+   (problème 7 : la compilation affamée) et surtout protège le tick (cause « un fil à la priorité minimale fige toute
+   la JVM »). Sur une machine calme, rien ne change (le fil tourne sur un cœur libre) ; sur une machine chargée, le
+   thread serveur (8) passe toujours devant. Le test « nothing heavy runs on the caller's thread » garde sa borne de
+   400 ms ; son appelant tourne comme le thread serveur (priorité 8, ses délais sur son propre fil) : c'est lui qui a
+   montré le gel.
+8. **`docs/ARCHITECTURE.md`** (point 3 de la Forge) dit encore « son fil, qui finit son calcul à la priorité minimale » :
+   fichier hors de ma liste, à corriger par le superviseur (« à la priorité normale »).
+9. **Un défaut de `ModuleThreads` corrigé** (vu sous charge) : le fil des modules prenait l'appel remis en deux temps
+   (`next` lu, puis remis à `null`) ; un appel remis entre les deux était effacé, jamais pris, et donc sauté (`LATE`).
+   Observé sous forte charge : le chat « vite » de `ModuleEngineTest` jamais lu par le module (sa première ligne, une
+   trace temporaire, jamais écrite), trois passages sur trois ; c'est la course que le code permettait quand un fil
+   des modules lent à démarrer se réveille juste quand l'appelant remet l'appel suivant. Désormais un `AtomicReference`
+   pris et vidé d'un seul geste (`getAndSet`). Et un fil des modules naît à la priorité de son appelant (celui qu'on
+   crée après un abandon démarre tout de suite, au lieu d'attendre derrière les fils ordinaires).
+10. **Tests ajustés à la charge, sans rien relâcher de ce qu'ils protègent** : `EcjCompilerTest` (« held back… never too
+   long ») chauffe ECJ d'abord puis bloque la compilation 2 s, au-delà de ses limites de 300 et 600 ms de travail (sous
+   charge, la première compilation d'une JVM coûte des centaines de millisecondes de travail : le JIT est en retard) ;
+   `ModuleEngineTest` (« held back… none is lost ») fait des secondes jusqu'à ce que l'appel sauté ait couru (20 au
+   plus), et admet qu'il soit lâché à son tour (voir M5-22, « un appel coupé »), mais exige toujours 0 faute et le
+   rejeu ; `ForgeServiceTest` (« nothing heavy… ») fait tourner son appelant comme le thread serveur ; `HeldBackTest`
+   vérifie qu'un appel sauté parce que le module attend l'est **sur-le-champ** (0 ns : jamais remis à un fil), ce qui le
+   distingue d'un appel `LATE`. L'attaque `DistinctShared` (`test/resources/forge/evil`) hache L1 **quatre fois** au
+   lieu d'une : un seul hachage (50 à 65 ms de CPU) tombait, aux pas de 15,6 ms de l'horloge CPU, à cheval sur la preuve
+   de 50 ms du démarrage ; quatre la dépassent nettement. Le résiduel documenté (M5-18) et la faute attendue
+   (`limit abandoned`) sont les mêmes ; sa borne dans `EvilModulesGameTests` est `55 + 16 ms + BusyMachine.SLACK_MILLIS`.
 
 ## Sondes (retirées ensuite)
 
-À remplir.
+Chaque sonde casse **une** règle dans une copie de travail à part (un worktree temporaire, supprimé), lance les tests
+qui doivent la voir, puis remet le code (script `probes.ps1` du bloc-notes de la session, rien dans le dépôt). Toutes
+sous charge, sauf S6 (rejouée au calme après le durcissement de `HeldBackTest`). **Toutes couvertes** : au moins un
+test échoue, pour la bonne raison.
+
+| Sonde | La règle cassée | Les tests qui échouent (et pourquoi) |
+|---|---|---|
+| S1 | le compteur ne crédite aucun travail | `MeterTest` (« 0 ns of its own work ») ; `HeldBackTest` (la boucle arrêtée devient un abandon) |
+| S2 | le compteur crédite tout écart (l'horloge murale d'avant) | 7 : `MeterTest` (un appel retenu « time budget », 75 ms de « travail ») ; `HeldBackTest` × 5 (fautes *limite* et *lenteur* sur des appels retenus) |
+| S3 | pas de règle CPU pour une étape longue du JDK | `MeterTest` (« disarm trips a call that overran inside one call of the JDK ») |
+| S4 | un appel lâché n'est jamais vu calculer | 4 : `AbandonTest` × 3 (plus d'abandon, plus de fil perdu), `HeldBackTest` (le banc patient n'abandonne plus) |
+| S5 | un appel lâché dont le compteur a sauté n'est pas une faute | `HeldBackTest` (« one limit fault » : aucune) |
+| S6 | les appels d'un module occupé ne sont plus sautés | `HeldBackTest` (« never two calls of a module at once ») |
+| S7 | le moteur ne rejoue pas les appels sautés | `ModuleEngineTest` (« vite » jamais lu) |
+| S8 | pas de note neutre quand la mémoire refuse | `ModuleEngineTest` (la ligne du canon reste ouverte) |
+| S9 | pas de patience au démarrage | 3 : `HeldBackTest` (le démarrage retenu ne démarre pas, etc.) |
+| S10 | la jauge sans plafond d'octets | `RetainedGaugeTest`, `ModuleHostTest` (« retains over 32 MiB ») |
+| S11 | lenteur à l'horloge murale | 5 : `HeldBackTest` × 2, `ModuleHostTest` × 3 (secondes étirées jugées lentes) |
+| S11b | plus de lenteur du tout | `ModuleHostTest` (« over 50 ms of its code a second… » : `SLOWNESS` attendue) |
+| S12 | le fil des modules garde sa priorité | `ModuleThreadsTest` (« runs at its caller's priority ») |
+| S13 | les limites d'ECJ à l'horloge murale | `EcjCompilerTest` (« held back… never too long » : `stuck`) |
+| S14 | deux compilations d'une même version à la fois | `ForgeServiceTest` (« compile it once » : 4 compilations) |
+| S15 | `onUnavailable` jamais appelé | `ForgeServiceTest` × 2 (compilateur bloqué, fils perdus) |
+| S16 | le banc juge l'horloge murale | `BenchTest` (« 40 ms held back, no work » : `slow`) |
+| S18 | l'appelant attend 3 s de plus (plus de filet mural) | 5 : `AbandonTest` (« holds the caller no longer », « never holds the caller past the budget »…) |
+| S19 | un fil abandonné n'est pas perdu | `AbandonTest` × 2 (plafond des fils perdus, L2) |
+| S20 | le compilateur à la priorité minimale | `EcjCompilerTest` (le fil à `prio 1`) |
+| S21 | un fil perdu à la priorité minimale | `ModuleThreadsTest` (« expected 5 but was 1 ») |
+
+Non couverts par une sonde : `LATE` (un appel jamais commencé, sauté sans faute : seule la charge le produit ; vu dans
+les journaux des passages) et la course de `ModuleThreads` corrigée (Décisions, 9 : non déterministe).
+Les attaques (`EvilModulesTest`, `HostBatteryTest`, `AbandonTest`, `EvilModulesGameTests`) font partie des passages
+sous charge et du build final : toutes vertes, inchangées sinon `DistinctShared` (Décisions, 10).
 
 ## Mesures avant et après
 
-À remplir.
+Charge : 32 fils de calcul en plus (un processus Java à part) sur 16 fils logiques, processeur à 100 % pendant toutes
+les mesures « sous charge » (méthode de FLAKY-4).
+
+**Un module sain qui agit à chaque tick** (sonde temporaire `LoadProbeTest`, retirée : le minuteur d'`orbiting_chickens`
+imité, un `dayTime` et huit sinus ; 3 000 appels espacés de 10 ms, sous charge) :
+
+| | Règles d'avant (horloge murale), jugées sur la même série | Règles d'après |
+|---|---|---|
+| fil des modules à la priorité 5 | 6 appels au-delà de 20 ms (6 fautes *limite*), 6 à 25 ms ou plus (le premier, à l'appel 218, aurait désactivé le module), 2 tranches de 20 appels au-delà de 50 ms ; appel le plus long : 56,6 ms murales | **0 faute** ; 3 appels lâchés réglés sans faute (`starved`), 4 sautés puis rejoués ; 0 seconde lente ; au plus 9,83 ms de travail |
+| à la priorité 8 (celle du thread serveur, que le fil des modules prend désormais) | — | aucun appel retenu : 0,4 ms murales au plus |
+
+**Les pauses de la JVM** (`-Xlog:safepoint`, attente du point d'arrêt, sous charge) :
+
+| | Avant (compilateur à la priorité minimale) | Après (priorité normale) |
+|---|---|---|
+| test « nothing heavy runs on the caller's thread » | appelant (priorité 8) figé 511, 529 et 2 572 ms : 3 échecs sur 5 passages | 0 échec en dix passages |
+| JVM des tests (hôte, moteur, service, arsenal) | 3 JVM, 153 points d'arrêt : 11 attentes de plus de 100 ms, **5 de plus de 400 ms, la plus longue 2 565 ms** ; fil en retard nommé : `narrator2-forge-compiler prio=1` (et un `commonPool-worker` à `prio=1`) | 10 JVM (les dix passages), 853 points d'arrêt : 79 de plus de 100 ms, **aucune de plus de 400 ms, la plus longue 391 ms** ; aucun fil de la Forge parmi les fils en retard |
+| serveur de GameTest (`ArsenalCreaturesGameTests`) | la Forge « prête » en 67 à 75 s avec 0 ou 1 des 7 modules intégrés construits ; les 2 GameTests expirent (tick 10 000), deux fois sur deux | la Forge prête en 4,3 à 5,1 s, 7 sur 7 ; `orbiting_chickens ended (fulfilled): 5 acts, 0 faults` à chaque fois ; 11 JVM de GameTest, 807 points d'arrêt, une attente de plus de 400 ms (685 ms, fils de la JVM et du jeu, aucun de la Forge) |
+
+**Les passages des tests sous charge** (hôte, moteur, service, arsenal, attaques : 13 classes, 107 tests) : avant
+la priorité normale du compilateur (passages a à f, au fil des corrections), un échec par passage ou presque, de 590 à
+740 s chacun (dont le test de l'appelant, figé par le compilateur) ; après, de 157 à 370 s (511 s une fois, quand les
+sondes tournaient en même temps) : les compilations ne sont plus affamées.
+
+Les mesures « avant » du cahier des charges (`ForgeServiceTest` 19 échecs sur 220 appels au banc, 8 cas de
+`ModuleEngineTest`, ECJ annulé à 13,8 s, 82 ms/s de lenteur murale) viennent de M5-15, M5-21 et FLAKY-4 : je ne les ai
+pas remesurées sur `main`.
 
 ## Ce que M5-21 et M5-22 doivent savoir
 
@@ -165,16 +266,28 @@ saturée, une compilation de 40 ms de travail a pris 13,8 s (M5-15). Le fil rest
   thread held back; it runs on alone` (un appel lâché), puis `… ended without computing past its budget … nobody's fault
   (N so far)` (réglé sans faute), et les `DEBUG` `… is skipped` (appels sautés puis rejoués). Une décision `mechanic fault`
   sur un module sain serait un défaut à signaler, avec sa cause.
-- Sur le serveur, le fil des modules tourne à la priorité 8 : sous 32 fils de calcul en plus, la sonde ci-dessous n'a vu
-  **aucun** appel retenu au-delà de 0,4 ms à cette priorité.
+- Sur le serveur, le fil des modules tourne à la priorité 8 : sous 32 fils de calcul en plus, la sonde de charge
+  (« Mesures ») n'a vu **aucun** appel retenu au-delà de 0,4 ms à cette priorité.
 - La **lenteur** est du travail, plus du temps mural : `ModuleView.msPerSecond` (temps mural) peut dépasser 50 sans faute
   sur un serveur chargé ; c'est voulu.
 - La **jauge** sans horloge : une marche peut durer plus de 5 ms sur un module qui retient beaucoup ; elle tourne sur le
   fil du module, le serveur ne l'attend jamais plus de 25 ms (au-delà, elle finit seule et son verdict vient ensuite).
-- **ECJ** : à la priorité minimale, sous forte charge, une compilation peut prendre des minutes de temps mural sans
-  jamais être « trop longue » (son travail est compté) ; `forge_test` a son propre délai de 45 s (l'outil). Si la recette
-  montre des `forge_test` qui expirent sous charge, monter le fil du compilateur à la priorité normale est la piste (une
-  décision de conception de M5-02, hors de ma tâche).
+- **ECJ** : à la priorité normale désormais ; sous forte charge, une compilation prend plus de temps mural sans jamais
+  être « trop longue » (son travail est compté) ; `forge_test` a son propre délai de 45 s (l'outil).
+- **Les pauses de la JVM** : sur un serveur chargé, `-Xlog:safepoint` montre l'attente du point d'arrêt (« Reaching
+  safepoint ») ; avec `-XX:+UnlockDiagnosticVMOptions -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=300`, la JVM nomme
+  le fil en retard. Un fil de la Forge n'y doit plus figurer à `prio=1`.
+- **Un appel coupé par une pause de la JVM** : même sans fil à la priorité minimale, une machine saturée fait attendre
+  les points d'arrêt (des fils ordinaires affamés) : dans la JVM des tests, une attente de plus de 100 ms toutes les
+  25 s environ, 391 ms au plus.
+  Un appel en vol quand une pause commence est lâché au réveil de l'appelant (ses 25 ms murales sont passées) et coupé
+  (ses requêtes du SDK refusées) : **aucune faute**, journalisé (`given up` puis `nobody's fault`). Possible, pas
+  observé : ni dans les GameTests sous charge, ni dans les passages (`ModuleEngineTest` l'admet pour l'appel rejoué ;
+  l'échec que j'y ai d'abord pris pour cela était la course de `ModuleThreads`, Décisions 9). Si la recette en voit
+  trop en jeu, une piste bornée : quand l'appelant constate qu'il a lui-même été arrêté
+  (un écart de plus de 1 ms dans son attente), lui laisser encore la marge (5 ms) de son propre temps, deux fois au plus
+  par appel — le serveur n'attendrait jamais plus de 35 ms de son temps à lui. Je ne l'ai pas fait : le filet mural
+  reste tel que la mission le demande.
 - Refaire une série de démarrages réels avec la sonde de M5-21 une fois cette branche fusionnée.
 
 ## Petits défauts réglés au passage
@@ -190,4 +303,25 @@ saturée, une compilation de 40 ms de travail a pris 13,8 s (M5-15). Le fil rest
 
 ## Vérifications
 
-À remplir.
+Charge : un processus Java à part, 32 fils de calcul sur 16 fils logiques, processeur à 100 % (méthode de FLAKY-4).
+
+- **Build complet** (`.\gradlew.bat build`, machine calme, sur le code final fusionné avec `main` à `7105e7d`) : vert ;
+  **1 944 tests unitaires** (224 classes), 0 échec ; **390 GameTests** (« All 390 required tests passed »).
+- **Dix passages sous charge sur le code final**, sans aucun échec : à chaque fois les 13 classes de l'hôte, du moteur,
+  du service, de l'arsenal et des attaques (`ModuleHostTest`, `HeldBackTest`, `AbandonTest`, `ModuleThreadsTest`,
+  `HostBatteryTest`, `RetainedGaugeTest`, `PipelineTest`, `SdkBridgeTest`, `MeterTest`, `ForgeServiceTest`,
+  `ArsenalScenariosTest`, `EvilModulesTest`, `ModuleEngineTest`), 107 tests, soit 1 070 exécutions, 0 échec.
+- **Le compilateur et le banc sous charge** (`EcjCompilerTest`, `BenchTest`, 48 tests) : trois passages sur le code
+  final, 0 échec.
+- **En jeu, sous charge** (serveur de GameTest) : `ArsenalCreaturesGameTests` (le module sain `orbiting_chickens`, qui
+  agit à chaque tick, et `parade`) et `ModuleEngineGameTests` (le module `spinner`, qui boucle), cinq fois chacun (trois
+  avant la dernière retouche de `ModuleThreads`, deux sur le code final), puis `ModuleHostGameTests` et
+  `EvilModulesGameTests` (deux fois chacun, dont une sur le code final) : tout vert, 38 GameTests exécutés.
+  `orbiting_chickens` finit à chaque fois `ended (fulfilled): 5 acts, 0 faults` (jamais désactivé) ; `spinner` est à
+  chaque fois `disabled: limit in timer: time budget at Spinner.java:7` (2 fautes) ; l'attaque `indexOf` est abandonnée
+  à 25 ms, `DistinctShared` à 55 ms ; la Forge prête en 2,6 à 5,5 s.
+- **Les échecs rencontrés en route** (tous expliqués et réglés, rien d'ignoré) : le test de l'appelant figé (le
+  compilateur à la priorité minimale, Causes) ; `EcjCompilerTest` « held back » (le travail d'une première compilation
+  sous charge, Décisions 10) ; `ModuleEngineTest` « none is lost » (la course de `ModuleThreads`, Décisions 9) ;
+  plus tôt, l'attaque `DistinctShared` à cheval sur sa preuve (Décisions 10).
+- Les sondes S1 à S21 (ci-dessus), retirées ; le fichier de sonde de charge `LoadProbeTest` retiré.
