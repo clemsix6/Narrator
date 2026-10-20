@@ -285,7 +285,8 @@ class ForgeServiceTest {
         try {
             val tooLong = assertFailsWith<ForgeRejected> { forge.test(BEACON_NAME, BEACON) }
             assertEquals("FAILED: the compilation of beacon took too long (over 10 s): write a simpler source", tooLong.toResult().text)
-            withTimeoutOrFail { !forge.available }
+            // The compiler is stuck (unavailable) a moment before it tells the Forge (the decision).
+            withTimeoutOrFail { !forge.available && decisions(services, ForgeService.STUCK).isNotEmpty() }
             assertTrue(forge.unavailableReason!!.startsWith("the compiler is stuck since "), forge.unavailableReason)
             assertTrue(forge.status().compiler.startsWith("stuck since "), forge.status().compiler)
             val refused = assertFailsWith<ForgeRejected> { forge.test(BEACON_NAME, BEACON) }
