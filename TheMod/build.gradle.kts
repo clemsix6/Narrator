@@ -229,6 +229,11 @@ tasks.withType<JavaCompile>().configureEach {
     options.release = 25
 }
 
+// The SDK's parameter names stay in its bytecode: the Forge's diagnostics show them to the forger (M5-02, M5-10).
+tasks.named<JavaCompile>("compileJava") {
+    options.compilerArgs.add("-parameters")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_25
