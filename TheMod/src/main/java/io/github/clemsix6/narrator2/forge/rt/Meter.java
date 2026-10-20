@@ -40,6 +40,13 @@ public final class Meter {
 
     private static final StackWalker STACK = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
 
+    /**
+     * The meter of the call running on this thread (set between {@link #arm} and {@link #disarm}), so that a long walk
+     * inside the runtime ({@link Guarded}'s deep hash and equality) can check the budget and stop at it — the meter the
+     * rewritten bytecode cannot reach from a static helper. A module thread runs one call at a time, nesting restores it.
+     */
+    private static final ThreadLocal<Meter> CURRENT = new ThreadLocal<>();
+
     private final ClassLoader owner;
     private boolean armed;
     private long deadline;
@@ -68,6 +75,7 @@ public final class Meter {
         depth = 0;
         tripped = null;
         armed = true;
+        CURRENT.set(this);
     }
 
     /**
@@ -83,6 +91,27 @@ public final class Meter {
         }
         allocatedAtDisarm = ALLOCATIONS == null ? -1 : allocatedNow();
         armed = false;
+        CURRENT.remove();
+    }
+
+    /**
+     * Checks the clock and the allocation now — not batched like {@link #tick} — and trips past either; for a long walk
+     * inside the runtime ({@link Guarded}) that calls {@link #sample} between its steps, so it stops at the budget even
+     * cold, before the host would abandon the call. Throws into the abandoned thread once {@link #revoke}d.
+     */
+    private void checkpoint() {
+        if (revoked) throw abandoned();
+        if (!armed) return;
+        if (tripped != null) throw new ForgeLimit(tripped);
+        // The time bound only: a deep walk allocates little (a work stack of references), and reading the thread's
+        // allocated bytes is a JMX call too dear to make between every slice of the walk.
+        if (System.nanoTime() > deadline) trip("time budget");
+    }
+
+    /** The current thread's call checks its budget (called by {@link Guarded} between the steps of a deep walk); a no-op outside a metered call. */
+    public static void sample() {
+        Meter current = CURRENT.get();
+        if (current != null) current.checkpoint();
     }
 
     /**
@@ -126,6 +155,7 @@ public final class Meter {
         ticks = running.ticks;
         depth = running.depth;
         tripped = running.tripped;
+        CURRENT.set(this);
     }
 
     /** The state of a call while another one runs nested in it. */

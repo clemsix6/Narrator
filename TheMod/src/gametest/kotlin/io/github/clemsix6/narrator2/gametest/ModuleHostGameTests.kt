@@ -43,8 +43,8 @@ import java.util.concurrent.atomic.AtomicReference
  * In-game tests of the loader and the host (task M5-05, M5 §16.3), in the Forge's batch: a module's code runs on a
  * module thread while the server thread waits for it and runs its SDK calls (so the world is read on the server thread,
  * where `getChunkNow` answers); and while modules attack it — an endless loop, the hash of a structure shared ten
- * thousand times, an `indexOf` of O(n·m) in a loop, a list that grows, an allocation loop — the server's tick never
- * waits past a call's budget and its margin.
+ * thousand times (now bounded by the guard, M5-18), an `indexOf` of O(n·m) in a loop, a list that grows, an allocation
+ * loop — the server's tick never waits past a call's budget and its margin.
  */
 class ModuleHostGameTests {
 
@@ -156,9 +156,11 @@ class ModuleHostGameTests {
                     helper.assertTrue(measure.called.fault != null, "${measure.attack}: stopped")
                 }
                 val kinds = measures.associate { it.attack to it.called.fault?.kind }
-                helper.assertTrue(kinds["endless loop"] == Fault.Kind.LIMIT && kinds["shared hash"] == Fault.Kind.LIMIT && kinds["indexOf loop"] == Fault.Kind.LIMIT, "$kinds")
-                helper.assertTrue(kinds["growing list"] == Fault.Kind.EXCEPTION && kinds["allocation loop"] == Fault.Kind.LIMIT, "$kinds")
-                helper.assertTrue(measures.first { it.attack == "shared hash" }.disabled != null, "an abandoned call disables its module")
+                helper.assertTrue(kinds["endless loop"] == Fault.Kind.LIMIT && kinds["indexOf loop"] == Fault.Kind.LIMIT && kinds["allocation loop"] == Fault.Kind.LIMIT, "$kinds")
+                // The shared-structure hash is now bounded by the guard (M5-18): a clean ForgeLimit in a few ms, no abandon, no lost thread.
+                helper.assertTrue(kinds["shared hash"] == Fault.Kind.EXCEPTION && kinds["growing list"] == Fault.Kind.EXCEPTION, "$kinds")
+                val sharedHeld = measures.first { it.attack == "shared hash" }.called.nanos / 1e6
+                helper.assertTrue(sharedHeld < BUDGET_MS, "the guard stopped the shared hash before the abandon: $sharedHeld ms")
             }
             .thenSucceed()
     }

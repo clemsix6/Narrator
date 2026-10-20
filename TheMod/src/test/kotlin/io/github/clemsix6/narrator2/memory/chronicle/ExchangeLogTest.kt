@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.event.PlayerJoined
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.journal.IdKind
+import io.github.clemsix6.narrator2.mechanics.module.ModuleEngine
 import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
@@ -177,6 +178,40 @@ class ExchangeLogTest {
             lines.map { it.text },
         )
         assertEquals(listOf(true, true, true, true, true, false), lines.map { it.worthABatch })
+    }
+
+    /**
+     * M5 §6.6, §15: a module's end is news of its own (`mechanic module_ended`, its ending after the subject), and so is
+     * a note it told the Director (`notified`); its start, faults and acts are not.
+     */
+    @Test
+    fun `a module's end and its notes are ENGINE lines, its start, faults and acts are not`() = runBlocking<Unit> {
+        f.chapterRow()
+        val mechanic = DecisionRecord.Kind.MECHANIC
+        decision("20:00:30", mechanic, ModuleEngine.STARTED, "C-70", "C-70 orbiting_chickens v0 law until 20:40: player Bartok")
+        decision("20:00:40", mechanic, "act", "Bartok", "C-70: 1 acts of its module (spawn)")
+        decision("20:01:00", mechanic, ModuleEngine.FAULT, "C-73", "C-73 simon_says: limit in timer: time budget at SimonSays.java:41")
+        decision("20:02:00", mechanic, ModuleEngine.NOTIFIED, "C-73", "C-73 simon_says says: « Bartok est éliminé, il reste Mimosa »")
+        decision(
+            "20:03:00", mechanic, ModuleEngine.ENDED, "C-70", "C-70 orbiting_chickens law expired, canon retired: 12 acts, 0 faults; « its time ran out »",
+            buildJsonObject { put(ModuleEngine.ENDING, "expired") },
+        )
+        decision(
+            "20:04:00", mechanic, ModuleEngine.ENDED, "C-73", "C-73 simon_says plan disabled, canon cancelled: 3 acts, 2 faults; « disabled: limit in timer »",
+            buildJsonObject { put(ModuleEngine.ENDING, "disabled") },
+        )
+        f.journal.sync()
+
+        val lines = log.lines(f.chapter, at("20:00"), at("20:10"))
+        assertEquals(
+            listOf(
+                "[20:02:00] ENGINE mechanic notified C-73: C-73 simon_says says: « Bartok est éliminé, il reste Mimosa »",
+                "[20:03:00] ENGINE mechanic module_ended C-70 (expired): C-70 orbiting_chickens law expired, canon retired: 12 acts, 0 faults; « its time ran out »",
+                "[20:04:00] ENGINE mechanic module_ended C-73 (disabled): C-73 simon_says plan disabled, canon cancelled: 3 acts, 2 faults; « disabled: limit in timer »",
+            ),
+            lines.map { it.text },
+        )
+        assertTrue(lines.all { it.worthABatch })
     }
 
     /**
