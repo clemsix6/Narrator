@@ -208,8 +208,8 @@ object Diagnostics {
     }
 
     /**
-     * A method missing or not applicable on [owner] (a qualified name): its overloads, the closest names, or the same
-     * name elsewhere in the SDK. On an SDK type with no name close to it (`ctx.acts().actionbar(…)`): what the SDK
+     * A method missing or not applicable on [owner] (a qualified name): its overloads, or the same name on another SDK
+     * type then the closest names, or the same name elsewhere in the SDK. On an SDK type with no name close to it (`ctx.acts().actionbar(…)`): what the SDK
      * calls it ([SYNONYMS]: `hud`) or the same name on another SDK type, then every method of the type ([listing]).
      */
     private fun methodHints(owner: String?, selector: String?): List<String> {
@@ -219,7 +219,12 @@ object Diagnostics {
             val same = SdkIndex.methods(type).filter { it.name == selector }
             if (same.isNotEmpty()) return same.take(4).map { methodHint(type, it) }
             val close = closest(selector, SdkIndex.methods(type).map { it.name }.distinct())
-            if (close.isNotEmpty()) return close.flatMap { name -> SdkIndex.methods(type).filter { it.name == name } }.take(3).map { methodHint(type, it) }
+            if (close.isNotEmpty()) {
+                // The very name on another type comes first: `ctx.acts().ground()` is `ctx.ground()`, not `sound`.
+                val elsewhere = SdkIndex.types.filter { it != type }.flatMap { other -> SdkIndex.methods(other).filter { it.name == selector }.map { other to it } }
+                val near = close.flatMap { name -> SdkIndex.methods(type).filter { it.name == name } }.map { type to it }
+                return (elsewhere + near).take(3).map { (owner, method) -> methodHint(owner, method) }
+            }
             if (SdkIndex.methods(type).isNotEmpty()) return meant(selector, type) + listing(type)
         } else if (JDK_PREFIXES.any { owner.startsWith(it) }) {
             return emptyList()

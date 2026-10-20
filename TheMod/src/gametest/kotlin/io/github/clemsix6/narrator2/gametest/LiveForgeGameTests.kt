@@ -909,9 +909,9 @@ private class ForgeEvals(private val run: ForgeRun) {
     }
 
     /**
-     * F3: the Director, woken by an operator: something new (a quiz) is commissioned, then deployed after the forger's
+     * F3: the Director, woken by an operator: something new (a jumping contest) is commissioned, then deployed after the forger's
      * `TASK`; something the arsenal does (chickens in orbit) is deployed without commissioning anything. Each deployment
-     * announced for a law, silent for a plan.
+     * staged as its kind wants ([announced]).
      */
     private suspend fun f3() {
         val details = mutableListOf<String>()
@@ -919,12 +919,14 @@ private class ForgeEvals(private val run: ForgeRun) {
         run.configure(DIRECTOR_CONFIG)
         val start = run.marks()
 
-        // 1 and 2: something new.
+        // 1 and 2: something new, that neither the arsenal nor a rule nor a challenge does: counting jumps needs a module
+        // (no fact says a player jumped, no goal counts them). A first pass asked for a quiz, which the Director rightly
+        // made of `answer` challenges, one per question: a request a rule can serve does not measure F3.
         val asked = run.marks()
-        run.step("F3 new: Opaline asks for a quiz", settleMs = 120_000) {
+        run.step("F3 new: Opaline asks for a jumping contest", settleMs = 120_000) {
             opaline.command(
-                "narrator whisper Invente un jeu de quiz pour Bartok et Mimosa : trois questions de culture Minecraft posées dans le chat, " +
-                    "le premier qui répond juste marque un point, le meilleur gagne. Lance-le quand il est prêt.",
+                "narrator whisper Invente un concours de sauts pour Bartok et Mimosa : pendant trois minutes, chaque saut compte un point, " +
+                    "la barre d'action affiche les scores, et le plus sauteur gagne. Lance-le quand il est prêt.",
             )
         }
         val first = run.directorCalls(asked.toolCall)
@@ -936,7 +938,7 @@ private class ForgeEvals(private val run: ForgeRun) {
             "calls of the turn: ${first.map { "${it.tool} ${it.status}" }}"
         var forgedName: String? = null
         if (commission != null) {
-            val task = run.commissioned("F3 quiz", asked.toolCall)
+            val task = run.commissioned("F3 jumping contest", asked.toolCall)
             forgedName = task?.module?.name
             run.settle(240_000)
             val after = run.directorCalls(asked.toolCall)
@@ -974,10 +976,16 @@ private class ForgeEvals(private val run: ForgeRun) {
         run.configure(FORGER_CONFIG)
     }
 
-    /** A law is staged (a line in its turn, after the module runs); a plan stays silent (no line in its turn after it). */
+    /**
+     * Staged as its kind wants (M5-20: « en loi, publique, que tu mets en scène une fois qu'elle tourne, ou en plan,
+     * secret »): nothing said of it before it runs, in its turn; and a law staged by a line after it, in its turn. A plan
+     * may be commented once its effect shows, as the plans of M4 were (M4-24: the welcome committee, then a line): a
+     * first pass also failed a plan for the line that greeted its chickens, which this rule no longer does.
+     */
     private fun announced(calls: List<DirectorCall>, deploy: DirectorCall): Boolean {
-        val spoke = calls.any { it.turn == deploy.turn && it.id > deploy.id && it.ok && it.tool in SPEECH_TOOLS }
-        return if (deploy.text("kind") == "plan") !spoke else spoke
+        fun speech(call: DirectorCall) = call.turn == deploy.turn && call.ok && call.tool in SPEECH_TOOLS
+        if (calls.any { speech(it) && it.id < deploy.id }) return false
+        return deploy.text("kind") == "plan" || calls.any { speech(it) && it.id > deploy.id }
     }
 
     /** What M5-20 asks to watch in F3: the briefs, the promises before the TASK, the machinery shown to the players, the MODULE lines. */

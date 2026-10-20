@@ -109,6 +109,7 @@ class DiagnosticsTest {
                     ctx.acts().actionbar("Bartok", "tic");
                     ctx.acts().shoutAt("Bartok", "tac");
                     PlayerInfo info = ctx.world().find("Bartok");
+                    ctx.acts().ground();
                 }
             }
         """.trimIndent()
@@ -132,6 +133,9 @@ class DiagnosticsTest {
         val find = hintsAt("find")
         assertEquals("World (ctx.world()): PlayerInfo player(String name)", find.first(), "$find")
         assertTrue(find.last().startsWith("methods of World (ctx.world()): biome(Place at), block(Cell cell), count(String player, String item), "), "$find")
+
+        // A close name on the type (sound) comes after the very name on another type (seen in F1 of M5-22).
+        assertEquals("ModuleContext (ctx): Ground ground()", hintsAt("ctx.acts().ground()").first(), "${hintsAt("ctx.acts().ground()")}")
 
         // The list of a type's methods is written once in a report, at its first entry.
         val report = Diagnostics.render(diagnostics, source)
