@@ -12,9 +12,10 @@ import kotlin.test.fail
 /**
  * The prompts only name what the model really has (M1_M2 §18.2, T22, M3 §16). The lesson of the v1: tools
  * that did nothing were presented to the model as working. Every identifier quoted between backticks in
- * `director.md`, `analyst.md`, `scout.md`, `chronicler.md` and `dreamer.md` must be a tool of that role's set,
- * with everything wired (the memory and the mechanics engine included, M4 §12.1); and since each prompt says it
- * lists "all the tools", each role's set must be named in full by its prompt.
+ * `director.md`, `analyst.md`, `scout.md`, `forger.md`, `chronicler.md` and `dreamer.md` must be a tool of that role's
+ * set, with everything wired (the memory and the mechanics engine included, M4 §12.1; the Forge for the forger alone
+ * until M5-20 writes the Director's part of it); and since each prompt says it lists "all the tools", each role's set
+ * must be named in full by its prompt.
  */
 class PromptToolMentionsTest {
     private val prompts = Prompts.bundled()
@@ -23,14 +24,17 @@ class PromptToolMentionsTest {
         journalAvailable = true, workerRoles = setOf(Role.ANALYST, Role.SCOUT), memoryAvailable = true, mechanicsAvailable = true,
     )
 
-    private fun toolsOf(role: Role): Set<String> = ToolCatalog.toolSetFor(role, everythingWired, services).names.toSet()
+    /** The forger works only with the Forge (M5 §8.1). */
+    private val forgeWired = everythingWired.copy(forgeAvailable = true)
+
+    private fun toolsOf(role: Role, env: ToolEnv = everythingWired): Set<String> = ToolCatalog.toolSetFor(role, env, services).names.toSet()
 
     /** The identifiers quoted between backticks in [prompt]. */
     private fun quoted(prompt: String): Set<String> = BACKTICKED.findAll(prompts.get(prompt)).map { it.groupValues[1] }.toSet()
 
-    private fun assertNamesExactly(prompt: String, role: Role) {
+    private fun assertNamesExactly(prompt: String, role: Role, env: ToolEnv = everythingWired) {
         val quoted = quoted(prompt)
-        val tools = toolsOf(role)
+        val tools = toolsOf(role, env)
         assertTrue(quoted.isNotEmpty(), "$prompt.md quotes no tool at all")
         assertEquals(emptySet(), quoted - tools, "$prompt.md quotes identifiers that are not tools of the ${role.id}: they do not exist or are not wired")
         assertEquals(emptySet(), tools - quoted, "tools of the ${role.id} that $prompt.md never names, although it says it lists them all")
@@ -53,6 +57,13 @@ class PromptToolMentionsTest {
             "the scout's tools (M4 §14)",
         )
         assertNamesExactly("scout", Role.SCOUT)
+    }
+
+    @Test
+    fun `the forger's prompt names its tools, all of them and nothing else`() {
+        assertEquals(setOf("forge_save", "forge_test", "game_ids", "module_list", "module_read"), toolsOf(Role.FORGER, forgeWired), "the forger's tools (M5 §8.1)")
+        assertEquals(emptySet(), toolsOf(Role.FORGER), "without the Forge, the forger has no tool")
+        assertNamesExactly("forger", Role.FORGER, forgeWired)
     }
 
     @Test
