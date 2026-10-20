@@ -21,16 +21,19 @@ import java.util.concurrent.atomic.AtomicReference
  *   module's to pay for.
  * - Each object counts once ([IdentityHashMap] of the objects seen): a cycle ends, and a structure shared ten thousand
  *   times (finding 1 of M5-04) is walked once.
- * - Its ceiling is hard: [maxObjects] objects or [maxNanos], the first reached; past it the measure is not
- *   [Measure.complete] and the host disables the module (« retains too much to measure »).
+ * - **Its ceilings are work, not time** (M5-LOAD): past [maxObjects] objects, or past [maxBytes] estimated, the walk
+ *   stops ([Measure.complete] false) and the verdict is known (« retains too much to measure », « retains about … »).
+ *   Every reference it follows was paid 8 bytes by what holds it, so a walk follows at most `maxBytes / 8` references
+ *   (4 Mi) and sees at most [maxObjects] objects, whatever the machine does: a slow or busy machine makes it slower,
+ *   never wrong. The host runs it on the module thread, where the server never waits for it past a call's budget.
  *
- * Never calls `hashCode`, `equals` nor `toString` of anything. The host runs it inside one of the module's calls, on
- * its module thread: the static fields of a class not initialized yet initialize it there, under the meter.
+ * Never calls `hashCode`, `equals` nor `toString` of anything, nor any code of the module: [statics], which may
+ * initialize a class of the module (its static initializer is the module's code), comes apart, inside a metered call.
  */
 class RetainedGauge(
     private val loader: ClassLoader,
     private val maxObjects: Int = ForgeLimits.GAUGE_MAX_OBJECTS,
-    private val maxNanos: Long = ForgeLimits.GAUGE_MAX_NANOS,
+    private val maxBytes: Long = ForgeLimits.RETAINED_BYTES,
 ) {
     /** [bytes] estimated over [objects] distinct objects in [nanos]; [complete] false when a ceiling stopped the walk. */
     data class Measure(val bytes: Long, val objects: Int, val nanos: Long, val complete: Boolean)
@@ -40,28 +43,27 @@ class RetainedGauge(
 
     private val shapes = HashMap<Class<*>, Shape>()
 
-    /** What [roots] retain, with the static fields of [statics] (the module's classes loaded so far). */
-    fun measure(roots: Collection<Any?>, statics: Collection<Class<*>> = emptyList()): Measure {
+    /**
+     * The values of the static reference fields of [classes] that are the module's ([loader]'s). Reading one initializes
+     * its class when it is not yet: the module's static initializer runs, so the host calls this inside a metered call.
+     */
+    fun statics(classes: Collection<Class<*>>): List<Any?> = classes.filter { it.classLoader === loader }.flatMap { type ->
+        type.declaredFields.filter { Modifier.isStatic(it.modifiers) && !it.type.isPrimitive && it.trySetAccessible() }.map { it.get(null) }
+    }
+
+    /** What [roots] retain (the module's instance, what it handed to the SDK, its [statics]): the walk, no code of the module. */
+    fun measure(roots: Collection<Any?>): Measure {
         val start = System.nanoTime()
         val seen = IdentityHashMap<Any, Unit>()
         val pending = ArrayDeque<Any>()
         var bytes = 0L
-        var walked = 0
         val visit = { value: Any? -> if (value != null && seen.put(value, Unit) == null) pending.addLast(value) }
 
         roots.forEach(visit)
-        for (type in statics) {
-            if (type.classLoader !== loader) continue
-            for (field in type.declaredFields) {
-                if (Modifier.isStatic(field.modifiers) && !field.type.isPrimitive && field.trySetAccessible()) visit(field.get(null))
-            }
-        }
         while (true) {
             val value = pending.removeFirstOrNull() ?: break
             bytes += size(value, visit)
-            walked++
-            val over = seen.size > maxObjects || (walked % CLOCK_EVERY == 0 && System.nanoTime() - start > maxNanos)
-            if (over) return Measure(bytes, seen.size, System.nanoTime() - start, complete = false)
+            if (seen.size > maxObjects || bytes > maxBytes) return Measure(bytes, seen.size, System.nanoTime() - start, complete = false)
         }
         return Measure(bytes, seen.size, System.nanoTime() - start, complete = true)
     }
@@ -134,8 +136,5 @@ class RetainedGauge(
     private companion object {
         const val OBJECT = 16L
         const val FIELD = 8L
-
-        /** The clock is read once every this many objects walked. */
-        const val CLOCK_EVERY = 256
     }
 }

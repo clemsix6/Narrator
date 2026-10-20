@@ -14,7 +14,7 @@ A module is one Java 25 file compiled against this SDK and part of `java.base` o
 
 ## 2. How a module runs
 
-- Each deployment makes a new instance: constructor, then `start(ctx)`, 50 ms each (20 at the bench); keep `ctx` in a field. Then it runs only when called back: each fact handler, timer run and `then` callback is a call of its own, 20 ms at most, one at a time, on the server thread, which waits for it. Never loop to wait: schedule.
+- Each deployment makes a new instance: constructor, then `start(ctx)`, 50 ms each (20 at the bench); keep `ctx` in a field. Then it runs only when called back: each fact handler, timer run and `then` callback is a call of its own, 20 ms at most, one at a time, the server waiting for it. Never loop to wait: schedule.
 - Nothing blocks: acts are queued, done after the call; their `Outcome` comes a tick later.
 - It ends when its time runs out (`ctx.endsAt()`, 5 minutes to 7 days), when it is stopped, when it calls `ctx.end(why)`, or when its faults disable it (§7). Then `stop(ctx, why)` runs once, never after a fault: reads work, acts are dropped. Its creatures are taken back after it.
 - State lives in fields. After a server restart: a new instance, `start` with `ctx.restarted()` true: `ctx.storage()` back, creatures back as their chunks load, no timers nor subscriptions; the restart's facts were missed.
@@ -109,7 +109,7 @@ record Outcome(String status, String text, List<String> creatures) {  // creatur
   boolean ok();
 }
 record Spawn(int count, int distance, String name, boolean target, int lifetimeMinutes, int height, boolean baby) {
-  static Spawn of(int count);  // 1 to 12; 8 blocks away, no name, no target, 5 minutes, on the ground, adults
+  static Spawn of(int count);  // 1 to 12, capped by chaos (§4); 8 blocks away, no name, no target, 5 minutes, on the ground, adults
   Spawn withDistance(int distance);  // 2 to 24
   Spawn withName(String name);  // 32 chars
   Spawn withTarget(boolean target);  // they go for the player: hostile
@@ -127,8 +127,8 @@ interface Creature {  // steered at once; once not its own, ForgeRefusal but for
   CreatureInfo info();  // null once gone
   boolean alive();
   void moveTo(Place to, double speed);  // walks there, 0.3 to 2.5
-  void velocity(double x, double y, double z);  // blocks a tick, each -2 to 2
-  void push(double x, double y, double z);  // adds to its motion
+  void velocity(double x, double y, double z);  // blocks a tick, each -2 to 2, beyond: ForgeRefusal
+  void push(double x, double y, double z);  // adds to its motion; the same bounds
   void lookAt(Place at);
   void gravity(boolean on);  // off: it floats and keeps its motion
   void glow(boolean on);
@@ -230,7 +230,7 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 
 - The tools, as `refuseNext` names them: `say` (`say`, `sayTo`), `show_title`, `hud`, `play_sound`, `particles`, `fireworks`, `lightning` (`lightning`, `smite`), `explosion`, `apply_effect`, `set_attribute`, `launch`, `teleport` (both), `spawn`, `punish`, `place_blocks` (`ground().place`), `creature_attack` (`Creature.attack`), `game` (`win`, `lose`).
 - Hostile, refused like a punishment: `smite`, `launch`, `punish`, `teleportRandom`, `attack`; an `explosion` that hurts; a harmful `effect`; an `attribute` against them; a `teleport` beyond 32 blocks; a `spawn` of hostile creatures near a player or with a target; a `place` within 2 blocks of a player.
-- `effect`: never `wither`, `poison`, `instant_damage`, `levitation` (`DENIED (forbidden_effect)`). `teleport`: never to another player nor another dimension. `spawn`: never a boss or a creature out of scale (warden, wither, ender dragon, elder guardian…), a `creeper` or a `breeze` (`DENIED (forbidden_creature)`).
+- `effect`: never `wither`, `poison`, `instant_damage`, `levitation` (`DENIED (forbidden_effect)`). `teleport`: never to another player nor another dimension. `spawn`: at chaos 0 to 5, 0, 2, 4, 6, 10, 12 a call and 0, 4, 8, 16, 24, 32 of the Narrator's creatures alive (`DENIED (mob_cap)`): summon two by two, handle refusals; never a boss or a creature out of scale (warden, wither, ender dragon…), a `creeper` or a `breeze` (`DENIED (forbidden_creature)`).
 - `punish`: `tiny`, `moon_gravity`, `slow_hands`, `heavy_feet`, `hunger`, `butterfingers`, `guests`, `slime_rain`, `skyward`, `tree_top`, `smite`, `cage`, `web`; severity 1 to 5, capped by the chaos level (4 at chaos 3); one per call and player; `reason`: one factual line, French, third person (« a bougé quand le Narrateur regardait »).
 - `particles`: `heart`, `flame`, `smoke`, `end_rod`, `happy_villager`… (`game_ids`). `ground().place`: `glass`, a stained glass (`red_stained_glass`), `cobweb`, `slime_block`, `honey_block`; they go by themselves.
 - No act gives or takes an item, runs a command, changes the weather, the time or a block (but in thin air), or makes players fight.
@@ -243,17 +243,17 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 
 - Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They drop nothing, break nothing, attack only players, take no fall damage, never push players. A summoned one vanishes at the end of its lifetime (summon again to last) or of the deployment; a claimed one goes back. `CreatureGone`: one died, vanished or unloaded.
 - `claim(uuid)`: a wild hostile creature (`zombie`, `skeleton`…) spawn could summon, within 32 blocks of an online player; null for an animal, a villager, a golem, a tamed, named or ridden one, a boss, another's.
-- Steering is immediate, no act; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s; steered into one, it does not push them.
+- Steering is immediate, no act; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s.
 
 ## 7. The sandbox
 
 Allowed: the basics of `java.lang` (of `System`, only `nanoTime`, `currentTimeMillis`, `arraycopy`), the collections and helpers of `java.util`, `java.util.function`, the streams and `Collectors`, `AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`, `ThreadLocalRandom`, and the dates and durations of `java.time`.
 
-The guard refuses the rest (`[1] refused WordRace.java:12: java.lang.Thread: …`), among it: files, the network, reflection; threads, `Thread.sleep`, executors, `synchronized`, `wait`, `ThreadLocal`, parallel streams; regular expressions (`matches`, `split`, `replaceAll`, `replaceFirst`: use `Text.words`, `Text.normalize`, `contains`, `indexOf`, `replace`); endless streams (`Stream.iterate`, `Stream.generate`, `Random.ints`…); `UUID.randomUUID` (use `ctx.random()`); `catch (Throwable)`, `catch (Error)` (catch a precise exception), try-with-resources; `new int[a][b]` (use `new int[a * b]`); a class of its own that is a `Collection`, a `Map` or a `CharSequence` (keep one in a field); the range views `subSet`, `headSet`, `tailSet`, `subMap`, `headMap`, `tailMap` (use `ceiling`, `floor`, `higher`, `lower`).
+The guard refuses the rest, among it: files, the network, reflection; threads, `Thread.sleep`, executors, `synchronized`, `wait`, `ThreadLocal`, parallel streams; regular expressions (`matches`, `split`, `replaceAll`, `replaceFirst`: use `Text.words`, `Text.normalize`, `contains`, `indexOf`, `replace`); endless streams (`Stream.iterate`, `Stream.generate`, `Random.ints`…); `UUID.randomUUID` (use `ctx.random()`); `catch (Throwable)`, `catch (Error)` (catch a precise exception), try-with-resources; `new int[a][b]` (use `new int[a * b]`); a class of its own that is a `Collection`, a `Map` or a `CharSequence` (keep one in a field); the range views `subSet`, `headSet`, `tailSet`, `subMap`, `headMap`, `tailMap` (use `ceiling`, `floor`, `higher`, `lower`).
 
-Its limits throw `ForgeLimit`, an `Error` that ends the call (`catch (Exception e)` does not stop it): 20 ms a call (50 for the constructor and `start`); 64 nested calls; 16 MiB allocated a call; 10,000 elements a collection; 65,536 characters a text, elements an array or asked capacity; hashing or comparing a structure larger than that. Memory it keeps: 32 MiB in the game, 4 MiB at the bench.
+Its limits throw `ForgeLimit`, an `Error` that ends the call (`catch (Exception e)` does not stop it): 20 ms of its own work a call (50 for the constructor and `start`); 64 nested calls; 16 MiB allocated a call; 10,000 elements a collection; 65,536 characters a text, elements an array or asked capacity; hashing or comparing a structure larger than that. Memory it keeps: 32 MiB in the game, 4 MiB at the bench.
 
-Its faults, over ten minutes, disable it: two calls stopped by time, depth or allocation; one call so long it is abandoned (25 ms); three exceptions out of its code (an uncaught `ForgeRefusal` counts); any fault in the constructor or `start`; over 50 ms of calls a second for five seconds; too much memory. Then: no `stop`, its creatures taken back, the Director told the fault and its line, the fault noted on its version (`module_list`). A refusal of the guard is a rule, not an obstacle: change the approach within the SDK, never get round it.
+Its faults, over ten minutes, disable it: two calls stopped by time, depth or allocation; one call still computing when given up (25 ms); three exceptions out of its code (an uncaught `ForgeRefusal` counts); any fault in the constructor or `start`; over 50 ms of its work a second for five seconds; too much memory. Then: no `stop`, its creatures taken back, the Director told the fault and its line, the fault noted on its version (`module_list`). A refusal of the guard is a rule, not an obstacle: change the approach within the SDK, never get round it.
 
 ## 8. The bench and forge_test
 

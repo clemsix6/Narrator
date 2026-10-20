@@ -104,7 +104,7 @@ object SandboxPolicy {
         "java/lang/Long.getLong" to "a module cannot read system properties",
         "java/lang/Boolean.getBoolean" to "a module cannot read system properties",
         "java/util/Locale.setDefault" to "a module cannot change the whole server",
-        "java/lang/String.matches" to "regular expressions can run for ever; use ctx.text()",
+        "java/lang/String.matches" to "regular expressions can run for ever; use Text.words(), Text.normalize(), contains() or equals()",
         "java/lang/String.replaceAll" to "regular expressions can run for ever; use replace()",
         "java/lang/String.replaceFirst" to "regular expressions can run for ever; use replace()",
         "java/lang/String.split" to "regular expressions can run for ever; use Text.words()",

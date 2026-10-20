@@ -19,10 +19,13 @@ public interface Creature {
     /** Walks to {@code to} (same dimension), as its pathfinding can, at {@code speed} 0.3 (slow) to 2.5 (running). */
     void moveTo(Place to, double speed);
 
-    /** Sets its motion, in blocks per tick, each component within -2 and 2; with {@link #gravity} off, it keeps it. */
+    /**
+     * Sets its motion, in blocks per tick, each component within -2 and 2: beyond, {@link ForgeRefusal}, never a capped
+     * value (cap a computed speed yourself). With {@link #gravity} off, it keeps it.
+     */
     void velocity(double x, double y, double z);
 
-    /** Adds to its motion, each component within -2 and 2. */
+    /** Adds to its motion, each component within -2 and 2: beyond, {@link ForgeRefusal}, never a capped value. */
     void push(double x, double y, double z);
 
     /** Turns its head toward {@code at}. */
