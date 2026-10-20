@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.forge.sandbox
 
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.Limits
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -13,16 +14,21 @@ import kotlin.test.assertTrue
  * and of the M5-01 handoff (findings 1 to 5), through ECJ, the rewriting and the meter, as the host calls a module:
  * each one is stopped, a single call of the JDK before it allocates. Open: `HostBatteryTest` runs the same battery
  * through the real loader and host (M5-05) by overriding [run].
+ *
+ * A case about the meter's time is `timed`: it has the game's budget. Any other has a busy machine's patience
+ * ([BusyMachine]): its limit, never the clock, is what stops it; were that limit gone, the time or the allocation
+ * would, with another fault.
  */
 open class RewriteBatteryTest {
     /** Starts the rewritten module [name] ([classes]) as the host calls a module: here, the test harness. */
-    internal open fun run(name: String, classes: Map<String, ByteArray>): MeteredCall = LoadedModule(name, classes, metered = true).start()
+    internal open fun run(name: String, classes: Map<String, ByteArray>, timed: Boolean): MeteredCall =
+        LoadedModule(name, classes, metered = true).start(budgetNanos = if (timed) ForgeLimits.CALL_NANOS else BusyMachine.PATIENT_NANOS)
 
     /** Compiles, checks that the guard lets it through (the rewriting is then the barrier), rewrites and starts a module. */
-    private fun start(name: String, members: String = "", body: String): MeteredCall {
+    private fun start(name: String, members: String = "", body: String, timed: Boolean = false): MeteredCall {
         val classes = Rewrites.compile(name, Rewrites.source(name, members, body))
         if ("nCopies" !in body) assertEquals(emptyList(), BytecodeGuard().check(classes), "$name passes the guard")
-        return run(name, Instrumenter.rewrite(name, classes))
+        return run(name, Instrumenter.rewrite(name, classes), timed)
     }
 
     /** Stopped by a limit of `Guarded` ([message]) before the JDK allocated. */
@@ -43,7 +49,7 @@ open class RewriteBatteryTest {
 
     @Test
     fun `an endless loop is stopped at 20 ms`() {
-        val call = start("Loop", body = "while (true) { }")
+        val call = start("Loop", body = "while (true) { }", timed = true)
         assertTripped(call, "time budget", "Loop")
         assertTrue(call.millis >= ForgeLimits.CALL_MILLIS && call.millis < 2_000, "stopped at about 20 ms: $call")
     }
@@ -77,13 +83,13 @@ open class RewriteBatteryTest {
     @Test
     fun `a finally cannot swallow the meter's error, and a loop in a finally does not outlive the meter`() {
         // The handler's entry ticks: a tripped meter throws again there, before the finally's return can swallow it.
-        assertTripped(start("Swallow", body = "try { while (true) { } } finally { return; }"), "time budget", "Swallow")
-        assertTripped(start("FinallyLoop", body = "try { while (true) { } } finally { while (true) { } }"), "time budget", "FinallyLoop")
+        assertTripped(start("Swallow", body = "try { while (true) { } } finally { return; }", timed = true), "time budget", "Swallow")
+        assertTripped(start("FinallyLoop", body = "try { while (true) { } } finally { while (true) { } }", timed = true), "time budget", "FinallyLoop")
     }
 
     @Test
     fun `catch Exception does not swallow the meter's error`() {
-        val call = start("CatchException", body = "try { while (true) { } } catch (Exception e) { m.log(\"caught\"); }")
+        val call = start("CatchException", body = "try { while (true) { } } catch (Exception e) { m.log(\"caught\"); }", timed = true)
         assertTripped(call, "time budget", "CatchException")
         assertEquals(emptyList(), call.logs)
     }
@@ -238,7 +244,7 @@ open class RewriteBatteryTest {
 
     @Test
     fun `a lambda or a method reference that a JDK loop calls is metered without a loop of its own`() {
-        val lambda = start("FlatMap", body = "long n = IntStream.range(0, 65_536).boxed().flatMap(i -> IntStream.range(0, 65_536).boxed()).count(); m.log(\"\" + n);")
+        val lambda = start("FlatMap", body = "long n = IntStream.range(0, 65_536).boxed().flatMap(i -> IntStream.range(0, 65_536).boxed()).count(); m.log(\"\" + n);", timed = true)
         assertTrue(lambda.fault?.startsWith("ForgeLimit") == true, "$lambda")
         assertTrue(lambda.tripped!!.startsWith("time budget") || lambda.tripped!!.startsWith("allocation budget"), "$lambda")
         val reference = start(
@@ -251,6 +257,7 @@ open class RewriteBatteryTest {
                 for (int i = 0; i < 1_000; i++) n += all.stream().flatMap(List::stream).count();
                 m.log("" + n);
             """.trimIndent(),
+            timed = true,
         )
         assertTrue(reference.fault?.startsWith("ForgeLimit") == true, "$reference")
         assertTrue(reference.tripped!!.startsWith("time budget") || reference.tripped!!.startsWith("allocation budget"), "$reference")
