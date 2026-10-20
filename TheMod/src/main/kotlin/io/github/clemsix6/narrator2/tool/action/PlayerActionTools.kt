@@ -123,9 +123,9 @@ data class ApplyEffectArgs(
 
 class ApplyEffectTool : NarratorTool<ApplyEffectArgs>(
     name = "apply_effect",
-    description = "Puts a status effect on players for a while, replacing the one of that kind they have. A harmful effect " +
-        "is a punishment: refused for a protected player, one who died a few minutes ago or one already punished by an " +
-        "earlier turn, and capped in length and level by the chaos level. A beneficial effect never replaces a longer and " +
+    description = "Puts a status effect on players for a while, replacing the one of that kind they have. A harmful effect, " +
+        "glowing included, is a punishment: refused for a protected player, one who died a few minutes ago or one already " +
+        "punished by an earlier turn, and capped in length and level by the chaos level. A beneficial effect never replaces a longer and " +
         "stronger one the player has; replacing one that is longer or stronger takes something away, so it is a " +
         "punishment too. Resistance goes up to level 3. Effects that act on the world (omens, infested, oozing, weaving, " +
         "wind_charged) are never given.",
