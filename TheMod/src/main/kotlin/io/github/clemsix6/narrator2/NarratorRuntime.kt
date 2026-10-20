@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.director.createDirector
 import io.github.clemsix6.narrator2.event.EventBus
 import io.github.clemsix6.narrator2.forge.Forge
 import io.github.clemsix6.narrator2.forge.createForge
+import io.github.clemsix6.narrator2.forge.forgeState
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.createGuards
 import io.github.clemsix6.narrator2.journal.DuckJournal
@@ -61,7 +62,10 @@ import java.time.Clock
  *
  * Components depend on [NarratorServices], never on this class. They are created in this order, each
  * factory receiving the runtime with the services created before it: Journal, bus, player states,
- * guards, Observer, reflexes, workers, memory, Forge, mechanics, Director.
+ * guards, Observer, reflexes, workers, memory, Forge, mechanics, Director. The Forge comes before the mechanics, whose
+ * modules' part builds and runs its modules; it starts off the server thread (its arsenal, the built-in modules
+ * compiled) while the rest starts. At `SERVER_STOPPING` ([ShutdownSequence]) the mechanics stop first (their modules
+ * stop with the server, then the modules' thread ends), then the Forge (its compiler thread ends), then the memory.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -147,7 +151,7 @@ class NarratorRuntime private constructor(
         reflexes = createReflexes(this)
         workers = createWorkers(this)
         memory = createMemory(this)
-        forge = createForge(this)
+        forge = createForge(this, ::tellOperatorsOnline)
         mechanics = createMechanics(this)
         director = createDirector(this)
         shutdown = ShutdownSequence(
@@ -158,7 +162,7 @@ class NarratorRuntime private constructor(
     }
 
     /**
-     * A yellow `[Narrator]` line in the chat of the operators online (the Journal's outages). Any thread;
+     * A yellow `[Narrator]` line in the chat of the operators online (the Journal's outages, a Forge that fell). Any thread;
      * on the server thread only, so dropped once the server has stopped.
      */
     private fun tellOperatorsOnline(text: String) {
@@ -172,6 +176,7 @@ class NarratorRuntime private constructor(
     private fun abandon() {
         phase = Phase.STOPPED
         scope.cancel()
+        if (::forge.isInitialized) forge.stop()
         if (::bus.isInitialized) bus.close()
         if (::journal.isInitialized) runCatching { journal.close() }.onFailure { log.error("the Journal failed to close", it) }
         settings.get().close()
@@ -267,7 +272,7 @@ class NarratorRuntime private constructor(
                     "Journal ${if (runtime.journal.available) "available" else "unavailable"} · " +
                     "memory ${if (runtime.memory.available) "on" else "off (${runtime.memory.unavailableReason})"} · " +
                     "mechanics ${if (runtime.mechanics.available) "on" else "off (${runtime.mechanics.unavailableReason})"} · " +
-                    "forge ${if (runtime.forge.available) "on" else "off (${runtime.forge.unavailableReason})"} · data in ${runtime.dataDir}",
+                    "forge ${forgeState(runtime.forge, runtime.mechanics.modules.halted)} · data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }

@@ -31,12 +31,13 @@ class PromptsTest {
     /**
      * What enters a prompt has a budget (M3 §2, decision 11). The system prompts are sent with every request
      * of their conversations: the Director's at each turn, the Chronicler's every ten minutes, the Dreamer's at each
-     * step of a dream, the forger's (its prompt, then the SDK's reference, M5 §8.2) at each step of a task.
+     * step of a dream, the forger's (its prompt, then the SDK's reference, M5 §8.2) at each step of a task. The Forge
+     * gave the Director 2,000 characters and the Chronicler 200 (M5 §9.4).
      */
     @Test
     fun `the bundled prompts stay within their budgets`() {
         val budgets = mapOf(
-            "director" to 34_000, "analyst" to 8_000, "scout" to 6_000, "forger" to 9_000, "sdk" to 30_000, "chapter_summary" to 4_000, "chronicler" to 11_500,
+            "director" to 36_000, "analyst" to 8_000, "scout" to 6_000, "forger" to 9_000, "sdk" to 30_000, "chapter_summary" to 4_000, "chronicler" to 11_700,
             "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000,
         )
         assertEquals(Prompts.NAMES.toSet(), budgets.keys, "every prompt has a budget")

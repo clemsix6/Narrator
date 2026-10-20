@@ -13,19 +13,16 @@ import kotlin.test.fail
  * The prompts only name what the model really has (M1_M2 §18.2, T22, M3 §16). The lesson of the v1: tools
  * that did nothing were presented to the model as working. Every identifier quoted between backticks in
  * `director.md`, `analyst.md`, `scout.md`, `forger.md`, `chronicler.md` and `dreamer.md` must be a tool of that role's
- * set, with everything wired (the memory and the mechanics engine included, M4 §12.1; the Forge for the forger alone
- * until M5-20 writes the Director's part of it); and since each prompt says it lists "all the tools", each role's set
- * must be named in full by its prompt.
+ * set, with everything wired (the memory, the mechanics engine and the Forge included, M4 §12.1, M5 §9.4); and since
+ * each prompt says it lists "all the tools", each role's set must be named in full by its prompt.
  */
 class PromptToolMentionsTest {
     private val prompts = Prompts.bundled()
     private val services = TestServices()
     private val everythingWired = ToolEnv(
         journalAvailable = true, workerRoles = setOf(Role.ANALYST, Role.SCOUT), memoryAvailable = true, mechanicsAvailable = true,
+        forgeAvailable = true,
     )
-
-    /** The forger works only with the Forge (M5 §8.1). */
-    private val forgeWired = everythingWired.copy(forgeAvailable = true)
 
     private fun toolsOf(role: Role, env: ToolEnv = everythingWired): Set<String> = ToolCatalog.toolSetFor(role, env, services).names.toSet()
 
@@ -42,7 +39,7 @@ class PromptToolMentionsTest {
 
     @Test
     fun `the Director's prompt names its tools, all of them and nothing else`() {
-        assertEquals(44, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine (M4 §12.1): ${toolsOf(Role.DIRECTOR)}")
+        assertEquals(47, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine and the Forge (M5 §9.1): ${toolsOf(Role.DIRECTOR)}")
         assertNamesExactly("director", Role.DIRECTOR)
     }
 
@@ -61,9 +58,9 @@ class PromptToolMentionsTest {
 
     @Test
     fun `the forger's prompt names its tools, all of them and nothing else`() {
-        assertEquals(setOf("forge_save", "forge_test", "game_ids", "module_list", "module_read"), toolsOf(Role.FORGER, forgeWired), "the forger's tools (M5 §8.1)")
-        assertEquals(emptySet(), toolsOf(Role.FORGER), "without the Forge, the forger has no tool")
-        assertNamesExactly("forger", Role.FORGER, forgeWired)
+        assertEquals(setOf("forge_save", "forge_test", "game_ids", "module_list", "module_read"), toolsOf(Role.FORGER), "the forger's tools (M5 §8.1)")
+        assertEquals(emptySet(), toolsOf(Role.FORGER, everythingWired.copy(forgeAvailable = false)), "without the Forge, the forger has no tool")
+        assertNamesExactly("forger", Role.FORGER)
     }
 
     @Test

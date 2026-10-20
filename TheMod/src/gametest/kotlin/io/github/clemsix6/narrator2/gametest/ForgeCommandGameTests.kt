@@ -10,10 +10,10 @@ import net.minecraft.server.permissions.LevelBasedPermissionSet
  * batch of the Forge ([ForgeContractsGameTests.FORGE_ENVIRONMENT]):
  *
  * - `/narrator forge [status]` and the `Forge:` line of `/narrator status` on the server's Forge and engine.
- * - Until the assembly (M5-21) the server runs without the Forge (`DisabledForge`, `DisabledModules`): every other
- *   command is refused with the reason, the switch is neither set nor lifted, and no `operator` decision is written.
- *   Once assembled, the lists answer from the real Forge and engine; pulling the switch on the shared server is
- *   M5-21's test (`forge off` then `on`).
+ * - Without a Forge (`DisabledForge`, `DisabledModules`) every other command is refused with the reason, the switch is
+ *   neither set nor lifted, and no `operator` decision is written. With the server's Forge (assembled by M5-21), the
+ *   lists answer from the real Forge and engine; pulling the switch on the shared server is `ForgeAssemblyGameTests`'s
+ *   (`forge off` then `on`, in a batch of its own).
  * - Only a game master reaches the commands: below level 2, `/narrator forge off|on` and `/narrator module stop` do
  *   not exist.
  *

@@ -142,7 +142,7 @@ interface RuleControl {
 
 /**
  * The modules deployed (M5 §6.4-6.7), and the Forge's switch (M5 §3.7). Task M5-11 writes it (`ModuleBook`, on the
- * engine's state); until the assembly (M5-21), and while the engine is off, it is a [DisabledModules].
+ * engine's state); while the engine is off, it is a [DisabledModules].
  */
 interface ModuleControl {
     /** The operator's switch (`/narrator forge off`), kept in the world's state; null while modules may run. Any thread. */
