@@ -142,13 +142,13 @@ val cleanGameTestRun = tasks.register<Delete>("cleanGameTestRun") {
 }
 tasks.matching { it.name == "runGameTest" }.configureEach { dependsOn(cleanGameTestRun) }
 
-// The live acceptances against the owner's real LLMGW server (T22 for M2, M4-24 for the mechanics): a GameTest
-// server that runs only the in-game live tests (`LiveDirectorGameTests`, `LiveMechanicsGameTests`, filtered by
-// id), with the real key and the SSH tunnel on localhost:8088. Never part of `build` or `check`; costs real
-// tokens. `-Pnarrator2.live.dry` runs the same scenarios without a key (the Director stays asleep), to check
-// them for free. `-Pnarrator2.live.filter=narrator2-gametest:live_mechanics_*` picks the tests (`live_*` by
-// default), `-Pnarrator2.live.parts=L5,L6` the parts of the mechanics' evals, `-Pnarrator2.live.budget=6` the
-// dollars a run may spend (see `LiveMechanicsGameTests`).
+// The live acceptances against the owner's real LLMGW server (T22 for M2, M4-24 for the mechanics, M5-22 for the
+// Forge): a GameTest server that runs only the in-game live tests (`LiveDirectorGameTests`, `LiveMechanicsGameTests`,
+// `LiveForgeGameTests`, filtered by id), with the real key and the SSH tunnel on localhost:8088. Never part of `build`
+// or `check`; costs real tokens. `-Pnarrator2.live.dry` runs the same scenarios without a key (the Director stays
+// asleep), to check them for free. `-Pnarrator2.live.filter=narrator2-gametest:live_mechanics_*` picks the tests
+// (`live_*` by default: all of them, some 25 dollars), `-Pnarrator2.live.parts=L5,L6` the parts of the evals,
+// `-Pnarrator2.live.budget=6` the dollars a run may spend (see `LiveMechanicsGameTests`, `LiveForgeGameTests`).
 loom.runs.register("liveGameTest") {
     inherit(loom.runs.getByName("gameTest"))
     // No IDE run configuration: it would write the run's environment, hence the key, into a file.
@@ -169,7 +169,7 @@ val cleanLiveGameTestRun = tasks.register<Delete>("cleanLiveGameTestRun") {
 }
 tasks.matching { it.name == "runLiveGameTest" }.configureEach { dependsOn(cleanLiveGameTestRun) }
 tasks.register("liveGameTest") {
-    description = "Runs the live acceptances (M2 evening, M4 mechanics) on a GameTest server against the real LLMGW server (SSH tunnel on localhost:8088)."
+    description = "Runs the live acceptances (M2 evening, M4 mechanics, M5 Forge) on a GameTest server against the real LLMGW server (SSH tunnel on localhost:8088)."
     group = "verification"
     dependsOn("runLiveGameTest")
 }

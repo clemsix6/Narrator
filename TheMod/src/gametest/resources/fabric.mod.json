@@ -58,7 +58,9 @@
       "io.github.clemsix6.narrator2.gametest.ArsenalCreaturesGameTests",
       "io.github.clemsix6.narrator2.gametest.ArsenalGamesGameTests",
       "io.github.clemsix6.narrator2.gametest.ArsenalWorldGameTests",
-      "io.github.clemsix6.narrator2.gametest.ForgeAssemblyGameTests"
+      "io.github.clemsix6.narrator2.gametest.ForgeAssemblyGameTests",
+      "io.github.clemsix6.narrator2.gametest.ForgeEndToEndTests",
+      "io.github.clemsix6.narrator2.gametest.LiveForgeGameTests"
     ]
   },
   "depends": {

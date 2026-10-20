@@ -61,7 +61,9 @@ class ForgeAssemblyGameTests {
         check(tools(runtime, Role.DIRECTOR).let { it.size == 47 && it.containsAll(FORGE_TOOLS) }) { "the Director's 47 tools: ${tools(runtime, Role.DIRECTOR)}" }
         check(tools(runtime, Role.FORGER).size == 5) { "the forger's five tools: ${tools(runtime, Role.FORGER)}" }
         val status = answer(helper, "narrator forge")
-        check(status.getOrNull(1) == "Forge: on · ECJ ${forge.status().ecj} · arsenal ${forge.arsenal.list().size} (0 forged, 0 pending, 0 broken) · 0 running · compiler idle · leaks 0") {
+        // The versions another batch saved stay in the server's arsenal (ForgeEndToEndTests forges one): counted, never pending nor broken.
+        val forged = forge.arsenal.list().count { !it.builtIn }
+        check(status.getOrNull(1) == "Forge: on · ECJ ${forge.status().ecj} · arsenal ${forge.arsenal.list().size} ($forged forged, 0 pending, 0 broken) · 0 running · compiler idle · leaks 0") {
             "forge status: $status"
         }
 
