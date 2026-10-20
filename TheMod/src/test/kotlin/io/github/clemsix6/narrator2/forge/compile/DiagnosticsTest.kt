@@ -42,7 +42,7 @@ class DiagnosticsTest {
             [1] error Chickens.java:5:20: The method spawn(String, String, Spawn) in the type Acts is not applicable for the arguments (String, String)
               5 | ctx.acts().spawn("chicken", "Bartok");
                 |            ^^^^^
-              hint: Acts (ctx.acts()): Pending spawn(String, String, Spawn) — Spawn.of(int)
+              hint: Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)
             """.trimIndent(),
             Diagnostics.render(errors("Chickens", source), source),
         )
@@ -76,12 +76,12 @@ class DiagnosticsTest {
             return diagnostics.filter { it.line == line }.flatMap { it.hints }
         }
 
-        assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String, String, Spawn) — Spawn.of(int)"), hintsAt("spwan"))
-        assertEquals(listOf("Acts (ctx.acts()): Pending teleport(String, Place)"), hintsAt("teleportPlayer"))
-        assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String, String, Spawn) — Spawn.of(int)"), hintsAt("ctx.spawn"))
-        assertEquals(listOf("Acts (ctx.acts()): Pending say(String)"), hintsAt("say(\"Bonjour\")"))
+        assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)"), hintsAt("spwan"))
+        assertEquals(listOf("Acts (ctx.acts()): Pending teleport(String player, Place to)"), hintsAt("teleportPlayer"))
+        assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)"), hintsAt("ctx.spawn"))
+        assertEquals(listOf("Acts (ctx.acts()): Pending say(String text)"), hintsAt("say(\"Bonjour\")"))
         assertEquals(
-            listOf("Spawn: static Spawn of(int)", "Spawn: Spawn(int count, int distance, String name, boolean target, int lifetimeMinutes, int height, boolean baby)"),
+            listOf("Spawn: static Spawn of(int count)", "Spawn: Spawn(int count, int distance, String name, boolean target, int lifetimeMinutes, int height, boolean baby)"),
             hintsAt("new Spawn(6)"),
         )
         assertEquals(listOf("Place: Place(String dimension, double x, double y, double z)"), hintsAt("new Place(1, 2)"))
@@ -89,12 +89,12 @@ class DiagnosticsTest {
         assertEquals(listOf("import java.util.List;"), hintsAt("List<String> names"))
         assertEquals(listOf("Limits: static int MAX_ACTS_PER_CALL = 4", "Limits: static int MAX_ACTS_PER_MINUTE = 30"), hintsAt("MAX_ACT;"))
         assertEquals(listOf("ModuleContext (ctx): World world()"), hintsAt("wrld"))
-        assertEquals(listOf("World (ctx.world()): PlayerInfo player(String)"), hintsAt("player(3)"))
+        assertEquals(listOf("World (ctx.world()): PlayerInfo player(String name)"), hintsAt("player(3)"))
         assertTrue(hintsAt(".nam;").isNotEmpty() && hintsAt(".nam;").all { " name(" in it }, "${hintsAt(".nam;")}")
 
         // A hint about a member is written at each entry that needs it.
         val report = Diagnostics.render(diagnostics, source)
-        assertEquals(2, Regex(Regex.escape("hint: Acts (ctx.acts()): Pending spawn(String, String, Spawn)")).findAll(report).count(), report)
+        assertEquals(2, Regex(Regex.escape("hint: Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how)")).findAll(report).count(), report)
     }
 
     @Test

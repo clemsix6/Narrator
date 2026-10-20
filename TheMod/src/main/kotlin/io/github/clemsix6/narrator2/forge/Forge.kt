@@ -71,6 +71,13 @@ interface Forge {
      */
     suspend fun review(name: String, version: Int?, approve: Boolean, operator: String): ArsenalEntry
 
+    /**
+     * The last [fault] of a deployment of [name] at [version] (M5 §3.7, `Fault.text`): the arsenal shows it as the
+     * entry's `problem` (`module_list`, `/narrator forge show`) until the server restarts. In memory, any thread; nothing
+     * when the Forge does not run. The engine (M5-11) tells it each fault of a deployment.
+     */
+    fun noteFault(name: String, version: Int, fault: String) {}
+
     /** What `/narrator forge status` shows of the Forge itself (M5 §14). Any thread. */
     fun status(): ForgeStatus
 
