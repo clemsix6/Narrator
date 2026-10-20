@@ -136,12 +136,13 @@ class ArsenalGamesGameTests {
             rig.await("the first order above both hotbars", 30_000) { order(bob) != null && order(ann) != null }
             val order = order(ann)!!
             check(order == order(bob)) { "the same order for both: $order, ${order(bob)}" }
-            val bobMoves = rig.onServer {
-                answer(ann, order, right = true)
-                answer(bob, order, right = false)
-            }
+            println("[M5-16] simon_says in the server: the first order is « $order »")
+            val moving = rig.onServer { listOf(ann to true, bob to false).filter { (player, right) -> answer(player, order, right) }.map { it.first } }
             var step = 0
-            val ended = rig.awaitEnd(view.ref) { if (bobMoves) bob.live.teleportTo(bob.live.x + if (step++ % 2 == 0) 2.0 else -2.0, bob.live.y, bob.live.z) }
+            val ended = rig.awaitEnd(view.ref) {
+                val dx = if (step++ % 2 == 0) 2.0 else -2.0
+                for (player in moving) player.live.teleportTo(player.live.x + dx, player.live.y, player.live.z)
+            }
             val verdict = "${ann.name} a tenu jusqu'au bout de Jacques a dit"
             check(ended.status == CanonStatus.RETIRED && ended.resolution == verdict) { "the law's canon after « $order »: ${ended.status} ${ended.resolution}" }
             val won = rig.awaitChallenge(challenge.ref)
@@ -198,8 +199,8 @@ class ArsenalGamesGameTests {
         private val book = ModuleBook(services, store, modules, clock)
         private val engine = Engine(services, store, listOf(challenges, modules), clock)
 
-        /** The most the calls of a module took in one second, in ms, as its views said (`ModuleView.msPerSecond`). */
-        private var busiest = 0.0
+        /** What the calls of the module took in the last second, in ms, at each tick (`ModuleView.msPerSecond`). */
+        private val seconds = CopyOnWriteArrayList<Double>()
 
         fun start() = engine.start(helper.level.server)
 
@@ -207,7 +208,7 @@ class ArsenalGamesGameTests {
         fun tick() {
             clock.advance(Duration.ofMillis(TICK_MS))
             engine.tick(helper.level.server)
-            for (view in book.list()) busiest = maxOf(busiest, view.msPerSecond)
+            for (view in book.list()) seconds += view.msPerSecond
         }
 
         suspend fun <T> onServer(block: () -> T): T = helper.level.server.onServerThread(10_000, block)
@@ -260,9 +261,12 @@ class ArsenalGamesGameTests {
         fun lines(kind: MechanicSignal): List<String> =
             director.signals.filterIsInstance<DirectorSignal.Mechanic>().filter { it.kind == kind }.map { it.line }
 
-        /** The game's numbers in the log of the GameTests (M5-16's handoff quotes them): its busiest second, and how it ended. */
-        fun report(module: String, ended: String) =
-            println("[M5-16] $module in the server: its calls took ${"%.2f".format(Locale.ROOT, busiest)} ms in its busiest second; $ended")
+        /** The game's numbers in the log of the GameTests (M5-16's handoff quotes them): the time of its calls a second, and how it ended. */
+        fun report(module: String, ended: String) {
+            val sorted = seconds.sorted()
+            val ms = { value: Double -> "%.2f".format(Locale.ROOT, value) }
+            println("[M5-16] $module in the server: its calls took ${ms(sorted[sorted.size / 2])} ms a second (median), ${ms(sorted.last())} ms at most; $ended")
+        }
 
         /** What a test leaves running stopped, the engine stopped, its threads closed. */
         suspend fun cleanUp() {
