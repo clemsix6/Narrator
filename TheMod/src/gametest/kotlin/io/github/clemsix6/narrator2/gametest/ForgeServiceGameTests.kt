@@ -29,8 +29,8 @@ import java.util.concurrent.atomic.AtomicReference
  * registries, its guards, its chaos level — off the server thread; `game_ids` reads the server's own registries; a save
  * fills the cache, and a restart builds the version again from its source. The times go to the log.
  *
- * The server's own Forge is not wired yet (M5-21): each test has a [ForgeService] of its own, on a folder of its own, seen
- * by the tools through the server's services.
+ * Each test has a [ForgeService] of its own, on a folder of its own, seen by the tools through the server's services: the
+ * server's own Forge and its arsenal are left alone (`ForgeAssemblyGameTests` tests them).
  */
 class ForgeServiceGameTests {
 
