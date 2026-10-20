@@ -117,7 +117,8 @@ class ModuleThreadsTest {
             // Never before its budget; after it, only what a busy machine adds (the call itself would wait a minute).
             assertTrue(waited >= budgetMillis && waited < budgetMillis + BusyMachine.SLACK_MILLIS, "the caller waited its budget, no more: $waited ms")
             val lost = assertNotNull(abandoned.get())
-            assertEquals(Thread.MIN_PRIORITY, lost.priority)
+            // The normal priority, not the lowest: a busy machine would starve it while every pause of the JVM waits for it.
+            assertEquals(Thread.NORM_PRIORITY, lost.priority)
             assertTrue(lost.name.endsWith("(abandoned)"), lost.name)
             assertEquals(1, threads.lost.alive())
 
@@ -127,7 +128,7 @@ class ModuleThreadsTest {
             assertNotEquals(lost, next.get())
 
             release.countDown()
-            // The lost thread runs at the lowest priority: a busy machine may keep it waiting for seconds.
+            // A busy machine may keep the lost thread waiting for seconds.
             assertTrue(ended.await(60, TimeUnit.SECONDS))
             assertTrue(afterwards.get() is ForgeLimit, "the SDK refuses the abandoned thread: ${afterwards.get()}")
             assertEquals(ModuleThreads.ABANDONED_MESSAGE, afterwards.get()!!.message)

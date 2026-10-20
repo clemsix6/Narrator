@@ -99,7 +99,7 @@ class Compilation(val outcome: Outcome, val classes: Map<String, ByteArray>, val
  * else exists for it: `net.minecraft`, Fabric, the mod, `forge.rt`, `jdk.internal`, `sun.misc` and the other
  * modules of the JDK all "cannot be resolved".
  *
- * One thread, [THREAD_NAME] (a daemon, at the lowest priority), compiles one source at a time, in the order asked;
+ * One thread, [THREAD_NAME] (a daemon, at the normal priority), compiles one source at a time, in the order asked;
  * the callers suspend, never block, and the server thread never compiles. A compilation past [budgetMs] is cancelled
  * at ECJ's next check (between two of its phases) and its caller gets [Compilation.Outcome.TOO_LONG] right then;
  * one that ignores its cancellation up to [stuckMs] makes the compiler **stuck until the server restarts** (M5 §3.8):
@@ -107,9 +107,16 @@ class Compilation(val outcome: Outcome, val classes: Map<String, ByteArray>, val
  * pool thread) with the source's label and when its compilation started.
  *
  * **Both limits are the compiler's own work** (M5-LOAD): its thread's CPU time on the compilation, read about every
- * [WATCH_MS] and at each of ECJ's checks, never the wall clock. At the lowest priority on a saturated machine, a
- * compilation of 40 ms of work once took 13.8 s of wall clock (M5-15): that is the machine's doing, not the source's.
+ * [WATCH_MS] and at each of ECJ's checks, never the wall clock. On a saturated machine, a compilation of 40 ms of
+ * work once took 13.8 s of wall clock (M5-15, at the lowest priority): that is the machine's doing, not the source's.
  * Without a CPU clock, the wall clock, as before.
+ *
+ * **The normal priority, not the lowest** (M5-LOAD): every pause of the JVM (a garbage collection) first waits for each
+ * thread running Java code to reach a safepoint, and a busy machine starves a thread at the lowest priority for
+ * seconds. Measured under load, the whole JVM — the server thread included — stood still 2.2 to 2.6 s at each
+ * collection while the compiler compiled at the lowest priority, and the Forge took 70 s to build its seven built-in
+ * modules. The threads the compiler's thread starts (the JDK's delay scheduler, the common pool's workers) take its
+ * priority too.
  *
  * Built when the Forge starts: without ECJ on the class path, the constructor throws `NoClassDefFoundError`.
  */
@@ -148,7 +155,7 @@ class EcjCompiler(
 
     private val thread = Thread(null, ::work, THREAD_NAME, STACK_BYTES).apply {
         isDaemon = true
-        priority = Thread.MIN_PRIORITY
+        priority = Thread.NORM_PRIORITY
     }
 
     init {

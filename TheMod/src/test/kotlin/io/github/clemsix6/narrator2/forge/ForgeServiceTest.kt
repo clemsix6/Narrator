@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.forge.arsenal.ArsenalStore
 import io.github.clemsix6.narrator2.forge.arsenal.Manifest
 import io.github.clemsix6.narrator2.forge.compile.EcjCompiler
 import io.github.clemsix6.narrator2.forge.host.LostThreads
+import io.github.clemsix6.narrator2.mechanics.module.ModuleFixture
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
@@ -304,8 +305,8 @@ class ForgeServiceTest {
         try {
             val tooLong = assertFailsWith<ForgeRejected> { forge.test(BEACON_NAME, BEACON) }
             assertEquals("FAILED: the compilation of beacon took too long (over 10 s): write a simpler source", tooLong.toResult().text)
-            // The compiler is stuck (unavailable) a moment before it tells the Forge (the decision). Its thread is at the
-            // lowest priority: a busy machine may give it its 600 ms of work slowly.
+            // The compiler is stuck (unavailable) a moment before it tells the Forge (the decision). A busy machine may
+            // give its thread its 600 ms of work slowly.
             withTimeoutOrFail(300_000) { !forge.available && decisions(services, ForgeService.STUCK).isNotEmpty() }
             assertTrue(forge.unavailableReason!!.startsWith("the compiler is stuck since "), forge.unavailableReason)
             assertTrue(forge.status().compiler.startsWith("stuck since "), forge.status().compiler)
@@ -368,7 +369,11 @@ class ForgeServiceTest {
     @Test
     fun `nothing heavy runs on the caller's thread - compilation, bench and disk run elsewhere`() {
         val (forge, _) = forge()
-        val caller = Executors.newSingleThreadExecutor { Thread(it, "caller") }.asCoroutineDispatcher()
+        // The caller runs like the server thread (priority 8, M5-LOAD), its ticker's delays on its own thread: a busy
+        // machine does not hold it back, so a long gap is the caller's thread blocked or working.
+        val caller = Executors.newSingleThreadScheduledExecutor {
+            Thread(it, "caller").apply { priority = ModuleFixture.SERVER_PRIORITY }
+        }.asCoroutineDispatcher()
         caller.use {
             runBlocking<Unit>(caller) {
                 val gaps = CopyOnWriteArrayList<Long>()

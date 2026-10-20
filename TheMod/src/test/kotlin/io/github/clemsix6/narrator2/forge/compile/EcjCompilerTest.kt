@@ -89,10 +89,11 @@ class EcjCompilerTest {
         // The SDK is read by name through the mod's loader (Knot in game), and nothing else is asked of it.
         assertTrue("io/github/clemsix6/narrator2/forge/api/ForgeModule.class" in loader.paths, "${loader.paths}")
         assertTrue(loader.paths.all { it.startsWith("io/github/clemsix6/narrator2/forge/api/") }, "${loader.paths}")
-        // Never on the caller's thread (nor the server's): on the compiler's own, a daemon at the lowest priority.
+        // Never on the caller's thread (nor the server's): on the compiler's own, a daemon at the normal priority (not
+        // the lowest, which a busy machine starves while every pause of the JVM waits for it, M5-LOAD).
         assertEquals(setOf(EcjCompiler.THREAD_NAME), loader.threads)
         val threads = Thread.getAllStackTraces().keys.filter { it.name == EcjCompiler.THREAD_NAME && it.isAlive }
-        assertTrue(threads.isNotEmpty() && threads.all { it.isDaemon && it.priority == Thread.MIN_PRIORITY }, "$threads")
+        assertTrue(threads.isNotEmpty() && threads.all { it.isDaemon && it.priority == Thread.NORM_PRIORITY }, "$threads")
     }
 
     @Test
@@ -211,15 +212,19 @@ class EcjCompilerTest {
 
     @Test
     fun `a compilation held back by the machine, without computing, is never too long`() = runBlocking<Unit> {
-        // Blocked in a read (no work: as a compiler thread at the lowest priority that a saturated machine starves, M5-15
-        // saw 13.8 s for 40 ms of work), it outlasts its budget on the wall clock many times, and compiles all the same.
+        // Blocked in a read (no work: as a compiler thread a saturated machine starves, M5-15 saw 13.8 s for 40 ms of
+        // work), it outlasts its budget on the wall clock many times, and compiles all the same.
+        // ECJ warmed first, with the game's budgets: a JVM's first compilation loads ECJ and runs it interpreted, and a
+        // busy machine, whose JIT lags, makes that hundreds of milliseconds of the compiler's own work (measured).
+        assertEquals(Outcome.COMPILED, compiler().compile(ForgeSamples.CLASS, ForgeSamples.SOURCE, "warm").outcome)
         val loader = RecordingLoader()
         val gate = loader.closed()
-        val compiler = compiler(loader, budgetMs = 50, stuckMs = 100)
+        val compiler = compiler(loader, budgetMs = 300, stuckMs = 600)
         val held = async { compiler.compile(ForgeSamples.CLASS, ForgeSamples.SOURCE, "held") }
-        // Its thread at the lowest priority, a busy machine may start it late: wait for it, then hold it a second more.
+        // A busy machine may start its thread late: wait for it, then hold it 2 s more, past its budget and its stuck
+        // limit on the wall clock.
         withTimeout(300_000) { while (!compiler.status().startsWith("compiling held (")) delay(20) }
-        delay(1_000)
+        delay(2_000)
         assertTrue(compiler.status().startsWith("compiling held ("), compiler.status())
         gate.countDown()
         assertEquals(Outcome.COMPILED, held.await().outcome)
@@ -240,7 +245,7 @@ class EcjCompilerTest {
             assertEquals(Outcome.TOO_LONG, stuckOne.await().outcome)
             assertTrue(compiler.status().startsWith("compiling blocked ("), compiler.status())
 
-            // The compiler's thread is at the lowest priority: a busy machine may give it its 200 ms of work slowly.
+            // A busy machine may give the compiler's thread its 200 ms of work slowly.
             assertEquals(Outcome.STUCK, withTimeout(300_000) { waiting.await() }.outcome)
             val (label, since) = withTimeout(5_000) { told.await() }
             assertEquals("blocked", label)
@@ -282,7 +287,7 @@ class EcjCompilerTest {
 
         val running = async { compiler.compile("Blocked", "public class Blocked { int v = io.github.clemsix6.narrator2.forge.api.Sdk.VERSION; }") }
         val waiting = async { compiler.compile("Waiting", "public class Waiting {}") }
-        // Its thread at the lowest priority, a busy machine may start it late (M5-LOAD): wait for it.
+        // A busy machine may start its thread late (M5-LOAD): wait for it.
         withTimeout(300_000) { while (!compiler.status().startsWith("compiling Blocked (")) delay(20) }
         compiler.stop()
 

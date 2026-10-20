@@ -40,6 +40,7 @@ class HeldBackTest {
         assertTrue(host.busy())
         val meanwhile = host.call("timer") { fake.timers[0].run() }!!
         assertTrue(meanwhile.skipped, "while it runs alone, the module's calls are skipped: never two calls of a module at once")
+        assertEquals(0L, meanwhile.nanos, "skipped at once, never handed over to a module thread")
         assertTrue(Hosts.settled(host))
 
         assertEquals(emptyList(), faults, "nobody's fault")
@@ -120,9 +121,10 @@ class HeldBackTest {
 
         // One indexOf of 75 ms at a time, in a loop: given up once its thread's CPU time shows its budget, 40 ms at least.
         val computing = host.call("timer") { fake.timers[1].run() }!!
-        assertEquals(Fault.Kind.LIMIT, computing.fault?.kind)
-        assertTrue(computing.fault!!.cause.startsWith("time budget: one call ran past 25 ms and was abandoned"), computing.fault!!.cause)
-        assertTrue(computing.fault!!.disables)
+        val fault = checkNotNull(computing.fault) { "given up while computing: a fault" }
+        assertEquals(Fault.Kind.LIMIT, fault.kind)
+        assertTrue(fault.cause.startsWith("time budget: one call ran past 25 ms and was abandoned"), fault.cause)
+        assertTrue(fault.disables)
     }
 
     @Test

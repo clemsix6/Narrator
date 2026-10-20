@@ -45,6 +45,7 @@ import kotlinx.serialization.json.put
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The Forge (M5 §2, §5.4, §6.1 to §6.3, §11): the arsenal ([ArsenalStore]) and the pipeline from a source to a module
@@ -115,7 +116,7 @@ class ForgeService(
     private val building = ConcurrentHashMap<Key, CompletableDeferred<Unit>>()
 
     /** Whether [onUnavailable] was told. */
-    private val toldUnavailable = java.util.concurrent.atomic.AtomicBoolean()
+    private val toldUnavailable = AtomicBoolean()
     private val loaded = CompletableDeferred<Boolean>()
     private val benches: MutableSet<Job> = ConcurrentHashMap.newKeySet()
     private var startup: Job? = null

@@ -23,7 +23,7 @@ import java.util.concurrent.locks.LockSupport
  * - **Abandon**: past the budget, the caller gives the call up and goes on. An SDK request it is serving ends first
  *   (an SDK call is short and bounded); none is served after: a request already posted, or a later one, throws
  *   [ForgeLimit] into the abandoned thread, which therefore **never touches the world again**. A fresh thread, started
- *   then, takes the next calls. By default the given-up thread is **lost** at once ([lose]: the lowest priority,
+ *   then, takes the next calls. By default the given-up thread is **lost** at once ([lose]: the normal priority,
  *   counted by [LostThreads]); the host instead tells first whether the module computed (M5-LOAD): a thread the
  *   machine merely held back finishes its call alone and is never lost.
  * - **Patience** ([Patience]): a caller that may wait (the bench, a module's start) waits past the budget as long as the
@@ -140,10 +140,14 @@ class ModuleThreads(
 
     /**
      * Counts [thread], whose call was given up, among the lost threads: it computes on past its budget (M5-LOAD), at the
-     * lowest priority from now on, until its JDK call returns ([LostThreads], whose ceiling may make the Forge stuck).
+     * normal priority from now on, until its JDK call returns ([LostThreads], whose ceiling may make the Forge stuck).
+     *
+     * Not the lowest (M5-LOAD): every pause of the JVM (a garbage collection) first waits for each thread running Java
+     * code to reach a safepoint, and a busy machine starves a thread at the lowest priority for seconds — measured, the
+     * whole JVM, server thread included, stood still 2.2 to 2.6 s at each collection while such a thread computed.
      */
     fun lose(thread: Thread) {
-        thread.priority = Thread.MIN_PRIORITY
+        thread.priority = Thread.NORM_PRIORITY
         if (!thread.name.endsWith(LOST_SUFFIX)) thread.name = thread.name.removeSuffix(GIVEN_UP_SUFFIX) + LOST_SUFFIX
         lost.add(thread)
     }
@@ -220,9 +224,13 @@ class ModuleThreads(
         var done = false
     }
 
+    /**
+     * A module thread. Born at the priority of the thread that makes it (the caller: a thread made after an abandon starts
+     * at once on a busy machine, not after the threads its caller outranks).
+     */
     private inner class Worker(name: String) : Thread(null, null, name, STACK_BYTES) {
-        @Volatile
-        private var next: Call? = null
+        /** The call handed over and not taken yet; taken and cleared in one step, so that no call posted meanwhile is lost. */
+        private val next = AtomicReference<Call?>()
 
         @Volatile
         var closing = false
@@ -233,11 +241,10 @@ class ModuleThreads(
 
         init {
             isDaemon = true
-            priority = NORM_PRIORITY
         }
 
         fun post(call: Call) {
-            next = call
+            next.set(call)
             LockSupport.unpark(this)
         }
 
@@ -269,10 +276,7 @@ class ModuleThreads(
         private fun take(): Call? {
             val spinUntil = System.nanoTime() + IDLE_SPIN_NANOS
             while (true) {
-                next?.let {
-                    next = null
-                    return it
-                }
+                next.getAndSet(null)?.let { return it }
                 if (closing) return null
                 if (System.nanoTime() - spinUntil < 0) Thread.onSpinWait() else LockSupport.park(this)
             }
@@ -345,7 +349,7 @@ class ModuleThreads(
 }
 
 /**
- * The module threads lost by abandonment (M5 §3.7): each still runs its JDK call, at the lowest priority, until it
+ * The module threads lost by abandonment (M5 §3.7): each still runs its JDK call, at the normal priority, until it
  * returns. [limit] may be alive at once; past it, the Forge is **stuck** until the server restarts ([stuck]): no
  * module code runs any more, and [onStuck] is called once, with why (the Forge stops every module, writes the decision
  * `forge stuck` and tells the operators, like a stuck compiler). One per Forge: the server's module threads and the

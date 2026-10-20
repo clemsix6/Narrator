@@ -97,7 +97,7 @@ class AbandonTest {
         assertEquals("LIMIT", values["kind"], line)
         assertEquals("true", values["disables"], line)
         assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", values["cause"]?.replace('_', ' '), line)
-        assertEquals("1", values["stillAlive"], "the lost thread burns on, at the lowest priority: $line")
+        assertEquals("1", values["stillAlive"], "the lost thread burns on: $line")
         println("[host] L2 = 10,000 × L1 in a JVM of its own: $line (System.gc() ms, each a safepoint)")
     }
 
@@ -116,8 +116,7 @@ class AbandonTest {
             """.trimIndent(),
         )
         val fake = FakeContext()
-        // The lost thread runs at the lowest priority, and its stack is read at its next safepoint: on a busy machine,
-        // that may take seconds. The bench waits for it as long as it is given (here a minute; the bench's own, 1 s).
+        // The lost thread's stack is read at its next safepoint: on a busy machine, that may take seconds. The bench waits for it as long as it is given (here a minute; the bench's own, 1 s).
         // As the bench does, its caller is patient (M5-LOAD): it gives the call up once its thread computed past
         // its budget, the thread still in its JDK call.
         val host = attacked("Search", module, threads, label = "bench Search", lineWaitMillis = 60_000, patienceNanos = BusyMachine.PATIENT_NANOS)
@@ -190,9 +189,9 @@ class AbandonTest {
     }
 
     /**
-     * Waits for the lost threads to end. They run at the lowest priority: on a machine whose cores are all taken, one
-     * runs only when the system lifts a starved thread, a few tens of milliseconds every four seconds or so (measured:
-     * the 0.75 s hash of the bench's test took over a minute under 32 spinning threads on 16 cores).
+     * Waits for the lost threads to end. On a machine whose cores are all taken, that may take long (FLAKY-4 measured,
+     * at the lowest priority, the 0.75 s hash of the bench's test over a minute under 32 spinning threads on 16 cores;
+     * lost threads run at the normal priority since M5-LOAD).
      */
     private fun awaitNoLostThread(millis: Long = 300_000): Boolean {
         val deadline = System.currentTimeMillis() + millis
