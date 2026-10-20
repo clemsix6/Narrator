@@ -63,6 +63,9 @@ class FactQueue : Events {
     /** Whether some active subscription wants the facts of [type]: the engine may skip building them otherwise. Any thread. */
     fun wants(type: Class<out GameFact>): Boolean = type in wanted
 
+    /** The module's handlers of the active subscriptions, as they are (never called here): roots of the memory gauge (M5-05). Server thread. */
+    fun handlers(): List<Any> = subscriptions.map { it.handler }
+
     /**
      * Queues [fact], which [Facts] translated, when some subscription wants its class; past `ForgeLimits.FACTS_PER_TICK`
      * facts waiting, it is dropped and counted. Any thread (the bus calls inline).

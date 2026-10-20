@@ -129,11 +129,9 @@ class BytecodeGuard {
             interfaces?.forEach { face ->
                 if (face in own) return@forEach
                 val refusal = SandboxPolicy.typeRefusal(face)
-                if (refusal != null) {
-                    flag(0, "implements ${face.replace('/', '.')}", refusal)
-                } else if (SandboxPolicy.isSdkType(face) && face != SandboxPolicy.FORGE_MODULE) {
-                    flag(0, "implements ${face.replace('/', '.')}", "a module may implement only ForgeModule from the SDK")
-                }
+                    ?: SandboxPolicy.containerRefusal(face)
+                    ?: if (SandboxPolicy.isSdkType(face) && face != SandboxPolicy.FORGE_MODULE) "a module may implement only ForgeModule from the SDK" else null
+                flag(0, "implements ${face.replace('/', '.')}", refusal)
             }
         }
 

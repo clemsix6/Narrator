@@ -217,11 +217,11 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
 | **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, `survey` (terrains plats et dégagés), SQL (positions), `recall` |
 | **Forgeron** | Écrire, tester et sauver un module de la Forge, commandé par `forge_module` | `module_list`, `module_read`, `game_ids`, `forge_test`, `forge_save` (§10.2) |
-| **Scénariste** | Proposer trois idées originales (défi, châtiment, rebondissement) notées sur la nouveauté, le fun et l'équité, en évitant ce qui a déjà été fait | Mémoire, historique des interventions, `inspire` |
+| **Scénariste** | Préparer la suite sans jamais agir : pendant le rêve, le programme (des **idées** `P-…` notées sur la nouveauté, le fun et l'équité, adaptées à la progression réelle, une saison, les récits prévus) ; à la demande (`delegate`), trois idées pour un grand moment ([design M6](design/M6.md) §6) | `inspire`, `propose_idea`, `drop_idea`, `remember` (récits prévus, lore), `recall`, `player_profile`, `sql` |
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
-Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), le **Forgeron** en M5 (une tâche à la fois, 40 requêtes et 20 minutes au plus, commandé par son propre outil), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
+Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), le **Forgeron** en M5 (une tâche à la fois, 40 requêtes et 20 minutes au plus, commandé par son propre outil), le **Scénariste** en M6 (une étape du rêve, et un rôle de `delegate`), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
 
 ### 7.4 Chapitres et contexte
 - La conversation du Directeur est **append-only** : on n'édite jamais un tour passé, on ne change pas le prompt système ni la liste d'outils en cours de chapitre. C'est indispensable avec Opus 5.5 (sa réflexion est liée au préfixe exact de la conversation) et c'est ce qui rend le cache de prompt efficace.
@@ -242,7 +242,7 @@ Claude Opus est la **réflexion** du Narrateur ; un petit modèle, **Claude Haik
 | **Filtre des battements** | Le résumé des dernières minutes mérite-t-il une intervention, et quelle accroche ? | Pas d'appel à Opus pour un battement sans matière : moins de coût, moins d'interventions forcées |
 | **Signaux de personnalité** | Pour chaque message d'un joueur : politesse, vantardise, entraide, agressivité, humour (scores) | Agrégés dans le temps, ils deviennent des **preuves chiffrées** pour les traits de la fiche joueur |
 | **Réaction aux interventions** (à venir) | Après une intervention : le joueur a-t-il ri, joué le jeu, ignoré, été agacé ? | Nourrit l'historique des interactions (valence) et le bilan de ce qui marche |
-| **Surveillance du ton** (à venir) | Chaque réplique du Narrateur, après envoi : sombre ? cruelle ? répétitive ? plate ? | Si le ton dérive, une consigne système recadre le Directeur. C'est le garde-fou qui manquait à la v1 |
+| **Relecture des répliques** (M6) | Chaque réplique du Directeur, après envoi : registre comique, sombre, cruelle, plate, hors personnage, répétitive, mots béquilles | Si le ton dérive, une note du moteur recadre le Directeur à son réveil suivant ; les registres et les béquilles nourrissent la veille du style, `inspire` et la revue du Rêveur ([design M6](design/M6.md) §3.3, §4.3). C'est le garde-fou qui manquait à la v1 |
 | **Réminiscences** (à venir) | Ce souvenir est-il un bon rappel pour cet événement ? | Filtre les candidats de la recherche locale avant de les attacher |
 
 Précautions :
@@ -383,11 +383,12 @@ Principes :
 
 1. **Le SDK, et rien d'autre.** Un module est compilé contre le SDK du Narrateur, une API Java bornée (faits, minuteurs, lectures du monde, actes, créatures pilotées, blocs temporaires, petit état, arbitrage d'un défi jugé), et contre une liste blanche du JDK. Il ne voit **aucune classe du jeu**, de Fabric ni du mod : avec elles, aucun interdit du §17 ne pourrait être garanti (des milliers de méthodes du jeu écrivent le monde ou un joueur, une liste noire ne serait jamais complète). Tout ce qu'il fait au monde passe par les vrais outils et les garde-fous ; chaque invocation qui agit est un acte du moteur, comme une règle qui se déclenche. Les règles du §10.1 et les modules partagent ce moteur.
 2. **Cinq barrières.** Un compilateur aveugle (ECJ ne voit que `java.base` et le SDK) ; une garde par liste blanche sur le bytecode (types, membres, appels dynamiques, `catch`, structure) ; une réécriture du bytecode qui mesure le temps (20 ms par appel), l'allocation et la profondeur, et borne tableaux, collections et textes ; un chargeur de classes par module qui refuse au lien tout nom hors liste ; un hôte qui désactive un module fautif, mesure la mémoire qu'il retient et surveille son déchargement. Un coupe-circuit (`/narrator forge off`) arrête tout. Une batterie de modules malveillants vérifie chaque barrière.
-3. **Nos propres crochets.** Les événements de Fabric API ne se désinscrivent pas, et il en manque (projectile qui touche, explosion, tick d'entité). Le mod a donc son propre bus d'événements, alimenté par Fabric API et des mixins ; le moteur des mécaniques en livre les faits aux modules, sur le thread serveur.
-4. **Le Forgeron ne devine pas.** Il a la référence du SDK dans son prompt, les identifiants des registres du jeu (`game_ids`), l'arsenal et ses sources (`module_list`, `module_read`), des diagnostics qui pointent vers le SDK, et un banc d'essai (`forge_test`) qui fait tourner le module dans un monde simulé, avec ses scénarios, avant toute sauvegarde (`forge_save`).
-5. **Cycle de vie propre.** Écrit → compilé → gardé → réécrit → testé → sauvé (une version immuable de l'arsenal, dans le dossier du monde) → déployé (une ligne du canon, loi ou plan, une durée) → suivi → retiré (abonnements, minuteurs, créatures rendues, chargeur abandonné). Un déploiement survit au redémarrage : recompilé, redémarré avec son petit état.
-6. **Tout expire** : un déploiement dure de 5 minutes à 7 jours ; un module qui plante ou ralentit le serveur est désactivé et le Directeur le sait.
-7. **Un arsenal qui grandit.** Le mod livre sept modules écrits à la main (poules en orbite, parade, loup, Jacques a dit, chaud ou froid, le sol est de lave, tempête de gravité), qui servent aussi d'exemples au Forgeron ; chaque module forgé s'y ajoute, versionné.
+3. **Le code d'un module ne tourne jamais sur le thread serveur.** Un seul appel du JDK peut durer sans fin sans exécuter une ligne du module (hacher une liste qui se contient dix mille fois : des minutes), et rien ne l'interrompt. Chaque appel d'un module tourne donc sur un **fil des modules** ; le thread serveur le lui confie et l'attend **au plus son budget** (20 ms, plus 5 ms pour que le compteur se dénoue), en servant pendant ce temps les appels du SDK du module : le monde n'est lu et écrit que par le thread serveur, comme si le module tournait dessus. Au-delà, le thread serveur **abandonne** l'appel et reprend son tick ; le module est désactivé, et son fil, qui finit son calcul à la priorité minimale, ne peut plus rien demander au SDK. Au-delà de deux fils abandonnés encore vivants, la Forge s'arrête jusqu'au redémarrage. Reste un coût mesuré : tant qu'un fil perdu calcule, chaque point d'arrêt global de la JVM (une collecte de la mémoire) peut attendre jusqu'à la fin de son calcul en cours, soit 65 à 90 ms par collecte dans l'attaque mesurée (design/M5.md §3.8).
+4. **Nos propres crochets.** Les événements de Fabric API ne se désinscrivent pas, et il en manque (projectile qui touche, explosion, tick d'entité). Le mod a donc son propre bus d'événements, alimenté par Fabric API et des mixins ; le moteur des mécaniques en livre les faits aux modules, sur le thread serveur.
+5. **Le Forgeron ne devine pas.** Il a la référence du SDK dans son prompt, les identifiants des registres du jeu (`game_ids`), l'arsenal et ses sources (`module_list`, `module_read`), des diagnostics qui pointent vers le SDK, et un banc d'essai (`forge_test`) qui fait tourner le module dans un monde simulé, avec ses scénarios, avant toute sauvegarde (`forge_save`).
+6. **Cycle de vie propre.** Écrit → compilé → gardé → réécrit → testé → sauvé (une version immuable de l'arsenal, dans le dossier du monde) → déployé (une ligne du canon, loi ou plan, une durée) → suivi → retiré (abonnements, minuteurs, créatures rendues, chargeur abandonné). Un déploiement survit au redémarrage : recompilé, redémarré avec son petit état.
+7. **Tout expire** : un déploiement dure de 5 minutes à 7 jours ; un module qui plante ou ralentit le serveur est désactivé et le Directeur le sait.
+8. **Un arsenal qui grandit.** Le mod livre sept modules écrits à la main (poules en orbite, parade, loup, Jacques a dit, chaud ou froid, le sol est de lave, tempête de gravité), qui servent aussi d'exemples au Forgeron ; chaque module forgé s'y ajoute, versionné.
 
 Le Directeur n'écrit pas de code Java : il crée des règles lui-même, commande les modules au Forgeron (`forge_module` : « un 1, 2, 3, soleil qui arbitre le défi »), continue à jouer, puis les déploie (`deploy_module`) au moment le plus dramatique.
 
@@ -396,12 +397,15 @@ Le Directeur n'écrit pas de code Java : il crée des règles lui-même, command
 Mécanismes concrets contre la répétition et la dérive :
 
 - **Prompt de voix** avec exemples et contre-exemples (`prompts/director.md`), et une liste de **registres comiques** à faire tourner (faux documentaire, commentaire sportif, bureaucratie divine, tribunal, bulletin météo, prophétie ridicule…).
-- **Historique des interventions** dans chaque rapport de situation : type, cible, registre, heure.
-- **Tics de langage** détectés pendant les rêves (expressions et structures surutilisées) et listés dans le rapport.
-- **`inspire`** : tire trois graines d'idées (mécanique × thème × rebondissement) dans un deck, en excluant ce qui a servi récemment.
-- **Le Scénariste** pour les interventions importantes : trois propositions, notées, la meilleure retenue.
+- **Historique des interventions** dans chaque rapport de situation (`Your last actions`), et rangé par levier et par registre pour `inspire`, le Scénariste et le tableau de bord (M6).
+- **Chaque réplique relue** après envoi par le réflexe (M6) : son registre, ses défauts (sombre, cruelle, plate, hors personnage, répétitive) et ses mots béquilles.
+- **Tics de langage** calculés par le code sur les répliques réellement envoyées, noms et nombres normalisés (« `<n>` secondes », « Bonsoir, mortels ») : dans le briefing, dans une ligne `Style:` de la situation pendant le chapitre (amorces, expressions et béquilles au repos, registres trop servis), et pour le Rêveur. **Une amorce trop servie est refusée** par `say` : une liste noire glissante, appliquée par le code (M6).
+- **Notes de ton** : une dérive (sombre, cruelle, hors personnage, plate ou répétitive) devient une note du moteur au réveil suivant (M6).
+- **`inspire`** (M6) : un outil instantané, sans modèle, qui rend trois idées : celles du programme du Scénariste qui conviennent aux joueurs en ligne, puis des graines (levier × souvenir, lieu, gag ou trait de la mémoire × rebondissement d'un deck × registre le moins servi), en excluant ce qui a servi récemment. Le battement porte au plus une idée du programme.
+- **Le Scénariste** (M6) prépare le programme pendant les rêves et, à la demande, trois idées notées pour un grand moment ; le Directeur choisit, adapte ou ignore.
 - **Arcs à fin programmée** et thèmes en jachère.
-- **Auto-évaluation pendant les rêves** : ce qui a fait réagir les joueurs est renforcé, ce qui est tombé à plat est abandonné.
+- **Auto-évaluation pendant les rêves** : ce qui a fait réagir les joueurs est renforcé, ce qui est tombé à plat est abandonné ; la revue a les réactions par registre (M6).
+- **Évaluation du ton hors ligne** (M6) : un juge Opus note les répliques sur une grille (drôle, juste, jamais glauque, jamais cruel, voix, répétition, lisibilité) et compare deux versions du prompt en rejouant des situations figées.
 - **Cooldowns et plafonds** dans le moteur : même si le modèle s'emballe, le jeu reste jouable.
 
 ## 12. Traces et débogage
@@ -433,7 +437,9 @@ Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[T
 /narrator why                  # pourquoi la dernière action (déclencheur + résumé de réflexion + actions)
 /narrator sql <requête>        # requête en lecture seule sur le Journal et les traces
 ```
-Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde au plus) puis lisent la base. Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`, `turns`…). Un tableau de bord web des traces viendra en M6.
+Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde au plus) puis lisent la base. Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`, `turns`…).
+
+**Le tableau de bord web** (M6, [design M6](design/M6.md) §8) : un serveur HTTP du mod, lié à `127.0.0.1` (port 8770 ; à distance, par un tunnel SSH), en lecture seule, protégé par un jeton que donne `/narrator dashboard`. Rendu côté serveur en HTML et CSS, **sans JavaScript** : une politique de sécurité (`Content-Security-Policy: default-src 'none'`) interdit tout script au navigateur. Il montre les tours, les conversations (transcriptions rendues), les tâches, les décisions, les coûts en dollars, la mémoire (canon, idées du Scénariste, documents), les fiches, les mécaniques, l'arsenal de la Forge, le style (diversité, registres, drapeaux de ton) et une page SQL en accès « modèle » : les messages privés y sont inaccessibles par construction.
 
 ## 13. Sécurité et administration
 
@@ -460,7 +466,11 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator sheet <joueur>
 /narrator memory …               # voir MEMOIRE.md §12
 /narrator trace …                # voir §12.4
-/narrator usage                  # consommation de tokens par rôle
+/narrator usage                  # consommation de tokens (et en dollars, M6) par rôle
+/narrator dashboard [reset]      # le lien du tableau de bord web ; reset : un nouveau jeton (M6)
+/narrator style                  # tics, béquilles, registres, diversité, drapeaux de ton (M6)
+/narrator memory ideas [all]     # les idées du Scénariste (M6)
+/narrator restart                # reconstruit le Narrateur sans arrêter Minecraft (M6)
 ```
 
 ## 14. Claude via LLMGW
@@ -523,7 +533,7 @@ Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, dur
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures. **Terminé le 18/10/2026** : correctifs de la relecture fusionnés (voir `design/reviews/M3_REVIEW.md`), puis évals E1 à E6 et recette E7 contre le vrai LLMGW (voir `design/handoff/M3-19.md`) |
 | **M4 — Mécaniques** | Moteur des mécaniques (abonné du bus, état dans le monde, actes par les vrais outils) ; défis suivis (objectifs détectés, barres de boss, enjeux payés sous les garde-fous), duels consentis, paris ; catalogue de châtiments, catégories et sévérité ; faveurs (pardon, grâce, joker) et offrandes ; pièges de blocs temporaires (`BlockRestorer`) et index des blocs posés fiable ; Règles (§10.1), lois et plans ; récits bornés ; rythme ; Éclaireur ; rappels persistants. Design : [design/M4.md](design/M4.md) | Des parties rythmées, des règles du monde folles. **Recette réelle le 19/10/2026** : évals L1 à L6 et soirée passées contre le vrai LLMGW (voir `design/handoff/M4-24.md`). **Terminé le 19/10/2026** : relecture du code (42 constats, lots `M4-FIX-A` à `I`) et correctifs de la recette (`design/handoff/M4-POST.md` : les créatures d’un châtiment ne tuent jamais) |
 | **M5 — Forge** | SDK Java des modules, compilation à chaud (ECJ), bac à sable (liste blanche, réécriture, chargeur filtrant, hôte), banc d'essai, outils d'introspection (référence du SDK, identifiants du jeu, arsenal), Forgeron, déploiements suivis par le moteur, arsenal de départ. Design : [design/M5.md](design/M5.md) | Il invente de nouvelles mécaniques |
-| **M6 — Finitions** | Scénariste, `inspire`, tics, évaluation du ton, tableau de bord web des traces | Il se renouvelle, et on voit tout |
+| **M6 — Finitions** | Relecture de chaque réplique (registre, défauts, béquilles) et veille du style (tics normalisés, amorces au repos refusées, ligne `Style:`, notes de ton) ; `inspire` ; le Scénariste (programme du rêve, idées `P-…`, saisons, récits prévus, à la demande) ; juge Opus et rejeu hors ligne ; tableau de bord web sans JavaScript ; `/narrator restart` ; compactage de `director.md` ; reliquats de M4. Design : [design/M6.md](design/M6.md) (18 tâches), après la fin de M5 | Il se renouvelle, et on voit tout |
 
 Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats, outils, garde-fous, tâches pour les agents) est dans [docs/design/M1_M2.md](design/M1_M2.md). Il tranche en outre, le 25/09/2026 :
 - **Un seul bus de faits** pour le Journal, la saillance, puis le moteur de mécaniques et les modules de la Forge (abonnés synchrones ou asynchrones à file bornée, désabonnement par propriétaire). L'interception d'actions du jeu (annuler des dégâts…) relève des crochets de la Forge, pas du bus.
@@ -558,6 +568,26 @@ Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md), relu et 
 - **Le Forgeron** a cinq outils et le SDK dans son prompt ; **le Directeur** commande (`forge_module`), déploie
   (`deploy_module`) et arrête (`stop_module`) : 47 outils.
 - **Pas de piège de sol** (fosse, patinoire) : la décision C reste absolue, aucun bloc ne remplace un bloc existant.
+
+Le design exécutable de M6 est dans [docs/design/M6.md](design/M6.md), rédigé le 20/10/2026 ; ses décisions D1 à D10
+attendent l'accord du propriétaire (§18.2 du design). Il propose :
+- **Le renouvellement par des mécanismes** : Haiku relit chaque réplique **après** son envoi (registre, défauts, mots
+  béquilles ; moins de 0,02 $ de l'heure) ; le code normalise noms et nombres dans les tics, tient une liste noire
+  glissante d'amorces que `say` refuse, une ligne `Style:` dans la situation et des notes de ton au réveil suivant.
+  Aucune relecture avant envoi (elle ralentirait chaque réponse).
+- **Le juge Opus hors ligne seulement**, pour les évals et le rejeu A/B d'un changement de prompt ; en jeu, la relecture
+  et la revue du Rêveur (registres × réactions) suffisent.
+- **`inspire` est du code** (programme du Scénariste, mémoire, arsenal, deck de rebondissements, exclusions de ce qui a
+  servi), outil du Directeur et du Scénariste ; le battement porte au plus une idée.
+- **Le Scénariste prépare, le Directeur décide** : des idées `P-…` (une table de la mémoire), une étape du rêve et un
+  rôle de `delegate` ; aucun outil d'action ; il ne commande pas de module (Q8 de M5 maintenue). `Plans` quitte le
+  Grimoire, et les récits prévus passent du Rêveur au Scénariste (une seule plume par sujet).
+- **Le tableau de bord** : lié à `127.0.0.1`, jeton, lecture seule, HTML et CSS rendus côté serveur, CSP sans script ;
+  la règle « pas de JavaScript » est appliquée aussi au tableau de bord, et vérifiée par le navigateur.
+- **`/narrator restart`** reconstruit le runtime joueurs en ligne, ce qui attend étant fait hors du thread serveur.
+- **`director.md`** : les consignes restent dans le prompt système (relu du cache d'un chapitre à l'autre, alors que le
+  briefing est réécrit à chaque chapitre) ; la place vient du compactage de ce qui répète les descriptions d'outils,
+  validé par le rejeu.
 
 ## 17. Décisions prises
 

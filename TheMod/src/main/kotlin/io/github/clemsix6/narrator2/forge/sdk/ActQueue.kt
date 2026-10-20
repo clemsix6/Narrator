@@ -144,6 +144,9 @@ class ActQueue(
     /** Outcomes whose callback waits for its call (server thread). */
     private val ready = ArrayDeque<Asked>()
 
+    /** The acts whose callback may still be called (given, not called nor forgotten yet): their callbacks are the memory gauge's roots. */
+    private val kept = ArrayList<Asked>()
+
     private val queue = Channel<List<Asked>>(Channel.UNLIMITED)
 
     private val askedCount = AtomicInteger()
@@ -217,6 +220,7 @@ class ActQueue(
         var called = 0
         while (called < CALLBACKS_PER_TICK && state != State.CLOSED) {
             val asked = ready.removeFirstOrNull() ?: break
+            kept.removeIf { it === asked }
             val callback = asked.callback ?: continue
             val outcome = asked.outcome ?: continue
             called++
@@ -239,8 +243,12 @@ class ActQueue(
         state = State.CLOSED
         queue.close()
         ready.clear()
+        kept.clear()
         settleLate()
     }
+
+    /** The module's callbacks that may still be called, as they are (never called here): roots of the memory gauge (M5-05). Server thread. */
+    fun callbacks(): List<Any> = kept.mapNotNull { it.callback }
 
     /** The outcomes that came back since the end: settled, never seen by the module. Server thread. */
     private fun settleLate() {
@@ -305,7 +313,8 @@ class ActQueue(
     private fun waiting(asked: Asked) {
         if (state == State.CLOSED) return
         if (ready.size >= WAITING_CALLBACKS) {
-            ready.removeFirst()
+            val forgotten = ready.removeFirst()
+            kept.removeIf { it === forgotten }
             log.debug { "$ref: more than $WAITING_CALLBACKS callbacks waiting, the oldest forgotten" }
         }
         ready.addLast(asked)
@@ -333,6 +342,7 @@ class ActQueue(
             if (callback == null) throw ForgeRefusal("then needs a callback")
             if (this.callback != null) throw ForgeRefusal("one callback per act: then was given one already")
             this.callback = callback
+            if (state != State.CLOSED) kept += this
             if (outcome != null) waiting(this)
         }
     }

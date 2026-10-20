@@ -55,6 +55,9 @@ class Scheduler : Timers {
     /** Timers waiting, repeating ones included. */
     val pending: Int get() = queue.size
 
+    /** The module's tasks of the timers waiting, as they are (never run here): roots of the memory gauge (M5-05). */
+    fun tasks(): List<Any> = queue.map { it.task }
+
     /** The module's `stop` is about to run: no timer from now on (none runs during `stop` either). */
     fun stopping() {
         if (phase == Phase.RUNNING) phase = Phase.STOPPING
