@@ -317,7 +317,7 @@ class ForgeServiceTest {
                 val cpu = ManagementFactory.getThreadMXBean()
                 val cpuBefore = cpu.currentThreadCpuTime
                 val began = System.nanoTime()
-                val report = forge.test(ForgeSamples.NAME, ForgeSamples.SOURCE)
+                val report = (1..4).map { forge.test(ForgeSamples.NAME, ForgeSamples.SOURCE) }.last()
                 val saved = forge.save(BEACON_NAME, BEACON, "Fireworks over a player.", "forger T-31")
                 val took = (System.nanoTime() - began) / 1_000_000
                 val callerCpu = (cpu.currentThreadCpuTime - cpuBefore) / 1_000_000
@@ -325,7 +325,7 @@ class ForgeServiceTest {
                 assertTrue(report.ok, report.text)
                 assertEquals(1, saved.version)
                 val longest = gaps.max() / 1_000_000
-                println("[forge] a test and a save took $took ms, $callerCpu ms of them on the caller's thread (its ticker included); its longest gap $longest ms")
+                println("[forge] four tests and a save took $took ms, $callerCpu ms of them on the caller's thread (its ticker included); its longest gap $longest ms")
                 assertTrue(callerCpu * 5 < took * 2, "the caller's thread worked $callerCpu ms of $took ms")
                 assertTrue(longest < 400, "the caller's thread was held $longest ms")
             }
