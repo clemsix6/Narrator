@@ -34,7 +34,7 @@ class AbandonTest {
     private val shared = SHARED
 
     @Test
-    fun `hashing a structure shared ten thousand times never holds the caller past the budget, and nothing reaches the SDK after`() {
+    fun `a single long call of the JDK never holds the caller past the budget, and nothing reaches the SDK after`() {
         val fake = FakeContext()
         val calls = Collections.synchronizedList(mutableListOf<Long>())
         val faults = mutableListOf<Fault>()
@@ -53,14 +53,14 @@ class AbandonTest {
         assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", fault.cause, "the server thread never waits for the line")
         assertEquals(1, threads.lost.alive(), "its thread runs on, lost")
 
-        // L1's hash takes ~80 ms on the lost thread; then its next step (the log) is refused, and it ends.
+        // The indexOf takes ~75 ms on the lost thread; then it returns and the thread ends (it is already abandoned).
         assertTrue(awaitNoLostThread(5_000), "the lost thread ended")
         val lived = (System.nanoTime() - abandonedAt) / 1e6
         assertEquals(before, calls.size, "no SDK call reached the context after the abandon")
         assertEquals(emptyList(), fake.logs.toList())
         assertNull(host.call("timer") { fake.timers[1].run() }, "a disabled module never runs again")
         assertTrue(stuck.isEmpty())
-        println("[host] L1 = 10,000 × L0 hashed in one JDK call: the caller went on after %.1f ms; the lost thread ended %.0f ms later".format(waited, lived))
+        println("[host] an O(n·m) indexOf in one JDK call: the caller went on after %.1f ms; the lost thread ended %.0f ms later".format(waited, lived))
     }
 
     @Test
@@ -94,12 +94,24 @@ class AbandonTest {
 
     @Test
     fun `at the bench the caller may wait for the line of the abandoned call`() {
+        // A mid-size shared structure (10 × L1) hashed by an unguarded HashSet(Collection) constructor: ~0.75 s in one
+        // JDK call — long enough that the lost thread's stack is still in it when read, short enough to end before the test does.
+        val module = Hosts.source(
+            "Search",
+            "List<Object> deep;",
+            """
+                List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
+                List<List<Integer>> l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
+                deep = new ArrayList<>(); for (int i = 0; i < 10; i++) deep.add(l1);
+                m.timers().every(1, () -> m.log("" + new HashSet<>(deep).size()));
+            """.trimIndent(),
+        )
         val fake = FakeContext()
-        val host = ModuleHost("Shared", Hosts.build("Shared", shared), threads, "bench Shared", lineWaitMillis = 2_000)
+        val host = ModuleHost("Search", Hosts.build("Search", module), threads, "bench Search", lineWaitMillis = 2_000)
         assertTrue(host.started(fake.context))
         val fault = assertNotNull(host.call("timer") { fake.timers[0].run() }?.fault)
         assertTrue(fault.cause.startsWith("time budget: one call ran past $BUDGET_MS ms and was abandoned in java.util."), fault.cause)
-        assertTrue("hashCode at Shared.java:" in fault.cause, fault.cause)
+        assertTrue("at Search.java:" in fault.cause, fault.cause)
         assertTrue(fault.line > 0)
         assertTrue(awaitNoLostThread(5_000))
     }
@@ -184,16 +196,24 @@ class AbandonTest {
         /** What a busy test machine may add. */
         const val SLACK_MS = 5
 
-        /** The exact case of finding 1: L0 of 10,000 numbers, L1 = 10,000 × L0, L2 = 10,000 × L1, each within its limits. */
+        /**
+         * Attacks the meter and the guard cannot see: one long call of the JDK that is neither a backward jump of the
+         * module nor a collection hash/equality the guard now bounds (M5-18). timer 0 is an O(n·m) `indexOf` of 32,768
+         * characters in 65,536 (≈ 75 ms in one call); timer 1 feeds the shared structure of M5-04's finding 1
+         * (L2 = 10,000 × L1 = 10,000 × L0) to `Stream.distinct()`, a factory the guard does not wrap, which hashes it
+         * in one call that runs for minutes. Both are given up by the host at the budget, their thread lost.
+         */
         val SHARED = Hosts.source(
             "Shared",
-            "List<List<Integer>> l1; List<List<List<Integer>>> l2;",
+            "List<List<List<Integer>>> l2; String text; String pattern;",
             """
                 List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
-                l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
+                List<List<Integer>> l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
                 l2 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l2.add(l1);
-                m.timers().every(1, () -> m.log("" + l1.hashCode()));
-                m.timers().every(1, () -> m.log("" + l2.hashCode()));
+                text = "a".repeat(65_535) + "b";
+                pattern = "a".repeat(32_767) + "b";
+                m.timers().every(1, () -> { if (text.indexOf(pattern) < 0) m.log("never"); });
+                m.timers().every(1, () -> m.log("" + Stream.of(l2).distinct().count()));
             """.trimIndent(),
         )
     }

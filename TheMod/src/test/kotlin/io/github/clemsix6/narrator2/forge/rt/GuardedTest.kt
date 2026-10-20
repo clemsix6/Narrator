@@ -210,6 +210,40 @@ class GuardedTest {
     }
 
     @Test
+    fun `the hash and equality of a shared structure are bounded, in one call, before the JDK does them`() {
+        // L1 = 10,000 references to one list of 10,000: a hashCode walks 10^8 element slots in one JDK call.
+        val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList())
+        val l1 = java.util.ArrayList<Any?>().apply { repeat(10_000) { add(l0) } }
+        val l1b = java.util.ArrayList<Any?>(l1)
+        // Explicit hash and equality, and the collection operations the design names.
+        assertFailsWith<ForgeLimit> { Guarded.hashCode(l1) }
+        assertFailsWith<ForgeLimit> { Guarded.equals(l1, l1b) }
+        assertFailsWith<ForgeLimit> { Guarded.hash(l1) }
+        assertFailsWith<ForgeLimit> { Guarded.containsAll(l1, l1b) }
+        assertFailsWith<ForgeLimit> { Guarded.removeAll(java.util.ArrayList(l1), l1b) }
+        assertFailsWith<ForgeLimit> { Guarded.retainAll(java.util.ArrayList(l1), l1b) }
+        assertFailsWith<ForgeLimit> { Guarded.contains(java.util.HashSet<Any?>(), l1) }
+        // The implicit paths: a list as a key of a map, or an element of a set.
+        assertFailsWith<ForgeLimit> { Guarded.put(java.util.HashMap<Any, Int>(), l1, 1) }
+        assertFailsWith<ForgeLimit> { Guarded.add(java.util.HashSet<Any>(), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.containsKey(java.util.HashMap<Any, Int>(), l1) }
+        // Arrays: deepHashCode and deepEquals descend into nested arrays.
+        val a0 = IntArray(10_000)
+        val a1 = Array<Any>(10_000) { a0 }
+        val a2 = Array<Any>(10_000) { a1 }
+        assertFailsWith<ForgeLimit> { Guarded.deepHashCode(a2) }
+        assertFailsWith<ForgeLimit> { Guarded.objectsDeepEquals(a2, a2.clone()) }
+
+        // A plain structure, non-shared and within what a module can build, is hashed and compared as the JDK does.
+        val small = java.util.ArrayList<Any?>((0 until 1_000).toList())
+        assertEquals(small.hashCode(), Guarded.hashCode(small))
+        assertTrue(Guarded.equals(small, java.util.ArrayList<Any?>(small)))
+        assertEquals(0, Guarded.hashCode(null))
+        assertEquals("x".hashCode(), Guarded.hashCode("x"))
+        assertTrue(Guarded.add(java.util.HashSet<Any?>(), listOf(1, 2, 3)), "a small list is a fine set element")
+    }
+
+    @Test
     fun `a sub-list and a list iterator count against their list`() {
         val list = java.util.ArrayList((0 until 10).toList())
         val view = Guarded.subList(list, 2, 5)
