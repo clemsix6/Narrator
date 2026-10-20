@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.count
+import io.github.clemsix6.narrator2.guard.CreatureShield
 import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
@@ -10,6 +11,8 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.mechanics.punish.Primitives
 import io.github.clemsix6.narrator2.mechanics.punish.PunishmentCatalog
+import io.github.clemsix6.narrator2.mechanics.rule.MarkOwner
+import io.github.clemsix6.narrator2.mechanics.rule.RuleMarks
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
@@ -18,6 +21,8 @@ import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.tool.action.PunishArgs
 import io.github.clemsix6.narrator2.tool.action.PunishTool
+import io.github.clemsix6.narrator2.tool.action.SpawnArgs
+import io.github.clemsix6.narrator2.tool.action.SpawnTool
 import kotlinx.coroutines.runBlocking
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
@@ -37,6 +42,8 @@ import java.time.Instant
  * - a blow that would kill their player is refused and turned into a rescue where he stands: nothing lost, nothing
  *   counted against the Narrator's quota of deaths;
  * - they go at the end of the punishment, at their player's death and at his departure.
+ *
+ * So are the hostile creatures the Director summons with `spawn` (M4-LEFTOVERS), but a module's (M5 §4.5).
  *
  * Each test has its own guards on a test clock ([Rig], as `PunishGameTests`); what the game's hooks do (targeting,
  * damage, deaths, departures) goes through the server's guards, which read the creatures' own mark.
@@ -128,6 +135,67 @@ class PunishmentCreaturesGameTests {
         helper.assertTrue(guests.all { it.isRemoved }, "the guests are sent away")
     }
 
+    /**
+     * A zombie the Director sends at Pistache with `spawn`, outside any punishment of the catalogue, is his alone too
+     * (M4-LEFTOVERS): Bartok, next to him, is no target and takes no blow; a blow that does not kill Pistache still hurts
+     * him; the one that would kill him is a rescue where he stands, nothing lost, nothing counted, the zombie sent away.
+     */
+    @GameTest
+    fun aZombieOfSpawnHurtsItsPlayerButNeverKills(helper: GameTestHelper) = rig(helper) { rig ->
+        rig.floor(7)
+        val pistache = rig.player(BlockPos(2, 1, 2))
+        val bartok = rig.player(BlockPos(5, 1, 5))
+        pistache.live.inventory.add(ItemStack(Items.DIAMOND, 5))
+        val result = rig.spawn(SpawnArgs(entity = "zombie", near = pistache.name, distance = 2, target = true, lifetimeMinutes = 1), act = 1)
+        helper.assertEquals(ToolStatus.OK, result.status, result.text)
+        val zombie = rig.creaturesOf(pistache).single()
+        helper.assertEquals(NarratorMob.SPAWN, zombie.getAttached(NarratorMob.TYPE)?.punishment, "the zombie is bound to Pistache")
+
+        zombie.target = bartok.live
+        helper.assertTrue(zombie.target !== bartok.live, "a passer-by is no target: ${zombie.target}")
+        bartok.live.damageCooldownTime = 0
+        helper.assertFalse(bartok.live.hurtServer(helper.level, helper.level.damageSources().mobAttack(zombie), 4f), "nor takes its blow")
+        helper.assertEquals(bartok.live.maxHealth, bartok.live.health, "Bartok untouched")
+
+        pistache.live.damageCooldownTime = 0
+        helper.assertTrue(zombie.doHurtTarget(helper.level, pistache.live), "the zombie's blow lands")
+        val hurt = pistache.live.health
+        helper.assertTrue(hurt < pistache.live.maxHealth && !pistache.live.isDeadOrDying, "a blow that does not kill still hurts: $hurt")
+        helper.assertFalse(zombie.isRemoved, "and the zombie stays")
+
+        val where = pistache.live.position()
+        pistache.live.health = 1f
+        pistache.live.damageCooldownTime = 0
+        zombie.doHurtTarget(helper.level, pistache.live)
+        helper.assertFalse(pistache.live.isDeadOrDying, "the fatal blow is refused")
+        helper.assertEquals(DeathGuard.RESCUE_HEALTH, pistache.live.health, "rescued, with three hearts")
+        helper.assertTrue(pistache.live.position().distanceTo(where) < 0.01, "where he stood: ${pistache.live.position()} (was $where)")
+        helper.assertEquals(5, count(pistache.live, Items.DIAMOND), "nothing lost")
+        val state = GuardStates.read(pistache.live)
+        helper.assertTrue(state.narratorKills.isEmpty() && state.lastDeathAt == null && !state.protectedDeath, "no death, none counted: $state")
+        helper.assertTrue((state.shield?.until ?: 0L) > System.currentTimeMillis(), "shielded from the Narrator a while: ${state.shield}")
+        helper.assertTrue(zombie.isRemoved, "the zombie is sent away")
+    }
+
+    /**
+     * A module's creature, summoned by its act through `spawn` and then the module's (M5 §4.5), is bound to nobody: its
+     * module aims it, and its target's death is the death guard's, as M5 decided. It stays when that player leaves.
+     */
+    @GameTest
+    fun aModulesCreatureIsBoundToNobody(helper: GameTestHelper) = rig(helper) { rig ->
+        rig.floor(7)
+        val pistache = rig.player(BlockPos(2, 1, 2))
+        val result = rig.spawn(SpawnArgs(entity = "zombie", near = pistache.name, distance = 2, lifetimeMinutes = 1), act = 1)
+        helper.assertEquals(ToolStatus.OK, result.status, result.text)
+        val zombie = rig.creaturesOf(pistache).single()
+        helper.assertTrue(CreatureShield.boundTo(zombie) != null, "summoned, the zombie is Pistache's")
+        RuleMarks.mark(zombie, MarkOwner.module(MODULE)) // what the module's act does with the creatures it summoned
+        helper.assertEquals(null, CreatureShield.boundTo(zombie), "a module's, bound to nobody")
+        pistache.close()
+        helper.assertFalse(zombie.isRemoved, "nor sent away with Pistache")
+        zombie.discard()
+    }
+
     /** The guests go at the end of the punishment, at their player's death and at his departure. */
     @GameTest
     fun theGuestsGoWithThePunishmentAndWithTheirPlayer(helper: GameTestHelper) = rig(helper) { rig ->
@@ -169,6 +237,7 @@ class PunishmentCreaturesGameTests {
         private val services =
             TestServices(minecraft = helper.level.server, clock = clock, settings = settings, players = helper.narrator().players, guards = guards, trace = base.trace)
         private val tool = PunishTool()
+        private val spawnTool = SpawnTool()
         val players = mutableListOf<TestPlayer>()
 
         /** A vulnerable player standing at [at] (relative), on the ground. */
@@ -185,9 +254,13 @@ class PunishmentCreaturesGameTests {
 
         /** `punish` of [player] as the Director's turn [act], on the server thread (its steps run inline). */
         fun punish(player: TestPlayer, id: PunishmentId, severity: Int, act: Long) = runBlocking {
-            val caller = Caller(Role.DIRECTOR, "creatures-gametest", turnId = act, taskId = null)
-            tool.run(ToolContext(services, caller, clock, tool.timeoutMs), PunishArgs(player.name, id, severity, REASON, "Le Mouton Candidat"))
+            tool.run(ToolContext(services, turn(act), clock, tool.timeoutMs), PunishArgs(player.name, id, severity, REASON, "Le Mouton Candidat"))
         }
+
+        /** The Director's own `spawn` ([args]) in its turn [act], on the server thread. */
+        fun spawn(args: SpawnArgs, act: Long) = runBlocking { spawnTool.run(ToolContext(services, turn(act), clock, spawnTool.timeoutMs), args) }
+
+        private fun turn(act: Long) = Caller(Role.DIRECTOR, "creatures-gametest", turnId = act, taskId = null)
 
         /** The creatures summoned for [player], loaded. */
         fun creaturesOf(player: TestPlayer): List<Mob> = Primitives.summonedFor(player.live).values.filter { !it.isRemoved }
@@ -201,6 +274,9 @@ class PunishmentCreaturesGameTests {
     private companion object {
         const val FIELD = "narrator2-gametest:oracle_field"
         const val REASON = "a traité le Narrateur de dieu de pacotille"
+
+        /** The deployment of a module that holds no creature anywhere else. */
+        const val MODULE = 990_801L
 
         /** 30 seconds of game: in the acceptance, the guests killed three players in 29 s. */
         const val SCENE_TICKS = 600
