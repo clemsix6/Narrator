@@ -7,6 +7,8 @@ import java.util.Locale
 /**
  * Measurements of one call to Claude, successful or not: one row of `llm_calls`.
  *
+ * @property model the model that answered: the role's, or the fallback model when a safety classifier
+ *   handed the request to another one (`llm/Fallback`); the role's when the call failed.
  * @property startedAt when the call started, with the server's time zone.
  * @property attempts HTTP requests sent, retries included.
  * @property requestId id of the last attempt, when known: the `request-id` response header, or
@@ -15,7 +17,9 @@ import java.util.Locale
  * @property timeToFirstTokenMs from the start of the last attempt to the first streamed content.
  * @property durationMs whole call, retries and waits included.
  * @property stopReason the API's `stop_reason`, e.g. `end_turn`; null when the call failed.
- * @property refusalCategory category of a refusal (`stop_details.category`), e.g. `cyber`.
+ * @property refusalCategory category of a refusal (`stop_details.category`), e.g. `cyber`; also set when
+ *   the requested model declined and a fallback model answered (the fallback's category, with a usable
+ *   [stopReason]).
  * @property error operator-facing description of a failure; null when the call succeeded.
  */
 data class CallStats(
