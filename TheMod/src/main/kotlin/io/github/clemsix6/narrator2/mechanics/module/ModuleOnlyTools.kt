@@ -75,8 +75,9 @@ data class HudArgs(
 /**
  * `hud`: a line above the hotbar of some players, or of everyone online, in the Narrator's color: a game's display (a
  * countdown, a score), not a line of the Narrator's: not journaled, and out of the speech limits that the Director and
- * the rules share. One line per player and second ([ForgeLimits.HUD_GAP_MS]), on the server, whatever module asks: the
- * players who got one less than a second ago are skipped, and when all of them did it is `DENIED (module_acts)`.
+ * the rules share. One line per player and second ([ForgeLimits.HUD_GAP_MS], less a tick of slack), on the server,
+ * whatever module asks: the players who got one less than a second ago are skipped, and when all of them did it is
+ * `DENIED (module_acts)`.
  */
 class HudTool : NarratorTool<HudArgs>(
     name = "hud",
@@ -98,7 +99,7 @@ class HudTool : NarratorTool<HudArgs>(
         if (audience.isEmpty()) refuse(ToolResult.failed("nobody is online"))
         val now = ctx.clock.millis()
         val (allowed, waiting) = synchronized(shown) {
-            audience.partition { now - (shown[it.uuid] ?: Long.MIN_VALUE / 2) >= ForgeLimits.HUD_GAP_MS }.also { (allowed, _) -> allowed.forEach { shown[it.uuid] = now } }
+            audience.partition { now - (shown[it.uuid] ?: Long.MIN_VALUE / 2) >= ForgeLimits.HUD_GAP_MS - SLACK_MS }.also { (allowed, _) -> allowed.forEach { shown[it.uuid] = now } }
         }
         if (allowed.isEmpty()) {
             refuse(ActQueue.denied("one line above the hotbar per player and second: ${ToolText.names(waiting)} got one less than a second ago"))
@@ -110,6 +111,15 @@ class HudTool : NarratorTool<HudArgs>(
         if (got.isEmpty()) refuse(ToolResult.failed("nobody got it: ${ToolText.names(allowed)} left the game"))
         val skipped = if (waiting.isEmpty()) "" else "; skipped (one line per player and second): ${ToolText.names(waiting)}"
         ToolResult.ok("ok: shown to ${ToolText.names(got)}$skipped", got)
+    }
+
+    private companion object {
+        /**
+         * A module's timer of one second runs every 20 ticks, but its lines reach this tool a few milliseconds early or
+         * late by the clock (the server's ticks and the acts' coroutine are not on the dot): without a tick of slack,
+         * about every other line of a countdown would be refused (M5-17).
+         */
+        const val SLACK_MS = 1_000L / Limits.TICKS_PER_SECOND
     }
 }
 
