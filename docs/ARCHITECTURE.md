@@ -221,7 +221,9 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
-Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), le **Forgeron** en M5 (une tâche à la fois, 40 requêtes et 20 minutes au plus, commandé par son propre outil), le **Scénariste** en M6 (une étape du rêve, et un rôle de `delegate`), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles réellement câblés.
+Trois assistants au plus en parallèle par défaut, chacun avec un nombre d'étapes et une durée plafonnés. Le Directeur et les assistants partagent le même moteur de conversation. M2 livre l'**Analyste** ; l'**Éclaireur** arrive en M4 avec les mécaniques qui en ont besoin (arènes des duels, lieux des défis et des plans), le **Forgeron** en M5 (une tâche à la fois, 40 requêtes et 20 minutes au plus, commandé par son propre outil), le **Scénariste** en M6 (une étape du rêve, et un rôle de `delegate`), les autres rôles avec leur jalon. L'`enum` des rôles de `delegate` ne contient que les rôles câblés dans le code ; un
+rôle momentanément indisponible (le Scénariste quand la mémoire ne tourne pas) est refusé avec sa raison, car la
+définition d'un outil ne change jamais ([relecture du design M6](design/reviews/M6_DESIGN_REVIEW.md), constat 4).
 
 ### 7.4 Chapitres et contexte
 - La conversation du Directeur est **append-only** : on n'édite jamais un tour passé, on ne change pas le prompt système ni la liste d'outils en cours de chapitre. C'est indispensable avec Opus 5.5 (sa réflexion est liée au préfixe exact de la conversation) et c'est ce qui rend le cache de prompt efficace.
@@ -470,7 +472,7 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator dashboard [reset]      # le lien du tableau de bord web ; reset : un nouveau jeton (M6)
 /narrator style                  # tics, béquilles, registres, diversité, drapeaux de ton (M6)
 /narrator memory ideas [all]     # les idées du Scénariste (M6)
-/narrator restart                # reconstruit le Narrateur sans arrêter Minecraft (M6)
+/narrator restart                # reconstruit le Narrateur sans arrêter Minecraft, serveur vide (M6)
 ```
 
 ## 14. Claude via LLMGW
@@ -533,7 +535,7 @@ Une fois M1 et M2 livrés, les plafonds (puissance d'explosion, invocations, dur
 | **M3 — Mémoire** | Fiches joueurs, canon, souvenirs, interactions, chapitres et briefing, Chroniqueur, rêves | Il se souvient, sur des centaines d'heures. **Terminé le 18/10/2026** : correctifs de la relecture fusionnés (voir `design/reviews/M3_REVIEW.md`), puis évals E1 à E6 et recette E7 contre le vrai LLMGW (voir `design/handoff/M3-19.md`) |
 | **M4 — Mécaniques** | Moteur des mécaniques (abonné du bus, état dans le monde, actes par les vrais outils) ; défis suivis (objectifs détectés, barres de boss, enjeux payés sous les garde-fous), duels consentis, paris ; catalogue de châtiments, catégories et sévérité ; faveurs (pardon, grâce, joker) et offrandes ; pièges de blocs temporaires (`BlockRestorer`) et index des blocs posés fiable ; Règles (§10.1), lois et plans ; récits bornés ; rythme ; Éclaireur ; rappels persistants. Design : [design/M4.md](design/M4.md) | Des parties rythmées, des règles du monde folles. **Recette réelle le 19/10/2026** : évals L1 à L6 et soirée passées contre le vrai LLMGW (voir `design/handoff/M4-24.md`). **Terminé le 19/10/2026** : relecture du code (42 constats, lots `M4-FIX-A` à `I`) et correctifs de la recette (`design/handoff/M4-POST.md` : les créatures d’un châtiment ne tuent jamais) |
 | **M5 — Forge** | SDK Java des modules, compilation à chaud (ECJ), bac à sable (liste blanche, réécriture, chargeur filtrant, hôte), banc d'essai, outils d'introspection (référence du SDK, identifiants du jeu, arsenal), Forgeron, déploiements suivis par le moteur, arsenal de départ. Design : [design/M5.md](design/M5.md) | Il invente de nouvelles mécaniques |
-| **M6 — Finitions** | Relecture de chaque réplique (registre, défauts, béquilles) et veille du style (tics normalisés, amorces au repos refusées, ligne `Style:`, notes de ton) ; `inspire` ; le Scénariste (programme du rêve, idées `P-…`, saisons, récits prévus, à la demande) ; juge Opus et rejeu hors ligne ; tableau de bord web sans JavaScript ; `/narrator restart` ; compactage de `director.md` ; reliquats de M4. Design : [design/M6.md](design/M6.md) (18 tâches), après la fin de M5 | Il se renouvelle, et on voit tout |
+| **M6 — Finitions** | Relecture de chaque réplique (registre, défauts, béquilles) et veille du style (tics normalisés, amorces au repos refusées, ligne `Style:`, notes de ton) ; `inspire` ; le Scénariste (programme du rêve, idées `P-…`, saisons, récits prévus, à la demande) ; juge Opus et rejeu hors ligne ; tableau de bord web sans JavaScript ; `/narrator restart` (serveur vide) ; compactage de `director.md`. Design : [design/M6.md](design/M6.md) (17 tâches, relu le 20/10/2026), après la fin de M5 ; les reliquats de M4 sont faits par le lot M4-LEFTOVERS | Il se renouvelle, et on voit tout |
 
 Le design détaillé et exécutable de M1 et M2 (contrats, schéma SQL, formats, outils, garde-fous, tâches pour les agents) est dans [docs/design/M1_M2.md](design/M1_M2.md). Il tranche en outre, le 25/09/2026 :
 - **Un seul bus de faits** pour le Journal, la saillance, puis le moteur de mécaniques et les modules de la Forge (abonnés synchrones ou asynchrones à file bornée, désabonnement par propriétaire). L'interception d'actions du jeu (annuler des dégâts…) relève des crochets de la Forge, pas du bus.
@@ -569,10 +571,12 @@ Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md), relu et 
   (`deploy_module`) et arrête (`stop_module`) : 47 outils.
 - **Pas de piège de sol** (fosse, patinoire) : la décision C reste absolue, aucun bloc ne remplace un bloc existant.
 
-Le design exécutable de M6 est dans [docs/design/M6.md](design/M6.md), rédigé le 20/10/2026 ; ses décisions D1 à D10
-attendent l'accord du propriétaire (§18.2 du design). Il propose :
+Le design exécutable de M6 est dans [docs/design/M6.md](design/M6.md), rédigé et relu le 20/10/2026
+([relecture](design/reviews/M6_DESIGN_REVIEW.md)) ; le superviseur a accepté D1 à D6, D8 et D10, D9 provisoirement
+(les noms des cinq registres attendent le propriétaire), et la relecture remplace D7 par son repli « serveur vide »
+(§18.2 du design). Il tranche :
 - **Le renouvellement par des mécanismes** : Haiku relit chaque réplique **après** son envoi (registre, défauts, mots
-  béquilles ; moins de 0,02 $ de l'heure) ; le code normalise noms et nombres dans les tics, tient une liste noire
+  béquilles ; 0,005 à 0,025 $ de l'heure) ; le code normalise noms et nombres dans les tics, tient une liste noire
   glissante d'amorces que `say` refuse, une ligne `Style:` dans la situation et des notes de ton au réveil suivant.
   Aucune relecture avant envoi (elle ralentirait chaque réponse).
 - **Le juge Opus hors ligne seulement**, pour les évals et le rejeu A/B d'un changement de prompt ; en jeu, la relecture
@@ -584,7 +588,9 @@ attendent l'accord du propriétaire (§18.2 du design). Il propose :
   Grimoire, et les récits prévus passent du Rêveur au Scénariste (une seule plume par sujet).
 - **Le tableau de bord** : lié à `127.0.0.1`, jeton, lecture seule, HTML et CSS rendus côté serveur, CSP sans script ;
   la règle « pas de JavaScript » est appliquée aussi au tableau de bord, et vérifiée par le navigateur.
-- **`/narrator restart`** reconstruit le runtime joueurs en ligne, ce qui attend étant fait hors du thread serveur.
+- **`/narrator restart`** reconstruit le runtime **serveur vide** (les connexions attendent la fin de l'échange), ce
+  qui attend étant fait hors du thread serveur : avec des joueurs en ligne, les garde-fous du §17 ne les protégeraient
+  plus pendant l'échange.
 - **`director.md`** : les consignes restent dans le prompt système (relu du cache d'un chapitre à l'autre, alors que le
   briefing est réécrit à chaque chapitre) ; la place vient du compactage de ce qui répète les descriptions d'outils,
   validé par le rejeu.
