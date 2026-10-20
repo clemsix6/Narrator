@@ -89,7 +89,9 @@ class EvilModulesTest {
                     assertTrue(compiled.ok, "${evil.name} compiles: ${compiled.problems}")
                     assertTrue(BytecodeGuard().check(compiled.classes).isEmpty(), "${evil.name} is clean to the guard (the rewriting and host are the barrier)")
                     val built = Instrumenter.rewrite(evil.name, compiled.classes)
-                    val host = ModuleHost(evil.name, built, threads, "evil ${evil.name}")
+                    // The game's budgets, and a margin a busy machine never outlasts (FLAKY-4): its meter or its guard
+                    // stops each attack, never a hand-over the machine was too busy to start in 5 ms.
+                    val host = ModuleHost(evil.name, built, threads, "evil ${evil.name}", abandonMarginNanos = BusyMachine.SLACK_NANOS)
                     host.start(FakeContext().context)
                     val disabled = host.disabled ?: fail("${evil.name} ran to the end, crossing every barrier")
                     // A deep walk cold can hit the meter's time budget before its own count cap; both are a sandbox stop.

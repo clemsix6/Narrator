@@ -288,10 +288,11 @@ class ModuleHost(
      * Lets everything go — instance, context, meter, classes, loader — and returns a weak reference to the loader,
      * for the [LeakWatch]. No code of the module runs after this.
      *
-     * The module thread goes too ([ModuleThreads.close]; a new one takes the next call of any module): once the code
-     * of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's own, or its
-     * meter's —, whose stack pins the module's classes, until another exception is thrown on that thread or it ends
-     * (FLAKY-4: measured, the last of twenty modules unloaded stayed alive on a warm JVM, never on an interpreted one).
+     * The module thread goes too ([ModuleThreads.renew]: a new one, started now, takes the next call of any module):
+     * once the code of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's
+     * own, or its meter's —, whose stack pins the module's classes, until another exception is thrown on that thread or
+     * it ends (FLAKY-4: measured, the last of twenty modules unloaded stayed alive on a warm JVM, never on an
+     * interpreted one).
      */
     fun unload(): WeakReference<ClassLoader> {
         val reference = WeakReference<ClassLoader>(loader)
@@ -303,7 +304,7 @@ class ModuleHost(
         gauge = null
         loader = null
         bridge.clear()
-        threads.close()
+        threads.renew()
         return reference
     }
 
