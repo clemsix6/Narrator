@@ -199,20 +199,21 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     /**
      * Effects, modifiers, what the ledger holds (a confiscation is harmful; a stake or what is owed is shown apart,
-     * under its purpose, never harmful), creatures and traps. An offering is not: it is the player's gift waiting
-     * for an answer, not the Narrator's doing, and the situation's `Offerings` line tells it (M4-24, finding 2: an
-     * offering among the active effects read like a confiscation with a deadline).
+     * under its purpose, never harmful, with no deadline: [Escrow.active]), creatures and traps, the soonest to end
+     * first. An offering is not: it is the player's gift waiting for an answer, not the Narrator's doing, and the
+     * situation's `Offerings` line tells it (M4-24, finding 2: an offering among the active effects read like a
+     * confiscation with a deadline).
      */
     override fun activeOn(uuid: UUID): List<ActiveEffect> {
         val state = states.snapshot(uuid)
+        val now = clock.millis()
         return buildList {
             state.effects.forEach { add(ActiveEffect("effect", EffectLedger.describe(it), it.expiresAt, it.harmful)) }
             state.modifiers.forEach { add(ActiveEffect("attribute", AttributeLedger.describe(it), it.expiresAt, it.harmful)) }
-            state.confiscations.filter { it.purpose != LedgerPurpose.OFFERING }
-                .forEach { add(ActiveEffect(it.purpose.id, it.what, it.returnAt, harmful = it.purpose == LedgerPurpose.CONFISCATION)) }
+            state.confiscations.filter { it.purpose != LedgerPurpose.OFFERING }.forEach { add(Escrow.active(it, now) { winner -> services.players.get(winner)?.ref?.name }) }
             addAll(mobs.activeOn(uuid))
             addAll(BlockRestorer.activeOn(uuid))
-        }.sortedBy { it.until }
+        }.sortedBy { it.until ?: Long.MAX_VALUE }
     }
 
     override fun deathsLeft(player: UUID): Int {
@@ -324,16 +325,17 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     /**
      * `ALLOW_DEATH` of [player]: whether the death may happen. A blow of a punishment's creature never kills
-     * (M4-POST: a punishment of the catalogue is a gag, not an execution): the punishment's creatures summoned for
-     * them are sent away, and the death is refused and turned into a rescue where they stand ([DeathGuard.rescue]
-     * in place: shielded 5 minutes, nothing lost, nothing counted). Any other death goes to the death guard.
-     * Server thread.
+     * (M4-POST: a punishment of the catalogue is a gag, not an execution; M4-LEFTOVERS: nor does a hostile creature
+     * of `spawn`): the creatures bound to them ([CreatureShield.boundTo]) are sent away, and the death is refused and
+     * turned into a rescue where they stand ([DeathGuard.rescue] in place: shielded 5 minutes, nothing lost, nothing
+     * counted). Any other death goes to the death guard. Server thread.
      */
     fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean {
         val creature = CreatureShield.punishmentOf(source) ?: return death.allowDeath(player, source)
         val gone = mobs.retirePunishments(player.uuid, clock.millis(), "a fatal blow refused")
         val sent = if (gone.isEmpty()) "" else ", ${gone.joinToString()} sent away"
-        death.rescue(player, "punish ${creature.punishment}: a fatal blow of its creatures$sent; a punishment never kills", inPlace = true)
+        val act = if (creature.punishment == NarratorMob.SPAWN) NarratorMob.SPAWN else "punish ${creature.punishment}"
+        death.rescue(player, "$act: a fatal blow of its creatures$sent; the Narrator's creatures never kill", inPlace = true)
         return false
     }
 

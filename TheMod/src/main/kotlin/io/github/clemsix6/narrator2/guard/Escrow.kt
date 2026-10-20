@@ -174,6 +174,34 @@ object Escrow {
     fun offeringBackLine(entry: Confiscation, player: String): String =
         "${ref(entry.id)} went back to ${ModelText.name(player)}, not taken: ${short(entry.what)}"
 
+    /**
+     * [entry] among its player's active effects (`Guards.activeOn`, the situation and the briefing read it): a
+     * confiscation (or an offering) as what it holds until it comes back; a stake or what is owed under its purpose,
+     * with no deadline (M4-LEFTOVERS: shown bare, `Bartok 2x minecraft:emerald until 21:40` told the Director nothing):
+     * - `2x minecraft:emerald staked on C-50: a bet that Mimosa wins`, settled when the challenge ends;
+     * - `2x minecraft:emerald staked on C-50 and lost: goes to Mimosa once both are online` (the winner [name]d from
+     *   their UUID, `its winner` when unknown);
+     * - `2x minecraft:emerald staked on C-50 and settled (back to them once their inventory has room)`;
+     * - `1x minecraft:golden_apple owed to them (given once their inventory has room): the reward of the challenge C-50`.
+     */
+    fun active(entry: Confiscation, now: Long, name: (UUID) -> String?): ActiveEffect {
+        val kind = entry.purpose.id
+        val waiting = "once their inventory has room"
+        return when (entry.purpose) {
+            LedgerPurpose.STAKE -> {
+                val staked = "${entry.what} staked" + entry.canon?.let { " on C-$it" }.orEmpty()
+                val purpose = when {
+                    entry.returnAt <= now -> "$staked and settled (back to them $waiting)"
+                    entry.owedTo != null -> "$staked and lost: goes to ${name(entry.owedTo) ?: "its winner"} once both are online"
+                    else -> staked + entry.reason?.let { ": $it" }.orEmpty()
+                }
+                ActiveEffect(kind, purpose, until = null, harmful = false)
+            }
+            LedgerPurpose.OWED -> ActiveEffect(kind, "${entry.what} owed to them (given $waiting)" + entry.reason?.let { ": $it" }.orEmpty(), until = null, harmful = false)
+            else -> ActiveEffect(kind, entry.what, entry.returnAt, harmful = entry.purpose == LedgerPurpose.CONFISCATION)
+        }
+    }
+
     /** A ledger description for the model, ids without `minecraft:`: `10x diamond, 1x iron_sword`. */
     fun short(what: String): String = what.replace("x minecraft:", "x ")
 

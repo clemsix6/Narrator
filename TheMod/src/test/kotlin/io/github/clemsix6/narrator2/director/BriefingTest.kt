@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.forge.api.ParamType
 import io.github.clemsix6.narrator2.forge.api.Sdk
 import io.github.clemsix6.narrator2.guard.ActiveEffect
 import io.github.clemsix6.narrator2.guard.Confiscation
+import io.github.clemsix6.narrator2.guard.Escrow
 import io.github.clemsix6.narrator2.guard.Guards
 import io.github.clemsix6.narrator2.guard.LedgerPurpose
 import io.github.clemsix6.narrator2.guard.PlayerPacing
@@ -147,6 +148,29 @@ class BriefingTest {
         assertContains(text, "Reminders: R-3 at 21:10 \"check that Bartok kept his word\"\n")
         assertFalse("unavailable" in text, text)
         assertTrue(text.length <= Briefing.MAX_CHARS)
+    }
+
+    /**
+     * A stake and what is owed tell their purpose among the active effects, with no deadline, as the guards give them
+     * ([Escrow.active]); an effect keeps its own (M4-LEFTOVERS).
+     */
+    @Test
+    fun `a stake and what is owed tell their purpose among the active effects`() {
+        history()
+        val at = now.toEpochMilli()
+        val names = { _: UUID -> null }
+        guards.active[bartok.uuid] = listOf(
+            ActiveEffect("effect", "slowness II", at + 60_000, harmful = true),
+            Escrow.active(
+                Confiscation(812, emptyList(), "2x minecraft:emerald", at, at + 7 * 86_400_000L, "a bet that Mimosa wins", null, LedgerPurpose.STAKE, canon = 50), at, names,
+            ),
+            Escrow.active(Confiscation(813, emptyList(), "1x minecraft:golden_apple", at, at, "the reward of the challenge C-50", null, LedgerPurpose.OWED), at, names),
+        )
+        assertContains(
+            render(),
+            "Your active effects: Bartok slowness II (effect) until 21:01, Bartok 2x minecraft:emerald staked on C-50: a bet that Mimosa wins (stake), " +
+                "Bartok 1x minecraft:golden_apple owed to them (given once their inventory has room): the reward of the challenge C-50 (owed)\n",
+        )
     }
 
     // ── §18.2 (2) ───────────────────────────────────────────────────────────────────────────────────

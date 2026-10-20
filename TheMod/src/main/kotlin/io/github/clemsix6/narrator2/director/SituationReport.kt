@@ -126,7 +126,9 @@ class SituationReport(private val services: NarratorServices, private val digest
 
     private fun effects(online: List<LivePlayer>): String {
         val effects = online.flatMap { live ->
-            services.guards.activeOn(live.ref.uuid).map { "${who(live.ref)} ${ModelText.escape(it.what)} until ${hours.format(Instant.ofEpochMilli(it.until))}" }
+            services.guards.activeOn(live.ref.uuid).map {
+                "${who(live.ref)} ${ModelText.escape(it.what)}" + it.until?.let { until -> " until ${hours.format(Instant.ofEpochMilli(until))}" }.orEmpty()
+            }
         }
         return if (effects.isEmpty()) "none" else effects.joinToString(", ")
     }
