@@ -573,8 +573,8 @@ Le design exécutable de M5 est dans [docs/design/M5.md](design/M5.md), relu et 
 
 Le design exécutable de M6 est dans [docs/design/M6.md](design/M6.md), rédigé et relu le 20/10/2026
 ([relecture](design/reviews/M6_DESIGN_REVIEW.md)) ; le superviseur a accepté D1 à D6, D8 et D10, D9 provisoirement
-(les noms des cinq registres attendent le propriétaire), et la relecture remplace D7 par son repli « serveur vide »
-(§18.2 du design). Il tranche :
+(les noms des cinq registres attendent le propriétaire), et, pour D7, le repli « serveur vide » que proposait la
+relecture ; le propriétaire pourra rouvrir plus tard le cas joueurs en ligne (§18.2 du design). Il tranche :
 - **Le renouvellement par des mécanismes** : Haiku relit chaque réplique **après** son envoi (registre, défauts, mots
   béquilles ; 0,005 à 0,025 $ de l'heure) ; le code normalise noms et nombres dans les tics, tient une liste noire
   glissante d'amorces que `say` refuse, une ligne `Style:` dans la situation et des notes de ton au réveil suivant.

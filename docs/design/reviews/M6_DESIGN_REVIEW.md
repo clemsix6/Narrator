@@ -16,8 +16,9 @@ interdit du §17 tombe, le serveur gèle, ou le découpage casse le build de plu
 **finition**.
 
 **Bilan** : 17 constats — **2 bloquants, 6 importants, 8 mineurs, 1 finition**. Deux changements de périmètre :
-**`/narrator restart` passe au repli « serveur vide »** (D7, constat 1) et **la tâche M6-15 est annulée** (ses deux
-points sont faits par M4-LEFTOVERS, constat 8). Dix-sept tâches restent.
+**`/narrator restart` passe au repli « serveur vide »** (D7, constat 1 ; confirmé par le superviseur) et **la tâche
+M6-15 est annulée** (ses deux points sont faits par M4-LEFTOVERS, fusionné en `ee0abdd`, constat 8). Dix-sept tâches
+restent. La branche de la relecture a fusionné `main` après `ee0abdd`.
 
 **Ce qui tient.** Les fondations sont justes et vérifiées dans le code : `ReflexClient.label(system, request, schema)`
 est bien générique (`reflex/ReflexClient.kt:126`) ; `NarratorSpoke` porte `turnId` et `operator`
@@ -199,13 +200,20 @@ réelles (`REFLEX-HAIKU` : 0,0001 à 0,0005 $ l'appel ; `M3-19` §21.4 : 0,08 à
 
 8. **IMPORTANT (découpage, contexte du superviseur) : M6-15 est faite par M4-LEFTOVERS.**
    - Où : `M6.md` §11 (deux lignes), §15.1, §15.2, M6-15.
-   - L'agent M4-LEFTOVERS corrige le `spawn` du Directeur (ses créatures liées à leur joueur, sans tuer) et les mises
-     dans les effets actifs (leur but indiqué plutôt que leur retrait), plus la description de `glowing` et un GameTest
-     instable. Ce sont les deux seuls points de M6-15 ; il ne reste de « Pour la suite » de `M4-POST` qu'une question
-     de règle (une mort d'une autre cause pendant un châtiment du catalogue reste comptée), qui n'est pas une tâche
-     tant que le propriétaire ne l'a pas tranchée, et une note sur `forgetTheMinute` pour les tests.
-   - Changement : **M6-15 est annulée** (le numéro reste réservé) ; le §11 renvoie à M4-LEFTOVERS ; M6-17 vérifie
-     qu'il est fusionné. Si M4-LEFTOVERS n'était pas fusionné à l'étape 0, la tâche serait rouverte telle quelle.
+   - M4-LEFTOVERS est fusionné dans `main` (`ee0abdd`, `handoff/M4-LEFTOVERS.md`). Il fait les deux points de M6-15,
+     **autrement que ne le prévoyait `M6.md`** :
+     - les créatures hostiles de `spawn` portent la marque `NarratorMob.SPAWN`, ne visent et ne blessent que leur
+       joueur, et leur coup fatal devient un sauvetage ; les créatures d'un module en sont exclues (M5 §4.5) ;
+     - les mises et les dus **restent** dans `activeOn` (« Your active effects ») au lieu d'en sortir, mais sous leur
+       but (`Escrow.active` : « staked on C-50: a bet that Mimosa wins », « owed to them… ») et sans échéance
+       (`ActiveEffect.until` devient `Long?`).
+     Il corrige aussi la description de `glowing` dans `apply_effect` et un GameTest instable. Il ne reste de « Pour
+     la suite » de `M4-POST` qu'une question de règle (une mort d'une autre cause pendant un châtiment du catalogue
+     reste comptée), qui n'est pas une tâche tant que le propriétaire ne l'a pas tranchée.
+   - Changement : **M6-15 est annulée** (le numéro reste réservé) ; le §11 et le bloc de M6-15 décrivent ce que
+     M4-LEFTOVERS a fait, et `M6.md` ne cite plus l'ancien comportement prévu (les mises sorties d'`activeOn`). Une
+     conséquence pour M6 : le tableau de bord (M6-10, M6-12) rend un `ActiveEffect` sans rien après le but quand
+     `until` est nul, comme la situation et le briefing.
 
 9. **MINEUR (relecture Haiku) : disjoncteur partagé, ligne `llm_calls`, schéma, coût.**
    - Le disjoncteur de `ReflexClient` (5 échecs de suite → 5 min, `reflex/ReflexClient.kt:80`) est commun au tri du
@@ -334,8 +342,9 @@ réelles (`REFLEX-HAIKU` : 0,0001 à 0,0005 $ l'appel ; `M3-19` §21.4 : 0,08 à
 - **D5** (une relecture Haiku par réplique) : **acceptée**.
 - **D6** (juge Opus hors ligne seulement) : **acceptée**.
 - **D7** (`/narrator restart` complet, joueurs en ligne) : acceptée par le superviseur sous réserve d'un risque
-  sérieux ; **la relecture en trouve un** (constat 1 : le §17 tombe pendant l'échange). **Alternative intégrée : le
-  repli « serveur vide »**, avec les connexions retenues pendant l'échange. Au superviseur de confirmer.
+  sérieux ; **la relecture en trouve un** (constat 1 : le §17 tombe pendant l'échange). **Le superviseur confirme le
+  repli « serveur vide »**, avec les connexions retenues pendant l'échange ; le propriétaire pourra rouvrir plus tard
+  le cas joueurs en ligne.
 - **D8** (compacter « Comment tu travailles », validé par le rejeu) : **acceptée**.
 - **D9** (cinq registres de plus dans la voix) : **acceptée provisoirement** ; les noms (bande-annonce, guide
   touristique, horoscope, mode d'emploi, vente aux enchères) seront validés par le propriétaire. Ils sont tenus à un
@@ -345,7 +354,8 @@ réelles (`REFLEX-HAIKU` : 0,0001 à 0,0005 $ l'appel ; `M3-19` §21.4 : 0,08 à
 ## Ce que le propriétaire doit encore trancher
 
 - Les noms des cinq registres (D9) et, s'il le veut, « service client céleste » → « service client » (constat 15).
-- Le repli « serveur vide » de `/narrator restart` (D7, constat 1), si un redémarrage joueurs en ligne lui importe.
+- Plus tard, s'il le souhaite : rouvrir le redémarrage joueurs en ligne (D7 : le superviseur a retenu le repli
+  « serveur vide »).
 - La relecture de `storyteller.md` (M6-07), du compactage (M6-14) et des ajouts de `director.md` (M6-16).
 - Le point laissé ouvert par `M4-POST` : une mort d'une autre cause pendant un châtiment du catalogue reste comptée.
 
