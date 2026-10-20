@@ -814,6 +814,7 @@ class PlayerActionGameTests {
             // Neutral in the game, a punishment all the same (M4 review, finding 33): seen through every wall.
             act(ApplyEffectTool(), ApplyEffectArgs(listOf(bob.name), "glowing", seconds = 5))
             helper.assertTrue(GuardStates.read(bob.live).effects.single { it.effect == "minecraft:glowing" }.harmful, "glowing is harmful in the ledger: a pardon lifts it")
+            helper.assertTrue("A harmful effect, glowing included, is a punishment" in ApplyEffectTool().description, "and the tool's description says so (M4-LEFTOVERS)")
             act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.SCALE, multiply = 0.5, seconds = 10))
             act(SetAttributeTool(), SetAttributeArgs(bob.name, AttributeKey.BLOCK_BREAK_SPEED, multiply = 0.5, seconds = 10))
             act(LaunchTool(), LaunchArgs(bob.name, LaunchDirection.UP, 0.5))

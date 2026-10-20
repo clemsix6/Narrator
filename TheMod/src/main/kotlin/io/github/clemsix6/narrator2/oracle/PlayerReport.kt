@@ -148,9 +148,8 @@ class PlayerReport(private val player: ServerPlayer) {
     fun effects(mine: List<ActiveEffect>, now: Long): List<String> {
         val active = player.activeEffects.sortedBy { it.effect.registeredName }.map { describe(it) }
         val yours = mine.map { effect ->
-            val left = effect.until - now
-            val end = if (left > 0) "ends in ${ToolText.duration(left)}" else "overdue"
-            "${effect.what} (${effect.kind}, $end${if (effect.harmful) ", punishment" else ""})"
+            val end = effect.until?.let { until -> if (until > now) "ends in ${ToolText.duration(until - now)}" else "overdue" }
+            "${effect.what} (${listOfNotNull(effect.kind, end, "punishment".takeIf { effect.harmful }).joinToString(", ")})"
         }
         return listOf(
             "effects: " + active.ifEmpty { listOf("none") }.joinToString(" · "),
