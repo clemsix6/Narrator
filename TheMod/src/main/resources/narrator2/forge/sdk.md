@@ -8,7 +8,7 @@ A module is one Java 25 file compiled against this SDK and part of `java.base` o
 - One `public final class` named after the module in UpperCamelCase (`word_race` → `WordRace`), `implements ForgeModule`, with a public constructor without arguments (or none). Nested classes, records, enums, pattern switches, lambdas, streams: fine.
 - `@ModuleInfo(name = "word_race", summary = "…")`: the name, `[a-z][a-z0-9_]{2,31}`, is the tools' `name`; the summary, one English line (120 chars): what players see.
 - `@Param(…)` once per parameter, 8 at most: a snake_case name; `doc`, one English line (120 chars); `required = false` takes its `fallback` (INTEGER, NUMBER and BOOLEAN need one); `min`, `max` bound an INTEGER or a NUMBER, how many PLAYERS (8 at most), how long a TEXT (300 at most); `choices`: a TEXT's only values. The module reads checked values only.
-- Text forms (`fallback`, `Bench.start`): PLAYER `Bartok`; PLAYERS `Bartok,Mimosa`; INTEGER `6`; NUMBER `2.5`; TEXT as is; BOOLEAN `true`; PLACE `120 64 -30`, `120 64 -30 the_nether`, or an online player's name (where they stand at the start).
+- Text forms (`fallback`, `Bench.start`): PLAYER `Bartok`; PLAYERS `Bartok,Mimosa`; INTEGER `6`; NUMBER `2.5`; TEXT as is; BOOLEAN `true`; PLACE `120 64 -30`, `120 64 -30 the_nether`, or an online player's name.
 - `Scenarios`: a nested `public static final class Scenarios`, up to 8 methods `public void name(Bench b)`, helpers private or static; one at least for `forge_save` (§8).
 - Code, comments, `summary`, `doc` and `log` lines are English; all that players or the Director read is French.
 
@@ -18,7 +18,7 @@ A module is one Java 25 file compiled against this SDK and part of `java.base` o
 - Nothing blocks: acts are queued, done after the call; their `Outcome` comes a tick later.
 - It ends when its time runs out (`ctx.endsAt()`, 5 minutes to 7 days), when it is stopped, when it calls `ctx.end(why)`, or when its faults disable it (§7). Then `stop(ctx, why)` runs once, never after a fault: reads work, acts are dropped. Its creatures are taken back after it.
 - State lives in fields. After a server restart: a new instance, `start` with `ctx.restarted()` true: `ctx.storage()` back, creatures back as their chunks load, no timers nor subscriptions; the restart's facts were missed.
-- Ids have no `minecraft:` (`cow`, `diamond_ore`, `the_nether`, `story/mine_stone`); `game_ids` lists them. Players are names, creatures UUIDs as text, times epoch ms, delays ticks (20 a second).
+- Ids have no `minecraft:` (`cow`, `diamond_ore`, `the_nether`); `game_ids` lists them. Players are names, creatures UUIDs as text, times epoch ms, delays ticks (20 a second).
 - A refused SDK call throws `ForgeRefusal`, a RuntimeException you may catch: a limit of the SDK, a bad argument, a deployment that is over. A refused act throws nothing: its `Outcome` says so.
 
 ## 3. Reference
@@ -92,7 +92,7 @@ interface Acts {  // §4
   Pending hud(String player, String text);  // the action bar, 80 chars; null: everyone
   Pending sound(String player, String sound);  // entity.chicken.egg; null: everyone
   Pending particles(Place at, String particle, int count);  // 1 to 200
-  Pending fireworks(Place at, int count);  // 1 to 8, harmless
+  Pending fireworks(Place at, int count);  // 1 to 8, harmless; from open ground 6 blocks from any player, else failed
   Pending lightning(Place at);  // harmless
   Pending smite(String player, int hearts);  // 1 to 5
   Pending explosion(Place at, double power, boolean hurts);  // 0.5 to 4; never breaks a block
@@ -142,7 +142,7 @@ interface Creature {  // steered at once; once not its own, ForgeRefusal but for
 interface Ground {
   Pending place(List<Cell> cells, String block, int seconds);  // an act: 1 to 64 loaded air cells, all or nothing, 1 to 120 s
 }
-interface Storage {  // texts kept with the world, within the MAX_STORAGE limits
+interface Storage {  // texts kept with the world (MAX_STORAGE limits); a long as text: Long.toString, Long.parseLong
   String get(String key);  // null: none
   void put(String key, String value);  // null removes
   void remove(String key);
@@ -155,7 +155,7 @@ interface Storage {  // texts kept with the world, within the MAX_STORAGE limits
 interface Game {  // the judged challenge it referees
   String id();  // C-75
   List<String> players();  // its participants
-  boolean running();  // false once won, lost, cancelled or expired
+  boolean running();  // true until its verdict, past its deadline too
   Pending win(List<String> winners, String note);  // among players(); note: French, how they won; once
   Pending lose(String note);  // nobody won
 }
@@ -226,7 +226,7 @@ final class Limits {  // constants: Limits.TICKS_PER_SECOND
 
 Each act calls one of the Narrator's tools, checked as for the Director; the acts of one call of the module are one turn for the guards (a protected player, one already punished in it, one dead minutes ago or in grace, the same punishment too soon, the chaos level: refused). 4 acts a call (refused ones count), 30 a minute; `say`, `sayTo`, `title`: 4 a minute, within the server's speech limit shared with the Director; `hud`: once a second per player. Beyond: `DENIED (module_acts): …`, nothing done.
 
-`Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Read it when it matters; never insist, the same act is refused again. Fall back, say something else, or end.
+`Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Test `ok()`, not a status. Never insist on the same player: in the callback (a new call), try another one, or give up and say something else.
 
 - The tools, as `refuseNext` names them: `say` (`say`, `sayTo`), `show_title`, `hud`, `play_sound`, `particles`, `fireworks`, `lightning` (`lightning`, `smite`), `explosion`, `apply_effect`, `set_attribute`, `launch`, `teleport` (both), `spawn`, `punish`, `place_blocks` (`ground().place`), `creature_attack` (`Creature.attack`), `game` (`win`, `lose`).
 - Hostile, refused like a punishment: `smite`, `launch`, `punish`, `teleportRandom`, `attack`; an `explosion` that hurts; a harmful `effect`; an `attribute` against them; a `teleport` beyond 32 blocks; a `spawn` of hostile creatures near a player or with a target; a `place` within 2 blocks of a player.
@@ -264,7 +264,7 @@ The bench is a simulated world, with the game's sandbox and SDK; acts are record
 2. **Dry checks**: each distinct act is checked by the real tool at chaos 3, as if the Director asked: an unknown id, a severity of 5… fail the test, with the module's line.
 3. **Scenarios**, each on a new bench: no player, air from y = 64 up, stone below, plains, clear, `dayTime` 6,000 plus the ticks; the deployment C-1 lasts 10 minutes; a challenge is C-2. The first false `check`, exception, fault or call over 20 ms fails it; 30 s for the whole bench.
 
-Fidelity: no physics, collisions, chunks nor guards (but `refuseNext`); creatures do not fight back; `moveTo` walks 0.2 × speed block a tick, straight; `velocity` and `push` move them each tick; a spawn's creatures appear the tick after and vanish after their lifetime. Every act answers `ok (simulated)`, but a refusal you impose, a player not online (`invalid`), `place` on a cell that is not air (`failed`), `hud` twice a second.
+Fidelity: no physics, collisions, chunks nor guards (but `refuseNext`); creatures do not fight back and move straight (`moveTo`: 0.2 × speed block a tick); a spawn's appear the tick after. Every act answers `ok (simulated)`, but a refusal you impose, a player not online (`invalid`), `place` on a cell that is not air (`failed`), `hud` twice a second.
 
 ```java
 interface Bench {
@@ -298,14 +298,13 @@ Write two scenarios at least: the normal case, and a refusal of the guards (`ref
 ## 9. What costs tries
 
 - `ctx.end` drops every act asked in the same call, a `win` too (`game won: Mimosa → dropped`): end in the callback of the last act, `last.then(o -> ctx.end(why))` (§10).
-- Finish before `ctx.endsAt()`, 15 s ahead: the expiry drops a verdict on its way. Rhythms in ticks (timers count the engine's), durations and deadlines in `ctx.now()`.
-- A game speaks through `hud` (80 chars, `Text.cut`): `say` and `title` eat the speech limit the Director shares (8 a minute for the server). Two lines a game: the rule, the result.
-- 4 acts a call: with many players, spread the `hud` lines over timer runs (`hud` with a null player reaches all).
+- Finish 10 to 15 s before `ctx.endsAt()`: acts asked in `stop`, and a verdict on its way at the expiry, are dropped. Rhythms in ticks (timers count the engine's), durations and deadlines in `ctx.now()`.
+- A game speaks through `hud` (80 chars, `Text.cut`; `every(20)` for a display each second): `say` and `title` eat the speech limit the Director shares. Two lines a game: the rule, the result.
+- 4 acts a call: with many players, one timer per player.
 - `tellDirector` notes, `end` reasons, `win` and `lose` notes: French, factual, third person (« Mimosa a gagné », never « tu », « je » nor « vous »), or the memory refuses them.
-- `Game.running()` stays true until the verdict, past the challenge's deadline too.
-- A scenario reads a draw (`ctx.random()`) in `b.acts()`, then plays it (§10).
+- A scenario reads a draw (`ctx.random()`) in `b.acts()` or `b.notes()`, then plays it (§10).
 - `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. SDK lists are unmodifiable. `then` once per act; acts asked in `stop` are dropped.
-- The built-in modules (version 0) are tested examples: `module_read` `tag` and `simon_says`, games that referee a challenge and speak through `hud`.
+- The built-in modules (version 0) are tested examples to `module_read`: `gravity_storm` (short: a refused hostile act tried on another player), `hot_cold` (storage, restart, a timer per player, a challenge), `tag` and `simon_says` (games that referee a challenge).
 
 ```java
 ctx.acts().spawn("cow", "Bartok", Spawn.of(3).withHeight(4).withName("Ballon")).then(o -> {

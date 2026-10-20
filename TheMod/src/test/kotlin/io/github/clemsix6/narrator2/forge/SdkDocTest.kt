@@ -158,16 +158,16 @@ class SdkDocTest {
     }
 
     /**
-     * A Forge of its own for [body], warmed by a first `forge_test` of an empty module whose report is not read: the
-     * first module of a JVM pays the loading of the compiler and the bench in its first calls (M5-10, M5-16), which the
-     * bench's 20 ms per call do not forgive on a busy machine.
+     * A Forge of its own for [body], warmed by a first `forge_test` of a module that says one line, whose report is not
+     * read: the first module of a JVM pays the loading of the compiler, the bench and the path of an act in its first
+     * calls (M5-10, M5-16), which the bench's 20 ms per call do not forgive on a busy machine.
      */
     private suspend fun withForge(body: suspend (ForgeService) -> Unit) {
         val dir = Files.createTempDirectory("narrator2-sdk-doc")
         val services = TestServices(dataDir = dir)
         val forge = ForgeService(services, ArsenalStore(dir.resolve(ForgeService.ARSENAL_DIR), services.clock, builtInNames = emptyList()))
         try {
-            forge.test(SNIPPET_NAME, SNIPPET_MODULE.replace("SNIPPET", ""))
+            forge.test(SNIPPET_NAME, WARM_UP)
             body(forge)
         } finally {
             forge.stop()
@@ -349,6 +349,10 @@ class SdkDocTest {
                 }
             }
         """.trimIndent() + "\n"
+
+        /** The snippets' module with nothing in its snippet, whose `start` says one line. */
+        val WARM_UP = SNIPPET_MODULE.replace("SNIPPET", "")
+            .replace("public void start(ModuleContext ctx) {}", "public void start(ModuleContext ctx) { ctx.acts().say(\"Échauffement.\"); }")
 
         /** Every public type of the SDK's two packages, by its key: `Acts`, `GameFact.Chat`, `Bench`. */
         val SDK: Map<String, Class<*>> = listOf("io/github/clemsix6/narrator2/forge/api", "io/github/clemsix6/narrator2/forge/api/test").flatMap { dir ->
