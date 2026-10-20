@@ -146,7 +146,36 @@ saturée, une compilation de 40 ms de travail a pris 13,8 s (M5-15). Le fil rest
 
 ## Ce que M5-21 et M5-22 doivent savoir
 
-À remplir.
+### M5-21 (l'assemblage, fusionné avant moi)
+
+- **`onUnavailable`** : `ForgeService(services, onUnavailable = { reason -> … })` remplace le guet de `ForgeSetup.kt`
+  (une lecture de `available` par seconde) : appelé une fois, sur le fil qui constate la chute (le fil du pool de la
+  surveillance du compilateur, ou celui qui perd le troisième fil), jamais à `stop()`. À brancher par M5-21 (je n'ai pas
+  touché `ForgeSetup.kt`).
+- **Une compilation par version** au redémarrage : plus de `compiled keeper v1` en double.
+- Le **moteur** construit ses hôtes aux valeurs du jeu (aucun crochet) : la patience du démarrage (2 s) et la priorité du
+  fil des modules (celle du thread serveur, 8) s'appliquent d'elles-mêmes. Le **banc** a sa patience (10 s) dans
+  `ForgeService.bench`.
+- `ModuleThreads.close()` à l'arrêt, inchangé. Un fil lâché qui court encore au déchargement d'un module est révoqué et
+  compté parmi les fils perdus (prudent : il finit au prochain code du module).
+
+### M5-22 (la recette)
+
+- **Ce qu'il faut compter sur le serveur réel** (journal `Forge`, `INFO`) : `its <call> call was given up at N ms, its
+  thread held back; it runs on alone` (un appel lâché), puis `… ended without computing past its budget … nobody's fault
+  (N so far)` (réglé sans faute), et les `DEBUG` `… is skipped` (appels sautés puis rejoués). Une décision `mechanic fault`
+  sur un module sain serait un défaut à signaler, avec sa cause.
+- Sur le serveur, le fil des modules tourne à la priorité 8 : sous 32 fils de calcul en plus, la sonde ci-dessous n'a vu
+  **aucun** appel retenu au-delà de 0,4 ms à cette priorité.
+- La **lenteur** est du travail, plus du temps mural : `ModuleView.msPerSecond` (temps mural) peut dépasser 50 sans faute
+  sur un serveur chargé ; c'est voulu.
+- La **jauge** sans horloge : une marche peut durer plus de 5 ms sur un module qui retient beaucoup ; elle tourne sur le
+  fil du module, le serveur ne l'attend jamais plus de 25 ms (au-delà, elle finit seule et son verdict vient ensuite).
+- **ECJ** : à la priorité minimale, sous forte charge, une compilation peut prendre des minutes de temps mural sans
+  jamais être « trop longue » (son travail est compté) ; `forge_test` a son propre délai de 45 s (l'outil). Si la recette
+  montre des `forge_test` qui expirent sous charge, monter le fil du compilateur à la priorité normale est la piste (une
+  décision de conception de M5-02, hors de ma tâche).
+- Refaire une série de démarrages réels avec la sonde de M5-21 une fois cette branche fusionnée.
 
 ## Petits défauts réglés au passage
 

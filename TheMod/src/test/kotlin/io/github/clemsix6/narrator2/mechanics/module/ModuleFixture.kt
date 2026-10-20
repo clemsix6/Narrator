@@ -101,6 +101,9 @@ internal class ModuleFixture(
         settings = testSettings(NarratorConfig(forge = ForgeConfig(maxActive = maxActive))),
     )
     val store = StateStore.inMemory(initial)
+
+    /** The test's thread is the server thread: at its priority (8, `MinecraftServer.spin`), which the module thread takes (M5-LOAD). */
+    private val testPriority = Thread.currentThread().priority.also { Thread.currentThread().priority = SERVER_PRIORITY }
     val threads = ModuleThreads("module-engine-test")
     val runner = Runner()
     val server = Server()
@@ -198,6 +201,7 @@ internal class ModuleFixture(
     override fun close() {
         engine.stopping()
         threads.close()
+        Thread.currentThread().priority = testPriority
     }
 
     /**
@@ -273,6 +277,9 @@ internal class ModuleFixture(
 
     companion object {
         const val TICK_MS = 50L
+
+        /** The server thread's priority on a machine of more than four cores (`MinecraftServer.spin`, javap). */
+        const val SERVER_PRIORITY = 8
 
         /** The players the server knows. */
         val KNOWN = listOf(MechanicsSamples.bartok, MechanicsSamples.mimosa, MechanicsSamples.josiane)
