@@ -24,6 +24,7 @@ import io.github.clemsix6.narrator2.forge.sdk.ArgsView
 import io.github.clemsix6.narrator2.forge.sdk.FactQueue
 import io.github.clemsix6.narrator2.forge.sdk.Scheduler
 import io.github.clemsix6.narrator2.forge.sdk.StorageMap
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -58,7 +59,9 @@ class PipelineTest {
         val faults = mutableListOf<Fault>()
         val world = Players()
         val context = Context(ArgsView(manifest.params, ForgeSamples.params), world)
-        val host = ModuleHost(ForgeSamples.CLASS, classes, threads, "C-70 ${ForgeSamples.NAME}") { faults += it }
+        // A busy machine's patience: no call of the witness may be stopped (the test expects no fault), and its first
+        // `start`, cold, loads and links its classes.
+        val host = ModuleHost(ForgeSamples.CLASS, classes, threads, "C-70 ${ForgeSamples.NAME}", timeScale = BusyMachine.TIME_SCALE) { faults += it }
         try {
             val started = System.nanoTime()
             host.start(context)

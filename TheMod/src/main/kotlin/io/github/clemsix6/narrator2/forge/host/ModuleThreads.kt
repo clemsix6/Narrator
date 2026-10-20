@@ -93,7 +93,10 @@ class ModuleThreads(
         }
     }
 
-    /** Ends the live module thread (the server stops, a bench or a test is done); a later [run] makes a new one. */
+    /**
+     * Ends the live module thread (the server stops, a module is unloaded, a bench or a test is done); a later [run]
+     * makes a new one.
+     */
     fun close() {
         worker?.let {
             it.closing = true

@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.forge.rt
 
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.Limits
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -28,7 +29,7 @@ class MeterTest {
         assertEquals("module code ran outside a metered call", assertFailsWith<ForgeLimit> { meter.enter() }.message)
         assertFailsWith<ForgeLimit> { meter.tick() }
         meter.exit()
-        meter.arm(ForgeLimits.CALL_NANOS, ForgeLimits.CALL_ALLOCATION_BYTES)
+        meter.arm(BusyMachine.PATIENT_NANOS, ForgeLimits.CALL_ALLOCATION_BYTES)
         meter.enter()
         meter.tick()
         meter.exit()
@@ -101,7 +102,8 @@ class MeterTest {
 
     @Test
     fun `a sound call is not tripped`() {
-        meter.arm(ForgeLimits.CALL_NANOS, ForgeLimits.CALL_ALLOCATION_BYTES)
+        // A busy machine's patience: a sound call is no slower than its work, however long the machine holds it back.
+        meter.arm(BusyMachine.PATIENT_NANOS, ForgeLimits.CALL_ALLOCATION_BYTES)
         repeat(1_000) {
             meter.enter()
             meter.tick()

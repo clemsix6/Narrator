@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.forge.api.GameFact
 import io.github.clemsix6.narrator2.forge.api.Place
 import io.github.clemsix6.narrator2.forge.rt.Guarded
 import io.github.clemsix6.narrator2.forge.rt.Meter
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import org.junit.jupiter.api.Test
 import org.objectweb.asm.ClassReader
@@ -83,27 +84,29 @@ class InstrumenterTest {
         val plain = LoadedModule(ForgeSamples.CLASS, ForgeSamples.classes, metered = false)
         assertEquals(ForgeSamples.classes.keys + (ForgeSamples.CLASS + Built.METER_SUFFIX), rewritten.classes.keys)
 
-        val initialized = rewritten.call {
+        // A busy machine's patience for every call: what is compared here is what the module does, never its time.
+        val patient = BusyMachine.PATIENT_NANOS
+        val initialized = rewritten.call(patient) {
             rewritten.classes.keys.forEach { Class.forName(it, true, rewritten.loader) }
         }
         assertNull(initialized.error, "every class verified and initialized: $initialized")
 
         for (module in listOf(rewritten, plain)) {
-            assertNull(module.start().error)
-            repeat(25) { module.context.timers.forEach { timer -> assertNull(module.call { timer.run() }.error) } }
+            assertNull(module.start(patient).error)
+            repeat(25) { module.context.timers.forEach { timer -> assertNull(module.call(patient) { timer.run() }.error) } }
             val facts = listOf(
                 GameFact.BlockBroken("Mimosa", Place("overworld", 1.5, 64.0, 2.5), "diamond_ore", false),
                 GameFact.Chat("Bartok", Place("overworld", 0.5, 64.0, 0.5), "score"),
                 GameFact.Chat("Mimosa", Place("overworld", 0.5, 64.0, 0.5), "loup"),
             )
             for (fact in facts) {
-                module.context.handlers.filter { (type, _) -> type.isInstance(fact) }.forEach { (_, handler) -> assertNull(module.call { handler.accept(fact) }.error) }
+                module.context.handlers.filter { (type, _) -> type.isInstance(fact) }.forEach { (_, handler) -> assertNull(module.call(patient) { handler.accept(fact) }.error) }
             }
         }
-        val (call, table) = rewritten.invoke("table")
+        val (call, table) = rewritten.invoke("table", budgetNanos = patient)
         assertNull(call.error, "$call")
-        assertEquals(plain.invoke("table").second, table)
-        assertEquals(plain.invoke("greeting", "sévère").second, rewritten.invoke("greeting", "sévère").second)
+        assertEquals(plain.invoke("table", budgetNanos = patient).second, table)
+        assertEquals(plain.invoke("greeting", "sévère", budgetNanos = patient).second, rewritten.invoke("greeting", "sévère", budgetNanos = patient).second)
         assertEquals(plain.context.logs.toList(), rewritten.context.logs.toList())
         assertEquals(plain.context.storage, rewritten.context.storage)
         assertNull(rewritten.meter.tripped())

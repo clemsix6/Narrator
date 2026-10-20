@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.forge.host
 
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.forge.host.AbandonTest.Companion.attack
 import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import kotlin.system.exitProcess
 
@@ -16,15 +17,15 @@ object SharedStructureAttack {
         val baseline = gcs()
         val threads = ModuleThreads("attack-module")
         val fake = FakeContext()
-        val host = Hosts.host("Shared", AbandonTest.SHARED, threads)
+        val host = AbandonTest.attacked("Shared", AbandonTest.SHARED, threads)
         check(host.started(fake.context)) { "${host.disabled}" }
-        val called = host.call("timer") { fake.timers[1].run() }!!
+        val called = host.attack { fake.timers[1].run() }!!
         val alive = threads.lost.alive()
         Thread.sleep(500)
         val during = gcs()
         println(
-            "attack waited=%.1f kind=%s disables=%s alive=%d stillAlive=%d gcBefore=%s gcDuring=%s"
-                .format(called.nanos / 1e6, called.fault?.kind, called.fault?.disables, alive, threads.lost.alive(), baseline, during),
+            "attack waited=%.1f kind=%s disables=%s cause=%s alive=%d stillAlive=%d gcBefore=%s gcDuring=%s"
+                .format(called.nanos / 1e6, called.fault?.kind, called.fault?.disables, called.fault?.cause?.replace(' ', '_'), alive, threads.lost.alive(), baseline, during),
         )
         System.out.flush()
         exitProcess(0)

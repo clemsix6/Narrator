@@ -59,11 +59,19 @@ data class Fault(val kind: Kind, val call: String, val cause: String, val line: 
  *   *exception* (3 disable), *slowness* ([second]), *memory* ([second], [gauge]); any fault in the constructor or
  *   `start` disables at once. Once disabled, no code of the module ever runs again. [onFault] hears each fault, on the
  *   caller's thread. The text of an exception is all that is kept: class, message (cut), the module's line.
- * - **Unloading** ([unload]): everything let go, a [WeakReference] to the loader returned for the [LeakWatch].
+ * - **Unloading** ([unload]): everything let go, the module thread its code ran on ended, a [WeakReference] to the
+ *   loader returned for the [LeakWatch].
  *
  * The caller's thread only (the server thread, or the bench's worker); [label] names it in the log (`C-70
  * orbiting_chickens`). [lineWaitMillis]: how long the caller may wait, after an abandon, for the module's line (0 for
  * the server thread, which never waits; the bench may wait for it, the forger needs it).
+ *
+ * [timeScale], [abandonMarginNanos] and [gaugeNanos] are for tests; the game keeps their defaults. A busy test machine
+ * holds any thread back for tens of milliseconds, sometimes more than a hundred (FLAKY-4): a test whose subject is not
+ * time multiplies the host's own wall-clock limits by [timeScale] — a call's budget, `start`'s, the margin, the
+ * gauge's clock —, so that only the limit it tests can stop its module. A budget given to [call] is kept as it is (a
+ * test of time gives the game's). A test of the meter's own stop gives the margin alone more, so that a call its
+ * meter stops is never abandoned instead.
  */
 class ModuleHost(
     mainClass: String,
@@ -72,6 +80,9 @@ class ModuleHost(
     val label: String,
     private val clock: Clock = Clock.systemUTC(),
     private val lineWaitMillis: Long = 0,
+    private val timeScale: Long = 1,
+    private val abandonMarginNanos: Long = ABANDON_MARGIN_NANOS * timeScale,
+    private val gaugeNanos: Long = ForgeLimits.GAUGE_MAX_NANOS * timeScale,
     private val onFault: (Fault) -> Unit = {},
 ) {
     private val log = Log.forge
@@ -116,7 +127,7 @@ class ModuleHost(
         this.loader = loader
         this.meter = meter
         type = Class.forName(mainClass, false, loader)
-        gauge = RetainedGauge(loader)
+        gauge = RetainedGauge(loader, maxNanos = gaugeNanos)
     }
 
     /** What one call did: its wall time on the caller's side, the bytes it allocated (-1 unmeasured), its fault. */
@@ -132,7 +143,7 @@ class ModuleHost(
         val seen = bridge.wrap(ModuleContext::class.java, context)
         this.context = seen
         var made: ForgeModule? = null
-        val constructed = call(CONSTRUCTOR, STARTUP_CALL_NANOS, startup = true) {
+        val constructed = call(CONSTRUCTOR, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) {
             made = try {
                 type.getConstructor().newInstance() as ForgeModule
             } catch (wrapped: InvocationTargetException) {
@@ -141,7 +152,7 @@ class ModuleHost(
         }
         val module = made?.takeIf { disabled == null } ?: return constructed
         instance = module
-        return call(START, STARTUP_CALL_NANOS, startup = true) { module.start(seen) }
+        return call(START, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) { module.start(seen) }
     }
 
     /** The module's `stop` (an end that is not a disabling), in a call of its own. */
@@ -156,7 +167,7 @@ class ModuleHost(
      * `callback`…), on the module thread, metered, abandoned past its budget. Never throws: a fault is counted here,
      * told to [onFault], and may disable the module. Nothing runs once it is disabled or unloaded (null then).
      */
-    fun call(what: String, body: () -> Unit): Called? = call(what, ForgeLimits.CALL_NANOS, startup = false, body)
+    fun call(what: String, body: () -> Unit): Called? = call(what, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, body)
 
     /**
      * [call] with a budget of its own (the bench: a scenario has what is left of the bench's 30 s), and an allocation
@@ -169,20 +180,20 @@ class ModuleHost(
      * call was abandoned, it throws the meter's [ForgeLimit][io.github.clemsix6.narrator2.forge.rt.ForgeLimit] (the
      * thread is lost: it must unwind).
      */
-    fun call(what: String, budgetNanos: Long, body: () -> Unit): Called? = call(what, budgetNanos, startup = false, body)
+    fun call(what: String, budgetNanos: Long, body: () -> Unit): Called? = call(what, budgetNanos, budgetNanos, startup = false, body)
 
-    private fun call(what: String, budgetNanos: Long, startup: Boolean, body: () -> Unit): Called? {
+    /** [budget] of wall clock; [nominal], the game's budget for it, which its allocation allowance follows. */
+    private fun call(what: String, nominal: Long, budget: Long, startup: Boolean, body: () -> Unit): Called? {
         if (disabled != null || unloaded) return null
         val meter = meter ?: return null
         val names = loader?.names ?: return null
-        val budget = if (startup) STARTUP_CALL_NANOS else budgetNanos
-        val calls = if (startup) 1 else maxOf(1, budget / ForgeLimits.CALL_NANOS)
+        val calls = if (startup) 1 else maxOf(1, nominal / ForgeLimits.CALL_NANOS)
         val allowance = (ForgeLimits.CALL_ALLOCATION_BYTES * calls).coerceAtMost(ForgeLimits.ALLOCATION_PER_MINUTE_BYTES)
         val nested = ModuleThreads.onModuleThread()
         val outcome = Outcome()
         var lost: Thread? = null
         val started = System.nanoTime()
-        val ran = threads.run(budget + ABANDON_MARGIN_NANOS, onAbandon = { thread -> meter.revoke().also { lost = thread } }) {
+        val ran = threads.run(budget + abandonMarginNanos, onAbandon = { thread -> meter.revoke().also { lost = thread } }) {
             val running = if (nested) meter.nest(budget, allowance) else null
             if (running == null) meter.arm(budget, allowance)
             try {
@@ -200,7 +211,7 @@ class ModuleHost(
         val fault = when (ran) {
             ModuleThreads.Ran.DONE -> done(what, startup, outcome)
             ModuleThreads.Ran.ABANDONED -> abandoned(what, lost, names, budget)
-            ModuleThreads.Ran.LATE -> limit(what, startup, "the module thread did not start the call within ${(budget + ABANDON_MARGIN_NANOS) / 1_000_000} ms (an overloaded machine)", 0)
+            ModuleThreads.Ran.LATE -> limit(what, startup, "the module thread did not start the call within ${(budget + abandonMarginNanos) / 1_000_000} ms (an overloaded machine)", 0)
             ModuleThreads.Ran.STUCK -> Fault(Fault.Kind.STUCK, what, "the Forge is stuck: too many module threads were lost", 0, disables = true)
         } ?: allocated(what, if (ran == ModuleThreads.Ran.DONE) outcome.allocated else -1)
         fault?.let(::fault)
@@ -238,9 +249,9 @@ class ModuleHost(
         val cause = when {
             found.objects > ForgeLimits.GAUGE_MAX_OBJECTS -> "retains too much to measure (over ${ForgeLimits.GAUGE_MAX_OBJECTS} objects)"
             slowMeasures >= SLOW_MEASURES ->
-                "retains too much to measure (${found.objects} objects seen in ${ForgeLimits.GAUGE_MAX_NANOS / 1_000_000} ms, $slowMeasures measures in a row)"
+                "retains too much to measure (${found.objects} objects seen in ${gaugeNanos / 1_000_000} ms, $slowMeasures measures in a row)"
             !found.complete -> {
-                log.info("$label: its memory was not measured within ${ForgeLimits.GAUGE_MAX_NANOS / 1_000_000} ms (${found.objects} objects seen); again next time")
+                log.info("$label: its memory was not measured within ${gaugeNanos / 1_000_000} ms (${found.objects} objects seen); again next time")
                 return null
             }
             found.bytes > ForgeLimits.RETAINED_BYTES -> "retains about ${found.bytes / MIB} MiB (at most ${ForgeLimits.RETAINED_BYTES / MIB})"
@@ -274,6 +285,11 @@ class ModuleHost(
     /**
      * Lets everything go — instance, context, meter, classes, loader — and returns a weak reference to the loader,
      * for the [LeakWatch]. No code of the module runs after this.
+     *
+     * The module thread goes too ([ModuleThreads.close]; a new one takes the next call of any module): once the code
+     * of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's own, or its
+     * meter's —, whose stack pins the module's classes, until another exception is thrown on that thread or it ends
+     * (FLAKY-4: measured, the last of twenty modules unloaded stayed alive on a warm JVM, never on an interpreted one).
      */
     fun unload(): WeakReference<ClassLoader> {
         val reference = WeakReference<ClassLoader>(loader)
@@ -285,6 +301,7 @@ class ModuleHost(
         gauge = null
         loader = null
         bridge.clear()
+        threads.close()
         return reference
     }
 
@@ -378,7 +395,7 @@ class ModuleHost(
      * waited at most [lineWaitMillis] (0 on the server thread: it never waits; the place goes to the log when read).
      */
     private fun abandoned(what: String, thread: Thread?, names: Set<String>, budget: Long): Fault {
-        val cause = "time budget: one call ran past ${(budget + ABANDON_MARGIN_NANOS) / 1_000_000} ms and was abandoned"
+        val cause = "time budget: one call ran past ${(budget + abandonMarginNanos) / 1_000_000} ms and was abandoned"
         val stack = CompletableFuture<Array<StackTraceElement>>()
         if (thread != null) Thread.ofPlatform().daemon().name("narrator2-module-stack").start { stack.complete(thread.stackTrace) }
         val frames = try {
