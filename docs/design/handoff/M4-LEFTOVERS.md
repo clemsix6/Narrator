@@ -4,7 +4,7 @@ Trois reliquats de la recette réelle de M4 (`M4-24.md`, « Pour la suite » de 
 signalé par M5-05. **En cas de contradiction avec `M4.md`, `M4-POST.md` ou une passation antérieure, le code et cette
 passation font foi.**
 
-Branche `worktree-agent-aa1699ebc8635c826`, `main` (M5-05, `140f998`) fusionné.
+Branche `worktree-agent-aa1699ebc8635c826`, `main` fusionné (`ff21225` : M5-05, puis le design de M6).
 
 ## Ce qui a changé
 
@@ -185,7 +185,7 @@ n'est pas passager.
 
 ## Vérifications
 
-- `git merge main` (M5-05, `140f998`) : sans conflit (`ARCHITECTURE.md` fusionné automatiquement).
+- `git merge main` (`ff21225`, avec M5-05) : sans conflit (`ARCHITECTURE.md` fusionné automatiquement).
 - **`.\gradlew.bat build` sur l'état fusionné : vert**, **1 857 tests unitaires** (0 échec, 0 ignoré) et **« All 376
   required tests passed »** (374 de `main` + les 2 de `PunishmentCreaturesGameTests`).
 - Avant ce build vert, deux `build` ont échoué sur des tests unitaires de la Forge (M5-05), **hors de cette tâche** :
