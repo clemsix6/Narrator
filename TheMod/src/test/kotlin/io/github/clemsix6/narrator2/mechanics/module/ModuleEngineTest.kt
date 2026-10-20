@@ -393,7 +393,9 @@ class ModuleEngineTest {
                 body = """
                     List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
                     l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
-                    m.timers().after(1, () -> m.log("" + l1.hashCode()));
+                    // The guard bounds an explicit hashCode now (M5-18); Stream.distinct still hashes it unguarded, so
+                    // the host abandons the call and its thread is lost, holding the module's classes (a leak).
+                    m.timers().after(1, () -> m.log("" + java.util.stream.Stream.of(l1).distinct().count()));
                 """,
             ),
         )
