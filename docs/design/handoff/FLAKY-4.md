@@ -4,7 +4,7 @@ Mission : rendre déterministes, sans les affaiblir, les tests de l'hôte des mo
 et ceux de `forge/host` et `forge/sandbox` qui dépendent de l'horloge murale, du GC ou de l'ordonnancement ; puis, à la
 demande du superviseur, `ModuleHostTest` › *twenty unloaded loaders…* (rouge à chaque `build` depuis M5-11) et les
 GameTests de l'hôte et du moteur vus instables par M5-10, et le premier acte froid du banc (M5-16). Branche
-`worktree-agent-af6a98845d846e9d1`, fusionnée avec `main` après M5-18, M5-10 et M5-16. **En cas de contradiction avec
+`worktree-agent-af6a98845d846e9d1`, fusionnée avec `main` après M5-18, M5-10, M5-16 et M5-17. **En cas de contradiction avec
 `M5.md` ou une passation plus ancienne (M5-05), le code et cette passation font foi.**
 
 | Test | Cause | Où était le défaut | Correction |
@@ -255,10 +255,11 @@ serveur), qui chaufferait tout le banc, lambdas comprises, comme le fait déjà 
 - Un passage antérieur, sous 32 fils de calcul, avait relevé les deux derniers défauts corrigés : l'attente du fil
   perdu du test du banc (plus d'une minute), et « x Infinity » dans `InstrumenterTest`.
 - Sondes : §4. Reproduction sans la Forge : §1.
-- `git merge main` trois fois (M5-18 `ed2d256`, conflit dans `AbandonTest` résolu en gardant ses attaques ; M5-10
-  `053e347` ; M5-16 `7da9584`), sans autre conflit.
-- **`.\gradlew.bat build`** sur l'état final (fusionné avec M5-16), pendant les builds d'autres agents : **vert**,
-  **1 908 tests unitaires** (0 échec, 0 ignoré) et **« All 385 required tests passed »** (GameTests). Dans
+- `git merge main` quatre fois (M5-18 `ed2d256`, conflit dans `AbandonTest` résolu en gardant ses attaques ; M5-10
+  `053e347` ; M5-16 `7da9584` ; M5-17 `6e9b92b`), sans autre conflit.
+- **`.\gradlew.bat build`** sur l'état fusionné avec M5-16 : vert, 1 908 tests unitaires et « All 385 required tests passed ».
+  Puis **sur l'état final, fusionné avec M5-17** (`6e9b92b`), pendant les builds d'autres agents : **vert**,
+  **1 908 tests unitaires** (0 échec, 0 ignoré) et **« All 388 required tests passed »** (GameTests). Dans
   `ModuleHostGameTests` : la boucle tient le tick 20,1 ms (arrêtée par son compteur), l'`indexOf` 25,1 ms (abandonné),
   le hachage partagé 5,5 ms (la garde), la liste 0,6 ms, l'allocation 0,8 ms ; ticks de 6 à 39,8 ms.
 - Aucun appel réel à Claude ; pas de `runServer`.
