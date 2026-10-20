@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.director.EventFormatter
 import io.github.clemsix6.narrator2.director.Salience
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.mechanics.module.ModuleEngine
 import io.github.clemsix6.narrator2.mechanics.rule.RuleBook
 import io.github.clemsix6.narrator2.memory.BriefText
 import io.github.clemsix6.narrator2.memory.CANON_COLUMNS
@@ -76,7 +77,7 @@ import java.util.UUID
  *   milestone advancements, first visits and notable structures, griefs (counted as the salience does),
  *   rare ores (counted by run), explosions near players;
  * - the news of the mechanics engine (M4 §19), lines `ENGINE`: its decisions in [ENGINE_NEWS], the ends of
- *   challenges and duels, the judgings, a rule's `notify` and its end, a joker played, the offerings and
+ *   challenges and duels, the judgings, a rule's `notify` and its end, a module's notes and its end, a joker played, the offerings and
  *   stakes the Narrator holds, takes or gives back. Their `reason` is the line, written by the engine for the
  *   model; they have no ref to cite (`engine_decisions` is no evidence): the canon (`C-…`) and the lines
  *   around them are. A rule's other firings are left out: a law that strikes writes its own interaction.
@@ -541,9 +542,10 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         /**
          * The engine's decisions the log shows (M4 §19), by kind, the players' side of the mechanics: of the
          * engine (`mechanic`), the ends of a challenge or a duel (`won`, `lost`, `expired`, `cancelled`), a
-         * judged challenge come due (`judging`), a rule's `notify` posted to the Director (`notified`), a rule's
-         * end ([RuleBook.ENDED], its `detail.ending` shown after the subject: M4 review, finding 31), a joker
-         * played (`joker`); of the ledger (M4-15), a stake or an offering put in
+         * judged challenge come due (`judging`), a rule's `notify` or a module's `tellDirector` posted to the Director
+         * (`notified`), a rule's end ([RuleBook.ENDED], its `detail.ending` shown after the subject: M4 review, finding
+         * 31), a module's end ([ModuleEngine.ENDED], M5 §6.6, likewise), a joker played (`joker`); of the ledger
+         * (M4-15), a stake or an offering put in
          * escrow (`held`), an offering taken for good (`offered`), items given back (`returned`: an offering not
          * taken, a stake, a confiscation). Left out: what only says where items go next (`released`,
          * `forfeited`, `owed`) or what the Director's event of a challenge's end already tells (`transferred`,
@@ -551,7 +553,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
          * what happened), like the Director's event.
          */
         val ENGINE_NEWS: Map<String, Set<String>> = mapOf(
-            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", RuleBook.ENDED, "joker"),
+            MECHANIC to setOf("won", "lost", "expired", "cancelled", "judging", "notified", RuleBook.ENDED, ModuleEngine.ENDED, "joker"),
             LEDGER to setOf("held", "offered", "returned"),
         )
 

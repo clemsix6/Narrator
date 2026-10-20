@@ -29,8 +29,9 @@ import java.time.format.DateTimeFormatter
  *
  * @property at when the engine started, epoch milliseconds: only the canon rows created before it are
  *   reconciled, never a challenge the Director starts while it runs (M4 review, finding 20).
- * @property ids the challenges, duels and rules of the state as the server starts, once the startup took
- *   out what ended while it was down: nothing else can have changed them yet.
+ * @property ids the challenges, duels, rules and modules (M5 §6.7) of the state as the server starts, once the
+ *   startup took out what ended while it was down: nothing else can have changed them yet. A tracked canon row
+ *   whose id is not here is "lost when the world rolled back".
  * @property closings what the startup took out of the state: id → the resolution of its canon row.
  * @property unreadable the entries the state could not read back.
  * @property told what the Director hears of [closings] once the server runs (it is created after the engine):
@@ -57,7 +58,8 @@ internal data class Startup(
  *   stop, won by them.
  * - [run], in a coroutine once the server runs: the Director hears of what the startup took out (no
  *   priority); the canon rows of what the startup took out, or could not read, are resolved; an open row the
- *   engine tracks with no state is resolved `cancelled` (`retired` for a law); and the entries whose canon row
+ *   engine tracks with no state (a challenge, a duel, a rule or a module) is resolved `cancelled` (`retired` for a
+ *   law); and the entries whose canon row
  *   is missing, or was closed before the server started, are named for the engine to drop from the state (with
  *   [drop], at its next tick).
  *
@@ -103,7 +105,7 @@ internal class Reconcile(private val services: NarratorServices) {
             val kind = if (challenge.isDuel) MechanicSignal.DUEL else MechanicSignal.CHALLENGE
             DirectorSignal.Mechanic(kind, "${challenge.ref} cancelled: $down; no stakes$back", now, priority = false)
         }
-        val ids = kept.challenges.mapTo(LinkedHashSet()) { it.id } + kept.rules.map { it.id }
+        val ids = kept.challenges.mapTo(LinkedHashSet()) { it.id } + kept.rules.map { it.id } + kept.modules.map { it.id }
         return kept to Startup(now, ids, ended.associate { it.id to DOWN }, state.unreadable, told)
     }
 
@@ -228,15 +230,19 @@ internal class Reconcile(private val services: NarratorServices) {
         fun unreadableNote(error: String): String = "unreadable when the server started: $error"
 
         /**
-         * [state] without the challenges, duels and rules [ids]: the bets of a challenge taken out are given
+         * [state] without the challenges, duels, rules and modules [ids]: the bets of a challenge taken out are given
          * back to their owners ([MechanicsState.settlements], applied once they are online) and the duelists
          * of an arena are put back where they were at their next join ([MechanicsState.returns]). The same
          * state when none of them is there.
          */
         fun drop(state: MechanicsState, ids: Set<Long>): MechanicsState {
             val gone = state.challenges.filter { it.id in ids }
-            if (gone.isEmpty() && state.rules.none { it.id in ids }) return state
-            return state.copy(challenges = state.challenges.filterNot { it.id in ids }, rules = state.rules.filterNot { it.id in ids })
+            if (gone.isEmpty() && state.rules.none { it.id in ids } && state.modules.none { it.id in ids }) return state
+            return state.copy(
+                challenges = state.challenges.filterNot { it.id in ids },
+                rules = state.rules.filterNot { it.id in ids },
+                modules = state.modules.filterNot { it.id in ids },
+            )
                 .givingBack(gone.flatMap { it.bets })
                 .puttingBack(gone.flatMap { it.arena })
         }
