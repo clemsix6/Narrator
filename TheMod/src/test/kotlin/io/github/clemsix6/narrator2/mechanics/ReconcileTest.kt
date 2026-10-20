@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.FakeMemory
+import io.github.clemsix6.narrator2.testing.ForgeSamples
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.testing.MechanicsSamples.evening
 import io.github.clemsix6.narrator2.testing.MemorySamples
@@ -254,6 +255,35 @@ class ReconcileTest {
             Reconcile.drop(MechanicsSamples.state.copy(settlements = listOf(Settlement(MechanicsSamples.josiane.uuid.toString(), 812))), setOf(50L)).settlements,
             "a settlement already there is not doubled",
         )
+    }
+
+    /**
+     * M5 §6.7 (handoff M5-01): a module of the state keeps its open canon row (never mistaken for a world rolled back);
+     * a module's open row without state is cancelled; one whose row is gone is dropped, and the drop takes it out.
+     */
+    @Test
+    fun `a module of the state keeps its open canon row, one without state is cancelled, one without row is dropped`() = runBlocking<Unit> {
+        val state = MechanicsState(rules = listOf(MechanicsSamples.griefLaw), modules = listOf(ForgeSamples.run, ForgeSamples.run.copy(id = 72)))
+        val (kept, startup) = reconcile.startup(state, startedAt)
+        assertEquals(listOf(70L, 72L), kept.modules.map { it.id })
+        assertEquals(setOf(60L, 70L, 72L), startup.ids)
+        put(
+            row(60, CanonKind.LAW, CanonMechanic.RULE),
+            row(70, CanonKind.LAW, CanonMechanic.MODULE),
+            row(71, CanonKind.PLAN, CanonMechanic.MODULE),
+            // C-72 has no row any more (a Journal rolled back)
+        )
+
+        val drop = reconcile.run(startup)
+
+        assertEquals(setOf(72L), drop)
+        assertEquals(CanonStatus.ACTIVE, canon(70).status, "a running module's row stays open")
+        assertEquals(CanonStatus.CANCELLED to Reconcile.ROLLED_BACK, canon(71).status to canon(71).resolution)
+        assertEquals(listOf("C-71", "C-72"), reconciled().map { it.first })
+        val dropped = Reconcile.drop(state, drop)
+        assertEquals(listOf(70L), dropped.modules.map { it.id })
+        assertEquals(state.rules, dropped.rules)
+        assertSame(state, Reconcile.drop(state, setOf(99L)))
     }
 
     @Test
