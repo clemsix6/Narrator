@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.forge.host
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.ModuleContext
 import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -21,6 +22,10 @@ import kotlin.test.assertTrue
  * What the module threads are for (the supervisor's decision on finding 1 of M5-04): a single call of the JDK that
  * runs for long — hashing a structure shared ten thousand times, an `indexOf` of O(n·m) — never holds the caller past
  * the budget; the module is disabled, and its abandoned thread never reaches the SDK again.
+ *
+ * Each attack is one call with the game's budget and margin ([attack]); the module's `start` before it has a busy
+ * machine's patience ([attacked]). The caller's wait is bounded on the wall clock with [BusyMachine.SLACK_MILLIS] to
+ * spare; that the call was given up while its JDK call ran on is checked as such (the fault, the lost thread).
  */
 class AbandonTest {
     private val stuck = Collections.synchronizedList(mutableListOf<String>())
@@ -38,14 +43,14 @@ class AbandonTest {
         val fake = FakeContext()
         val calls = Collections.synchronizedList(mutableListOf<Long>())
         val faults = mutableListOf<Fault>()
-        val host = Hosts.host("Shared", shared, threads, faults = faults)
+        val host = attacked("Shared", shared, threads, faults = faults)
         assertTrue(host.started(timed(fake.context, calls)), "${host.disabled}")
         val before = calls.size
 
-        val called = assertNotNull(host.call("timer") { fake.timers[0].run() })
+        val called = assertNotNull(host.attack { fake.timers[0].run() })
         val abandonedAt = System.nanoTime()
         val waited = called.nanos / 1e6
-        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + SLACK_MS, "the caller went on at the budget: $waited ms")
+        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + BusyMachine.SLACK_MILLIS, "the caller went on at the budget: $waited ms")
         val fault = assertNotNull(called.fault)
         assertEquals(Fault.Kind.LIMIT, fault.kind)
         assertTrue(fault.disables)
@@ -54,7 +59,7 @@ class AbandonTest {
         assertEquals(1, threads.lost.alive(), "its thread runs on, lost")
 
         // The indexOf takes ~75 ms on the lost thread; then it returns and the thread ends (it is already abandoned).
-        assertTrue(awaitNoLostThread(5_000), "the lost thread ended")
+        assertTrue(awaitNoLostThread(), "the lost thread ended")
         val lived = (System.nanoTime() - abandonedAt) / 1e6
         assertEquals(before, calls.size, "no SDK call reached the context after the abandon")
         assertEquals(emptyList(), fake.logs.toList())
@@ -85,9 +90,10 @@ class AbandonTest {
         val line = output.lines().single { it.startsWith("attack ") }
         val values = line.removePrefix("attack ").split(' ').associate { it.substringBefore('=') to it.substringAfter('=') }
         val waited = values.getValue("waited").toDouble()
-        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + SLACK_MS, "the caller went on at the budget: $line")
+        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + BusyMachine.SLACK_MILLIS, "the caller went on at the budget: $line")
         assertEquals("LIMIT", values["kind"], line)
         assertEquals("true", values["disables"], line)
+        assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", values["cause"]?.replace('_', ' '), line)
         assertEquals("1", values["stillAlive"], "the lost thread burns on, at the lowest priority: $line")
         println("[host] L2 = 10,000 × L1 in a JVM of its own: $line (System.gc() ms, each a safepoint)")
     }
@@ -107,13 +113,15 @@ class AbandonTest {
             """.trimIndent(),
         )
         val fake = FakeContext()
-        val host = ModuleHost("Search", Hosts.build("Search", module), threads, "bench Search", lineWaitMillis = 2_000)
+        // The lost thread runs at the lowest priority, and its stack is read at its next safepoint: on a busy machine,
+        // that may take seconds. The bench waits for it as long as it is given (here a minute; the bench's own, 1 s).
+        val host = attacked("Search", module, threads, label = "bench Search", lineWaitMillis = 60_000)
         assertTrue(host.started(fake.context))
-        val fault = assertNotNull(host.call("timer") { fake.timers[0].run() }?.fault)
+        val fault = assertNotNull(host.attack { fake.timers[0].run() }?.fault)
         assertTrue(fault.cause.startsWith("time budget: one call ran past $BUDGET_MS ms and was abandoned in java.util."), fault.cause)
         assertTrue("at Search.java:" in fault.cause, fault.cause)
         assertTrue(fault.line > 0)
-        assertTrue(awaitNoLostThread(5_000))
+        assertTrue(awaitNoLostThread())
     }
 
     @Test
@@ -125,23 +133,29 @@ class AbandonTest {
             m.timers().every(1, () -> { long t = System.nanoTime(); text.indexOf(pattern); m.log("one indexOf: " + (System.nanoTime() - t) / 1000 + " us"); });
             m.timers().every(1, () -> { while (true) { if (text.indexOf(pattern) < 0) m.log("never"); } });
         """.trimIndent()
-        val probe = Hosts.host("Search", Hosts.source("Search", body = body), threads)
+        // One indexOf, measured in a call with time to spare (FLAKY-4 saw a saturated machine hold such a call past
+        // 2 s). Should even this one run past its ten seconds, one indexOf is longer still.
+        val probe = attacked("Search", Hosts.source("Search", body = body), threads)
         assertTrue(probe.started(fake.context))
-        probe.call("timer") { fake.timers[0].run() }
-        val one = fake.logs.toList()
+        probe.call("timer", BusyMachine.PATIENT_NANOS) { fake.timers[0].run() }
+        val one = fake.logs.singleOrNull() ?: "one indexOf: over ${BusyMachine.PATIENT_NANOS / 1_000} us"
+        val oneMillis = one.removePrefix("one indexOf: ").removePrefix("over ").removeSuffix(" us").toLong() / 1e3
 
         val looping = FakeContext()
-        val host = Hosts.host("Search", Hosts.source("Search", body = body), threads)
+        val host = attacked("Search", Hosts.source("Search", body = body), threads)
         assertTrue(host.started(looping.context))
-        val called = assertNotNull(host.call("timer") { looping.timers[1].run() })
+        val called = assertNotNull(host.attack { looping.timers[1].run() })
         val waited = called.nanos / 1e6
-        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + SLACK_MS, "the caller went on at the budget: $waited ms")
+        assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + BusyMachine.SLACK_MILLIS, "the caller went on at the budget: $waited ms")
         assertEquals(Fault.Kind.LIMIT, called.fault?.kind)
         val fault = called.fault!!
         assertTrue(fault.disables || fault.cause.startsWith("time budget"), "$fault")
-        assertTrue(awaitNoLostThread(10_000), "the lost thread ended at its next tick")
+        // One indexOf longer than the budget (75 ms here): no tick of the module's code can come before the caller's
+        // deadline, so the call was given up, never stopped by its meter.
+        if (oneMillis > BUDGET_MS) assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", fault.cause, "one indexOf took $oneMillis ms")
+        assertTrue(awaitNoLostThread(), "the lost thread ended at its next tick")
         assertEquals(emptyList(), looping.logs.toList())
-        println("[host] indexOf of 32,768 characters in 65,536 (${one.firstOrNull() ?: "over its budget"}), looped: the caller went on after %.1f ms (${called.fault})".format(waited))
+        println("[host] indexOf of 32,768 characters in 65,536 ($one), looped: the caller went on after %.1f ms (${called.fault})".format(waited))
     }
 
     @Test
@@ -150,14 +164,14 @@ class AbandonTest {
         val strict = ModuleThreads("strict-module", lost)
         try {
             val fake = FakeContext()
-            val host = Hosts.host("Shared", shared, strict)
+            val host = attacked("Shared", shared, strict)
             assertTrue(host.started(fake.context))
-            assertEquals(Fault.Kind.LIMIT, host.call("timer") { fake.timers[0].run() }?.fault?.kind)
+            assertEquals(Fault.Kind.LIMIT, host.attack { fake.timers[0].run() }?.fault?.kind)
             assertTrue(lost.stuck)
             assertEquals(1, stuck.size)
 
             val other = FakeContext()
-            val next = Hosts.host("Shared", shared, strict)
+            val next = attacked("Shared", shared, strict)
             next.start(other.context)
             assertEquals(Fault.Kind.STUCK, next.disabled?.kind)
             assertEquals(emptyList(), other.timers, "its code never ran")
@@ -166,7 +180,12 @@ class AbandonTest {
         }
     }
 
-    private fun awaitNoLostThread(millis: Long): Boolean {
+    /**
+     * Waits for the lost threads to end. They run at the lowest priority: on a machine whose cores are all taken, one
+     * runs only when the system lifts a starved thread, a few tens of milliseconds every four seconds or so (measured:
+     * the 0.75 s hash of the bench's test took over a minute under 32 spinning threads on 16 cores).
+     */
+    private fun awaitNoLostThread(millis: Long = 300_000): Boolean {
         val deadline = System.currentTimeMillis() + millis
         while (threads.lost.alive() > 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
         return threads.lost.alive() == 0
@@ -190,11 +209,8 @@ class AbandonTest {
         )
 
     internal companion object {
-        /** A call's budget and the margin the meter has to unwind before the caller abandons it. */
+        /** A call's budget and the margin the meter has to unwind before the caller abandons it: the game's. */
         val BUDGET_MS = ForgeLimits.CALL_MILLIS + ModuleHost.ABANDON_MARGIN_NANOS / 1_000_000
-
-        /** What a busy test machine may add. */
-        const val SLACK_MS = 5
 
         /**
          * Attacks the meter and the guard cannot see: one long call of the JDK that is neither a backward jump of the
@@ -216,5 +232,24 @@ class AbandonTest {
                 m.timers().every(1, () -> m.log("" + Stream.of(l2).distinct().count()));
             """.trimIndent(),
         )
+
+        /**
+         * A host whose attack has the game's margin, and whose other calls (its `start`, which builds the attack's
+         * structure) a busy machine's patience ([BusyMachine.TIME_SCALE]).
+         */
+        fun attacked(
+            name: String,
+            source: String,
+            threads: ModuleThreads,
+            faults: MutableList<Fault> = mutableListOf(),
+            label: String = "C-70 $name",
+            lineWaitMillis: Long = 0,
+        ): ModuleHost = ModuleHost(
+            name, Hosts.build(name, source), threads, label,
+            lineWaitMillis = lineWaitMillis, timeScale = BusyMachine.TIME_SCALE, abandonMarginNanos = ModuleHost.ABANDON_MARGIN_NANOS,
+        ) { faults += it }
+
+        /** One call of the module's code with the game's budget ([ForgeLimits.CALL_NANOS]): the attack. */
+        fun ModuleHost.attack(body: () -> Unit): ModuleHost.Called? = call("timer", ForgeLimits.CALL_NANOS, body)
     }
 }

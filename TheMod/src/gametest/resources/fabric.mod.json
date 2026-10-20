@@ -55,6 +55,7 @@
       "io.github.clemsix6.narrator2.gametest.ForgeServiceGameTests",
       "io.github.clemsix6.narrator2.gametest.ModuleEngineGameTests",
       "io.github.clemsix6.narrator2.gametest.EvilModulesGameTests",
+      "io.github.clemsix6.narrator2.gametest.ArsenalCreaturesGameTests",
       "io.github.clemsix6.narrator2.gametest.ArsenalGamesGameTests",
       "io.github.clemsix6.narrator2.gametest.ArsenalWorldGameTests"
     ]

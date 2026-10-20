@@ -16,9 +16,12 @@ import io.github.clemsix6.narrator2.forge.compile.Diagnostics
 import io.github.clemsix6.narrator2.forge.sdk.Facts
 import io.github.clemsix6.narrator2.forge.sdk.ModuleActs
 import io.github.clemsix6.narrator2.forge.sdk.ModuleCall
+import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolText
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Stops a run of the bench at its first failure (a fault, a slow call, a failed check, the bench's time): thrown by the
@@ -397,10 +400,17 @@ internal class BenchImpl(
         /**
          * Loads, with the bench, what the SDK's calls would load the first time (the facts and the bus's classes, the
          * creatures and effects a module never has, the game's ids): never in a module's measured call, as in the game,
-         * where the engine loaded them long before. A cold first call measured 31 ms of it.
+         * where the engine loaded them long before. A cold first call measured 31 ms of it. The bench's side of an act
+         * too (`BenchActs` → `SimContext.ask` → its record and its dry call): the first act of the first module of a JVM
+         * paid 6 to 8 ms of loading in its call (M5-16), past the budget on a busy machine (FLAKY-4).
          */
         private fun loadSdk() {
             check(Facts.TYPES.isNotEmpty() && ModuleActs.forbiddenEffect("wither") != null && SimContext.forbidden("warden") != null)
+            val dry = DryCall("say", buildJsonObject { put("text", "x") }, "say: x", null)
+            check(dry.key.isNotEmpty() && ActRecord.statusOf(ToolResult.ok("ok")).isNotEmpty())
+            for (name in listOf("SimContext\$BenchPending", "SimActsKt", "SimContextKt", "BenchGame")) {
+                Class.forName("io.github.clemsix6.narrator2.forge.sim.$name", true, BenchImpl::class.java.classLoader)
+            }
         }
 
         /** The judged challenge a deployment of the bench referees. */

@@ -93,6 +93,16 @@ class ModuleThreads(
         }
     }
 
+    /**
+     * Ends the live module thread and starts the next one now, when one is live (a module was unloaded: what the JVM
+     * keeps on a thread goes with it, and the next call is handed to a thread already started, not one still to make).
+     */
+    fun renew() {
+        if (worker == null) return
+        close()
+        worker = Worker("$name-${made.incrementAndGet()}").also { it.start() }
+    }
+
     /** Ends the live module thread (the server stops, a bench or a test is done); a later [run] makes a new one. */
     fun close() {
         worker?.let {

@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import io.github.clemsix6.narrator2.forge.sandbox.Instrumenter
 import io.github.clemsix6.narrator2.forge.sandbox.ModuleLoader
 import io.github.clemsix6.narrator2.forge.sandbox.RewriteRefused
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -88,7 +89,9 @@ class EvilModulesTest {
                     assertTrue(compiled.ok, "${evil.name} compiles: ${compiled.problems}")
                     assertTrue(BytecodeGuard().check(compiled.classes).isEmpty(), "${evil.name} is clean to the guard (the rewriting and host are the barrier)")
                     val built = Instrumenter.rewrite(evil.name, compiled.classes)
-                    val host = ModuleHost(evil.name, built, threads, "evil ${evil.name}")
+                    // The game's budgets, and a margin a busy machine never outlasts (FLAKY-4): its meter or its guard
+                    // stops each attack, never a hand-over the machine was too busy to start in 5 ms.
+                    val host = ModuleHost(evil.name, built, threads, "evil ${evil.name}", abandonMarginNanos = BusyMachine.SLACK_NANOS)
                     host.start(FakeContext().context)
                     val disabled = host.disabled ?: fail("${evil.name} ran to the end, crossing every barrier")
                     // A deep walk cold can hit the meter's time budget before its own count cap; both are a sandbox stop.
@@ -106,10 +109,12 @@ class EvilModulesTest {
 
     @Test
     fun `a forbidden type is refused at link even without the guard`() {
+        // A busy machine's patience (FLAKY-4): the loader, never the clock, is what stops these; were it gone, they
+        // would run to their end.
         for (name in listOf("FileRead", "Socket", "Exec", "NewThread")) {
             val evil = corpus.first { it.name == name }
             val built = Instrumenter.rewrite(name, ForgeSamples.compile(name, evil.source).classes)
-            val host = ModuleHost(name, built, threads, "nogard $name")
+            val host = ModuleHost(name, built, threads, "nogard $name", timeScale = BusyMachine.TIME_SCALE)
             host.start(FakeContext().context)
             val disabled = host.disabled ?: fail("$name linked and ran without the guard")
             assertTrue("NoClassDefFoundError" in disabled.cause || "is not visible" in disabled.cause, "$name: ${disabled.cause}")
@@ -119,7 +124,7 @@ class EvilModulesTest {
         val forName = corpus.first { it.name == "ForName" }
         val context = FakeContext()
         val built = Instrumenter.rewrite("ForName", ForgeSamples.compile("ForName", forName.source).classes)
-        val host = ModuleHost("ForName", built, threads, "nogard ForName")
+        val host = ModuleHost("ForName", built, threads, "nogard ForName", timeScale = BusyMachine.TIME_SCALE)
         host.start(context.context)
         assertTrue(context.logs.contains("no forName"), "the loader blocked the reflective target: ${context.logs}")
         host.unload()
@@ -174,7 +179,7 @@ class EvilModulesTest {
             }
         """.trimIndent()
         val built = Instrumenter.rewrite("Keeper", ForgeSamples.compile("Keeper", source).classes)
-        val host = ModuleHost("Keeper", built, threads, "evil Keeper")
+        val host = ModuleHost("Keeper", built, threads, "evil Keeper", timeScale = BusyMachine.TIME_SCALE)
         host.start(FakeContext().context)
         assertTrue(host.disabled == null, "it started: ${host.disabled}")
         val loader = host.unload()
