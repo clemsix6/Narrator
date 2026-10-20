@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.forge.api.Limits
 import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import java.lang.management.ManagementFactory
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -85,12 +86,23 @@ class MeterTest {
         assertTrue(meter.allocatedSinceArm() >= 1L shl 20 && kept != null)
     }
 
+    /** Computes, without a tick of the module (one long step of the JDK), until this thread's CPU clock moved [nanos]. */
+    private fun burn(nanos: Long) {
+        val cpu = ManagementFactory.getThreadMXBean()
+        val start = cpu.currentThreadCpuTime
+        var x = 0L
+        while (cpu.currentThreadCpuTime - start < nanos) repeat(10_000) { x += it.toLong() xor (x ushr 3) }
+        check(x != 42L)
+    }
+
     @Test
     fun `disarm trips a call that overran inside one call of the JDK`() {
+        // Its thread's CPU time shows it: 40 ms at least, more than the clock's steps (15.6 ms under Windows) can add.
         meter.arm(1_000_000, Long.MAX_VALUE)
-        Thread.sleep(5)
+        burn(Meter.MIN_CPU_EVIDENCE_NANOS)
         meter.disarm()
         assertEquals("time budget", meter.tripped())
+        assertTrue(meter.cpu() >= Meter.MIN_CPU_EVIDENCE_NANOS, "its thread's CPU time: ${meter.cpu()}")
 
         meter.arm(60_000_000_000L, 1L shl 20)
         assumeTrue(meter.allocatedSinceArm() >= 0, "the JVM measures allocation")
@@ -98,6 +110,34 @@ class MeterTest {
         meter.disarm()
         assertEquals("allocation budget", meter.tripped())
         assertTrue(meter.allocatedSinceArm() >= big.size, "the allocation as it was at disarm")
+    }
+
+    @Test
+    fun `a call the machine holds back is not past its time, however long the wall clock says`() {
+        // A sleep stands for the machine holding the thread back (another thread on its core, a pause of the GC): no
+        // work of the module, no CPU (M5-LOAD; FLAKY-4 saw a call of a few µs take 4 ms, one of 75 ms of work 2 s).
+        meter.arm(2_000_000, Long.MAX_VALUE)
+        Thread.sleep(30)
+        repeat(4 * ForgeLimits.METER_CHECK_EVERY) { meter.tick() }
+        Thread.sleep(30)
+        meter.disarm()
+        assertNull(meter.tripped(), "60 ms of wall clock, but no work past its 2 ms")
+        assertTrue(meter.worked() < 2_000_000, "${meter.worked()} ns of its own work")
+    }
+
+    @Test
+    fun `the module's own work is counted, and only that, until its budget`() {
+        meter.arm(20_000_000, Long.MAX_VALUE)
+        val start = System.nanoTime()
+        // 10 ms of the module's own code (ticks), held back 30 ms, then its code again until its meter stops it.
+        while (System.nanoTime() - start < 10_000_000) meter.tick()
+        Thread.sleep(30)
+        val stopped = ticksUntilStopped { meter.tick() }
+        meter.disarm()
+        assertEquals("time budget", stopped.message)
+        val wall = (System.nanoTime() - start) / 1e6
+        assertTrue(wall >= 50, "stopped at 20 ms of its own work, not of the wall clock: $wall ms")
+        assertTrue(meter.worked() in 20_000_000..21_000_000, "${meter.worked()} ns of its own work")
     }
 
     @Test

@@ -30,9 +30,10 @@ interface BenchHost {
 
     /**
      * Runs [body], the module's code, as one call measured as in the game (M5-04 handoff, finding 1): on a module
-     * thread, never the caller's, armed for [budgetNanos]; the caller waits for it at most that long, then abandons it
-     * (the bench then closes the deployment's SDK, which refuses the abandoned thread from then on). Never throws: what
-     * stopped the call is [HostCall.fault].
+     * thread, never the caller's, armed for [budgetNanos] of its own work; the caller waits for it while it has not
+     * computed past that (a busy machine holding its thread back is not its doing), then gives it up (the bench then
+     * closes the deployment's SDK, which refuses the given-up thread from then on). Never throws: what stopped the call
+     * is [HostCall.fault].
      *
      * Calls nest: a scenario's own call (armed for what is left of the bench's time) runs the bench's ticks, which make
      * the module's calls, each through [call] again, from the scenario's module thread, armed for 20 ms on its own.
@@ -53,12 +54,14 @@ interface BenchHost {
 /**
  * One measured call of the module ([BenchHost.call]).
  *
- * @property nanos how long it ran (until the caller abandoned it, if it did).
+ * @property nanos how long it ran on the wall clock (until the caller gave it up, if it did).
  * @property fault what stopped it, as the host keeps a fault (M5 §3.7): `IllegalStateException: no wolf at
  *   TagGame.java:42`, `ForgeLimit: time budget at TagGame.java:41`; null when it returned in time.
  * @property line the module's line [fault] names; 0 when unknown.
+ * @property work its own work (M5-LOAD: its code as its meter measured it, its thread's CPU time for a long step of the
+ *   JDK): what the bench judges, never [nanos], which a busy machine stretches. The wall time when the host cannot tell.
  */
-data class HostCall(val nanos: Long, val fault: String?, val line: Int = 0)
+data class HostCall(val nanos: Long, val fault: String?, val line: Int = 0, val work: Long = nanos)
 
 /**
  * What the bench found (M5 §6.2): the smoke run, the scenarios, the dry checks of the acts.

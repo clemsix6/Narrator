@@ -650,6 +650,25 @@ class BenchTest {
     }
 
     @Test
+    fun `the bench judges a call's own work, never the wall clock a busy machine stretches`() = runBlocking<Unit> {
+        // As the real host reports a call (M5-LOAD): its wall time, and its own work apart (here its thread's CPU time).
+        fun walled(module: Class<*>): BenchHost {
+            val host = KotlinHost(module)
+            return object : BenchHost by host {
+                override fun call(budgetNanos: Long, body: () -> Unit): HostCall {
+                    val began = System.nanoTime()
+                    val call = host.call(budgetNanos, body)
+                    return call.copy(nanos = System.nanoTime() - began, work = call.nanos)
+                }
+            }
+        }
+        val held = BenchRun(walled(Sleepy::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
+        assertTrue(held.ok, "40 ms held back, no work: ${held.text(null)}")
+        val slow = BenchRun(walled(Slow::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
+        assertTrue(slow.problems.single().message.startsWith("took "), slow.text(null))
+    }
+
+    @Test
     fun `the smoke run fails a module that retains more than 4 MiB, or whose memory still grows`() = runBlocking<Unit> {
         val fat = BenchRun(KotlinHost(Fat::class.java), emptyList(), emptyList(), { _, _ -> null }).run()
         assertEquals(1, fat.problems.size, fat.text(null))
@@ -924,6 +943,13 @@ class BenchTest {
     }
 
     /** A module whose timer burns 30 ms of the processor. */
+    /** Held back 40 ms by the machine (a sleep: no work) in a timer. */
+    class Sleepy : ForgeModule {
+        override fun start(ctx: ModuleContext) {
+            ctx.timers().after(5) { Thread.sleep(40) }
+        }
+    }
+
     class Slow : ForgeModule {
         override fun start(ctx: ModuleContext) {
             ctx.timers().after(5) {

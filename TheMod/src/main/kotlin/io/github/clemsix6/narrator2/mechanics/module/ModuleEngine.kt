@@ -157,6 +157,9 @@ enum class ModuleEnding(val stop: StopReason?, val law: CanonStatus, val plan: C
  * - **Each tick** ([everyTick]), each deployment in the order they were deployed: its facts waiting (at most
  *   [ForgeLimits.FACTS_PER_TICK]), its timers due, its acts' callbacks. All the modules' code over
  *   [ForgeLimits.TICK_MS] in one tick: a `WARN`, once a minute at most, naming the slowest.
+ * - **A busy machine** (M5-LOAD): a call its host skipped (the module thread did not start it in time) is asked again
+ *   first at the next tick, nothing lost; while a call given up still runs ([ModuleHost.busy]), the deployment's tick
+ *   waits — its timers keep counting, its facts and callbacks wait in their queues. Neither is a fault.
  * - **Each second** ([everySecond]): its time is up → `expired`; the host's second (*slowness*); its creatures gone
  *   (`CreatureGone` facts); its note to the Director when the gap allows; its storage and counters into the state when
  *   they changed; its facts dropped (a decision `facts_dropped` a minute at most); one deployment's memory gauge (each
@@ -239,6 +242,9 @@ class ModuleEngine(
     /** What a restart's build gave back: [built], or why it could not be built ([problem]). */
     private class Build(val deployment: Deployment, val built: Built?, val problem: String?)
 
+    /** A call its host skipped, to ask again: its name, its body, the host's operation it was (a start), if any. */
+    private class Skipped(val what: String, val body: () -> Unit, val operation: ((ModuleHost) -> ModuleHost.Called?)?)
+
     /** Why a deployment did not start: its [fault] (its constructor or `start` faulted), or a [problem] before any code of it ran. */
     internal class NotStarted(val text: String, val fault: Fault?)
 
@@ -295,11 +301,31 @@ class ModuleEngine(
 
         val acts: Int get() = baseActs + queue.asked
 
+        /** The calls its host skipped (asked too late for the module thread, or while a call given up still ran): asked again first. */
+        private val skipped = ArrayDeque<Skipped>()
+
         /** Runs the host's [operation] (its start or stop) as one invocation: the acts it asks leave together. Server thread. */
         fun hosted(what: String, operation: (ModuleHost) -> ModuleHost.Called?) {
             this.operation = operation
             queue.invocation(what) {}
         }
+
+        /**
+         * The calls its host skipped, asked again in their order, each one invocation; false once the deployment ended or
+         * its host waits again ([busy]). Server thread.
+         */
+        fun replay(): Boolean {
+            repeat(skipped.size) {
+                val call = skipped.removeFirst()
+                operation = call.operation
+                queue.invocation(call.what, call.body)
+                if (!after(this) || busy()) return false
+            }
+            return true
+        }
+
+        /** Whether a call of its module given up still runs: its tick waits (its host settles it, which may disable it). */
+        fun busy(): Boolean = host?.busy() == true
 
         /** One call of the module, for its act queue: the host's operation if one waits, else [body] through the host. */
         private fun call(what: String, body: () -> Unit) {
@@ -310,6 +336,7 @@ class ModuleEngine(
             if (called != null) {
                 spent += called.nanos
                 if (called.allocated >= 0) metered = true
+                if (called.skipped) skipped.addLast(Skipped(what, body, operation))
             }
         }
 
@@ -365,7 +392,8 @@ class ModuleEngine(
         d.phase = Phase.RUNNING
         d.gaugeAt = clock.millis() + ForgeLimits.GAUGE_EVERY_MS_UNMETERED
         d.hosted(ModuleHost.START) { it.start(context) }
-        return host.disabled?.let { NotStarted(it.text, it) }
+        // A start its host skipped (asked too late for the module thread) is asked again at the next tick.
+        return host.disabled?.let { NotStarted(it.text, it) } ?: host.stalled?.let { NotStarted(it, null) }
     }
 
     /** [d]'s context: the SDK's real pieces on its parameters, storage, queue and creatures. Throws [IllegalArgumentException] when its parameters do not read. */
@@ -495,9 +523,17 @@ class ModuleEngine(
         if (total > ForgeLimits.TICK_MS * NANOS_PER_MS) slowTick(now, total, slowest, slowestNanos)
     }
 
-    /** [d]'s tick: its facts waiting, its timers due, its callbacks; each call stops the tick's work for it once it ends. */
+    /**
+     * [d]'s tick: the calls its host skipped, its facts waiting, its timers due, its callbacks; each call stops the
+     * tick's work for it once it ends. While a call of it given up still runs, its tick waits (its timers count it all
+     * the same); the calls asked in the meantime are skipped by its host, and asked again ([Deployment.replay]).
+     */
     private fun work(d: Deployment, now: Long) {
         val context = d.context ?: return
+        if (d.busy() || !d.replay()) {
+            if (after(d)) context.timers.advance()
+            return
+        }
         for (delivery in context.events.drain(now)) {
             if (delivery.live && !invoke(d, FACT) { delivery.deliver() }) return
         }
@@ -510,18 +546,32 @@ class ModuleEngine(
         after(d)
     }
 
+    /**
+     * Settles the calls given up (each deployment's host), ends the deployments that disabled, as their next tick would;
+     * true while a call given up still runs. Server thread; for the tests.
+     */
+    internal fun settle(): Boolean = live.filter { it.phase == Phase.RUNNING }.map { d -> d.busy().also { after(d) } }.any { it }
+
     /** One call of [d]'s module ([what]: `fact`, `timer`), then what it left; false once it ended. */
     private fun invoke(d: Deployment, what: String, body: () -> Unit): Boolean {
         d.queue.invocation(what, body)
         return after(d)
     }
 
-    /** After a call of [d]: disabled → it ends `disabled`; asked to end → `fulfilled`. True while it runs. Server thread. */
+    /**
+     * After a call of [d]: disabled → it ends `disabled`; a start given up without its fault ([ModuleHost.stalled]) → it
+     * ends `disabled` with that reason, no fault noted; asked to end → `fulfilled`. True while it runs. Server thread.
+     */
     private fun after(d: Deployment): Boolean {
         if (d.phase != Phase.RUNNING) return false
         val fault = d.host?.disabled
         if (fault != null) {
             disable(d, fault)
+            return false
+        }
+        val stalled = d.host?.stalled
+        if (stalled != null) {
+            endNow(d, ModuleEnding.DISABLED, "disabled: it failed to start: $stalled") { "${d.label} could not start: $stalled" }
             return false
         }
         val why = d.context?.endAsked ?: return true
@@ -783,16 +833,22 @@ class ModuleEngine(
 
     /**
      * The end of [ended] once its deployment is out (M5 §6.6): its canon resolved by the engine, its decision
-     * `module_ended`, and its `MODULE` line when it has one. Never on the server thread.
+     * `module_ended`, and its `MODULE` line when it has one. A note the memory refuses (the module's own words in the
+     * first or second person: `VoiceGuard`) closes the row all the same, with the engine's neutral words for its
+     * ending ([neutralNote]; M5-16, defect 2). Never on the server thread.
      */
     internal suspend fun close(ended: Ended) {
         val run = ended.run
         val status = if (run.kind == RuleKind.LAW) ended.ending.law else ended.ending.plan
+        val author = Author(Source.ENGINE, turnId = ended.by?.turnId, conversationId = ended.by?.conversationId)
         try {
-            services.memory.store.resolveCanon(
-                run.ref, status, ended.note, emptyList(),
-                Author(Source.ENGINE, turnId = ended.by?.turnId, conversationId = ended.by?.conversationId),
-            )
+            try {
+                services.memory.store.resolveCanon(run.ref, status, ended.note, emptyList(), author)
+            } catch (e: MemoryRejected) {
+                val neutral = neutralNote(ended.ending)
+                log.warn("the canon row of ${run.ref} refused its note (${e.message}): resolved ${status.id} with « $neutral »")
+                services.memory.store.resolveCanon(run.ref, status, neutral, emptyList(), author)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: MemoryRejected) {
@@ -907,6 +963,19 @@ class ModuleEngine(
         /** The canon's resolutions the engine writes itself. */
         const val EXPIRED_NOTE = "its time ran out"
         const val FORGE_OFF_NOTE = "the Forge was switched off by an operator"
+
+        /** The canon's resolution of a module that ended itself, when the memory refused its own words. */
+        const val ENDED_ITSELF_NOTE = "it ended by itself"
+
+        /** The engine's neutral words for [ending], in place of a note the memory refused. */
+        fun neutralNote(ending: ModuleEnding): String = when (ending) {
+            ModuleEnding.EXPIRED -> EXPIRED_NOTE
+            ModuleEnding.FULFILLED -> ENDED_ITSELF_NOTE
+            ModuleEnding.REMOVED -> "it was stopped"
+            ModuleEnding.DISABLED -> "it was disabled by its faults"
+            ModuleEnding.FORGE_OFF -> FORGE_OFF_NOTE
+            ModuleEnding.RESTART_FAILED -> "it could not restart"
+        }
 
         /** Why every module is disabled once too many module threads were lost. */
         const val STUCK_CAUSE = "the Forge is stuck: too many module threads were lost"

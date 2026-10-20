@@ -4,7 +4,9 @@ package io.github.clemsix6.narrator2.forge.api;
  * How {@link Acts#spawn} summons: {@code Spawn.of(6).withHeight(3).withName("Poulette")}. Out of their bounds, the
  * act answers {@code invalid}.
  *
- * @param count how many, 1 to 12.
+ * @param count how many, 1 to 12; the chaos level caps one call at 0, 2, 4, 6, 10 or 12 (chaos 0 to 5), and the
+ *     Narrator's creatures alive in the whole world at 0, 4, 8, 16, 24 or 32: past either, the act is refused. Two by
+ *     two passes at any level where summoning does; handle the refusal.
  * @param distance how far from the player they appear, between half this and this, 2 to 24 blocks.
  * @param name the name shown above each one, 32 characters; null for none.
  * @param target true: they go straight for the player (a hostile act, refused like any other).
