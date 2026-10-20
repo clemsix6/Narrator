@@ -2,37 +2,38 @@ package io.github.clemsix6.narrator2.forge.sandbox
 
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.Limits
-import io.github.clemsix6.narrator2.forge.rt.ForgeLimit
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * The runtime battery of the sandbox's spike (`.research/spikes/m5`), and the attacks of the design review (finding 1)
  * and of the M5-01 handoff (findings 1 to 5), through ECJ, the rewriting and the meter, as the host calls a module:
- * each one is stopped, a single call of the JDK before it allocates.
+ * each one is stopped, a single call of the JDK before it allocates. Open: `HostBatteryTest` runs the same battery
+ * through the real loader and host (M5-05) by overriding [run].
  */
-class RewriteBatteryTest {
+open class RewriteBatteryTest {
+    /** Starts the rewritten module [name] ([classes]) as the host calls a module: here, the test harness. */
+    internal open fun run(name: String, classes: Map<String, ByteArray>): MeteredCall = LoadedModule(name, classes, metered = true).start()
+
     /** Compiles, checks that the guard lets it through (the rewriting is then the barrier), rewrites and starts a module. */
     private fun start(name: String, members: String = "", body: String): MeteredCall {
         val classes = Rewrites.compile(name, Rewrites.source(name, members, body))
         if ("nCopies" !in body) assertEquals(emptyList(), BytecodeGuard().check(classes), "$name passes the guard")
-        return LoadedModule(name, Instrumenter.rewrite(name, classes), metered = true).start()
+        return run(name, Instrumenter.rewrite(name, classes))
     }
 
     /** Stopped by a limit of `Guarded` ([message]) before the JDK allocated. */
     private fun assertGuarded(call: MeteredCall, message: String) {
-        assertIs<ForgeLimit>(call.error, "stopped by a limit: $call")
-        assertTrue(call.error!!.message!!.startsWith(message), "stopped by « $message »: $call")
+        assertTrue(call.fault?.startsWith("ForgeLimit: $message") == true, "stopped by « $message »: $call")
         if (call.allocated >= 0) assertTrue(call.allocated < 4L shl 20, "stopped before it allocated: $call")
     }
 
     /** Stopped by the meter: [why], at the module's line, sticky. */
     private fun assertTripped(call: MeteredCall, why: String, module: String) {
-        assertIs<ForgeLimit>(call.error, "stopped by the meter: $call")
+        assertTrue(call.fault?.startsWith("ForgeLimit") == true, "stopped by the meter: $call")
         val tripped = call.tripped ?: error("the meter tripped: $call")
         assertTrue(tripped.startsWith(why), "tripped by « $why »: $call")
         assertTrue("at $module.java:" in tripped, "the module's line: $tripped")
@@ -90,7 +91,7 @@ class RewriteBatteryTest {
     @Test
     fun `an exception of the module goes out as it is`() {
         val call = start("Throws", body = "throw new IllegalStateException(\"boom\");")
-        assertIs<IllegalStateException>(call.error)
+        assertTrue(call.fault?.startsWith("IllegalStateException: boom") == true, "$call")
         assertNull(call.tripped)
     }
 
@@ -223,8 +224,13 @@ class RewriteBatteryTest {
 
     @Test
     fun `a sub-list, a list iterator and a stream builder count against their limit`() {
-        assertGuarded(start("SubList", body = "List<Integer> l = new ArrayList<>(); while (true) l.subList(0, 0).add(1);"), "a collection over 10000 elements")
-        assertGuarded(start("SubSubList", body = "List<Integer> l = new ArrayList<>(List.of(1, 2, 3)); while (true) l.subList(0, 2).subList(1, 1).add(1);"), "a collection over 10000 elements")
+        // Each view adds at the end of the list (no shift of what is there): the size limit is what stops it, never the
+        // time (inserting at the head of an ArrayList is O(n) a time, and 10,000 of them could reach 20 ms on a busy machine).
+        assertGuarded(start("SubList", body = "List<Integer> l = new ArrayList<>(); while (true) l.subList(l.size(), l.size()).add(1);"), "a collection over 10000 elements")
+        assertGuarded(
+            start("SubSubList", body = "List<Integer> l = new ArrayList<>(List.of(1, 2, 3)); while (true) l.subList(l.size() - 2, l.size()).subList(2, 2).add(1);"),
+            "a collection over 10000 elements",
+        )
         assertGuarded(start("Cursor", body = "List<Integer> l = new LinkedList<>(); ListIterator<Integer> it = l.listIterator(); while (true) { it.add(1); it.previous(); }"), "a collection over 10000 elements")
         assertGuarded(start("Builders", body = "Stream.Builder<Integer> b = Stream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
         assertGuarded(start("IntBuilder", body = "IntStream.Builder b = IntStream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
@@ -233,7 +239,7 @@ class RewriteBatteryTest {
     @Test
     fun `a lambda or a method reference that a JDK loop calls is metered without a loop of its own`() {
         val lambda = start("FlatMap", body = "long n = IntStream.range(0, 65_536).boxed().flatMap(i -> IntStream.range(0, 65_536).boxed()).count(); m.log(\"\" + n);")
-        assertIs<ForgeLimit>(lambda.error, "$lambda")
+        assertTrue(lambda.fault?.startsWith("ForgeLimit") == true, "$lambda")
         assertTrue(lambda.tripped!!.startsWith("time budget") || lambda.tripped!!.startsWith("allocation budget"), "$lambda")
         val reference = start(
             "FlatMapReference",
@@ -246,7 +252,7 @@ class RewriteBatteryTest {
                 m.log("" + n);
             """.trimIndent(),
         )
-        assertIs<ForgeLimit>(reference.error, "$reference")
+        assertTrue(reference.fault?.startsWith("ForgeLimit") == true, "$reference")
         assertTrue(reference.tripped!!.startsWith("time budget") || reference.tripped!!.startsWith("allocation budget"), "$reference")
     }
 }

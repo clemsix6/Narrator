@@ -76,6 +76,20 @@ class FactQueueTest {
     }
 
     @Test
+    fun `the handlers of the active subscriptions are the memory gauge's roots`() {
+        val queue = FactQueue()
+        val chat = Consumer<GameFact.Chat> { }
+        val left = Consumer<GameFact.Left> { }
+        val first = queue.on(GameFact.Chat::class.java, chat)
+        queue.on(GameFact.Left::class.java, left)
+        assertEquals(2, queue.handlers().size)
+        first.cancel()
+        assertTrue(queue.handlers().single() === left)
+        queue.close()
+        assertEquals(emptyList(), queue.handlers())
+    }
+
+    @Test
     fun `a cancelled subscription gets nothing more, not even what is queued, and frees its place`() {
         val queue = FactQueue()
         val got = mutableListOf<String>()

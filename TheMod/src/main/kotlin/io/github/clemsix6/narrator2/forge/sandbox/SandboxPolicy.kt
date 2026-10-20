@@ -124,7 +124,23 @@ object SandboxPolicy {
         "java/util/concurrent/ThreadLocalRandom.doubles" to "an endless stream",
         "java/util/Collections.nCopies" to "builds a huge list in one call",
         "java/util/UUID.randomUUID" to "draws on the system's entropy; use ctx.random()",
-    )
+    ) + rangeViews()
+
+    /**
+     * The range views of the sorted sets and maps, every form (`subSet(a, b)`, `subSet(a, true, b, false)`, `headMap`…),
+     * on every owner a call site may name: what is added through a view counts only within its range, so a set grows
+     * past its limit unseen (finding 2 of M5-04).
+     */
+    private fun rangeViews(): Map<String, String> {
+        val why = "a range view of a sorted set or map grows it past its limit unseen; use ceiling(), floor(), higher(), lower() or a filtered stream"
+        val sets = listOf("java/util/TreeSet", "java/util/NavigableSet", "java/util/SortedSet").flatMap { owner ->
+            listOf("subSet", "headSet", "tailSet").map { "$owner.$it" to why }
+        }
+        val maps = listOf("java/util/TreeMap", "java/util/NavigableMap", "java/util/SortedMap").flatMap { owner ->
+            listOf("subMap", "headMap", "tailMap").map { "$owner.$it" to why }
+        }
+        return (sets + maps).toMap()
+    }
 
     /** Owners of which only these members may be called. */
     val ONLY: Map<String, Set<String>> = mapOf(
@@ -203,6 +219,27 @@ object SandboxPolicy {
     fun superclassRefusal(internalName: String): String? =
         if (internalName in SUPERCLASSES) null
         else "a module class extends Object, a record, an enum, one of its own classes, or an allow-listed exception, not ${internalName.dot()}"
+
+    /**
+     * The allow-listed types that are a collection, a map or a text (`CharSequence`): no class of a module may be one
+     * (the supervisor's decision on M5-04's finding; the rewriting refuses it too). The JDK trusts their `size()` and
+     * `length()`: `new HashSet<>(lying)` reserves the size it is told, at once, and the list of such doors has no end.
+     */
+    val CONTAINERS: Set<String> by lazy {
+        val kinds = listOf(Collection::class.java, Map::class.java, CharSequence::class.java)
+        CLASSES.filterTo(HashSet()) { name ->
+            val type = runCatching { Class.forName(name.replace('/', '.'), false, ClassLoader.getPlatformClassLoader()) }.getOrNull()
+            type != null && kinds.any { it.isAssignableFrom(type) }
+        }
+    }
+
+    /** Null when a module class may implement [internalName] (an allow-listed interface), else why not. */
+    fun containerRefusal(internalName: String): String? =
+        if (internalName in CONTAINERS) {
+            "a module's class may not be a collection, a map or a CharSequence (${internalName.dot()}): the JDK trusts their size; keep one in a field instead"
+        } else {
+            null
+        }
 
     // ── Names a module's top class may not shadow ──────────────────────────────────────────────────────────────
 

@@ -53,6 +53,20 @@ class SchedulerTest {
     }
 
     @Test
+    fun `the tasks of the timers waiting are the memory gauge's roots`() {
+        val once = Runnable { }
+        val again = Runnable { }
+        scheduler.after(1, once)
+        scheduler.every(5, again)
+        assertEquals(2, scheduler.tasks().size)
+        scheduler.advance()
+        scheduler.next()!!.run()
+        assertTrue(scheduler.tasks().single() === again, "a one-time timer that ran is let go")
+        scheduler.close()
+        assertEquals(emptyList(), scheduler.tasks())
+    }
+
+    @Test
     fun `a timer runs once, its delay after it was made, and repeating ones again each period, in the order they are due then made`() {
         val once = scheduler.after(3, Task("once"))
         scheduler.every(2, Task("every"))

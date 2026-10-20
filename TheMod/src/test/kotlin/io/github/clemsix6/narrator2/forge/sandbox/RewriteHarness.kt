@@ -67,11 +67,21 @@ internal class RewriteLoader(private val classes: Map<String, ByteArray>) : Clas
     }
 }
 
-/** How one call of a module went: what it threw, what its meter says, how long it took, what it allocated and logged. */
-internal class MeteredCall(val error: Throwable?, val tripped: String?, val nanos: Long, val allocated: Long, val logs: List<String>) {
+/**
+ * How one call of a module went: what it threw ([error] here; [fault], its text `ForgeLimit: …`, also from the real
+ * host, which keeps no throwable), what its meter says, how long it took, what it allocated and logged.
+ */
+internal class MeteredCall(
+    val error: Throwable?,
+    val tripped: String?,
+    val nanos: Long,
+    val allocated: Long,
+    val logs: List<String>,
+    val fault: String? = error?.let { "${it.javaClass.simpleName}: ${it.message}" },
+) {
     val millis: Double get() = nanos / 1e6
 
-    override fun toString() = "error=$error, tripped=$tripped, ${"%.1f".format(millis)} ms, ${allocated / 1024} KiB, logs=$logs"
+    override fun toString() = "fault=$fault, tripped=$tripped, ${"%.1f".format(millis)} ms, ${allocated / 1024} KiB, logs=$logs"
 }
 
 /** A module loaded by a [RewriteLoader]; its [meter] set when it is [metered] (rewritten). */
