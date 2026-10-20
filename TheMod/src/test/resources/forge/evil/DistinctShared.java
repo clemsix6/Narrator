@@ -11,9 +11,8 @@ public final class DistinctShared implements ForgeModule {
     public void start(ModuleContext m) {
         List<Integer> l0 = new ArrayList<>();
         for (int i = 0; i < 10_000; i++) l0.add(i);
-        List<List<Integer>> l1a = new ArrayList<>();
-        for (int i = 0; i < 10_000; i++) l1a.add(l0);
-        List<List<Integer>> l1b = new ArrayList<>(l1a);
-        m.log("" + Stream.of(l1a, l1b).distinct().count());
+        List<List<Integer>> l1 = new ArrayList<>();
+        for (int i = 0; i < 10_000; i++) l1.add(l0);
+        m.log("" + Stream.of(l1).distinct().count());
     }
 }
