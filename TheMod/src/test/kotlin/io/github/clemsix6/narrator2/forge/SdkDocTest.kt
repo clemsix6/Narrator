@@ -157,11 +157,17 @@ class SdkDocTest {
         }
     }
 
+    /**
+     * A Forge of its own for [body], warmed by a first `forge_test` of an empty module whose report is not read: the
+     * first module of a JVM pays the loading of the compiler and the bench in its first calls (M5-10, M5-16), which the
+     * bench's 20 ms per call do not forgive on a busy machine.
+     */
     private suspend fun withForge(body: suspend (ForgeService) -> Unit) {
         val dir = Files.createTempDirectory("narrator2-sdk-doc")
         val services = TestServices(dataDir = dir)
         val forge = ForgeService(services, ArsenalStore(dir.resolve(ForgeService.ARSENAL_DIR), services.clock, builtInNames = emptyList()))
         try {
+            forge.test(SNIPPET_NAME, SNIPPET_MODULE.replace("SNIPPET", ""))
             body(forge)
         } finally {
             forge.stop()

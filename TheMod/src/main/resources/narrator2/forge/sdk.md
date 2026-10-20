@@ -5,18 +5,18 @@ A module is one Java 25 file compiled against this SDK and part of `java.base` o
 ## 1. The file
 
 - No `package` line. Imports: those of the example (§10), and what else of the JDK you use (§7).
-- One `public final class` named after the module in UpperCamelCase (`word_race` → `WordRace`), `implements ForgeModule`, with a public constructor without arguments (or none). Nested classes, records, enums, sealed interfaces, pattern switches, lambdas, streams, text blocks: fine.
-- `@ModuleInfo(name = "word_race", summary = "…")`: the name, `[a-z][a-z0-9_]{2,31}`, is the tools' `name`; the summary, one English line (120 chars) for the Director: what players see.
-- `@Param(…)` once per parameter, 8 at most. A snake_case name; `doc`, one English line (120 chars). `required = false` takes its `fallback` when left out (INTEGER, NUMBER and BOOLEAN need one). `min`, `max`: the bounds of an INTEGER or a NUMBER, how many PLAYERS (8 at most), how long a TEXT (300 at most). `choices`: a TEXT's only values. The Director's values are checked first: the module reads valid ones only.
+- One `public final class` named after the module in UpperCamelCase (`word_race` → `WordRace`), `implements ForgeModule`, with a public constructor without arguments (or none). Nested classes, records, enums, pattern switches, lambdas, streams: fine.
+- `@ModuleInfo(name = "word_race", summary = "…")`: the name, `[a-z][a-z0-9_]{2,31}`, is the tools' `name`; the summary, one English line (120 chars): what players see.
+- `@Param(…)` once per parameter, 8 at most: a snake_case name; `doc`, one English line (120 chars); `required = false` takes its `fallback` (INTEGER, NUMBER and BOOLEAN need one); `min`, `max` bound an INTEGER or a NUMBER, how many PLAYERS (8 at most), how long a TEXT (300 at most); `choices`: a TEXT's only values. The module reads checked values only.
 - Text forms (`fallback`, `Bench.start`): PLAYER `Bartok`; PLAYERS `Bartok,Mimosa`; INTEGER `6`; NUMBER `2.5`; TEXT as is; BOOLEAN `true`; PLACE `120 64 -30`, `120 64 -30 the_nether`, or an online player's name (where they stand at the start).
 - `Scenarios`: a nested `public static final class Scenarios`, up to 8 methods `public void name(Bench b)`, helpers private or static; one at least for `forge_save` (§8).
 - Code, comments, `summary`, `doc` and `log` lines are English; all that players or the Director read is French.
 
 ## 2. How a module runs
 
-- Each deployment makes a new instance: constructor, then `start(ctx)`, 50 ms each; keep `ctx` in a field. Then it runs only when called back: each fact handler, timer run and `then` callback is a call of its own, 20 ms at most, one at a time, on the server thread, which waits for it. Never loop to wait: schedule.
-- Nothing blocks: reads are immediate; acts are queued, done after the call, their `Outcome` comes at a later tick.
-- It ends when its time runs out (`ctx.endsAt()`, 5 minutes to 7 days), when the Director or an operator stops it, when it calls `ctx.end(why)`, or when its faults disable it (§7). Then `stop(ctx, why)` runs once, never after a fault: reads work, acts are dropped, timers and subscriptions refused. Its creatures are taken back after it.
+- Each deployment makes a new instance: constructor, then `start(ctx)`, 50 ms each (20 at the bench); keep `ctx` in a field. Then it runs only when called back: each fact handler, timer run and `then` callback is a call of its own, 20 ms at most, one at a time, on the server thread, which waits for it. Never loop to wait: schedule.
+- Nothing blocks: acts are queued, done after the call; their `Outcome` comes a tick later.
+- It ends when its time runs out (`ctx.endsAt()`, 5 minutes to 7 days), when it is stopped, when it calls `ctx.end(why)`, or when its faults disable it (§7). Then `stop(ctx, why)` runs once, never after a fault: reads work, acts are dropped. Its creatures are taken back after it.
 - State lives in fields. After a server restart: a new instance, `start` with `ctx.restarted()` true: `ctx.storage()` back, creatures back as their chunks load, no timers nor subscriptions; the restart's facts were missed.
 - Ids have no `minecraft:` (`cow`, `diamond_ore`, `the_nether`, `story/mine_stone`); `game_ids` lists them. Players are names, creatures UUIDs as text, times epoch ms, delays ticks (20 a second).
 - A refused SDK call throws `ForgeRefusal`, a RuntimeException you may catch: a limit of the SDK, a bad argument, a deployment that is over. A refused act throws nothing: its `Outcome` says so.
@@ -142,7 +142,7 @@ interface Creature {  // steered at once; once not its own, ForgeRefusal but for
 interface Ground {
   Pending place(List<Cell> cells, String block, int seconds);  // an act: 1 to 64 loaded air cells, all or nothing, 1 to 120 s
 }
-interface Storage {  // texts kept with the world: 64 keys of 40 chars, values of 512, 8,192 chars in all
+interface Storage {  // texts kept with the world, within the MAX_STORAGE limits
   String get(String key);  // null: none
   void put(String key, String value);  // null removes
   void remove(String key);
@@ -183,7 +183,7 @@ sealed interface GameFact {  // §5
   record BlockPlaced(String player, Place at, String block) {}
   record CreatureHit(String player, Place at, Who creature, float damage, float health) {}  // never the killing blow
   record PlayerHit(String player, Place at, String victim, float damage) {}
-  record PlayerHurt(String player, Place at, String cause, Who attacker, float damage) {}  // one cause's hits in 5 s, summed, up to 5 s late
+  record PlayerHurt(String player, Place at, String cause, Who attacker, float damage) {}  // 5 s of hits summed, 5 s late
   record CreatureKilled(String player, Place at, Who creature) {}
   record ProjectileHit(String player, Place at, String projectile, Who shooter, Who target) {}  // target null: a block
   record PlayerDied(String player, Place at, String cause, Who killer) {}
@@ -229,7 +229,7 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 `Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Read it when it matters; never insist, the same act is refused again. Fall back, say something else, or end.
 
 - The tools, as `refuseNext` names them: `say` (`say`, `sayTo`), `show_title`, `hud`, `play_sound`, `particles`, `fireworks`, `lightning` (`lightning`, `smite`), `explosion`, `apply_effect`, `set_attribute`, `launch`, `teleport` (both), `spawn`, `punish`, `place_blocks` (`ground().place`), `creature_attack` (`Creature.attack`), `game` (`win`, `lose`).
-- Hostile, so a punishment refused like one: `smite`, `launch`, `punish`, `teleportRandom`, `attack`; an `explosion` that hurts; a harmful `effect`; an `attribute` against them; a `teleport` beyond 32 blocks; a `spawn` of hostile creatures near a player or with a target; a `place` within 2 blocks of a player.
+- Hostile, refused like a punishment: `smite`, `launch`, `punish`, `teleportRandom`, `attack`; an `explosion` that hurts; a harmful `effect`; an `attribute` against them; a `teleport` beyond 32 blocks; a `spawn` of hostile creatures near a player or with a target; a `place` within 2 blocks of a player.
 - `effect`: never `wither`, `poison`, `instant_damage`, `levitation` (`DENIED (forbidden_effect)`). `teleport`: never to another player nor another dimension. `spawn`: never a boss or a creature out of scale (warden, wither, ender dragon, elder guardian…), a `creeper` or a `breeze` (`DENIED (forbidden_creature)`).
 - `punish`: `tiny`, `moon_gravity`, `slow_hands`, `heavy_feet`, `hunger`, `butterfingers`, `guests`, `slime_rain`, `skyward`, `tree_top`, `smite`, `cage`, `web`; severity 1 to 5, capped by the chaos level (4 at chaos 3); one per call and player; `reason`: one factual line, French, third person (« a bougé quand le Narrateur regardait »).
 - `particles`: `heart`, `flame`, `smoke`, `end_rod`, `happy_villager`… (`game_ids`). `ground().place`: `glass`, a stained glass (`red_stained_glass`), `cobweb`, `slime_block`, `honey_block`; they go by themselves.
@@ -241,15 +241,15 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 
 ## 6. Creatures
 
-- Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They drop nothing, break nothing, attack only players, take no fall damage, never push players. A summoned one vanishes at the end of its lifetime (a module that lasts summons again) or of the deployment; a claimed one goes back where it was. `CreatureGone`: one died, vanished or unloaded (it comes back when it loads).
-- `claim(uuid)`: a wild hostile creature (`zombie`, `skeleton`…) spawn could summon, within 32 blocks of an online player (see `CreatureAppeared`, `World.creatures`); null for an animal, a villager, a golem, a tamed, named or ridden one, a boss, another's. For animals, summon them.
+- Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They drop nothing, break nothing, attack only players, take no fall damage, never push players. A summoned one vanishes at the end of its lifetime (summon again to last) or of the deployment; a claimed one goes back. `CreatureGone`: one died, vanished or unloaded.
+- `claim(uuid)`: a wild hostile creature (`zombie`, `skeleton`…) spawn could summon, within 32 blocks of an online player; null for an animal, a villager, a golem, a tamed, named or ridden one, a boss, another's.
 - Steering is immediate, no act; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s; steered into one, it does not push them.
 
 ## 7. The sandbox
 
 Allowed: the basics of `java.lang` (of `System`, only `nanoTime`, `currentTimeMillis`, `arraycopy`), the collections and helpers of `java.util`, `java.util.function`, the streams and `Collectors`, `AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`, `ThreadLocalRandom`, and the dates and durations of `java.time`.
 
-The guard refuses the rest (`[1] refused WordRace.java:12: java.lang.Thread: …`), among it: files, the network, reflection; threads, `Thread.sleep`, executors, `synchronized`, `wait`, `ThreadLocal`, parallel streams; regular expressions (`matches`, `split`, `replaceAll`, `replaceFirst`: use `Text.words`, `Text.normalize`, `contains`, `indexOf`, `replace`); endless streams (`Stream.iterate`, `Stream.generate`, `Random.ints`…); `UUID.randomUUID` (use `ctx.random()`); `catch (Throwable)`, `catch (Error)` (catch a precise exception), try-with-resources; `new int[a][b]` (use `new int[a * b]`); a class of its own that is a `Collection`, a `Map` or a `CharSequence` (keep one in a field); the range views `subSet`, `headSet`, `tailSet`, `subMap`, `headMap`, `tailMap` (use `ceiling`, `floor`, `higher`, `lower`); implementing an SDK interface but `ForgeModule`.
+The guard refuses the rest (`[1] refused WordRace.java:12: java.lang.Thread: …`), among it: files, the network, reflection; threads, `Thread.sleep`, executors, `synchronized`, `wait`, `ThreadLocal`, parallel streams; regular expressions (`matches`, `split`, `replaceAll`, `replaceFirst`: use `Text.words`, `Text.normalize`, `contains`, `indexOf`, `replace`); endless streams (`Stream.iterate`, `Stream.generate`, `Random.ints`…); `UUID.randomUUID` (use `ctx.random()`); `catch (Throwable)`, `catch (Error)` (catch a precise exception), try-with-resources; `new int[a][b]` (use `new int[a * b]`); a class of its own that is a `Collection`, a `Map` or a `CharSequence` (keep one in a field); the range views `subSet`, `headSet`, `tailSet`, `subMap`, `headMap`, `tailMap` (use `ceiling`, `floor`, `higher`, `lower`).
 
 Its limits throw `ForgeLimit`, an `Error` that ends the call (`catch (Exception e)` does not stop it): 20 ms a call (50 for the constructor and `start`); 64 nested calls; 16 MiB allocated a call; 10,000 elements a collection; 65,536 characters a text, elements an array or asked capacity; hashing or comparing a structure larger than that. Memory it keeps: 32 MiB in the game, 4 MiB at the bench.
 
@@ -257,10 +257,10 @@ Its faults, over ten minutes, disable it: two calls stopped by time, depth or al
 
 ## 8. The bench and forge_test
 
-`forge_test` checks the name, the size (48,000 chars), no `package`, then compiles, guards, reads the form, rewrites and runs the bench. Its first line says where it stopped (`does not compile: 2 errors (14 ms)`, `compiled (14 ms), refused by the sandbox: 1 problem`, `…; scenarios 1/2`) or `ok: …`. Each problem: `[n] error|refused|fault WordRace.java:line: what`, the line, `hint:` lines. Fix them all, send the whole file again.
+`forge_test` compiles, guards, reads the form, rewrites, then runs the bench. Its first line says where it stopped (`does not compile: 2 errors (14 ms)`, `compiled (14 ms), refused by the sandbox: 1 problem`, `…; scenarios 1/2`) or `ok: …`. Each problem: `[n] error|refused|fault WordRace.java:line: what`, the line, `hint:` lines. Fix them all, send the whole file again.
 
 The bench is a simulated world, with the game's sandbox and SDK; acts are recorded, never done.
-1. **Smoke run**: players Bartok (0.5 64 0.5), Mimosa (6.5 64 0.5), Josiane (0.5 64 6.5), a wild zombie (10.5 64 10.5); required parameters get a sample (Bartok; Bartok,Mimosa; the min or 1; the first choice or bonjour; false; 8 64 0), the others their fallback; constructor, `start`, a sample fact of each record it listens to, 1,200 ticks, `stop(EXPIRED)`. It fails on a fault, a call over 20 ms, over 4 MiB kept or 1 MiB more in its second half.
+1. **Smoke run**: players Bartok (0.5 64 0.5), Mimosa (6.5 64 0.5), Josiane (0.5 64 6.5), a wild zombie; required parameters get a sample (Bartok; Bartok,Mimosa; the min or 1; the first choice; false; 8 64 0), the others their fallback; constructor, `start`, a sample fact of each record it listens to, 1,200 ticks, `stop(EXPIRED)`. It fails on a fault, a call over 20 ms, 4 MiB kept.
 2. **Dry checks**: each distinct act is checked by the real tool at chaos 3, as if the Director asked: an unknown id, a severity of 5… fail the test, with the module's line.
 3. **Scenarios**, each on a new bench: no player, air from y = 64 up, stone below, plains, clear, `dayTime` 6,000 plus the ticks; the deployment C-1 lasts 10 minutes; a challenge is C-2. The first false `check`, exception, fault or call over 20 ms fails it; 30 s for the whole bench.
 
@@ -291,17 +291,21 @@ interface Bench {
 }
 ```
 
-`acts()` lines: `say: Ça commence.`, `say to Mimosa: …`, `title Bartok: Attention / le sol brûle`, `hud everyone: 10 s`, `smite Bartok 2`, `effect Bartok speed 30s level 1`, `spawn chicken x6 near Bartok`, `punish Bartok tiny 2`, `place glass x4 for 30s`, `attack Mimosa with zombie`, `game won: Mimosa`, `game lost`…; then ` → denied` (or `invalid`, `failed`, `unknown`, `dropped`) when not `ok`. An act asked in a call is sent at the next tick, its status known a tick later: run 2 ticks or more before you check it.
+`acts()` lines: `say: Ça commence.`, `title Bartok: Attention / le sol brûle`, `hud everyone: 10 s`, `spawn chicken x6 near Bartok`, `punish Bartok tiny 2`, `game won: Mimosa`, `game lost`…, then ` → denied` (or `invalid`, `failed`, `unknown`, `dropped`) when not `ok`. An act is sent at the next tick, its status known a tick later: run 2 ticks before you check it.
 
 Write two scenarios at least: the normal case, and a refusal of the guards (`refuseNext`) that the module handles.
 
 ## 9. What costs tries
 
-- To win then end: `game.win(…).then(o -> ctx.end(…))` (§10). `win(…)` and `ctx.end(…)` in the same call drop the win (`game won: Mimosa → dropped`).
-- `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. Lists from the SDK are unmodifiable: copy one to change it.
-- 4 acts a call: for many players, `say` to all, `title` or `hud` with a null player, or spread the acts over timer runs.
-- `then` once per act; acts asked in `stop` are dropped. Timers every 5 to 20 ticks rather than every tick; `ctx.random()`, not `new Random()`.
-- The built-in modules (version 0 in `module_list`) are tested examples, with steered creatures: `module_read` them.
+- `ctx.end` drops every act asked in the same call, a `win` too (`game won: Mimosa → dropped`): end in the callback of the last act, `last.then(o -> ctx.end(why))` (§10).
+- Finish before `ctx.endsAt()`, 15 s ahead: the expiry drops a verdict on its way. Rhythms in ticks (timers count the engine's), durations and deadlines in `ctx.now()`.
+- A game speaks through `hud` (80 chars, `Text.cut`): `say` and `title` eat the speech limit the Director shares (8 a minute for the server). Two lines a game: the rule, the result.
+- 4 acts a call: with many players, spread the `hud` lines over timer runs (`hud` with a null player reaches all).
+- `tellDirector` notes, `end` reasons, `win` and `lose` notes: French, factual, third person (« Mimosa a gagné », never « tu », « je » nor « vous »), or the memory refuses them.
+- `Game.running()` stays true until the verdict, past the challenge's deadline too.
+- A scenario reads a draw (`ctx.random()`) in `b.acts()`, then plays it (§10).
+- `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. SDK lists are unmodifiable. `then` once per act; acts asked in `stop` are dropped.
+- The built-in modules (version 0) are tested examples: `module_read` `tag` and `simon_says`, games that referee a challenge and speak through `hud`.
 
 ```java
 ctx.acts().spawn("cow", "Bartok", Spawn.of(3).withHeight(4).withName("Ballon")).then(o -> {
@@ -335,30 +339,24 @@ public final class WordRace implements ForgeModule {
     public void start(ModuleContext ctx) {
         this.ctx = ctx;
         players = ctx.args().players("players");
-        word = ctx.storage().get("word");  // back after a restart
-        if (word == null) {
-            word = WORDS.get(ctx.random().nextInt(WORDS.size()));
-            ctx.storage().put("word", word);
-        }
+        word = WORDS.get(ctx.random().nextInt(WORDS.size()));  // the same draw after a restart: same seed
         String backwards = new StringBuilder(word).reverse().toString().toUpperCase(Locale.ROOT);
         ctx.acts().say("Le premier qui écrit ce mot à l'endroit gagne : " + backwards).then(o -> {
             if (!o.ok()) ctx.end("le mot n'a pas pu être annoncé");  // refused: give up, never insist
         });
         ctx.events().on(GameFact.Chat.class, this::heard);
-        ctx.timers().after(ctx.args().integer("seconds") * Limits.TICKS_PER_SECOND, this::timeUp);
+        long ms = Math.min(ctx.args().integer("seconds") * 1000L, ctx.endsAt() - ctx.now() - 15_000);  // done before the expiry
+        ctx.timers().after((int) Math.max(1, ms / 50), this::timeUp);
     }
 
     private void heard(GameFact.Chat chat) {
         if (over || !players.contains(chat.player()) || !Text.normalize(chat.text()).equals(word)) return;
         over = true;
         String winner = chat.player();
-        ctx.acts().title(null, winner + " gagne", "le mot était " + word);
+        Pending last = ctx.acts().title(null, winner + " gagne", "le mot était " + word);
         Game game = ctx.game();
-        if (game != null && game.running()) {
-            game.win(List.of(winner), winner + " a écrit « " + word + " » le premier").then(o -> ctx.end(winner + " a gagné"));
-        } else {
-            ctx.end(winner + " a gagné la course au mot");
-        }
+        if (game != null && game.running()) last = game.win(List.of(winner), winner + " a écrit « " + word + " » le premier");
+        last.then(o -> ctx.end(winner + " a gagné la course au mot"));  // ending now would drop the title and the win
     }
 
     private void timeUp() {
@@ -378,9 +376,11 @@ public final class WordRace implements ForgeModule {
             b.challenge("Bartok", "Mimosa");
             b.start("players=Bartok,Mimosa");
             b.run(2);
-            b.check(b.acts().get(0).startsWith("say: Le premier"), "the word is announced: " + b.acts());
+            String said = b.acts().get(0);  // the draw, read in the acts
+            b.check(said.startsWith("say: Le premier"), "the word is announced: " + b.acts());
+            String word = new StringBuilder(said.substring(said.lastIndexOf(' ') + 1)).reverse().toString();
             b.fact(new GameFact.Chat("Bartok", here, "patate"));
-            for (String w : WORDS) b.fact(new GameFact.Chat("Mimosa", here, w.toUpperCase(Locale.ROOT) + " !"));
+            b.fact(new GameFact.Chat("Mimosa", here, word + " !"));
             b.run(5);
             b.check(b.acts().contains("game won: Mimosa"), "Mimosa wins: " + b.acts());
             b.check(b.ended() != null, "it ends once the win is paid");
