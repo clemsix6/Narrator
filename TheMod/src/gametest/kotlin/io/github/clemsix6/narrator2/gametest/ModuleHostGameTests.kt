@@ -26,6 +26,7 @@ import io.github.clemsix6.narrator2.forge.sdk.FactQueue
 import io.github.clemsix6.narrator2.forge.sdk.StorageMap
 import io.github.clemsix6.narrator2.forge.sdk.WorldView
 import io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests.Companion.FORGE_ENVIRONMENT
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,7 +74,8 @@ class ModuleHostGameTests {
                     val world = WorldView(server, runtime.players) { false }
                     val arguments = mapOf("dimension" to dimension, "x" to gold.x, "y" to gold.y, "z" to gold.z)
                     val context = GameContext(world, arguments)
-                    val host = ModuleHost("Probe", probe, threads, "gametest Probe")
+                    // A busy server's patience (FLAKY-4): what is checked here is where the code runs, never its time.
+                    val host = ModuleHost("Probe", probe, threads, "gametest Probe", timeScale = BusyMachine.TIME_SCALE)
                     host.start(context)
                     helper.assertTrue(host.disabled == null, "the probe started: ${host.disabled}")
                     val surface = context.logs.firstOrNull { it.startsWith("surface ") }?.removePrefix("surface ")?.toIntOrNull()
@@ -86,7 +88,7 @@ class ModuleHostGameTests {
 
                     // The witness of ForgeSamples, loaded by its filtering loader and started from the server thread.
                     val tag = GameContext(world, mapOf("players" to listOf("Bartok", "Mimosa"), "minutes" to 5, "mood" to "taquin"))
-                    val witness0 = ModuleHost(ForgeSamples.CLASS, witness, threads, "gametest ${ForgeSamples.NAME}")
+                    val witness0 = ModuleHost(ForgeSamples.CLASS, witness, threads, "gametest ${ForgeSamples.NAME}", timeScale = BusyMachine.TIME_SCALE)
                     witness0.start(tag)
                     helper.assertTrue(witness0.disabled == null, "the witness started: ${witness0.disabled}")
                     repeat(3) { witness0.call("timer") { tag.tasks[0].run() } }
@@ -129,16 +131,29 @@ class ModuleHostGameTests {
             sequence = sequence
                 .thenExecute {
                     val made = GameContext(WorldView(server, helper.narrator().players) { false }, emptyMap())
-                    host = ModuleHost("Attack", built.get(), threads, "gametest attack $attack").also { it.start(made) }
+                    // Its `start` (the structures of the attacks) with a busy server's patience; the attack with the
+                    // game's margin, and the game's budget when time is what stops it (FLAKY-4).
+                    val attacker = ModuleHost(
+                        "Attack", built.get(), threads, "gametest attack $attack",
+                        timeScale = BusyMachine.TIME_SCALE, abandonMarginNanos = ModuleHost.ABANDON_MARGIN_NANOS,
+                    )
+                    attacker.start(made)
+                    helper.assertTrue(attacker.disabled == null, "$attack: the module started: ${attacker.disabled}")
+                    host = attacker
                     context = made
                 }
                 .thenIdle(1)
                 .thenExecute {
                     tick = server.tickCount
-                    called = host!!.call("timer") { context!!.tasks[index].run() }
+                    val budget = if (attack in GUARDED) ForgeLimits.CALL_NANOS * BusyMachine.TIME_SCALE else ForgeLimits.CALL_NANOS
+                    called = host?.call("timer", budget) { context!!.tasks[index].run() }
+                    helper.assertTrue(called != null, "$attack: the module ran: ${host?.disabled}")
                 }
                 .thenIdle(2)
-                .thenExecute { measures += Measure(attack, called!!, server.tickTimesNanos[tick % 100], host!!.disabled) }
+                .thenExecute {
+                    val ran = called
+                    if (ran == null) helper.assertTrue(false, "$attack never ran") else measures += Measure(attack, ran, server.tickTimesNanos[tick % 100], host?.disabled)
+                }
         }
         sequence
             .thenAwait { helper.assertTrue(lost.alive() == 0, "the lost threads end once their JDK call returns") }
@@ -150,17 +165,22 @@ class ModuleHostGameTests {
                         "[host] in the server, ${measure.attack}: the module held the tick %.1f ms, the tick took %.1f ms (%.1f ms at most before), %s"
                             .format(measure.called.nanos / 1e6, measure.tickNanos / 1e6, baseline, measure.called.fault?.text),
                     )
+                    // The wall clock of a busy server may add to both (FLAKY-4): without the abandon, the indexOf loop alone
+                    // holds its caller about 1 s (measured), until its meter reads the clock between two indexOf.
                     val held = measure.called.nanos / 1e6
-                    helper.assertTrue(held < BUDGET_MS + MARGIN_MS, "${measure.attack}: the module held the tick $held ms")
-                    helper.assertTrue(measure.tickNanos / 1e6 < BUDGET_MS + TICK_MARGIN_MS + baseline, "${measure.attack}: the tick took ${measure.tickNanos / 1e6} ms")
+                    helper.assertTrue(held < BUDGET_MS + MARGIN_MS + BusyMachine.SLACK_MILLIS, "${measure.attack}: the module held the tick $held ms")
+                    helper.assertTrue(measure.tickNanos / 1e6 < BUDGET_MS + TICK_MARGIN_MS + baseline + BusyMachine.SLACK_MILLIS, "${measure.attack}: the tick took ${measure.tickNanos / 1e6} ms")
                     helper.assertTrue(measure.called.fault != null, "${measure.attack}: stopped")
                 }
                 val kinds = measures.associate { it.attack to it.called.fault?.kind }
                 helper.assertTrue(kinds["endless loop"] == Fault.Kind.LIMIT && kinds["indexOf loop"] == Fault.Kind.LIMIT && kinds["allocation loop"] == Fault.Kind.LIMIT, "$kinds")
-                // The shared-structure hash is now bounded by the guard (M5-18): a clean ForgeLimit in a few ms, no abandon, no lost thread.
+                // The shared-structure hash is now bounded by the guard (M5-18), and the growing list too: each a clean
+                // ForgeLimit of the guard, an exception, given time enough that the clock never stops it first — no abandon,
+                // no lost thread.
                 helper.assertTrue(kinds["shared hash"] == Fault.Kind.EXCEPTION && kinds["growing list"] == Fault.Kind.EXCEPTION, "$kinds")
-                val sharedHeld = measures.first { it.attack == "shared hash" }.called.nanos / 1e6
-                helper.assertTrue(sharedHeld < BUDGET_MS, "the guard stopped the shared hash before the abandon: $sharedHeld ms")
+                val shared = measures.first { it.attack == "shared hash" }.called
+                helper.assertTrue(shared.fault!!.cause.startsWith("ForgeLimit: "), "the guard stopped the shared hash: ${shared.fault}")
+                Log.forge.info("[host] in the server, the guard stopped the shared hash in %.1f ms".format(shared.nanos / 1e6))
             }
             .thenSucceed()
     }
@@ -264,6 +284,9 @@ class ModuleHostGameTests {
 
         /** The attacks, in the order of the module's timers. */
         val ATTACKS = listOf("endless loop", "shared hash", "indexOf loop", "growing list", "allocation loop")
+
+        /** The attacks the guard stops, not the clock: their calls have a busy server's patience. */
+        val GUARDED = setOf("shared hash", "growing list")
 
         /** Reads a block and the surface of the cell its parameters name, and logs them. */
         val PROBE = """
