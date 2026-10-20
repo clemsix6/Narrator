@@ -212,7 +212,7 @@ class ToolCatalogTest {
         assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).forgeAvailable, "off unless said otherwise")
     }
 
-    /** The server runs without the Forge until its assembly (M5-21): the tools of M5, each a `ForgeTool`, stay hidden. */
+    /** Without the Forge (missing, down or switched off by an operator), the tools of M5, each a `ForgeTool`, stay hidden. */
     @Test
     fun `without the Forge the Director keeps exactly its 44 tools of M4, and the forger has none`() {
         val engineOnly = everythingWired.copy(mechanicsAvailable = true)
@@ -246,8 +246,27 @@ class ToolCatalogTest {
         assertTrue(sizes.values.sum() <= MECHANICS_DEFINITIONS_BUDGET, "the seven definitions take ${sizes.values.sum()} characters: $sizes")
     }
 
+    /**
+     * With the engine and the Forge the Director has 47 tools: the 44 of M4 and its three of the Forge (M5 §9.1). Their
+     * definitions, as the SDK sends them, enter the cached prefix of every chapter: 5,000 characters at most.
+     */
+    @Test
+    fun `with the engine and the Forge the Director gets its three tools of the Forge, whose definitions fit their budget`() {
+        val engine = everythingWired.copy(mechanicsAvailable = true)
+        val set = ToolCatalog.toolSetFor(Role.DIRECTOR, engine.copy(forgeAvailable = true), services)
+        val without = ToolCatalog.toolSetFor(Role.DIRECTOR, engine, services).names
+        assertEquals(47, set.names.size, "${set.names}")
+        assertEquals(FORGE_TOOLS, set.names - without.toSet())
+
+        val mapper = jsonMapper()
+        val sizes = FORGE_TOOLS.associateWith { name -> mapper.writeValueAsString(ToolSchema.definition(set[name]!!)).length }
+        assertTrue(sizes.values.sum() <= FORGE_DEFINITIONS_BUDGET, "the three definitions take ${sizes.values.sum()} characters: $sizes")
+    }
+
     private companion object {
         val MECHANICS_TOOLS = listOf("create_rule", "end_challenge", "favor", "propose_duel", "punish", "remove_rule", "start_challenge")
         const val MECHANICS_DEFINITIONS_BUDGET = 14_000
+        val FORGE_TOOLS = listOf("deploy_module", "forge_module", "stop_module")
+        const val FORGE_DEFINITIONS_BUDGET = 5_000
     }
 }
