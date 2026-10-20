@@ -4,6 +4,8 @@ package io.github.clemsix6.narrator2.agent
 
 import com.anthropic.core.jsonMapper
 import com.fasterxml.jackson.databind.JsonNode
+import io.github.clemsix6.narrator2.config.ForgeConfig
+import io.github.clemsix6.narrator2.config.Prompts
 import io.github.clemsix6.narrator2.config.WorkersConfig
 import io.github.clemsix6.narrator2.director.DirectorHarness.SchedulerClock
 import io.github.clemsix6.narrator2.director.DirectorSignal
@@ -13,11 +15,14 @@ import io.github.clemsix6.narrator2.journal.DisabledJournal
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeDirector
+import io.github.clemsix6.narrator2.testing.FakeForge
+import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeResponse
 import io.github.clemsix6.narrator2.testing.Hold
 import io.github.clemsix6.narrator2.testing.MemoryTraceSink
@@ -32,6 +37,7 @@ import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.TestTool
+import io.github.clemsix6.narrator2.tool.ToolCatalog
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolEnv
 import io.github.clemsix6.narrator2.tool.ToolResult
@@ -74,7 +80,8 @@ import kotlin.test.fail
 /**
  * The workers (M1_M2 §13) and the delegation tools (§9.6) against the strict fake Anthropic server: a
  * task per conversation and session, the limit of tasks at once and the line, the timeout, the
- * cancellation, the failures (402 budget, refusal, empty report), and the report posted to the Director.
+ * cancellation, the failures (402 budget, refusal, empty report), and the report posted to the Director;
+ * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits, one task at a time, the switch.
  * Virtual time, except where the test needs real threads.
  */
 class WorkersTest {
@@ -104,6 +111,7 @@ class WorkersTest {
         val timeoutSeconds: Int = 180,
         journalAvailable: Boolean = true,
         virtualTime: Boolean = true,
+        forgeConfig: ForgeConfig = ForgeConfig(),
     ) : AutoCloseable {
         val scheduler = TestCoroutineScheduler()
         val scope = CoroutineScope(SupervisorJob() + if (virtualTime) StandardTestDispatcher(scheduler) else Dispatchers.Default)
@@ -115,6 +123,10 @@ class WorkersTest {
         val services: NarratorServices
         val workers: Workers
 
+        /** The Forge and the mechanics engine, both running unless a test says otherwise: the forger works with them only. */
+        val forge = FakeForge(clock)
+        val mechanics = FakeMechanics(clock)
+
         /** Queries the fake `sql` got, in order. */
         val queries = CopyOnWriteArrayList<String>()
 
@@ -123,7 +135,7 @@ class WorkersTest {
 
         init {
             val defaults = testConfig(fake.baseUrl)
-            val config = defaults.copy(workers = WorkersConfig(maxConcurrent, maxSteps, timeoutSeconds))
+            val config = defaults.copy(workers = WorkersConfig(maxConcurrent, maxSteps, timeoutSeconds), forge = forgeConfig)
             client = ClaudeClient(config, TEST_API_KEY)
             val disabled = DisabledJournal("unit test", clock)
             val journal: Journal = if (journalAvailable) object : Journal by disabled { override val available = true } else disabled
@@ -136,6 +148,8 @@ class WorkersTest {
                 trace = traces,
                 transcripts = Transcripts(dir.resolve("logs"), enabled = true),
                 director = director,
+                forge = forge,
+                mechanics = mechanics,
             )
             services = object : NarratorServices by base {
                 override val workers get() = this@Rig.workers
@@ -289,7 +303,10 @@ class WorkersTest {
 
         assertTrue(session.startsWith("scout-"), session)
         assertEquals(listOf(Role.SCOUT), rig.toolSets.map { it.first })
-        assertEquals(ToolEnv(journalAvailable = true, workerRoles = emptySet(), memoryAvailable = true), rig.toolSets.single().second)
+        assertEquals(
+            ToolEnv(journalAvailable = true, workerRoles = emptySet(), memoryAvailable = true, mechanicsAvailable = true, forgeAvailable = true),
+            rig.toolSets.single().second,
+        )
         val request = rig.requestsOf(id).first().json
         assertContains(request.path("system")[0].path("text").asText(), "Tu es l'Éclaireur du Narrateur")
         assertEquals("low", request.path("output_config").path("effort").asText())
@@ -522,19 +539,169 @@ class WorkersTest {
         assertTrue("<engine>" !in opening, opening)
     }
 
+    // ── The forger (M5 §8.1) ───────────────────────────────────────────────────────────────────────
+
+    private val brief = "Un jeu : le premier qui écrit le mot gagne, Bartok contre Mimosa, cinq minutes."
+
+    @Test
+    fun `the forger takes tasks only while the Forge and the engine run and no operator switched the Forge off`() {
+        val rig = Rig()
+        assertTrue(Role.FORGER in rig.workers.roles)
+
+        rig.forge.available = false
+        rig.forge.reason = "the compiler is stuck since 21:04:10"
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT), rig.workers.roles)
+        assertEquals(
+            "no forger can take a task: the Forge is unavailable: the compiler is stuck since 21:04:10",
+            rig.workers.submit(Role.FORGER, brief, DIRECTOR_CALLER).exceptionOrNull()!!.message,
+        )
+        rig.forge.available = true
+        rig.mechanics.modules.halted = ForgeHalt("a module misbehaves", "Clement", START.toEpochMilli())
+        assertEquals("no forger can take a task: the Forge was switched off by Clement", rig.workers.submit(Role.FORGER, brief, DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        rig.mechanics.modules.halted = null
+        rig.mechanics.available = false
+        assertEquals(
+            "no forger can take a task: the mechanics are unavailable: fake mechanics off",
+            rig.workers.submit(Role.FORGER, brief, DIRECTOR_CALLER).exceptionOrNull()!!.message,
+        )
+        assertTrue(rig.workers.list().isEmpty())
+        rig.mechanics.available = true
+        assertTrue(rig.workers.submit(Role.FORGER, brief, DIRECTOR_CALLER).isSuccess)
+    }
+
+    @Test
+    fun `a forger task has the forger's prompt then the SDK as two system blocks, its effort, and its tools with the Forge`() {
+        val rig = Rig()
+        rig.base.players.put(online("Bartok"))
+        val id = rig.submit(brief, Role.FORGER)
+        val session = rig.session(id)
+        enqueueFor(session, reply { text("Module : word_race v1, prêt.") })
+
+        rig.await("the forger's report") { rig.done().size == 1 }
+
+        assertTrue(session.startsWith("forger-"), session)
+        val request = rig.requestsOf(id).single().json
+        val prompts = Prompts.bundled()
+        assertEquals(listOf(prompts.get("forger"), prompts.get(Prompts.SDK)), request.path("system").map { it.path("text").asText() }, "forger.md, then sdk.md")
+        assertEquals("high", request.path("output_config").path("effort").asText())
+        assertEquals(64_000, request.path("max_tokens").asInt())
+        assertEquals("claude-opus-5-5", request.path("model").asText())
+        assertEquals(
+            "<task id=\"T-$id\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>",
+            request.path("messages")[0].path("content")[0].path("text").asText(),
+        )
+        val (role, env) = rig.toolSets.single()
+        assertEquals(Role.FORGER, role)
+        assertEquals(ToolEnv(journalAvailable = true, workerRoles = emptySet(), memoryAvailable = true, mechanicsAvailable = true, forgeAvailable = true), env)
+        assertEquals(listOf("forge_save", "forge_test", "game_ids", "module_list", "module_read"), ToolCatalog.toolSetFor(Role.FORGER, env, rig.services).names)
+        assertEquals("Task T-$id (forger)", rig.traces.latestConversation(session)!!.label)
+        assertEquals(DirectorSignal.TaskDone(id, Role.FORGER, Status.DONE, "Module : word_race v1, prêt.", rig.done().single().at), rig.done().single())
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
+    @Test
+    fun `a forger task runs within forge_taskSteps requests and forge_taskMinutes, not the workers' limits`() {
+        val rig = Rig(maxSteps = 15, timeoutSeconds = 180, forgeConfig = ForgeConfig(taskSteps = 3, taskMinutes = 5))
+        val runaway = rig.submit(brief, Role.FORGER)
+        val slow = rig.submit("Un autre jeu : des vaches en ballon autour de Bartok.", Role.FORGER)
+        enqueueFor(rig.session(runaway), *Array(5) { sqlCall("SELECT $it") })
+        rig.awaitStatus(runaway, Status.FAILED)
+        assertEquals("step limit: still calling tools after 5 requests, no report", rig.task(runaway).error)
+        assertEquals(listOf("SELECT 0", "SELECT 1"), rig.queries, "requests past forge.taskSteps run no tool")
+
+        val hold = Hold()
+        enqueueFor(rig.session(slow), held(hold, "Module : trop tard."))
+        rig.await("the second forger task at Claude") { hold.awaitReached(0) }
+        rig.advance(5 * 60_000L - 1)
+        assertEquals(Status.RUNNING, rig.task(slow).status, "180 s are the workers', not the forger's")
+        rig.advance(1)
+        rig.awaitStatus(slow, Status.TIMEOUT)
+        assertEquals("no report within 5m", rig.task(slow).error)
+        hold.release()
+    }
+
+    @Test
+    fun `one forger task runs at a time, the next waits in line while the other roles' tasks go past it`() {
+        val rig = Rig(maxConcurrent = 3)
+        val hold = Hold()
+        val first = rig.submit(brief, Role.FORGER)
+        val second = rig.submit("Un autre jeu : des vaches en ballon autour de Bartok.", Role.FORGER)
+        val analyst = rig.submit()
+        enqueueFor(rig.session(first), held(hold, "Module : premier."))
+        enqueueFor(rig.session(analyst), analystReport())
+
+        assertEquals(Status.QUEUED, rig.task(second).status)
+        rig.awaitStatus(analyst, Status.DONE)
+        assertEquals(Status.QUEUED, rig.task(second).status, "a place is free, but the forger is busy")
+
+        fake.enqueue(reply { text("Module : second.") })
+        hold.release()
+        rig.awaitStatus(second, Status.DONE)
+        assertTrue(rig.task(second).startedAt!! >= rig.task(first).finishedAt!!)
+        assertEquals(listOf("Réponse : Bartok mine en overworld vers 100 -40 200.", "Module : premier.", "Module : second."), rig.done().map { it.result })
+    }
+
+    /** `/narrator forge off` cancels the forger's tasks (M5-14): not the Director's doing, so he is told. */
+    @Test
+    fun `the Forge's switch cancels the forger's tasks with its own words, and the Director is told`() {
+        val rig = Rig(maxConcurrent = 3)
+        val holds = List(2) { Hold() }
+        val running = rig.submit(brief, Role.FORGER)
+        val queued = rig.submit("Un autre jeu : des vaches en ballon autour de Bartok.", Role.FORGER)
+        val analyst = rig.submit()
+        enqueueFor(rig.session(running), held(holds[0], "Module : jamais lu."))
+        enqueueFor(rig.session(analyst), held(holds[1], "Réponse : jamais lue."))
+        rig.await("both at Claude") { holds.all { it.awaitReached(0) } }
+
+        rig.mechanics.modules.halted = ForgeHalt("a module misbehaves", "Clement", START.toEpochMilli())
+        rig.workers.cancel(queued).getOrThrow()
+        rig.workers.cancel(running).getOrThrow()
+        rig.workers.cancel(analyst).getOrThrow()
+        rig.awaitSettled(running)
+        rig.awaitSettled(analyst)
+
+        assertEquals("cancelled before it started: the Forge was switched off by Clement", rig.task(queued).error)
+        assertEquals("cancelled: the Forge was switched off by Clement", rig.task(running).error)
+        assertEquals("cancelled by the Director", rig.task(analyst).error, "the switch is the forger's only")
+        assertEquals(
+            listOf(queued to "cancelled before it started: the Forge was switched off by Clement", running to "cancelled: the Forge was switched off by Clement"),
+            rig.done().map { it.taskId to it.result },
+        )
+        assertTrue(rig.done().all { it.status == Status.CANCELLED && it.role == Role.FORGER })
+        holds.forEach { it.release() }
+    }
+
+    @Test
+    fun `a forger task that waited while the Forge fell fails at its start, without calling Claude`() {
+        val rig = Rig()
+        val hold = Hold()
+        val first = rig.submit(brief, Role.FORGER)
+        val second = rig.submit("Un autre jeu : des vaches en ballon autour de Bartok.", Role.FORGER)
+        enqueueFor(rig.session(first), held(hold, "Module : premier."))
+        rig.await("the first at Claude") { hold.awaitReached(0) }
+
+        rig.forge.available = false
+        rig.forge.reason = "the compiler is stuck since 21:04:10"
+        hold.release()
+        rig.awaitStatus(second, Status.FAILED)
+
+        assertEquals("no forger can work: the Forge is unavailable: the compiler is stuck since 21:04:10", rig.task(second).error)
+        assertEquals(listOf(Status.DONE, Status.FAILED), rig.done().map { it.status })
+        assertTrue(fake.requests.none { it.conversation == rig.task(second).conversationId }, "the second never called Claude")
+    }
+
     // ── What is offered, and the server that stops ─────────────────────────────────────────────────
 
     @Test
     fun `the Analyst and the scout take tasks only with the Journal and while the server runs`() {
         val closed = Rig(journalAvailable = false)
-        assertEquals(emptySet(), closed.workers.roles)
+        assertEquals(setOf(Role.FORGER), closed.workers.roles, "the forger does not need the Journal")
         assertEquals("no analyst can take a task: the Journal is unavailable", closed.workers.submit(Role.ANALYST, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
         assertEquals("no scout can take a task: the Journal is unavailable", closed.workers.submit(Role.SCOUT, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
-        assertEquals("no forger can take a task: there is no forger yet", closed.workers.submit(Role.FORGER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no storyteller can take a task: there is no storyteller yet", closed.workers.submit(Role.STORYTELLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
 
         val rig = Rig()
-        assertEquals(setOf(Role.ANALYST, Role.SCOUT), rig.workers.roles)
-        assertEquals("no forger can take a task: there is no forger yet", rig.workers.submit(Role.FORGER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT, Role.FORGER), rig.workers.roles)
         rig.base.phase = Phase.STOPPING
         assertEquals(emptySet(), rig.workers.roles)
         val refused = rig.call(DelegateTool(), """{"role": "analyst", "brief": "Where does Bartok mine these days?"}""")

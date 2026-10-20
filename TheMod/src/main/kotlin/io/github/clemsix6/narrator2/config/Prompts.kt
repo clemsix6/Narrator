@@ -8,7 +8,8 @@ import kotlin.io.path.name
 import kotlin.io.path.nameWithoutExtension
 
 /**
- * The Narrator's prompts. They ship in the jar under `narrator2/prompts/`. A file with the same name in
+ * The Narrator's prompts. They ship in the jar under `narrator2/prompts/`, but for the Forge's SDK reference
+ * ([SDK], `narrator2/forge/sdk.md`), the forger's second system block (M5 §8.1). A file with the same name in
  * the override folder (`config/narrator2/prompts/<name>.md`) replaces the bundled prompt; nothing is
  * copied there automatically, so the bundled prompts stay current with the mod.
  */
@@ -18,7 +19,10 @@ class Prompts private constructor(private val texts: Map<String, String>) {
 
     companion object {
         /** Every prompt the mod ships. Adding a prompt means adding its file name here. */
-        val NAMES = listOf("director", "analyst", "scout", "chapter_summary", "chronicler", "dreamer", "ping", "reflex")
+        val NAMES = listOf("director", "analyst", "scout", "forger", SDK, "chapter_summary", "chronicler", "dreamer", "ping", "reflex")
+
+        /** The Forge's SDK reference (English), which follows `forger.md` in the forger's system prompt (M5 §8.1, §8.2). */
+        const val SDK = "sdk"
 
         const val README = "README.md"
 
@@ -71,8 +75,11 @@ class Prompts private constructor(private val texts: Map<String, String>) {
             log.info("created ${dir.toAbsolutePath()} for prompt overrides")
         }
 
+        /** Where the bundled prompt [name] is in the jar. */
+        fun resource(name: String): String = if (name == SDK) "/narrator2/forge/sdk.md" else "/narrator2/prompts/$name.md"
+
         private fun bundled(name: String): String {
-            val stream = Prompts::class.java.getResourceAsStream("/narrator2/prompts/$name.md")
+            val stream = Prompts::class.java.getResourceAsStream(resource(name))
                 ?: error("prompt missing from the jar: $name")
             return stream.use { String(it.readAllBytes(), Charsets.UTF_8) }
         }

@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.agent
 
 import com.anthropic.models.messages.TextBlockParam
+import io.github.clemsix6.narrator2.config.Prompts
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
@@ -32,22 +33,28 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * The workers the Director delegates long work to (M1_M2 §13): the Analyst (M2) and the scout (M4 §14).
+ * The workers the Director delegates long work to (M1_M2 §13): the Analyst (M2), the scout (M4 §14) and the forger
+ * (M5 §8.1), whom the Director commissions through `forge_module`.
  *
  * - **Never waits.** [submit] queues the task and returns its id at once; the Director's turn goes on.
  * - **Its own conversation.** Each task is one conversation with Claude, `Task T-12 (analyst)`, with the
- *   role's prompt and read-only tools (`ToolCatalog.toolSetFor`), and its own id; its `X-Session-ID` is
+ *   role's prompt and tools (`ToolCatalog.toolSetFor`), and its own id; its `X-Session-ID` is
  *   the role's (`narrator2-analyst`), so that each task reads the prefix the previous ones cached. It opens
  *   with `<task id="T-12" from="director">brief</task>` and a `<context …/>`
  *   line (the names of the players online through the common escape, `core/ModelText`), and runs a
  *   single turn of [AgentLoop] within `workers.maxSteps` requests and `workers.timeoutSeconds`. The text
  *   of the last reply is the report (at most [RESULT_MAX_CHARS]).
+ * - **The forger** (M5 §8.1) works only while the Forge and the mechanics engine run and no operator switched the
+ *   Forge off; its system prompt is two blocks, `forger.md` then the SDK's reference (`Prompts.SDK`); its task runs
+ *   within `forge.taskSteps` requests and `forge.taskMinutes`; one forger task runs at a time, the next ones wait in
+ *   the common line while the other roles' tasks go past them.
  * - **In parallel, then in line.** At most `workers.maxConcurrent` tasks run at once, each in its own
  *   coroutine of `services.scope`; the others wait, first come first served, [MAX_QUEUED] at most (one
  *   more is refused). Settings are read when used.
  * - **Back to the Director.** A task that ends posts a [DirectorSignal.TaskDone]: its report when done,
  *   else why it failed or timed out. A task the Director cancelled posts nothing (the `tasks` call
- *   already told it), nor does a task stopped by the server.
+ *   already told it), nor does a task stopped by the server; a forger's task cancelled by the Forge's switch
+ *   (`/narrator forge off`, M5-14) is posted, `cancelled`, since the Director did not ask for it.
  * - **No retry.** A refusal, a cut-off or empty reply, a step limit or a gateway error fails the task
  *   with the reason; HTTP 402 fails it with `budget: …`.
  * - **Traced.** One `tasks` row at each change (queued, running, ended) and one `conversations` row per
@@ -69,18 +76,30 @@ class Workers(
     private val tasks = LinkedHashMap<Long, Task>() // guarded by lock: queued, running, and ended in the last KEEP_ENDED_MS
     private val queue = ArrayDeque<Task>() // guarded by lock
     private var running = 0 // guarded by lock: tasks whose coroutine has not completed
+    private var forging = 0 // guarded by lock: the forger's tasks among them
 
     /**
-     * The workers are offered only when the Journal opened (the Analyst works on it first, the scout reads the
-     * places players haunt in it), and never while the server stops.
+     * The Analyst and the scout are offered only when the Journal opened (the Analyst works on it first, the scout
+     * reads the places players haunt in it); the forger only while it can work ([forgeAbsence]); none while the
+     * server stops.
      */
     override val roles: Set<Role>
-        get() = if (services.phase == Phase.RUNNING && services.journal.available) WIRED else emptySet()
+        get() {
+            if (services.phase != Phase.RUNNING) return emptySet()
+            return buildSet {
+                if (services.journal.available) addAll(JOURNAL_ROLES)
+                if (forgeAbsence() == null) add(Role.FORGER)
+            }
+        }
 
     override fun submit(role: Role, brief: String, caller: Caller): Result<Long> {
         if (services.phase != Phase.RUNNING) return Result.failure(IllegalStateException("the server is stopping: no task can start"))
         if (role !in roles) {
-            val why = if (role in WIRED) "the Journal is unavailable" else "there is no ${role.id} yet"
+            val why = when (role) {
+                in JOURNAL_ROLES -> "the Journal is unavailable"
+                Role.FORGER -> forgeAbsence() ?: "the Forge is unavailable"
+                else -> "there is no ${role.id} yet"
+            }
             return Result.failure(IllegalArgumentException("no ${role.id} can take a task: $why"))
         }
         val now = clock.instant()
@@ -111,30 +130,42 @@ class Workers(
      * A queued task leaves the line at once. A running one is marked cancelled at once (the `tasks` row
      * and [list] say so); its coroutine is cancelled, which closes its stream and commits nothing, and
      * its place goes to the next task once the coroutine has completed.
+     *
+     * The Director cancels with `tasks`, and is not told again. While an operator's switch holds the Forge off, a
+     * forger's task is cancelled by that switch (`/narrator forge off` cancels them, M5-14): it says so, and the
+     * Director is told, since he did not ask for it.
      */
     override fun cancel(taskId: Long): Result<Unit> {
         val job: Job?
+        val record: TaskRecord
+        val switch: String?
         synchronized(lock) {
             val task = tasks[taskId] ?: return Result.failure(IllegalArgumentException("no task T-$taskId; ${summary()}"))
             if (task.record.status.finished) {
                 return Result.failure(IllegalArgumentException("task T-$taskId already ended (${task.record.status.id})"))
             }
+            switch = services.mechanics.modules.halted?.takeIf { task.record.role == Role.FORGER }?.let { "the Forge was switched off by ${it.by}" }
             task.cancelled = true
+            task.toldWhenCancelled = switch != null
             job = task.job
             if (job == null) {
                 queue.remove(task)
-                end(task, Status.CANCELLED, null, "cancelled by the Director before it started")
+                end(task, Status.CANCELLED, null, if (switch != null) "cancelled before it started: $switch" else "cancelled by the Director before it started")
             } else {
-                end(task, Status.CANCELLED, null, "cancelled by the Director")
+                end(task, Status.CANCELLED, null, if (switch != null) "cancelled: $switch" else "cancelled by the Director")
             }
+            record = task.record
         }
-        if (job == null) log.info("T-$taskId cancelled by the Director before it started") else job.cancel(CancellationException("cancelled by the Director"))
+        if (job == null) report(record, told = switch != null) else job.cancel(CancellationException(record.error))
         return Result.success(Unit)
     }
 
     // ── Running ─────────────────────────────────────────────────────────────────────────────────────
 
-    /** Starts queued tasks while there is room; while the server stops, cancels those still waiting. */
+    /**
+     * Starts queued tasks, first come first served, while there is room; a forger's task waits while another one
+     * runs, and the tasks behind it go past it. While the server stops, cancels those still waiting.
+     */
     private fun dispatch() {
         val starting = synchronized(lock) {
             if (services.phase != Phase.RUNNING) {
@@ -143,8 +174,12 @@ class Workers(
             }
             val max = services.settings.get().config.workers.maxConcurrent
             buildList {
-                while (running < max && queue.isNotEmpty()) {
-                    val task = queue.removeFirst()
+                val line = queue.iterator()
+                while (running < max && line.hasNext()) {
+                    val task = line.next()
+                    val forger = task.record.role == Role.FORGER
+                    if (forger && forging >= MAX_FORGING) continue
+                    line.remove()
                     val conversationId = "${task.record.role.id}-${UUID.randomUUID().toString().take(8)}"
                     task.record = task.record.copy(status = Status.RUNNING, startedAt = clock.instant(), conversationId = conversationId)
                     services.trace.task(task.record)
@@ -152,6 +187,7 @@ class Workers(
                         task.ending = work(task, conversationId)
                     }
                     running++
+                    if (forger) forging++
                     add(task)
                 }
             }
@@ -164,15 +200,26 @@ class Workers(
         }
     }
 
-    /** The task's single turn; returns how it ended. Throws only the cancellation of its coroutine. */
+    /**
+     * The task's single turn; returns how it ended. Throws only the cancellation of its coroutine. A forger's task
+     * that starts once the Forge cannot work any more (it waited in line) fails at once, without calling Claude.
+     */
     private suspend fun work(task: Task, conversationId: String): Ending {
         val record = task.record
         val settings = services.settings.get()
-        val config = settings.config.workers
+        val forger = record.role == Role.FORGER
+        if (forger) forgeAbsence()?.let { return Ending(Status.FAILED, null, "no forger can work: $it") }
+        val steps = if (forger) settings.config.forge.taskSteps else settings.config.workers.maxSteps
+        val timeoutMs = if (forger) settings.config.forge.taskMinutes * 60_000L else settings.config.workers.timeoutSeconds * 1_000L
         val started = record.startedAt ?: clock.instant()
         return try {
-            val tools = toolSet(record.role, ToolEnv(services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available))
-            val system = listOf(TextBlockParam.builder().text(settings.prompts.get(record.role.id)).build())
+            val env = ToolEnv(
+                services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available,
+                mechanicsAvailable = services.mechanics.available, forgeAvailable = forgeAbsence() == null,
+            )
+            val tools = toolSet(record.role, env)
+            val prompts = if (forger) listOf(record.role.id, Prompts.SDK) else listOf(record.role.id)
+            val system = prompts.map { TextBlockParam.builder().text(settings.prompts.get(it)).build() }
             val conversation = Conversation(record.role, "Task T-${task.id} (${record.role.id})", system, tools, services.transcripts, conversationId)
             val row = conversationRecord(task, conversation, started)
             synchronized(lock) {
@@ -184,10 +231,10 @@ class Workers(
             log.info("T-${task.id} ${record.role.id} started: $conversationId, ${tools.tools.size} tools")
             val caller = Caller(record.role, conversationId, turnId = null, taskId = task.id)
             val opening = Pending.text(opening(task))
-            val outcome = withTimeoutOrNull(config.timeoutSeconds * 1_000L) {
-                agent.runTurn(conversation, opening, caller, TurnLimits(config.maxSteps))
+            val outcome = withTimeoutOrNull(timeoutMs) {
+                agent.runTurn(conversation, opening, caller, TurnLimits(steps))
             }
-            if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${duration(config.timeoutSeconds * 1_000L)}") else endingOf(outcome)
+            if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${duration(timeoutMs)}") else endingOf(outcome)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -242,11 +289,12 @@ class Workers(
             }
             val (record, conversation, opened) = synchronized(lock) {
                 running--
+                if (task.record.role == Role.FORGER) forging--
                 end(task, ending.status, ending.result, ending.error)
                 Triple(task.record, task.conversation, task.opened)
             }
             if (conversation != null && opened != null) closeConversation(task, conversation, opened, record, stopping)
-            report(record, told = !task.cancelled && !stopping)
+            report(record, told = (!task.cancelled || task.toldWhenCancelled) && !stopping)
             dispatch()
         } catch (e: Exception) {
             log.error("T-${task.id}: its end was not recorded", e)
@@ -315,6 +363,23 @@ class Workers(
         tasks.values.removeIf { task -> task.record.finishedAt?.let { now.toEpochMilli() - it.toEpochMilli() > KEEP_ENDED_MS } ?: false }
     }
 
+    /**
+     * Why the forger cannot work now (M5 §8.1), in the order of the Director's `forge_module` (`forgeAvailable`): the
+     * Forge does not run, an operator switched it off, or the mechanics engine does not run; null when it can. Any
+     * thread.
+     */
+    private fun forgeAbsence(): String? {
+        val forge = services.forge
+        val mechanics = services.mechanics
+        val halt = mechanics.modules.halted
+        return when {
+            !forge.available -> "the Forge is unavailable: ${forge.unavailableReason}"
+            halt != null -> "the Forge was switched off by ${halt.by}"
+            !mechanics.available -> "the mechanics are unavailable: ${mechanics.unavailableReason}"
+            else -> null
+        }
+    }
+
     /** `tasks: T-3 running, T-4 queued`, for an error message. Under [lock]. */
     private fun summary(): String {
         val open = tasks.values.filter { !it.record.status.finished }
@@ -331,9 +396,13 @@ class Workers(
         /** Its `conversations` row as inserted when the conversation opened. */
         var opened: ConversationRecord? = null
 
-        /** The Director cancelled it: it posts no result. */
+        /** It was cancelled: it posts no result, unless [toldWhenCancelled]. */
         @Volatile
         var cancelled = false
+
+        /** The Forge's switch cancelled it, not the Director: its end is posted. */
+        @Volatile
+        var toldWhenCancelled = false
 
         @Volatile
         var ending: Ending? = null
@@ -352,8 +421,11 @@ class Workers(
         /** How long an ended task stays in [list] (and the situation's durations). */
         const val KEEP_ENDED_MS = 30 * 60_000L
 
-        /** The worker roles wired: the Analyst (M2) and the scout (M4 §14). */
-        private val WIRED = setOf(Role.ANALYST, Role.SCOUT)
+        /** The worker roles that need the Journal: the Analyst (M2) and the scout (M4 §14). */
+        private val JOURNAL_ROLES = setOf(Role.ANALYST, Role.SCOUT)
+
+        /** The forger's tasks running at once (M5 §8.1): the others wait in line. */
+        private const val MAX_FORGING = 1
 
         private const val LOG_BRIEF_CHARS = 120
         private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
