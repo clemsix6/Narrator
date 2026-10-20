@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.forge.api.Text
 import io.github.clemsix6.narrator2.forge.api.test.Bench
 import org.eclipse.jdt.core.compiler.IProblem
 import java.lang.reflect.Constructor
+import java.lang.reflect.Executable
 import java.lang.reflect.Field
 import java.lang.reflect.GenericArrayType
 import java.lang.reflect.Method
@@ -32,7 +33,7 @@ import kotlin.math.min
  * @property line the line of the source quoted under it, from 1; 0 for none.
  * @property column where its underline starts, from 1, [length] characters long; 0 for no underline.
  * @property also the other places of the same error (`40:9`).
- * @property hints what the SDK and the rules suggest (`Acts: Pending spawn(String, String, Spawn)`).
+ * @property hints what the SDK and the rules suggest (`Acts: Pending spawn(String type, String near, Spawn how)`).
  */
 data class Diagnostic(
     val kind: Kind,
@@ -66,14 +67,14 @@ data class Diagnostic(
  * [1] error OrbitingChickens.java:31:20: The method spawn(String, String, Spawn) in the type Acts is not applicable for the arguments (String, String)
  *   31 | ctx.acts().spawn("chicken", player);
  *      |            ^^^^^
- *   hint: Acts (ctx.acts()): Pending spawn(String, String, Spawn) — Spawn.of(int)
+ *   hint: Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)
  * [2] refused OrbitingChickens.java:57: java.lang.Thread: threads are not allowed in a module (use ctx.timers())
  *   57 | new Thread(this::loop).start();
  * [3] fault scenario theyCircleThePlayer: ForgeLimit: a collection over 10000 elements at OrbitingChickens.java:72
  * ```
  *
- * The SDK's parameter names are not in its bytecode (`javac` without `-parameters`): a method shows its parameter
- * types, a record's constructor its components.
+ * A method of the SDK shows its parameters' names (the SDK is compiled with `-parameters`), a record's constructor its
+ * components.
  */
 object Diagnostics {
     /** A module may not see the game: what to use instead. */
@@ -360,13 +361,17 @@ object Diagnostics {
         if (Modifier.isStatic(method.modifiers)) append("static ")
         if (method.typeParameters.isNotEmpty()) append(method.typeParameters.joinToString(", ", "<", "> ") { typeParameter(it) })
         append(show(method.genericReturnType)).append(' ').append(method.name)
-        append(parameters(method.genericParameterTypes, null, method.isVarArgs))
+        append(parameters(method.genericParameterTypes, names(method), method.isVarArgs))
     }
 
     private fun signature(type: Class<*>, constructor: Constructor<*>): String {
         val components = type.recordComponents?.takeIf { it.size == constructor.parameterCount }?.map { it.name }
-        return show(type) + parameters(constructor.genericParameterTypes, components, constructor.isVarArgs)
+        return show(type) + parameters(constructor.genericParameterTypes, components ?: names(constructor), constructor.isVarArgs)
     }
+
+    /** The names of [executable]'s parameters when its bytecode has them (`-parameters`) and they match its generic types; else null. */
+    private fun names(executable: Executable): List<String>? =
+        executable.parameters.takeIf { all -> all.size == executable.genericParameterTypes.size && all.all { it.isNamePresent } }?.map { it.name }
 
     private fun parameters(types: Array<Type>, names: List<String>?, varArgs: Boolean): String = types.indices.joinToString(", ", "(", ")") { i ->
         val shown = show(types[i]).let { if (varArgs && i == types.lastIndex && it.endsWith("[]")) it.removeSuffix("[]") + "..." else it }
