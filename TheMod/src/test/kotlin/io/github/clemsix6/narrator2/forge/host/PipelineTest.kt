@@ -93,6 +93,7 @@ class PipelineTest {
         } finally {
             context.events.close()
             context.timers.close()
+            context.callbacks.clear()
             threads.close()
         }
         val unloaded = host.unload()

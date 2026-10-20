@@ -305,15 +305,23 @@ class ModuleHostTest {
             ),
         )
         val witness = Hosts.build(ForgeSamples.CLASS, ForgeSamples.SOURCE)
-        repeat(20) { i ->
-            val fake = FakeContext()
-            val host = if (i % 2 == 0) ModuleHost(ForgeSamples.CLASS, witness, threads, "C-$i") else ModuleHost("Clinger", keeper, threads, "C-$i")
-            host.started(fake.context)
-            fake.timers.forEach { timer -> host.call("timer") { timer.run() } }
-            host.stop(StopReason.EXPIRED)
-            references += host.unload()
+        for (i in 0 until 20) {
+            references += if (i % 2 == 0) runAndUnload(ForgeSamples.CLASS, witness, "C-$i") else runAndUnload("Clinger", keeper, "C-$i")
         }
         assertTrue(Hosts.collected(references), "${references.count { it.get() != null }} of 20 loaders are still alive")
+    }
+
+    /**
+     * A deployment from its start to its unloading, in a frame of its own: its context (which keeps the module's
+     * handlers and timers, as the SDK does until its end) must not stay in a slot of the test's frame.
+     */
+    private fun runAndUnload(main: String, classes: Map<String, ByteArray>, label: String): WeakReference<ClassLoader> {
+        val fake = FakeContext()
+        val host = ModuleHost(main, classes, threads, label)
+        host.start(fake.context)
+        fake.timers.forEach { timer -> host.call("timer") { timer.run() } }
+        host.stop(StopReason.EXPIRED)
+        return host.unload()
     }
 
     @Test
