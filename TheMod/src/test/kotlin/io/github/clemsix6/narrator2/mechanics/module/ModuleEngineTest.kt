@@ -130,13 +130,21 @@ class ModuleEngineTest {
 
     @Test
     fun `a module the machine holds back is no fault - its call given up, the calls after it wait, none is lost`() {
+        // After its first read, 10 ms of its own work (rounds of a loop measured on this machine): the window in which the
+        // chat after it comes while the call given up still runs.
+        val rounds = Hosts.rounds(10)
         f.module(
             "reader",
             ModuleFixture.source(
                 "reader",
-                body = """
+                "long sink;",
+                """
                     m.events().on(GameFact.Chat.class, c -> {
-                        if (c.text().equals("lent")) { m.world().dayTime(); m.world().dayTime(); }
+                        if (c.text().equals("lent")) {
+                            m.world().dayTime();
+                            long x = 0; for (long i = 0; i < ${rounds}L; i++) x += i ^ (x >>> 3); sink = x;
+                            m.world().dayTime();
+                        }
                         m.storage().put(c.text(), "lu");
                     });
                 """,

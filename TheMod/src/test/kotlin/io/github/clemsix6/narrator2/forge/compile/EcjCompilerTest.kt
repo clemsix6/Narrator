@@ -217,6 +217,8 @@ class EcjCompilerTest {
         val gate = loader.closed()
         val compiler = compiler(loader, budgetMs = 50, stuckMs = 100)
         val held = async { compiler.compile(ForgeSamples.CLASS, ForgeSamples.SOURCE, "held") }
+        // Its thread at the lowest priority, a busy machine may start it late: wait for it, then hold it a second more.
+        withTimeout(300_000) { while (!compiler.status().startsWith("compiling held (")) delay(20) }
         delay(1_000)
         assertTrue(compiler.status().startsWith("compiling held ("), compiler.status())
         gate.countDown()
@@ -280,8 +282,8 @@ class EcjCompilerTest {
 
         val running = async { compiler.compile("Blocked", "public class Blocked { int v = io.github.clemsix6.narrator2.forge.api.Sdk.VERSION; }") }
         val waiting = async { compiler.compile("Waiting", "public class Waiting {}") }
-        delay(100)
-        assertTrue(compiler.status().startsWith("compiling Blocked ("), compiler.status())
+        // Its thread at the lowest priority, a busy machine may start it late (M5-LOAD): wait for it.
+        withTimeout(300_000) { while (!compiler.status().startsWith("compiling Blocked (")) delay(20) }
         compiler.stop()
 
         assertEquals(Outcome.STOPPED, withTimeout(1_000) { running.await() }.outcome)

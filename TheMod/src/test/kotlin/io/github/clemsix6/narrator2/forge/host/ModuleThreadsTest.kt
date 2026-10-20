@@ -55,6 +55,26 @@ class ModuleThreadsTest {
     }
 
     @Test
+    fun `the module thread runs at its caller's priority`() {
+        // The server thread is at 8 on a machine of more than four cores (MinecraftServer.spin): its module's call is
+        // its own work, never held back by the threads it outranks (M5-LOAD).
+        val threads = ModuleThreads("test-module")
+        val seen = AtomicInteger()
+        try {
+            Thread { threads.run(patient) { seen.set(Thread.currentThread().priority) } }.apply {
+                priority = 8
+                start()
+                join(60_000)
+            }
+            assertEquals(8, seen.get())
+            threads.run(patient) { seen.set(Thread.currentThread().priority) }
+            assertEquals(Thread.currentThread().priority, seen.get())
+        } finally {
+            threads.close()
+        }
+    }
+
+    @Test
     fun `what an SDK request throws reaches the module's thread`() {
         val threads = ModuleThreads()
         val caught = AtomicReference<Throwable>()

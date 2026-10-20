@@ -33,16 +33,20 @@ class HeldBackTest {
         val host = Hosts.host("Counter", Hosts.source("Counter", "public static int n;", "m.timers().every(1, () -> n++);"), threads, faults = faults)
         assertTrue(host.started(fake.context), "${host.disabled}")
 
-        val called = host.call("timer") { Thread.sleep(60); fake.timers[0].run() }!!
+        // Held back 500 ms: far more than a busy machine delays the caller after its deadline (FLAKY-4: 137 ms at most).
+        val called = host.call("timer") { Thread.sleep(500); fake.timers[0].run() }!!
         assertNull(called.fault)
         assertTrue(called.nanos / 1e6 < BUDGET_MS + BusyMachine.SLACK_MILLIS, "the caller went on at its deadline: ${called.nanos / 1e6} ms")
-        assertTrue(host.call("timer") { fake.timers[0].run() }!!.skipped || !host.busy(), "while it runs alone, the module's calls are skipped")
+        assertTrue(host.busy())
+        val meanwhile = host.call("timer") { fake.timers[0].run() }!!
+        assertTrue(meanwhile.skipped, "while it runs alone, the module's calls are skipped: never two calls of a module at once")
         assertTrue(Hosts.settled(host))
 
         assertEquals(emptyList(), faults, "nobody's fault")
         assertEquals(1, host.starved)
+        assertEquals(1, host.skipped)
         assertNull(host.call("timer") { fake.timers[0].run() }!!.fault, "the module goes on")
-        assertEquals(if (host.skipped > 0) 2 else 3, host.main.getField("n").getInt(null), "the call given up ran to its end, alone")
+        assertEquals(2, host.main.getField("n").getInt(null), "the call given up ran to its end, alone; the skipped one did not run")
         assertEquals(0, threads.lost.alive(), "no thread lost")
     }
 
@@ -97,6 +101,28 @@ class HeldBackTest {
         assertEquals(1, fake.timers.size)
         assertNull(host.call("timer") { fake.timers[0].run() }!!.fault)
         assertEquals(listOf("tick"), fake.logs.toList())
+    }
+
+    @Test
+    fun `a patient caller, the bench, waits for a call held back, and gives up one that computes`() {
+        val fake = FakeContext()
+        val source = Hosts.source(
+            "Patient", "public static int n;",
+            "m.timers().every(1, () -> n++); String text = \"a\".repeat(65_535) + \"b\"; String pattern = \"a\".repeat(32_767) + \"b\"; m.timers().every(1, () -> { while (true) { if (text.indexOf(pattern) < 0) m.log(\"never\"); } });",
+        )
+        val host = Hosts.host("Patient", source, threads, faults = faults, patienceNanos = BusyMachine.PATIENT_NANOS)
+        assertTrue(host.started(fake.context))
+        val held = host.call("timer") { Thread.sleep(80); fake.timers[0].run() }!!
+        assertNull(held.fault, "waited for: no work, no fault")
+        assertFalse(held.skipped || host.busy(), "never given up")
+        assertTrue(held.nanos >= 80_000_000)
+        assertEquals(1, host.main.getField("n").getInt(null))
+
+        // One indexOf of 75 ms at a time, in a loop: given up once its thread's CPU time shows its budget, 40 ms at least.
+        val computing = host.call("timer") { fake.timers[1].run() }!!
+        assertEquals(Fault.Kind.LIMIT, computing.fault?.kind)
+        assertTrue(computing.fault!!.cause.startsWith("time budget: one call ran past 25 ms and was abandoned"), computing.fault!!.cause)
+        assertTrue(computing.fault!!.disables)
     }
 
     @Test
