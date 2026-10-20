@@ -224,8 +224,13 @@ open class RewriteBatteryTest {
 
     @Test
     fun `a sub-list, a list iterator and a stream builder count against their limit`() {
-        assertGuarded(start("SubList", body = "List<Integer> l = new ArrayList<>(); while (true) l.subList(0, 0).add(1);"), "a collection over 10000 elements")
-        assertGuarded(start("SubSubList", body = "List<Integer> l = new ArrayList<>(List.of(1, 2, 3)); while (true) l.subList(0, 2).subList(1, 1).add(1);"), "a collection over 10000 elements")
+        // Each view adds at the end of the list (no shift of what is there): the size limit is what stops it, never the
+        // time (inserting at the head of an ArrayList is O(n) a time, and 10,000 of them could reach 20 ms on a busy machine).
+        assertGuarded(start("SubList", body = "List<Integer> l = new ArrayList<>(); while (true) l.subList(l.size(), l.size()).add(1);"), "a collection over 10000 elements")
+        assertGuarded(
+            start("SubSubList", body = "List<Integer> l = new ArrayList<>(List.of(1, 2, 3)); while (true) l.subList(l.size() - 2, l.size()).subList(2, 2).add(1);"),
+            "a collection over 10000 elements",
+        )
         assertGuarded(start("Cursor", body = "List<Integer> l = new LinkedList<>(); ListIterator<Integer> it = l.listIterator(); while (true) { it.add(1); it.previous(); }"), "a collection over 10000 elements")
         assertGuarded(start("Builders", body = "Stream.Builder<Integer> b = Stream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
         assertGuarded(start("IntBuilder", body = "IntStream.Builder b = IntStream.builder(); while (true) b.add(1);"), "a collection over 10000 elements")
