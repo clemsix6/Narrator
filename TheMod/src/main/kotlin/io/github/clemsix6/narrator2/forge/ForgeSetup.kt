@@ -3,14 +3,8 @@ package io.github.clemsix6.narrator2.forge
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.runtime.NarratorServices
-import io.github.clemsix6.narrator2.runtime.Phase
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 private val log = Log.forge
-
-/** How often [watch] looks whether the Forge fell. */
-private const val WATCH_MS = 1_000L
 
 /**
  * Creates the server's Forge (M5 §11, task M5-21), after the memory and before the mechanics, on the server thread at
@@ -21,20 +15,20 @@ private const val WATCH_MS = 1_000L
  * M5, the forger is not offered, and the deployments of the world's state end `restart_failed` (the mechanics keep their
  * modules' part whatever the Forge).
  *
- * Once it runs, the operators online are told when it falls ([watch]). [make] builds the service: the unit tests give
- * their own.
+ * Once it runs, the operators online are told, once, when it falls while the server runs ([fell]). [make] builds the
+ * service with what to do then: the unit tests give their own.
  */
 fun createForge(
     services: NarratorServices,
     tellOperators: (String) -> Unit = {},
-    make: (NarratorServices) -> ForgeService = { ForgeService(it) },
+    make: (NarratorServices, onUnavailable: (String) -> Unit) -> ForgeService = { s, onUnavailable -> ForgeService(s, onUnavailable = onUnavailable) },
 ): Forge {
     if (!services.settings.get().config.forge.enabled) {
         log.info("the Forge is off: forge.enabled is false")
         return DisabledForge("forge.enabled is false")
     }
     val forge = try {
-        make(services)
+        make(services) { reason -> fell(reason, tellOperators) }
     } catch (e: LinkageError) {
         log.error("the Forge is off: ECJ is missing from the class path", e)
         return DisabledForge("ECJ is missing: ${e.message ?: e.javaClass.simpleName}")
@@ -47,13 +41,25 @@ fun createForge(
         forge.stop()
         return couldNotStart(e)
     }
-    watch(forge, services, tellOperators)
     return forge
 }
 
 private fun couldNotStart(e: Exception): Forge {
     log.error("the Forge is off: it could not start", e)
     return DisabledForge("it could not start: ${e.message ?: e.javaClass.simpleName}")
+}
+
+/**
+ * The Forge fell while the server runs (`ForgeService.onUnavailable`, told once, never at the server's stop): its
+ * compiler stuck, too many module threads lost (then the modules' part also disables every deployment at its next
+ * second), or its arsenal unreadable at its start. It stays unavailable until the server restarts: deployments and the
+ * forger's tests are refused, and the Director and the forger lose its tools at their next chapter or task. The operators
+ * online are told ([tellOperators]: a yellow line, on the server thread).
+ */
+private fun fell(reason: String, tellOperators: (String) -> Unit) {
+    val text = "the Forge is unavailable until the server restarts: $reason"
+    log.warn("telling the operators online: $text")
+    tellOperators(text)
 }
 
 /**
@@ -64,21 +70,4 @@ fun forgeState(forge: Forge, halt: ForgeHalt?): String {
     val switch = halt?.let { "switched off by ${it.by}" }
     if (forge.available) return switch ?: "on"
     return "off (${forge.unavailableReason})" + switch?.let { ", $it" }.orEmpty()
-}
-
-/**
- * Tells the operators online, once, that [forge] fell while the server runs (M5-05, M5-10): its compiler stuck, or too
- * many module threads lost (then the modules' part also disables every deployment at its next second). It stays
- * unavailable until the server restarts: deployments and the forger's tests are refused, and the Director and the forger
- * lose its tools at their next chapter or task. Looks once a second, in the services' scope (cancelled when the server
- * stops); a Forge that stops with the server is not told.
- */
-private fun watch(forge: Forge, services: NarratorServices, tellOperators: (String) -> Unit) {
-    services.scope.launch {
-        while (forge.available) delay(WATCH_MS)
-        if (services.phase == Phase.STOPPING || services.phase == Phase.STOPPED) return@launch
-        val text = "the Forge is unavailable until the server restarts: ${forge.unavailableReason}"
-        log.warn("telling the operators online: $text")
-        tellOperators(text)
-    }
 }

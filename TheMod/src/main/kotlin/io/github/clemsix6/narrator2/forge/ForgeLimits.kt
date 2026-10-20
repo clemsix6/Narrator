@@ -51,9 +51,8 @@ object ForgeLimits {
     /** Memory a deployment may retain, as the gauge estimates it: past it, disabled. */
     const val RETAINED_BYTES = 32L * 1024 * 1024
 
-    /** The gauge's hard ceiling, the first reached: past it, disabled (« retains too much to measure »). */
+    /** The gauge's hard ceiling in objects: past it, disabled (« retains too much to measure »). */
     const val GAUGE_MAX_OBJECTS = 200_000
-    const val GAUGE_MAX_NANOS = 5_000_000L
 
     /** How often the gauge measures a deployment: once a minute, every 10 seconds without allocation metering. */
     const val GAUGE_EVERY_MS = 60_000L

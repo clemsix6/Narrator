@@ -169,7 +169,7 @@ class ModuleBook(
         Decisions(services.trace, clock).record(
             Log.forge, DecisionRecord.Kind.FORGE, HALTED, operator,
             "the Forge switched off by ${ModelText.name(operator)}: « ${ModelText.escape(reason)} »; " +
-                (if (ended.isEmpty()) "no module ran" else "${ended.size} modules stopped ($stopped)"),
+                (if (ended.isEmpty()) "no module ran" else "${ended.size} ${if (ended.size == 1) "module" else "modules"} stopped ($stopped)"),
             level = Log.Level.WARN,
         )
         ended.map { it.view }
