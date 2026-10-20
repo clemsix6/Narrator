@@ -1,16 +1,16 @@
 # The Forge SDK, version 1
 
-A module is one Java 25 file, compiled against this SDK and part of `java.base` only: no class of the game, of Fabric or of the mod. All it does goes through the SDK, so through the Narrator's own tools and guards.
+A module is one Java 25 file compiled against this SDK and part of `java.base` only: no class of the game, of Fabric or of the mod; all it does goes through the Narrator's own tools and guards.
 
 ## 1. The file
 
-- No `package` line. Imports: `io.github.clemsix6.narrator2.forge.api.*`, `io.github.clemsix6.narrator2.forge.api.test.Bench`, `java.util.*`, and what else of the JDK you use (§7).
+- No `package` line. Imports: those of the example (§10), and what else of the JDK you use (§7).
 - One `public final class` named after the module in UpperCamelCase (`word_race` → `WordRace`), `implements ForgeModule`, with a public constructor without arguments (or none). Nested classes, records, enums, sealed interfaces, pattern switches, lambdas, streams, text blocks: fine.
 - `@ModuleInfo(name = "word_race", summary = "…")`: the name, `[a-z][a-z0-9_]{2,31}`, is the tools' `name`; the summary, one English line (120 chars) for the Director: what players see.
 - `@Param(…)` once per parameter, 8 at most. A snake_case name; `doc`, one English line (120 chars). `required = false` takes its `fallback` when left out (INTEGER, NUMBER and BOOLEAN need one). `min`, `max`: the bounds of an INTEGER or a NUMBER, how many PLAYERS (8 at most), how long a TEXT (300 at most). `choices`: a TEXT's only values. The Director's values are checked first: the module reads valid ones only.
 - Text forms (`fallback`, `Bench.start`): PLAYER `Bartok`; PLAYERS `Bartok,Mimosa`; INTEGER `6`; NUMBER `2.5`; TEXT as is; BOOLEAN `true`; PLACE `120 64 -30`, `120 64 -30 the_nether`, or an online player's name (where they stand at the start).
 - `Scenarios`: a nested `public static final class Scenarios`, up to 8 methods `public void name(Bench b)`, helpers private or static; one at least for `forge_save` (§8).
-- Code, names, comments, `summary`, `doc`, `log`: English. What players read (`say`, titles, the action bar, `tellDirector`, the `end` reason, `win` notes, `punish` reasons): French.
+- Code, comments, `summary`, `doc` and `log` lines are English; all that players or the Director read is French.
 
 ## 2. How a module runs
 
@@ -197,7 +197,7 @@ sealed interface GameFact {  // §5
   record Slept(String player, Place at) {}
   record Joined(String player, Place at) {}
   record Left(String player, Place at) {}
-  record CreatureAppeared(String player, Place at, Who creature) {}  // a wild one within 64 blocks: claimable
+  record CreatureAppeared(String player, Place at, Who creature) {}  // a wild one within 64 blocks of player
   record CreatureGone(String player, Place at, Who creature, String why) {}  // its own: died, vanished, unloaded
 }
 final class Text {  // without regular expressions
@@ -226,7 +226,7 @@ final class Limits {  // constants: Limits.TICKS_PER_SECOND
 
 Each act calls one of the Narrator's tools, checked as for the Director; the acts of one call of the module are one turn for the guards (a protected player, one already punished in it, one dead minutes ago or in grace, the same punishment too soon, the chaos level: refused). 4 acts a call (refused ones count), 30 a minute; `say`, `sayTo`, `title`: 4 a minute, within the server's speech limit shared with the Director; `hud`: once a second per player. Beyond: `DENIED (module_acts): …`, nothing done.
 
-`Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Read the outcome when it matters and never insist: the same act again is refused again and looks like harassment. Fall back, say something else, or end.
+`Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Read it when it matters; never insist, the same act is refused again. Fall back, say something else, or end.
 
 - The tools, as `refuseNext` names them: `say` (`say`, `sayTo`), `show_title`, `hud`, `play_sound`, `particles`, `fireworks`, `lightning` (`lightning`, `smite`), `explosion`, `apply_effect`, `set_attribute`, `launch`, `teleport` (both), `spawn`, `punish`, `place_blocks` (`ground().place`), `creature_attack` (`Creature.attack`), `game` (`win`, `lose`).
 - Hostile, so a punishment refused like one: `smite`, `launch`, `punish`, `teleportRandom`, `attack`; an `explosion` that hurts; a harmful `effect`; an `attribute` against them; a `teleport` beyond 32 blocks; a `spawn` of hostile creatures near a player or with a target; a `place` within 2 blocks of a player.
@@ -243,7 +243,7 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 
 - Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They drop nothing, break nothing, attack only players, take no fall damage, never push players. A summoned one vanishes at the end of its lifetime (a module that lasts summons again) or of the deployment; a claimed one goes back where it was. `CreatureGone`: one died, vanished or unloaded (it comes back when it loads).
 - `claim(uuid)`: a wild hostile creature (`zombie`, `skeleton`…) spawn could summon, within 32 blocks of an online player (see `CreatureAppeared`, `World.creatures`); null for an animal, a villager, a golem, a tamed, named or ridden one, a boss, another's. For animals, summon them.
-- Steering is immediate, no act; on a creature gone it does nothing; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s; steered into one, it does not push them.
+- Steering is immediate, no act; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s; steered into one, it does not push them.
 
 ## 7. The sandbox
 
@@ -257,14 +257,14 @@ Its faults, over ten minutes, disable it: two calls stopped by time, depth or al
 
 ## 8. The bench and forge_test
 
-`forge_test` checks the name, the size (48,000 chars) and no `package`, then compiles, guards, checks the form (`@ModuleInfo`, `@Param`, `Scenarios`), rewrites and runs the bench. Its first line says where it stopped (`does not compile: 2 errors (14 ms)`, `compiled (14 ms), refused by the sandbox: 1 problem`, `…; scenarios 1/2`) or `ok: …`. Each problem: `[n] error|refused|fault WordRace.java:line:column: what`, the line, `hint:` lines. Fix them all, send the whole file again.
+`forge_test` checks the name, the size (48,000 chars), no `package`, then compiles, guards, reads the form, rewrites and runs the bench. Its first line says where it stopped (`does not compile: 2 errors (14 ms)`, `compiled (14 ms), refused by the sandbox: 1 problem`, `…; scenarios 1/2`) or `ok: …`. Each problem: `[n] error|refused|fault WordRace.java:line: what`, the line, `hint:` lines. Fix them all, send the whole file again.
 
 The bench is a simulated world, with the game's sandbox and SDK; acts are recorded, never done.
 1. **Smoke run**: players Bartok (0.5 64 0.5), Mimosa (6.5 64 0.5), Josiane (0.5 64 6.5), a wild zombie (10.5 64 10.5); required parameters get a sample (Bartok; Bartok,Mimosa; the min or 1; the first choice or bonjour; false; 8 64 0), the others their fallback; constructor, `start`, a sample fact of each record it listens to, 1,200 ticks, `stop(EXPIRED)`. It fails on a fault, a call over 20 ms, over 4 MiB kept or 1 MiB more in its second half.
 2. **Dry checks**: each distinct act is checked by the real tool at chaos 3, as if the Director asked: an unknown id, a severity of 5… fail the test, with the module's line.
 3. **Scenarios**, each on a new bench: no player, air from y = 64 up, stone below, plains, clear, `dayTime` 6,000 plus the ticks; the deployment C-1 lasts 10 minutes; a challenge is C-2. The first false `check`, exception, fault or call over 20 ms fails it; 30 s for the whole bench.
 
-Fidelity: no physics, collisions, chunks nor guards (but `refuseNext`); creatures do not fight back; `moveTo` walks 0.2 × speed block a tick, straight; `velocity` and `push` move them each tick; a spawn's creatures appear the tick after, around the player, and vanish after their lifetime. Every act answers `ok (simulated)`, but a refusal you impose, a player not online (`invalid`), `place` on a cell that is not air (`failed`), `hud` twice in a second for a player.
+Fidelity: no physics, collisions, chunks nor guards (but `refuseNext`); creatures do not fight back; `moveTo` walks 0.2 × speed block a tick, straight; `velocity` and `push` move them each tick; a spawn's creatures appear the tick after and vanish after their lifetime. Every act answers `ok (simulated)`, but a refusal you impose, a player not online (`invalid`), `place` on a cell that is not air (`failed`), `hud` twice a second.
 
 ```java
 interface Bench {
@@ -293,12 +293,13 @@ interface Bench {
 
 `acts()` lines: `say: Ça commence.`, `say to Mimosa: …`, `title Bartok: Attention / le sol brûle`, `hud everyone: 10 s`, `smite Bartok 2`, `effect Bartok speed 30s level 1`, `spawn chicken x6 near Bartok`, `punish Bartok tiny 2`, `place glass x4 for 30s`, `attack Mimosa with zombie`, `game won: Mimosa`, `game lost`…; then ` → denied` (or `invalid`, `failed`, `unknown`, `dropped`) when not `ok`. An act asked in a call is sent at the next tick, its status known a tick later: run 2 ticks or more before you check it.
 
-Write two scenarios at least: the normal case, and a refusal of the guards the module handles (`b.refuseNext("punish", "DENIED (already_punished): …")`).
+Write two scenarios at least: the normal case, and a refusal of the guards (`refuseNext`) that the module handles.
 
 ## 9. What costs tries
 
 - To win then end: `game.win(…).then(o -> ctx.end(…))` (§10). `win(…)` and `ctx.end(…)` in the same call drop the win (`game won: Mimosa → dropped`).
 - `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. Lists from the SDK are unmodifiable: copy one to change it.
+- 4 acts a call: for many players, `say` to all, `title` or `hud` with a null player, or spread the acts over timer runs.
 - `then` once per act; acts asked in `stop` are dropped. Timers every 5 to 20 ticks rather than every tick; `ctx.random()`, not `new Random()`.
 - The built-in modules (version 0 in `module_list`) are tested examples, with steered creatures: `module_read` them.
 

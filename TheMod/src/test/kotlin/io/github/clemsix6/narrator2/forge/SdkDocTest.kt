@@ -141,6 +141,7 @@ class SdkDocTest {
                 val scenarios = report.manifest!!.scenarios
                 assertTrue(scenarios.size >= 2, "the example $name has ${scenarios.size} scenarios: two at least, as sdk.md asks")
                 assertEquals(scenarios, report.scenariosPassed, "the example $name: ${report.text}")
+                println("[sdk.md] the example $name at the bench: ${report.text}")
             }
         }
     }
