@@ -1,7 +1,6 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.core.Log
-import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.Acts
 import io.github.clemsix6.narrator2.forge.api.Args
 import io.github.clemsix6.narrator2.forge.api.Creatures
@@ -57,18 +56,23 @@ class EvilModulesGameTests {
             .thenAwait { helper.assertTrue(failure.get() == null && built.get() != null, "building the attacks: ${failure.get()}") }
             .thenExecute {
                 try {
+                    val budgetMs = (ModuleHost.STARTUP_CALL_NANOS + ModuleHost.ABANDON_MARGIN_NANOS) / 1_000_000
                     for (name in GUARDED) {
                         val context = EvilContext()
                         val host = ModuleHost(name, built.get().getValue(name), threads, "evil $name")
                         val called = host.start(context.context)
-                        val disabled = host.disabled
-                        helper.assertTrue(disabled != null && "too large to hash" in disabled.cause, "$name: $disabled")
+                        val cause = host.disabled?.cause ?: "<not disabled>"
+                        // Stopped before the JDK does the work: the call-site guard (« too large to hash ») warm, or
+                        // the meter at the time budget (« time budget ») cold, never the host's abandon.
+                        helper.assertTrue(host.disabled != null, "$name ran to the end: $cause")
+                        helper.assertTrue("abandoned" !in cause, "$name was abandoned, not bounded by the guard: $cause")
+                        helper.assertTrue("too large to hash" in cause || "time budget" in cause, "$name: $cause")
                         val held = (called?.nanos ?: 0) / 1e6
-                        helper.assertTrue(held < ForgeLimits.CALL_MILLIS.toDouble(), "$name held the tick $held ms (bounded, not abandoned)")
-                        Log.forge.info("[evil] $name stopped by the guard in %.1f ms, no lost thread".format(held))
+                        helper.assertTrue(held < budgetMs, "$name held the tick $held ms (bounded, not abandoned)")
+                        Log.forge.info("[evil] $name stopped in %.1f ms (%s), no lost thread".format(held, cause))
                         host.unload()
                     }
-                    helper.assertTrue(threads.lost.alive() == 0, "the guard stopped them in a few ms: no call was abandoned, no thread lost")
+                    helper.assertTrue(threads.lost.alive() == 0, "no call was abandoned, no thread lost: the guard or the meter stopped each one")
                 } finally {
                     threads.close()
                 }

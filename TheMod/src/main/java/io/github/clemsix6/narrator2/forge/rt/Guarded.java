@@ -702,6 +702,9 @@ public final class Guarded {
      */
     static final int DEEP_VISITS = 4_000_000;
 
+    /** How often the deep walk checks the call's budget ({@link Meter#sample}): often enough to stop at the budget even cold, cheap enough to vanish warm. */
+    private static final int DEEP_SAMPLE = 2_048;
+
     /**
      * Walks [value] the way the JDK's {@code hashCode}/{@code equals} would, counting the element slots it would visit
      * (with multiplicity: a shared child is counted every time it is reached, as the JDK re-hashes it), and throws a
@@ -713,6 +716,7 @@ public final class Guarded {
     private static void deep(Object value, boolean arrays) {
         if (!composite(value, arrays)) return;
         long visited = 0;
+        long nextSample = DEEP_SAMPLE;
         ArrayDeque<Object> stack = new ArrayDeque<>();
         stack.push(value);
         while (!stack.isEmpty()) {
@@ -746,6 +750,13 @@ public final class Guarded {
                 if ((visited += 2) > DEEP_VISITS) throw deepLimit();
                 if (composite(entry.getKey(), arrays)) stack.push(entry.getKey());
                 if (composite(entry.getValue(), arrays)) stack.push(entry.getValue());
+            }
+            // The walk itself is not metered bytecode, so it checks the call's budget as it goes: cold, where it would
+            // crawl past the count cap and be abandoned, the meter trips it at the time budget first — a clean limit,
+            // no lost thread. Without a meter (a unit test calling Guarded directly), the count cap alone bounds it.
+            if (visited >= nextSample) {
+                Meter.sample();
+                nextSample = visited + DEEP_SAMPLE;
             }
         }
     }
