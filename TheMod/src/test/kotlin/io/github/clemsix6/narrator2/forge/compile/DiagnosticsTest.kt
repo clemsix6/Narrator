@@ -78,7 +78,9 @@ class DiagnosticsTest {
 
         assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)"), hintsAt("spwan"))
         assertEquals(listOf("Acts (ctx.acts()): Pending teleport(String player, Place to)"), hintsAt("teleportPlayer"))
-        assertEquals(listOf("Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)"), hintsAt("ctx.spawn"))
+        val onContext = hintsAt("ctx.spawn")
+        assertEquals("Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how) — Spawn.of(int)", onContext.first(), "$onContext")
+        assertTrue(onContext.size == 2 && onContext[1].startsWith("methods of ModuleContext (ctx): acts(), args(), "), "$onContext")
         assertEquals(listOf("Acts (ctx.acts()): Pending say(String text)"), hintsAt("say(\"Bonjour\")"))
         assertEquals(
             listOf("Spawn: static Spawn of(int count)", "Spawn: Spawn(int count, int distance, String name, boolean target, int lifetimeMinutes, int height, boolean baby)"),
@@ -95,6 +97,48 @@ class DiagnosticsTest {
         // A hint about a member is written at each entry that needs it.
         val report = Diagnostics.render(diagnostics, source)
         assertEquals(2, Regex(Regex.escape("hint: Acts (ctx.acts()): Pending spawn(String type, String near, Spawn how)")).findAll(report).count(), report)
+    }
+
+    @Test
+    fun `a method unknown on an SDK type, with no close name, gets what the SDK calls it and every method of the type, listed once`() {
+        val source = """
+            import io.github.clemsix6.narrator2.forge.api.*;
+
+            public final class Beats implements ForgeModule {
+                public void start(ModuleContext ctx) {
+                    ctx.acts().actionbar("Bartok", "tic");
+                    ctx.acts().shoutAt("Bartok", "tac");
+                    PlayerInfo info = ctx.world().find("Bartok");
+                }
+            }
+        """.trimIndent()
+        val diagnostics = errors("Beats", source)
+        fun hintsAt(snippet: String): List<String> {
+            val line = source.lines().indexOfFirst { snippet in it } + 1
+            return diagnostics.filter { it.line == line }.flatMap { it.hints }
+        }
+
+        // The action bar is hud in the SDK; then every method of Acts, with its parameters' names, no return type.
+        val actionbar = hintsAt("actionbar")
+        assertEquals("Acts (ctx.acts()): Pending hud(String player, String text)", actionbar.first(), "$actionbar")
+        val acts = actionbar[1]
+        assertTrue(acts.startsWith("methods of Acts (ctx.acts()): attribute(String player, String attribute, double multiply, int seconds), effect("), acts)
+        assertTrue("hud(String player, String text)" in acts && "spawn(String type, String near, Spawn how)" in acts && "Pending" !in acts, acts)
+        assertTrue(acts.length <= "methods of Acts (ctx.acts()): ".length + 800, "${acts.length}")
+        assertEquals(2, actionbar.size, "$actionbar")
+        // No name of the SDK for it: the list alone.
+        assertEquals(listOf(acts), hintsAt("shoutAt"))
+        // find: the World calls it player.
+        val find = hintsAt("find")
+        assertEquals("World (ctx.world()): PlayerInfo player(String name)", find.first(), "$find")
+        assertTrue(find.last().startsWith("methods of World (ctx.world()): biome(Place at), block(Cell cell), count(String player, String item), "), "$find")
+
+        // The list of a type's methods is written once in a report, at its first entry.
+        val report = Diagnostics.render(diagnostics, source)
+        assertEquals(1, Regex(Regex.escape("hint: methods of Acts (ctx.acts()): ")).findAll(report).count(), report)
+        assertEquals(1, Regex(Regex.escape("hint: methods of World (ctx.world()): ")).findAll(report).count(), report)
+        assertTrue(report.lines().first { it.startsWith("[1] ") }.contains("actionbar"), report)
+        assertTrue(report.length < 2_500, "${report.length}: $report")
     }
 
     @Test

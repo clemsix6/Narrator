@@ -74,7 +74,13 @@ data class Diagnostic(
  * ```
  *
  * A method of the SDK shows its parameters' names (the SDK is compiled with `-parameters`), a record's constructor its
- * components.
+ * components. A method unknown on an SDK type, with no name close to it, gets the SDK's name for it when there is one
+ * (`actionbar` → `Acts: Pending hud(String player, String text)`) and the list of the type's methods, written once:
+ *
+ * ```
+ *   hint: Acts (ctx.acts()): Pending hud(String player, String text)
+ *   hint: methods of Acts (ctx.acts()): attribute(String player, String attribute, double multiply, int seconds), effect(…), …
+ * ```
  */
 object Diagnostics {
     /** A module may not see the game: what to use instead. */
@@ -133,7 +139,7 @@ object Diagnostics {
                 if (more > 0) out.append("… $more $MORE\n")
                 break
             }
-            written += hints.filter { it in RULES }
+            written += hints.filter { it in RULES || it.startsWith(LISTING) }
             out.append(entry)
         }
         return out.toString().trimEnd()
@@ -141,6 +147,12 @@ object Diagnostics {
 
     private const val MORE = "more not shown"
     private val RULES = setOf(GAME_RULE, MOD_RULE, JDK_RULE)
+
+    /** How a hint that lists every method of a type begins ([listing]): written once in a report, like a rule. */
+    private const val LISTING = "methods of "
+
+    /** The longest list of a type's methods in a hint ([listing]). */
+    private const val LISTING_CHARS = 800
 
     /** The widest excerpt of a line, around the underline. */
     private const val EXCERPT = 100
@@ -195,7 +207,11 @@ object Diagnostics {
         }
     }
 
-    /** A method missing or not applicable on [owner] (a qualified name): its overloads, the closest names, or the same name elsewhere in the SDK. */
+    /**
+     * A method missing or not applicable on [owner] (a qualified name): its overloads, the closest names, or the same
+     * name elsewhere in the SDK. On an SDK type with no name close to it (`ctx.acts().actionbar(…)`): what the SDK
+     * calls it ([SYNONYMS]: `hud`) or the same name on another SDK type, then every method of the type ([listing]).
+     */
     private fun methodHints(owner: String?, selector: String?): List<String> {
         if (owner == null || selector == null) return emptyList()
         val type = SdkIndex.type(owner.substringBefore('<'))
@@ -204,6 +220,7 @@ object Diagnostics {
             if (same.isNotEmpty()) return same.take(4).map { methodHint(type, it) }
             val close = closest(selector, SdkIndex.methods(type).map { it.name }.distinct())
             if (close.isNotEmpty()) return close.flatMap { name -> SdkIndex.methods(type).filter { it.name == name } }.take(3).map { methodHint(type, it) }
+            if (SdkIndex.methods(type).isNotEmpty()) return meant(selector, type) + listing(type)
         } else if (JDK_PREFIXES.any { owner.startsWith(it) }) {
             return emptyList()
         }
@@ -212,6 +229,31 @@ object Diagnostics {
             .filter { (other, _) -> other != type }
             .take(3)
             .map { (other, method) -> methodHint(other, method) }
+    }
+
+    /**
+     * What [selector], unknown on [type], may have meant: the SDK's name for it ([SYNONYMS]), then the same name; each
+     * on [type] when it has it, else on the other SDK types (`ctx.spawn` → `ctx.acts().spawn`); 3 at most.
+     */
+    private fun meant(selector: String, type: Class<*>): List<String> =
+        listOfNotNull(SYNONYMS[selector.lowercase()], selector).flatMap { name ->
+            val own = SdkIndex.methods(type).filter { it.name == name }.map { type to it }
+            own.ifEmpty { SdkIndex.types.filter { it != type }.flatMap { other -> SdkIndex.methods(other).filter { it.name == name }.map { other to it } } }
+        }
+            .distinct()
+            .take(3)
+            .map { (t, method) -> methodHint(t, method) }
+
+    /**
+     * Every method of [type], with its parameters' names, no return type: `methods of Acts (ctx.acts()): attribute(String
+     * player, String attribute, double multiply, int seconds), effect(…), …`, [LISTING_CHARS] at most. Written once in a report.
+     */
+    private fun listing(type: Class<*>): String {
+        val all = SdkIndex.methods(type).joinToString(", ") { method ->
+            (if (Modifier.isStatic(method.modifiers)) "static " else "") + method.name + parameters(method.genericParameterTypes, names(method), method.isVarArgs)
+        }
+        val cut = if (all.length <= LISTING_CHARS) all else all.take(all.lastIndexOf(", ", LISTING_CHARS - 3)) + ", …"
+        return "$LISTING${owner(type)}: $cut"
     }
 
     private fun methodHint(type: Class<*>, method: Method): String {
@@ -426,6 +468,33 @@ object Diagnostics {
         put("EntityType", "a creature type is an id (\"cow\"): ctx.acts().spawn(type, near, how)")
         put("Component", "a text is a String")
         put("ServerTickEvents", "facts come through Events (ctx.events().on(…)), time through Timers (ctx.timers())")
+    }
+
+    /**
+     * What a model reaches for first and the SDK names otherwise (lower case → the SDK's method): the names of the
+     * game, of Bukkit and of other mods' APIs, for the same things.
+     */
+    private val SYNONYMS: Map<String, String> = buildMap {
+        listOf("actionbar", "sendactionbar", "showactionbar", "setactionbar").forEach { put(it, "hud") }
+        listOf("message", "sendmessage", "broadcast", "broadcastmessage", "chat", "announce").forEach { put(it, "say") }
+        listOf("tell", "whisper", "sendto", "messageto").forEach { put(it, "sayTo") }
+        listOf("sendtitle", "showtitle", "settitle").forEach { put(it, "title") }
+        listOf("playsound", "sendsound").forEach { put(it, "sound") }
+        listOf("particle", "spawnparticle", "spawnparticles").forEach { put(it, "particles") }
+        listOf("firework", "launchfirework").forEach { put(it, "fireworks") }
+        listOf("strike", "strikelightning", "lightningbolt").forEach { put(it, "lightning") }
+        listOf("damage", "hurt").forEach { put(it, "smite") }
+        listOf("explode", "createexplosion").forEach { put(it, "explosion") }
+        listOf("addeffect", "giveeffect", "applyeffect", "addpotioneffect", "potion").forEach { put(it, "effect") }
+        listOf("tp", "teleportto").forEach { put(it, "teleport") }
+        listOf("summon", "spawnentity", "spawnmob", "spawncreature").forEach { put(it, "spawn") }
+        listOf("find", "findplayer", "getplayer", "getplayerbyname").forEach { put(it, "player") }
+        listOf("getplayers", "onlineplayers", "getonlineplayers", "allplayers").forEach { put(it, "players") }
+        listOf("setblock", "placeblock", "placeblocks", "setblocks").forEach { put(it, "place") }
+        listOf("schedule", "runlater", "later", "delay", "runtasklater").forEach { put(it, "after") }
+        listOf("repeat", "runtimer", "interval", "runtasktimer").forEach { put(it, "every") }
+        listOf("subscribe", "listen", "register", "addlistener").forEach { put(it, "on") }
+        listOf("finish", "stopmodule", "done").forEach { put(it, "end") }
     }
 
     /** The SDK's types and members as a module sees them, by reflection on the SDK itself. */
