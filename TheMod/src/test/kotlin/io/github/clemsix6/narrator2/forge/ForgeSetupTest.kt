@@ -5,7 +5,6 @@ import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.forge.arsenal.ArsenalStore
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.runtime.NarratorServices
-import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -32,14 +31,14 @@ class ForgeSetupTest {
     @Test
     fun `the Forge stays off with its reason when the configuration says so, when ECJ is missing, or when it cannot start`() {
         val off = TestServices(clock = clock, settings = testSettings(NarratorConfig(forge = ForgeConfig(enabled = false))))
-        val cases: List<Triple<TestServices, (NarratorServices) -> ForgeService, String>> = listOf(
-            Triple(off, { error("never built when it is off") }, "forge.enabled is false"),
+        val cases: List<Triple<TestServices, (NarratorServices, (String) -> Unit) -> ForgeService, String>> = listOf(
+            Triple(off, { _, _ -> error("never built when it is off") }, "forge.enabled is false"),
             Triple(
                 TestServices(clock = clock),
-                { throw NoClassDefFoundError("org/eclipse/jdt/internal/compiler/env/INameEnvironment") },
+                { _, _ -> throw NoClassDefFoundError("org/eclipse/jdt/internal/compiler/env/INameEnvironment") },
                 "ECJ is missing: org/eclipse/jdt/internal/compiler/env/INameEnvironment",
             ),
-            Triple(TestServices(clock = clock), { throw IllegalStateException("the arsenal's folder is a file") }, "it could not start: the arsenal's folder is a file"),
+            Triple(TestServices(clock = clock), { _, _ -> throw IllegalStateException("the arsenal's folder is a file") }, "it could not start: the arsenal's folder is a file"),
         )
         for ((services, make, reason) in cases) {
             LogCapture().use { logs ->
@@ -72,8 +71,7 @@ class ForgeSetupTest {
             val lost = List(3) { Thread { hold.await() }.apply { isDaemon = true; start() } }
             lost.forEach(forge.lostThreads::add)
             assertFalse(forge.available)
-            awaitTrue("the operators told") { told.isNotEmpty() }
-            Thread.sleep(WATCH_LOOKS_MS) // the watch looks again: still told once
+            forge.lostThreads.add(Thread { hold.await() }.apply { isDaemon = true; start() }) // a fourth: still told once
             assertEquals(listOf("the Forge is unavailable until the server restarts: ${forge.unavailableReason}"), told.toList())
             assertContains(told.single(), "too many module threads were lost since ")
             assertTrue(services.traces.decisions.any { it.kind == DecisionRecord.Kind.FORGE && it.decision == ForgeService.STUCK }, "the decision forge stuck")
@@ -84,27 +82,19 @@ class ForgeSetupTest {
     }
 
     @Test
-    fun `a Forge that stops with the server is not told to the operators`() {
+    fun `a Forge that stops with the server is not told to the operators, whatever happens after`() {
         val services = TestServices(clock = clock)
         val told = CopyOnWriteArrayList<String>()
         val forge = createForge(services, told::add)
-        services.phase = Phase.STOPPING
-        forge.stop()
-        assertEquals("the server is stopping", forge.unavailableReason)
-        Thread.sleep(WATCH_LOOKS_MS)
-        assertEquals(emptyList(), told.toList())
-    }
-
-    private fun awaitTrue(what: String, condition: () -> Boolean) {
-        val until = System.nanoTime() + 10_000_000_000L
-        while (!condition()) {
-            check(System.nanoTime() < until) { "timed out waiting for: $what" }
-            Thread.sleep(20)
+        val hold = CountDownLatch(1)
+        try {
+            assertIs<ForgeService>(forge)
+            forge.stop()
+            assertEquals("the server is stopping", forge.unavailableReason)
+            repeat(3) { forge.lostThreads.add(Thread { hold.await() }.apply { isDaemon = true; start() }) }
+            assertEquals(emptyList(), told.toList())
+        } finally {
+            hold.countDown()
         }
-    }
-
-    private companion object {
-        /** Longer than the watch's look, once a second. */
-        const val WATCH_LOOKS_MS = 1_500L
     }
 }

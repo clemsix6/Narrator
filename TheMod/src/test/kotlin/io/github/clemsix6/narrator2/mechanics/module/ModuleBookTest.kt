@@ -219,8 +219,10 @@ class ModuleBookTest {
             assertNull(f.book.halted)
             assertTrue(f.decisions(ModuleBook.RESUMED, DecisionRecord.Kind.FORGE).single().reason!!.startsWith("the Forge switched back on by Josiane (off since 10-19 18:00:00 by Clement"))
             assertEquals("the Forge is not switched off: nothing to lift", assertFailsWith<MechanicRejected> { f.book.resume("Josiane") }.message)
-            f.deploy(f.spec("greeter", """{"player":"Bartok"}"""))
+            val third = f.deploy(f.spec("greeter", """{"player":"Bartok"}"""))
             assertEquals(1, f.book.list().size, "deployed again once lifted")
+            f.book.halt("encore des poules", "Mimosa")
+            assertEquals("the Forge switched off by Mimosa: « encore des poules »; 1 module stopped (${third.ref})", f.decisions(ModuleBook.HALTED, DecisionRecord.Kind.FORGE).last().reason)
         }
     }
 
