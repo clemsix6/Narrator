@@ -20,6 +20,8 @@ import org.eclipse.jdt.internal.compiler.lookup.ModuleBinding
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblem
 import org.eclipse.jdt.internal.compiler.problem.DefaultProblemFactory
 import java.io.IOException
+import java.lang.management.ManagementFactory
+import java.lang.management.ThreadMXBean
 import java.net.URI
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -100,9 +102,14 @@ class Compilation(val outcome: Outcome, val classes: Map<String, ByteArray>, val
  * One thread, [THREAD_NAME] (a daemon, at the lowest priority), compiles one source at a time, in the order asked;
  * the callers suspend, never block, and the server thread never compiles. A compilation past [budgetMs] is cancelled
  * at ECJ's next check (between two of its phases) and its caller gets [Compilation.Outcome.TOO_LONG] right then;
- * one that ignores its cancellation for [stuckMs] makes the compiler **stuck until the server restarts** (M5 §3.8):
+ * one that ignores its cancellation up to [stuckMs] makes the compiler **stuck until the server restarts** (M5 §3.8):
  * every compilation waiting or asked afterwards gets [Compilation.Outcome.STUCK], and [onStuck] is told once (on a
  * pool thread) with the source's label and when its compilation started.
+ *
+ * **Both limits are the compiler's own work** (M5-LOAD): its thread's CPU time on the compilation, read about every
+ * [WATCH_MS] and at each of ECJ's checks, never the wall clock. At the lowest priority on a saturated machine, a
+ * compilation of 40 ms of work once took 13.8 s of wall clock (M5-15): that is the machine's doing, not the source's.
+ * Without a CPU clock, the wall clock, as before.
  *
  * Built when the Forge starts: without ECJ on the class path, the constructor throws `NoClassDefFoundError`.
  */
@@ -118,6 +125,10 @@ class EcjCompiler(
         /** When it started on the compiler's thread, epoch milliseconds. */
         @Volatile
         var startedAt = 0L
+
+        /** When it started, on the clock of [spent]: the compiler thread's CPU time (or [System.nanoTime] without one). */
+        @Volatile
+        var clockAtStart = 0L
     }
 
     private class Stuck(val label: String, val since: Instant)
@@ -216,16 +227,14 @@ class EcjCompiler(
     private fun run(job: Job) {
         val start = System.nanoTime()
         job.startedAt = System.currentTimeMillis()
+        job.clockAtStart = clock()
         running = job
-        job.result.completeOnTimeout(Compilation(Compilation.Outcome.TOO_LONG, emptyMap(), emptyList(), budgetMs), budgetMs, TimeUnit.MILLISECONDS)
-        val watch = CompletableFuture<Boolean>()
-        watch.completeOnTimeout(true, stuckMs, TimeUnit.MILLISECONDS).thenAcceptAsync { late -> if (late) stuck(job) }
+        watch(job)
         val compilation = try {
             ecj(job, start)
         } catch (e: Throwable) {
             crashed(job, e, start)
         } finally {
-            watch.complete(false)
             running = null
         }
         job.result.complete(compilation)
@@ -238,7 +247,7 @@ class EcjCompiler(
                 if (job.result.isCancelled) {
                     log.debug { "${job.label}: dropped by its caller after ${compilation.millis} ms" }
                 } else {
-                    log.warn("${job.label}: the compilation took more than $budgetMs ms; cancelled after ${compilation.millis} ms")
+                    log.warn("${job.label}: the compilation took more than $budgetMs ms of the compiler's work; cancelled after ${compilation.millis} ms")
                 }
             else -> log.debug { "${job.label}: ${compilation.outcome.name.lowercase()} after ${compilation.millis} ms" }
         }
@@ -255,8 +264,7 @@ class EcjCompiler(
             result.allProblems.orEmpty().forEach { problems += it.toSourceProblem() }
             result.classFiles.forEach { classes[String(it.fileName()).replace('/', '.')] = it.bytes }
         }
-        val deadline = start + budgetMs * 1_000_000
-        val progress = Progress { stopped || job.result.isDone || System.nanoTime() - deadline > 0 }
+        val progress = Progress { stopped || job.result.isDone || spent(job) >= budgetMs }
         val compiler = Compiler(
             environment, DefaultErrorHandlingPolicies.proceedWithAllProblems(), options(), requestor,
             DefaultProblemFactory(Locale.ROOT), null, progress,
@@ -285,13 +293,36 @@ class EcjCompiler(
         }
     }
 
+    /**
+     * Every [WATCH_MS] while [job] compiles: past [budgetMs] of the compiler's work, its caller gets
+     * [Compilation.Outcome.TOO_LONG] at once (ECJ stops at its next check); past [stuckMs], ECJ ignored its
+     * cancellation: the compiler is stuck.
+     */
+    private fun watch(job: Job) {
+        CompletableFuture.delayedExecutor(WATCH_MS, TimeUnit.MILLISECONDS).execute {
+            if (running !== job) return@execute
+            val spent = spent(job)
+            if (spent >= budgetMs) job.result.complete(Compilation(Compilation.Outcome.TOO_LONG, emptyMap(), emptyList(), System.currentTimeMillis() - job.startedAt))
+            if (spent >= stuckMs) stuck(job) else watch(job)
+        }
+    }
+
+    /** The milliseconds of the compiler's own work on [job] so far: its thread's CPU time (the wall clock without a CPU clock). */
+    private fun spent(job: Job): Long = (clock() - job.clockAtStart) / 1_000_000
+
+    /** The compiler thread's CPU time, or [System.nanoTime] without a CPU clock. Any thread. */
+    private fun clock(): Long {
+        val cpu = CPU?.getThreadCpuTime(thread.threadId()) ?: -1
+        return if (cpu >= 0) cpu else System.nanoTime()
+    }
+
     private fun stuck(job: Job) {
         val since = Instant.ofEpochMilli(job.startedAt)
         synchronized(this) {
             if (stopped || stuck != null || running !== job) return
             stuck = Stuck(job.label, since)
         }
-        log.warn("the compiler is stuck: ${job.label} has been compiling for more than $stuckMs ms despite its cancellation; no more compilation until the server restarts")
+        log.warn("the compiler is stuck: ${job.label} has been compiling for more than $stuckMs ms of the compiler's work despite its cancellation; no more compilation until the server restarts")
         drain(Compilation.Outcome.STUCK)
         try {
             onStuck(job.label, since)
@@ -327,6 +358,12 @@ class EcjCompiler(
 
         /** The compiler thread's stack, fixed so that how deeply a source may nest does not depend on `-Xss` (about 15,000 levels). */
         private const val STACK_BYTES = 1L shl 20
+
+        /** How often the compiler's work on a compilation is read, while it compiles (the CPU clock moves by steps of 15.6 ms under Windows). */
+        const val WATCH_MS = 100L
+
+        /** The JVM's CPU clock of a thread; null without one. */
+        private val CPU: ThreadMXBean? = ManagementFactory.getThreadMXBean().takeIf { it.isThreadCpuTimeSupported && it.isThreadCpuTimeEnabled }
 
         /** The SDK's packages: the only ones of the mod a module sees. */
         val SDK_PACKAGES = setOf("io.github.clemsix6.narrator2.forge.api", "io.github.clemsix6.narrator2.forge.api.test")

@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.forge.api.ModuleContext
 import io.github.clemsix6.narrator2.forge.api.StopReason
 import io.github.clemsix6.narrator2.forge.rt.Meter
 import io.github.clemsix6.narrator2.forge.sandbox.ModuleLoader
+import java.lang.management.ManagementFactory
 import java.lang.ref.WeakReference
 import java.lang.reflect.InvocationTargetException
 import java.time.Clock
@@ -26,13 +27,13 @@ import kotlinx.serialization.json.put
  */
 data class Fault(val kind: Kind, val call: String, val cause: String, val line: Int, val disables: Boolean) {
     enum class Kind(val id: String) {
-        /** The meter stopped the call (time, allocation, depth), or the call was abandoned past its budget. */
+        /** The meter stopped the call (its own work past its budget, allocation, depth), or the call was given up while its thread computed past its budget. */
         LIMIT("limit"),
 
         /** Anything else the module's code threw, a limit of `Guarded` and a stack overflow included. */
         EXCEPTION("exception"),
 
-        /** Over [ForgeLimits.DEPLOYMENT_MS_PER_SECOND] in a second, [ForgeLimits.SLOW_SECONDS] seconds in a row. */
+        /** Over [ForgeLimits.DEPLOYMENT_MS_PER_SECOND] of its own work in a second, [ForgeLimits.SLOW_SECONDS] seconds in a row. */
         SLOWNESS("slowness"),
 
         /** Retains or allocates too much. */
@@ -55,12 +56,20 @@ data class Fault(val kind: Kind, val call: String, val cause: String, val line: 
  *   in the constructor's call.
  * - **Calls** ([call]): each one on the module thread of [threads], the caller waiting at most its budget
  *   ([ForgeLimits.CALL_NANOS]; [STARTUP_CALL_NANOS] for the constructor and `start`; plus [ABANDON_MARGIN_NANOS] for
- *   the meter to unwind): armed, run, disarmed and read (`tripped`, allocation) **on the module thread**; abandoned past it. The
- *   module sees its context through an [SdkBridge]: every SDK call runs on the caller's thread.
+ *   the meter to unwind): armed, run, disarmed and read (`tripped`, allocation, its own work) **on the module thread**.
+ *   The module sees its context through an [SdkBridge]: every SDK call runs on the caller's thread.
+ * - **Only the module's doing is a fault** (M5-LOAD): its meter counts its own work, not the wall clock ([Meter]); a
+ *   call **given up** at the caller's deadline ([busy]) runs on alone, refused by the SDK, the module waiting for it,
+ *   and is settled once its thread ended — a fault of its meter, or nobody's — or once its thread's CPU time shows it
+ *   computed past its budget ([computing]: then it is **abandoned**, lost, and disables at once). A call the module thread did not
+ *   even start in time is **skipped**, nobody's fault ([Called.skipped]: its caller may ask it again). Both are logged
+ *   and counted apart ([starved], [skipped]). Its constructor and `start`, and every call of a host with [patienceNanos]
+ *   (the bench), wait past their budget as long as the module thread has not computed ([STARTUP_PATIENCE_NANOS]).
  * - **Faults** (§3.7), counted over ten sliding minutes: a *limit* (2 disable; an abandoned call disables at once), an
- *   *exception* (3 disable), *slowness* ([second]), *memory* ([second], [gauge]); any fault in the constructor or
- *   `start` disables at once. Once disabled, no code of the module ever runs again. [onFault] hears each fault, on the
- *   caller's thread. The text of an exception is all that is kept: class, message (cut), the module's line.
+ *   *exception* (3 disable), *slowness* ([second]: its own work, [Called.work]), *memory* ([second], [gauge]); any
+ *   fault in the constructor or `start` disables at once. Once disabled, no code of the module ever runs again.
+ *   [onFault] hears each fault, on the caller's thread. The text of an exception is all that is kept: class, message
+ *   (cut), the module's line.
  * - **Unloading** ([unload]): everything let go, the module thread its code ran on ended, a [WeakReference] to the
  *   loader returned for the [LeakWatch].
  *
@@ -68,12 +77,9 @@ data class Fault(val kind: Kind, val call: String, val cause: String, val line: 
  * orbiting_chickens`). [lineWaitMillis]: how long the caller may wait, after an abandon, for the module's line (0 for
  * the server thread, which never waits; the bench may wait for it, the forger needs it).
  *
- * [timeScale], [abandonMarginNanos] and [gaugeNanos] are for tests; the game keeps their defaults. A busy test machine
- * holds any thread back for tens of milliseconds, sometimes more than a hundred (FLAKY-4): a test whose subject is not
- * time multiplies the host's own wall-clock limits by [timeScale] — a call's budget, `start`'s, the margin, the
- * gauge's clock —, so that only the limit it tests can stop its module. A budget given to [call] is kept as it is (a
- * test of time gives the game's). A test of the meter's own stop gives the margin alone more, so that a call its
- * meter stops is never abandoned instead.
+ * [timeScale] and [abandonMarginNanos] are for tests; the game keeps their defaults. A test whose subject is not time
+ * multiplies the host's own limits by [timeScale] — a call's budget, `start`'s, the margin —, so that only the limit
+ * it tests can stop its module (FLAKY-4). A budget given to [call] is kept as it is (a test of time gives the game's).
  */
 class ModuleHost(
     mainClass: String,
@@ -84,7 +90,7 @@ class ModuleHost(
     private val lineWaitMillis: Long = 0,
     private val timeScale: Long = 1,
     private val abandonMarginNanos: Long = ABANDON_MARGIN_NANOS * timeScale,
-    private val gaugeNanos: Long = ForgeLimits.GAUGE_MAX_NANOS * timeScale,
+    private val patienceNanos: Long = 0,
     private val onFault: (Fault) -> Unit = {},
 ) {
     private val log = Log.forge
@@ -96,24 +102,37 @@ class ModuleHost(
     private var context: ModuleContext? = null
     private val bridge = SdkBridge()
     private var unloaded = false
+    private var given: Given? = null
 
     private val limits = ArrayDeque<Long>()
     private val exceptions = ArrayDeque<Long>()
     private var spentThisSecond = 0L
+    private var workThisSecond = 0L
     private var slowSeconds = 0
     private var minuteStart = 0L
     private var allocatedThisMinute = 0L
-    private var slowMeasures = 0
 
     /** The fault that disabled it; null while it may run. */
     var disabled: Fault? = null
+        private set
+
+    /** Why it could not start without a fault of its own (its start given up, its thread held back past its patience); null while it may. */
+    var stalled: String? = null
         private set
 
     /** Faults so far (`ModuleView.faults`). */
     var faults = 0
         private set
 
-    /** The milliseconds its calls took in the last whole second (`ModuleView.msPerSecond`). */
+    /** Calls given up that its thread had not computed past their budget: nobody's fault. */
+    var starved = 0
+        private set
+
+    /** Calls that never ran: the module thread did not start them in time, or a call given up still ran. */
+    var skipped = 0
+        private set
+
+    /** The milliseconds its calls held their caller in the last whole second (`ModuleView.msPerSecond`). */
     var msPerSecond = 0L
         private set
 
@@ -129,31 +148,38 @@ class ModuleHost(
         this.loader = loader
         this.meter = meter
         type = Class.forName(mainClass, false, loader)
-        gauge = RetainedGauge(loader, maxNanos = gaugeNanos)
+        gauge = RetainedGauge(loader)
     }
 
-    /** What one call did: its wall time on the caller's side, the bytes it allocated (-1 unmeasured), its fault. */
-    class Called(val nanos: Long, val allocated: Long, val fault: Fault?)
+    /**
+     * What one call did: its wall time on the caller's side, the bytes it allocated (-1 unmeasured), its fault; [work],
+     * its own work (its meter's measure of its code, or its thread's CPU time for long steps of the JDK, and the SDK
+     * calls its caller served), 0 when unknown; [skipped] when nothing of it ran (asked too late, or a call given up
+     * before still runs): its caller may ask it again.
+     */
+    class Called(val nanos: Long, val allocated: Long, val fault: Fault?, val work: Long = 0, val skipped: Boolean = false)
 
     /**
      * Makes the module (its constructor, its static initializer) and starts it with [context] (which it sees behind
      * the [SdkBridge]), each in a call of its own: a fault in either disables it at once — it started when [disabled]
-     * is still null after. Returns the report of the last call made (the constructor's when it failed).
+     * and [stalled] are still null after, and the last call was not [Called.skipped]. Returns the report of the last
+     * call made (the constructor's when it failed). Asked again after a skipped call, it does what is left: the module
+     * is made once.
      */
     fun start(context: ModuleContext): Called? {
         val type = type ?: return null
-        val seen = bridge.wrap(ModuleContext::class.java, context)
-        this.context = seen
-        var made: ForgeModule? = null
-        val constructed = call(CONSTRUCTOR, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) {
-            made = try {
-                type.getConstructor().newInstance() as ForgeModule
-            } catch (wrapped: InvocationTargetException) {
-                throw wrapped.cause ?: wrapped
+        val seen = this.context ?: bridge.wrap(ModuleContext::class.java, context).also { this.context = it }
+        val module = instance ?: run {
+            var made: ForgeModule? = null
+            val constructed = call(CONSTRUCTOR, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) {
+                made = try {
+                    type.getConstructor().newInstance() as ForgeModule
+                } catch (wrapped: InvocationTargetException) {
+                    throw wrapped.cause ?: wrapped
+                }
             }
+            made?.takeIf { disabled == null && stalled == null }?.also { instance = it } ?: return constructed
         }
-        val module = made?.takeIf { disabled == null } ?: return constructed
-        instance = module
         return call(START, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) { module.start(seen) }
     }
 
@@ -166,10 +192,10 @@ class ModuleHost(
 
     /**
      * Runs [body] — code of the module: a fact's handler, a timer, a callback — as one call ([what]: `fact`, `timer`,
-     * `callback`…), on the module thread, metered, abandoned past its budget. Never throws: a fault is counted here,
+     * `callback`…), on the module thread, metered, given up past its budget. Never throws: a fault is counted here,
      * told to [onFault], and may disable the module. Nothing runs once it is disabled or unloaded (null then).
      */
-    fun call(what: String, body: () -> Unit): Called? = call(what, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, body)
+    fun call(what: String, body: () -> Unit): Called? = call(what, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, body = body)
 
     /**
      * [call] with a budget of its own (the bench: a scenario has what is left of the bench's 30 s), and an allocation
@@ -182,20 +208,48 @@ class ModuleHost(
      * call was abandoned, it throws the meter's [ForgeLimit][io.github.clemsix6.narrator2.forge.rt.ForgeLimit] (the
      * thread is lost: it must unwind).
      */
-    fun call(what: String, budgetNanos: Long, body: () -> Unit): Called? = call(what, budgetNanos, budgetNanos, startup = false, body)
+    fun call(what: String, budgetNanos: Long, body: () -> Unit): Called? = call(what, budgetNanos, budgetNanos, startup = false, body = body)
 
-    /** [budget] of wall clock; [nominal], the game's budget for it, which its allocation allowance follows. */
-    private fun call(what: String, nominal: Long, budget: Long, startup: Boolean, body: () -> Unit): Called? {
-        if (disabled != null || unloaded) return null
+    /**
+     * Whether a call given up before still runs (its thread held back): the module waits for it, and nothing of it
+     * runs meanwhile ([call] skips). Settles that call first, which may count a fault and disable the module.
+     */
+    fun busy(): Boolean {
+        settle()
+        return given != null && disabled == null && stalled == null
+    }
+
+    /**
+     * [budget] of its own work; [nominal], the game's budget for it, which its allocation allowance follows; [after],
+     * the host's own work on the module thread once the call is disarmed (the gauge's walk, which runs no module code).
+     */
+    private fun call(what: String, nominal: Long, budget: Long, startup: Boolean, after: ((Outcome) -> Unit)? = null, body: () -> Unit): Called? {
+        if (disabled != null || unloaded || stalled != null) return null
+        // A nested call runs inside this host's own running call, on its module thread: what is left to settle is the
+        // caller's (and a call nested in a call given up is refused by the module threads).
+        val nested = ModuleThreads.onModuleThread()
+        if (!nested) {
+            settle()
+            if (disabled != null) return null
+            if (given != null) {
+                skipped++
+                log.debug { "$label: its $what call is skipped, a call given up before still runs" }
+                return Called(0, -1, null, skipped = true)
+            }
+        }
         val meter = meter ?: return null
         val names = loader?.names ?: return null
         val calls = if (startup) 1 else maxOf(1, nominal / ForgeLimits.CALL_NANOS)
         val allowance = (ForgeLimits.CALL_ALLOCATION_BYTES * calls).coerceAtMost(ForgeLimits.ALLOCATION_PER_MINUTE_BYTES)
-        val nested = ModuleThreads.onModuleThread()
         val outcome = Outcome()
-        var lost: Thread? = null
+        var thread: Thread? = null
+        val waits = if (startup) maxOf(patienceNanos, STARTUP_PATIENCE_NANOS * timeScale) else patienceNanos
+        // A call with a budget of its own (a scenario: what is left of the bench) has had all the time it may have.
+        val patience = waits.takeIf { it > 0 && budget <= STARTUP_CALL_NANOS * timeScale }?.let { nanos ->
+            ModuleThreads.Patience(nanos) { running -> computing(running, budget) }
+        }
         val started = System.nanoTime()
-        val ran = threads.run(budget + abandonMarginNanos, onAbandon = { thread -> meter.revoke().also { lost = thread } }) {
+        val ran = threads.run(budget + abandonMarginNanos, onAbandon = { thread = it }, patience = patience, lose = false) {
             val running = if (nested) meter.nest(budget, allowance) else null
             if (running == null) meter.arm(budget, allowance)
             try {
@@ -206,33 +260,58 @@ class ModuleHost(
             meter.disarm()
             outcome.tripped = meter.tripped()
             outcome.allocated = meter.allocatedSinceArm()
+            outcome.worked = meter.worked()
+            outcome.cpu = meter.cpu()
+            try {
+                after?.invoke(outcome)
+            } catch (e: Exception) {
+                log.error("$label: the host's work after its $what call failed", e)
+            }
             running?.let(meter::unnest)
         }
         val nanos = System.nanoTime() - started
+        val served = if (nested) 0 else threads.served
         if (!nested) spentThisSecond += nanos
-        val fault = when (ran) {
-            ModuleThreads.Ran.DONE -> done(what, startup, outcome)
-            ModuleThreads.Ran.ABANDONED -> abandoned(what, lost, names, budget)
-            ModuleThreads.Ran.LATE -> limit(what, startup, "the module thread did not start the call within ${(budget + abandonMarginNanos) / 1_000_000} ms (an overloaded machine)", 0)
-            ModuleThreads.Ran.STUCK -> Fault(Fault.Kind.STUCK, what, "the Forge is stuck: too many module threads were lost", 0, disables = true)
-        } ?: allocated(what, if (ran == ModuleThreads.Ran.DONE) outcome.allocated else -1)
-        fault?.let(::fault)
-        return Called(nanos, if (ran == ModuleThreads.Ran.DONE) outcome.allocated else -1, fault)
+        return when (ran) {
+            ModuleThreads.Ran.DONE -> {
+                val work = outcome.work(nanos) + served
+                if (!nested) workThisSecond += work
+                val fault = done(what, startup, outcome) ?: allocated(what, outcome.allocated)
+                fault?.let(::fault)
+                Called(nanos, outcome.allocated, fault, work)
+            }
+            ModuleThreads.Ran.ABANDONED -> givenUp(Given(what, checkNotNull(thread), budget, outcome, served), startup, nanos)
+            ModuleThreads.Ran.LATE -> {
+                skipped++
+                log.debug { "$label: its $what call was skipped: the module thread did not start it within ${(budget + abandonMarginNanos) / NANOS_PER_MS} ms (an overloaded machine), nobody's fault" }
+                Called(nanos, -1, null, skipped = true)
+            }
+            ModuleThreads.Ran.STUCK -> {
+                val fault = Fault(Fault.Kind.STUCK, what, "the Forge is stuck: too many module threads were lost", 0, disables = true)
+                fault(fault)
+                Called(nanos, -1, fault)
+            }
+        }
     }
 
     /**
-     * Once a second, between two calls: its time in the last second (a fault *slowness* after
-     * [ForgeLimits.SLOW_SECONDS] seconds in a row over [ForgeLimits.DEPLOYMENT_MS_PER_SECOND]).
+     * Once a second, between two calls: its own work in the last second (a fault *slowness* after
+     * [ForgeLimits.SLOW_SECONDS] seconds in a row over [ForgeLimits.DEPLOYMENT_MS_PER_SECOND]). The wall time its calls
+     * held their caller is [msPerSecond]: on a busy machine it grows with what the machine holds back, its work does not.
      */
     fun second(): Fault? {
-        msPerSecond = spentThisSecond / 1_000_000
+        settle()
+        msPerSecond = spentThisSecond / NANOS_PER_MS
         spentThisSecond = 0
+        val work = workThisSecond
+        workThisSecond = 0
         if (disabled != null || unloaded) return null
-        slowSeconds = if (msPerSecond > ForgeLimits.DEPLOYMENT_MS_PER_SECOND) slowSeconds + 1 else 0
+        slowSeconds = if (work > ForgeLimits.DEPLOYMENT_MS_PER_SECOND * NANOS_PER_MS) slowSeconds + 1 else 0
         if (slowSeconds < ForgeLimits.SLOW_SECONDS) return null
         return Fault(
             Fault.Kind.SLOWNESS, SECOND,
-            "over ${ForgeLimits.DEPLOYMENT_MS_PER_SECOND} ms of its code a second, $slowSeconds seconds in a row (${msPerSecond} ms in the last)", 0, disables = true,
+            "over ${ForgeLimits.DEPLOYMENT_MS_PER_SECOND} ms of its code a second, $slowSeconds seconds in a row (${work / NANOS_PER_MS} ms of its own work in the last)",
+            0, disables = true,
         ).also(::fault)
     }
 
@@ -240,39 +319,35 @@ class ModuleHost(
      * Measures what it retains (M5 §3.7), once a minute (every 10 seconds without allocation metering), between two
      * calls: its instance, its classes' static fields and [handed] (the lambdas it gave the SDK), in a call of its own.
      * Past [ForgeLimits.RETAINED_BYTES], or past [ForgeLimits.GAUGE_MAX_OBJECTS] objects, a fault *memory* disables it.
-     * A measure stopped by the clock ([ForgeLimits.GAUGE_MAX_NANOS]) is noted and taken again next time: only
-     * [SLOW_MEASURES] of them in a row disable it (a first walk with a cold JIT costs about 1 µs an object, a warm one
-     * 40 to 80 ns).
+     * Only its verdict can: the walk is bounded by these ceilings, not by a clock (M5-LOAD); a measure its machine makes
+     * slow finishes on the module thread, given up by the caller like any call, and is judged once it ended.
      */
     fun gauge(handed: Collection<Any?> = emptyList()): Fault? {
         val found = measure(listOf(instance) + handed) ?: return null
-        retained = found
-        slowMeasures = if (found.complete || found.objects > ForgeLimits.GAUGE_MAX_OBJECTS) 0 else slowMeasures + 1
-        val cause = when {
-            found.objects > ForgeLimits.GAUGE_MAX_OBJECTS -> "retains too much to measure (over ${ForgeLimits.GAUGE_MAX_OBJECTS} objects)"
-            slowMeasures >= SLOW_MEASURES ->
-                "retains too much to measure (${found.objects} objects seen in ${gaugeNanos / 1_000_000} ms, $slowMeasures measures in a row)"
-            !found.complete -> {
-                log.info("$label: its memory was not measured within ${gaugeNanos / 1_000_000} ms (${found.objects} objects seen); again next time")
-                return null
-            }
-            found.bytes > ForgeLimits.RETAINED_BYTES -> "retains about ${found.bytes / MIB} MiB (at most ${ForgeLimits.RETAINED_BYTES / MIB})"
-            else -> return null
-        }
-        return Fault(Fault.Kind.MEMORY, GAUGE, cause, 0, disables = true).also(::fault)
+        return verdict(found)
     }
 
     /**
      * What [roots] and the static fields of the module's classes retain ([RetainedGauge]), measured in a call of its
-     * own (a nested one from the module thread); null when it could not run (disabled, unloaded, or the call faulted:
-     * the fault is counted as any other). The bench's own memory checks use it; [gauge] applies the game's limits.
+     * own; null when it could not run (disabled, unloaded, skipped, given up, or the call faulted: the fault is counted
+     * as any other). The static fields are read in the metered call (a class not yet initialized runs its module's
+     * static initializer), the walk after it, on the same thread. The bench's own memory checks use it; [gauge]
+     * applies the game's limits.
      */
     fun measure(roots: Collection<Any?>): RetainedGauge.Measure? {
         val gauge = gauge ?: return null
         val loader = loader ?: return null
-        var measure: RetainedGauge.Measure? = null
-        val called = call(GAUGE) { measure = gauge.measure(roots, loader.defined) } ?: return null
-        return measure.takeIf { called.fault == null }
+        var statics: List<Any?> = emptyList()
+        var found: RetainedGauge.Measure? = null
+        val after = { outcome: Outcome ->
+            found = gauge.measure(roots + statics)
+            outcome.measure = found
+        }
+        val called = call(GAUGE, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, after = after) {
+            statics = gauge.statics(loader.defined)
+        } ?: return null
+        if (called.fault != null || called.skipped || given != null) return null
+        return found
     }
 
     /** The module's class, loaded and not initialized (its static initializer runs in its constructor's call). */
@@ -286,7 +361,8 @@ class ModuleHost(
 
     /**
      * Lets everything go — instance, context, meter, classes, loader — and returns a weak reference to the loader,
-     * for the [LeakWatch]. No code of the module runs after this.
+     * for the [LeakWatch]. No code of the module runs after this: a call given up that still runs is revoked, its
+     * thread counted among the lost ones until it ends.
      *
      * The module thread goes too ([ModuleThreads.renew]: a new one, started now, takes the next call of any module):
      * once the code of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's
@@ -295,6 +371,13 @@ class ModuleHost(
      * interpreted one).
      */
     fun unload(): WeakReference<ClassLoader> {
+        given?.let { call ->
+            if (call.thread.isAlive) {
+                meter?.revoke()
+                threads.lose(call.thread)
+            }
+        }
+        given = null
         val reference = WeakReference<ClassLoader>(loader)
         unloaded = true
         instance = null
@@ -306,6 +389,117 @@ class ModuleHost(
         bridge.clear()
         threads.renew()
         return reference
+    }
+
+    /**
+     * A call given up at its caller's deadline ([call]): abandoned at once when its thread already computed past its
+     * budget ([computing]); else it runs on alone, settled later ([settle]). A start (the constructor or `start`) given up
+     * past its patience without computing never ends well: the module does not start ([stalled]), nobody's fault.
+     */
+    private fun givenUp(call: Given, startup: Boolean, nanos: Long): Called {
+        if (computing(call.thread, call.budget)) {
+            val fault = abandoned(call, alive = true)
+            fault(fault)
+            return Called(nanos, -1, fault, call.served)
+        }
+        given = call
+        if (startup) {
+            stalled = "its ${call.what} did not end within ${nanos / NANOS_PER_MS} ms, its thread held back by an overloaded machine"
+            meter?.revoke()
+            log.warn("$label: $stalled; it does not start (nobody's fault)")
+        } else {
+            log.info("$label: its ${call.what} call was given up at ${nanos / NANOS_PER_MS} ms, its thread held back; it runs on alone, the module waiting for it")
+        }
+        return Called(nanos, -1, null, call.served)
+    }
+
+    /**
+     * Settles the call given up, if any: once its thread ended, the fault of its meter (its own work past its budget,
+     * allocation, depth), an abandon when its thread's CPU clock shows it computed past its budget in a long step of the
+     * JDK, or nobody's fault ([starved]); while its thread runs, an abandon once it computed past its budget
+     * ([computing]), else nothing yet. A given-up gauge's verdict comes then.
+     */
+    private fun settle() {
+        val call = given ?: return
+        if (stalled != null) return
+        val alive = call.thread.isAlive
+        if (alive && !computing(call.thread, call.budget)) return
+        given = null
+        val outcome = call.outcome
+        val tripped = outcome.tripped
+        val fault = when {
+            alive -> abandoned(call, alive = true)
+            tripped == null -> null
+            tripped.startsWith(TIME_BUDGET) && outcome.worked < call.budget -> abandoned(call, alive = false)
+            else -> limit(call.what, false, tripped, lineOf(tripped))
+        }
+        workThisSecond += maxOf(outcome.worked, outcome.cpu, 0) + call.served
+        if (fault != null) {
+            fault(fault)
+            return
+        }
+        starved++
+        log.info(
+            "$label: its ${call.what} call, given up, ended without computing past its budget (${outcome.worked / NANOS_PER_MS} ms of its own work): " +
+                "its thread was held back, nobody's fault ($starved so far)",
+        )
+        if (call.what == GAUGE) outcome.measure?.let(::verdict)
+    }
+
+    /**
+     * Whether [thread], running a call of [budget], computed past it: its CPU clock since the call was armed reached
+     * [Meter.cpuEvidence] (its budget, 40 ms at least). That is the module's doing, which its meter could not stop (one
+     * long step of the JDK): a call merely held back by the machine never does (the CPU clock moves by steps of 15.6 ms
+     * under Windows: 40 ms is three of them, which a call of a few milliseconds never shows). Without a CPU clock, any
+     * call past its budget does.
+     */
+    private fun computing(thread: Thread, budget: Long): Boolean {
+        val armed = meter?.cpuAtArm() ?: return false
+        if (armed == Meter.UNARMED) return false
+        if (armed < 0) return true
+        val now = CPU_TIMES.getThreadCpuTime(thread.threadId())
+        return now >= 0 && now - armed >= Meter.cpuEvidence(budget)
+    }
+
+    /**
+     * The fault of a call given up while its thread computed on past its budget (M5-05: one long call of the JDK the
+     * meter cannot stop): disables at once; the meter revoked, so that its thread ends at the module's next code. When
+     * [alive], the thread is lost ([ModuleThreads.lose]) and where the module was is read from its stack — but that
+     * waits for the thread's next safepoint poll, and inside one long call of the JDK none may come for tens of
+     * milliseconds (measured: 50 to 65 ms in the hash of finding 1, a whole `indexOf` of 75 ms). So it is read on a
+     * helper thread and waited at most [lineWaitMillis] (0 on the server thread: it never waits; the place goes to the
+     * log when read).
+     */
+    private fun abandoned(call: Given, alive: Boolean): Fault {
+        meter?.revoke()
+        val cause = "time budget: one call ran past ${(call.budget + abandonMarginNanos) / NANOS_PER_MS} ms and was abandoned"
+        if (!alive) return Fault(Fault.Kind.LIMIT, call.what, cause, 0, disables = true)
+        threads.lose(call.thread)
+        val names = loader?.names.orEmpty()
+        val stack = CompletableFuture<Array<StackTraceElement>>()
+        Thread.ofPlatform().daemon().name("narrator2-module-stack").start { stack.complete(call.thread.stackTrace) }
+        val frames = try {
+            stack.get(lineWaitMillis, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            null
+        }
+        if (frames == null) {
+            stack.thenAccept { late -> log.warn("$label: its call abandoned past its budget ran${place(late, names).first.ifEmpty { " out of its code" }}") }
+            return Fault(Fault.Kind.LIMIT, call.what, cause, 0, disables = true)
+        }
+        val (place, line) = place(frames, names)
+        return Fault(Fault.Kind.LIMIT, call.what, cause + place, line, disables = true)
+    }
+
+    private fun verdict(found: RetainedGauge.Measure): Fault? {
+        retained = found
+        val cause = when {
+            found.objects > ForgeLimits.GAUGE_MAX_OBJECTS -> "retains too much to measure (over ${ForgeLimits.GAUGE_MAX_OBJECTS} objects)"
+            found.bytes > ForgeLimits.RETAINED_BYTES ->
+                "retains ${if (found.complete) "about" else "over"} ${found.bytes / MIB} MiB (at most ${ForgeLimits.RETAINED_BYTES / MIB})"
+            else -> return null
+        }
+        return Fault(Fault.Kind.MEMORY, GAUGE, cause, 0, disables = true).also(::fault)
     }
 
     private fun done(what: String, startup: Boolean, outcome: Outcome): Fault? {
@@ -360,13 +554,29 @@ class ModuleHost(
         }
     }
 
-    /** What a call left, written on the module thread before its end, read by the caller after it (never after an abandon). */
+    /**
+     * What a call left, written on the module thread before its end, read by the caller after it (never after a give-up
+     * but once its thread ended, or its stack read).
+     */
     private class Outcome {
         var thrown: String? = null
         var line = 0
         var tripped: String? = null
         var allocated = -1L
+        var worked = -1L
+        var cpu = -1L
+        var measure: RetainedGauge.Measure? = null
+
+        /**
+         * Its own work: what its meter measured of its code, or its thread's CPU time (a long step of the JDK) up to the
+         * call's [wall] time, the larger (the CPU clock moves by steps of 15.6 ms under Windows: [wall] caps a step that
+         * fell in a short call). Without a CPU clock, the wall time.
+         */
+        fun work(wall: Long): Long = if (cpu < 0) wall else maxOf(worked, minOf(cpu, wall))
     }
+
+    /** A call given up: what it was, its thread, its budget, what it leaves, the time the caller spent serving its SDK calls. */
+    private class Given(val what: String, val thread: Thread, val budget: Long, val outcome: Outcome, val served: Long)
 
     /**
      * [thrown] as text, on the module thread, while the call is still armed (a module's exception may compute its own
@@ -389,29 +599,6 @@ class ModuleHost(
         val place = frame?.let { " at ${it.fileName ?: it.className}:${it.lineNumber}" }.orEmpty()
         outcome.thrown = if (place.isNotEmpty() && text.endsWith(place)) text else text + place
         outcome.line = frame?.lineNumber ?: 0
-    }
-
-    /**
-     * The fault of a call abandoned on [thread]. Where the module was is read from the thread's stack — but that waits
-     * for the thread's next safepoint poll, and inside one long call of the JDK none may come for tens of milliseconds
-     * (measured: 50 to 65 ms in the hash of finding 1, a whole `indexOf` of 75 ms). So it is read on a helper thread and
-     * waited at most [lineWaitMillis] (0 on the server thread: it never waits; the place goes to the log when read).
-     */
-    private fun abandoned(what: String, thread: Thread?, names: Set<String>, budget: Long): Fault {
-        val cause = "time budget: one call ran past ${(budget + abandonMarginNanos) / 1_000_000} ms and was abandoned"
-        val stack = CompletableFuture<Array<StackTraceElement>>()
-        if (thread != null) Thread.ofPlatform().daemon().name("narrator2-module-stack").start { stack.complete(thread.stackTrace) }
-        val frames = try {
-            stack.get(lineWaitMillis, TimeUnit.MILLISECONDS)
-        } catch (_: TimeoutException) {
-            null
-        }
-        if (frames == null) {
-            stack.thenAccept { late -> log.warn("$label: its call abandoned past its budget ran${place(late, names).first.ifEmpty { " out of its code" }}") }
-            return Fault(Fault.Kind.LIMIT, what, cause, 0, disables = true)
-        }
-        val (place, line) = place(frames, names)
-        return Fault(Fault.Kind.LIMIT, what, cause + place, line, disables = true)
     }
 
     /** ` in java.util.AbstractList.hashCode at Shared.java:7`: the JDK call the module's innermost frame was in, and its line. */
@@ -442,11 +629,21 @@ class ModuleHost(
          */
         const val STARTUP_CALL_NANOS = 50L * 1_000_000
 
-        /** Past its budget, the meter stops a call at its next check and the call unwinds: the caller waits this much more before it abandons it. */
+        /** Past its budget, the meter stops a call at its next check and the call unwinds: the caller waits this much more before it gives it up. */
         const val ABANDON_MARGIN_NANOS = 5L * 1_000_000
 
-        /** Measures of the gauge stopped by its clock, in a row, that disable a module. */
-        const val SLOW_MEASURES = 3
+        /**
+         * How long past its budget a start (the constructor, `start`) is waited for while its thread has not computed
+         * (M5-LOAD): a start cannot be given up and finish alone (its SDK calls would be refused), and a saturated machine
+         * held a cold start (28 ms of work) back for over a second. The server thread waits that long only when the
+         * machine holds the module thread back, once per deployment.
+         */
+        const val STARTUP_PATIENCE_NANOS = 2_000L * 1_000_000
+
+        private val CPU_TIMES = ManagementFactory.getThreadMXBean()
+
+        /** How the meter names the time it stops a call for (`time budget at TagGame.java:41`). */
+        private const val TIME_BUDGET = "time budget"
 
         /**
          * Loads and initializes, once, what the first call of the first module would otherwise load inside its
@@ -468,7 +665,7 @@ class ModuleHost(
             // the first module of a JVM paid 6 to 8 ms of loading in its call).
             check(buildJsonObject { put("text", "x"); put("seconds", 0.5) }.toString().isNotEmpty())
             SdkBridge.interfaces().forEach { type -> java.lang.reflect.Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } }
-            Log.forge.debug { "the modules' runtime and SDK loaded in ${(System.nanoTime() - started) / 1_000_000} ms" + if (failed.isEmpty()) "" else " (not here: $failed)" }
+            Log.forge.debug { "the modules' runtime and SDK loaded in ${(System.nanoTime() - started) / NANOS_PER_MS} ms" + if (failed.isEmpty()) "" else " (not here: $failed)" }
         }
 
         /**
@@ -495,6 +692,7 @@ class ModuleHost(
 
         private const val MESSAGE_CHARS = 200
         private const val MINUTE_MS = 60_000L
+        private const val NANOS_PER_MS = 1_000_000L
         private const val MIB = 1024L * 1024
         private const val HOST_PACKAGE = "io.github.clemsix6.narrator2.forge.host."
     }

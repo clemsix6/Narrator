@@ -17,6 +17,7 @@ import io.github.clemsix6.narrator2.forge.host.ModuleThreads
 import io.github.clemsix6.narrator2.forge.sandbox.BytecodeGuard
 import io.github.clemsix6.narrator2.forge.sandbox.Instrumenter
 import io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests.Companion.FORGE_ENVIRONMENT
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -101,8 +102,10 @@ class EvilModulesGameTests {
                 val disabled = host.disabled
                 helper.assertTrue(disabled != null && "abandoned" in disabled.cause, "the host abandoned it: $disabled")
                 val held = (called?.nanos ?: 0) / 1e6
-                val abandonBudgetMs = (ModuleHost.STARTUP_CALL_NANOS + ModuleHost.ABANDON_MARGIN_NANOS) / 1_000_000
-                helper.assertTrue(held < abandonBudgetMs + 15, "the server went on at the budget: $held ms")
+                // A start is waited for while its thread has not computed (M5-LOAD), given up once its CPU time reached its
+                // budget (50 ms: four steps of the CPU clock under Windows, read each millisecond), as a busy machine allows.
+                val abandonBudgetMs = (ModuleHost.STARTUP_CALL_NANOS + ModuleHost.ABANDON_MARGIN_NANOS) / 1_000_000 + 16
+                helper.assertTrue(held < abandonBudgetMs + BusyMachine.SLACK_MILLIS, "the server went on at the budget: $held ms")
                 Log.forge.info("[evil] DistinctShared abandoned by the host after %.1f ms (a lost thread, bounded to two)".format(held))
                 host.unload()
             }

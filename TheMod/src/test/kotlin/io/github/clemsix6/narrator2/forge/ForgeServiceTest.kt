@@ -6,10 +6,14 @@ import io.github.clemsix6.narrator2.forge.api.ForgeModule
 import io.github.clemsix6.narrator2.forge.arsenal.ArsenalStore
 import io.github.clemsix6.narrator2.forge.arsenal.Manifest
 import io.github.clemsix6.narrator2.forge.compile.EcjCompiler
+import io.github.clemsix6.narrator2.forge.host.LostThreads
 import io.github.clemsix6.narrator2.testing.ForgeSamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -58,12 +62,33 @@ class ForgeServiceTest {
         approval: String = "auto",
         dir: Path = this.dir,
         newCompiler: ((String, java.time.Instant) -> Unit) -> EcjCompiler = { EcjCompiler(onStuck = it) },
+        onUnavailable: (String) -> Unit = {},
     ): Pair<ForgeService, TestServices> {
         val services = TestServices(dataDir = dir, settings = testSettings(NarratorConfig(forge = ForgeConfig(approval = approval))))
         val store = ArsenalStore(dir.resolve(ForgeService.ARSENAL_DIR), services.clock, builtInNames = emptyList())
-        val forge = ForgeService(services, store, ForgeService.engineDryCheck(services), newCompiler)
+        val forge = ForgeService(services, store, ForgeService.engineDryCheck(services), newCompiler, onUnavailable)
         made += forge
         return forge to services
+    }
+
+    /** A loader of the SDK for the compiler that holds each read while [held]: blocked, or [computing] (the compiler's limits count its work). */
+    private class Holding(private val computing: Boolean) : ClassLoader(null) {
+        val held = CountDownLatch(1)
+        private val sdk = ForgeModule::class.java.classLoader
+
+        @Volatile
+        var sink = 0L
+
+        override fun getResourceAsStream(name: String): InputStream? {
+            if (computing) {
+                var x = 0L
+                while (held.count > 0) repeat(10_000) { x += it.toLong() xor (x ushr 3) }
+                sink = x
+            } else {
+                held.await()
+            }
+            return sdk.getResourceAsStream(name)
+        }
     }
 
     private fun decisions(services: TestServices, what: String): List<DecisionRecord> =
@@ -271,31 +296,72 @@ class ForgeServiceTest {
     // ── unavailable, threads ───────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `a stuck compiler makes the Forge unavailable until the server restarts`() = runBlocking<Unit> {
-        val hold = CountDownLatch(1)
-        val armed = AtomicBoolean(true)
-        val sdk = ForgeModule::class.java.classLoader
-        val holding = object : ClassLoader(null) {
-            override fun getResourceAsStream(name: String): InputStream? {
-                if (armed.get()) hold.await()
-                return sdk.getResourceAsStream(name)
-            }
-        }
-        val (forge, services) = forge(newCompiler = { onStuck -> EcjCompiler(holding, budgetMs = 200, stuckMs = 600, onStuck = onStuck) })
+    fun `a stuck compiler makes the Forge unavailable until the server restarts, told once`() = runBlocking<Unit> {
+        // ECJ held while it computes, ignoring its cancellation: 200 ms of the compiler's work is too long, 600 stuck.
+        val holding = Holding(computing = true)
+        val told = CopyOnWriteArrayList<String>()
+        val (forge, services) = forge(newCompiler = { onStuck -> EcjCompiler(holding, budgetMs = 200, stuckMs = 600, onStuck = onStuck) }, onUnavailable = { told += it })
         try {
             val tooLong = assertFailsWith<ForgeRejected> { forge.test(BEACON_NAME, BEACON) }
             assertEquals("FAILED: the compilation of beacon took too long (over 10 s): write a simpler source", tooLong.toResult().text)
-            // The compiler is stuck (unavailable) a moment before it tells the Forge (the decision).
-            withTimeoutOrFail { !forge.available && decisions(services, ForgeService.STUCK).isNotEmpty() }
+            // The compiler is stuck (unavailable) a moment before it tells the Forge (the decision). Its thread is at the
+            // lowest priority: a busy machine may give it its 600 ms of work slowly.
+            withTimeoutOrFail(300_000) { !forge.available && decisions(services, ForgeService.STUCK).isNotEmpty() }
             assertTrue(forge.unavailableReason!!.startsWith("the compiler is stuck since "), forge.unavailableReason)
             assertTrue(forge.status().compiler.startsWith("stuck since "), forge.status().compiler)
             val refused = assertFailsWith<ForgeRejected> { forge.test(BEACON_NAME, BEACON) }
             assertTrue(refused.toResult().text.startsWith("DENIED (forge_off): the Forge is unavailable: the compiler is stuck since "), refused.toResult().text)
             assertFailsWith<ForgeRejected> { forge.build(BEACON_NAME, null) }
             assertEquals("compiler", decisions(services, ForgeService.STUCK).single().subject)
+            assertEquals(1, told.size, "told once: $told")
+            assertTrue(told.single().startsWith("the compiler is stuck since "), told.single())
+            forge.stop()
+            assertEquals(1, told.size, "the server's stop is not told")
         } finally {
-            armed.set(false)
-            hold.countDown()
+            holding.held.countDown()
+        }
+    }
+
+    @Test
+    fun `the server's stop is never told as the Forge becoming unavailable, too many lost threads is`() = runBlocking<Unit> {
+        val told = CopyOnWriteArrayList<String>()
+        val (stopped, _) = forge(onUnavailable = { told += it })
+        stopped.start().join()
+        stopped.stop()
+        assertEquals(emptyList(), told)
+
+        val (stuck, _) = forge(dir = Files.createTempDirectory("narrator2-forge"), onUnavailable = { told += it })
+        stuck.start().join()
+        val sleepers = List(LostThreads.LIMIT + 1) { Thread { runCatching { Thread.sleep(60_000) } }.apply { isDaemon = true; start() } }
+        try {
+            sleepers.forEach(stuck.lostThreads::add)
+            assertEquals(1, told.size, "$told")
+            assertTrue(told.single().startsWith("too many module threads were lost since "), told.single())
+        } finally {
+            sleepers.forEach(Thread::interrupt)
+        }
+    }
+
+    @Test
+    fun `two callers that build the same version at once compile it once`() = runBlocking<Unit> {
+        // A forged version on disk: the start checks it in the background while a restart's deployment builds it.
+        val module = dir.resolve("forge/beacon")
+        Files.createDirectories(module)
+        Files.writeString(module.resolve("v1.java"), BEACON)
+        Files.writeString(module.resolve("v1.json"), Manifest.encode(ForgeSamples.manifest.copy(name = BEACON_NAME, version = 1, hash = Manifest.hash(BEACON), params = emptyList(), scenarios = listOf("itLightsUp"))))
+        val holding = Holding(computing = false)
+        val (forge, services) = forge(newCompiler = { onStuck -> EcjCompiler(holding, onStuck = onStuck) })
+        try {
+            forge.start()
+            val builds = List(3) { async(Dispatchers.Default) { forge.build(BEACON_NAME, 1) } }
+            delay(300) // the first compilation held in its read of the SDK, the other callers waiting for it
+            holding.held.countDown()
+            val built = builds.awaitAll()
+            withTimeoutOrFail { forge.status().compiler == "idle" }
+            assertEquals(1, decisions(services, ForgeService.COMPILED).size, "compiled once: ${decisions(services, ForgeService.COMPILED).map { it.reason }}")
+            assertTrue(built.all { it.classes === built.first().classes }, "the same classes for all")
+        } finally {
+            holding.held.countDown()
         }
     }
 
@@ -333,8 +399,8 @@ class ForgeServiceTest {
         }
     }
 
-    private suspend fun withTimeoutOrFail(condition: () -> Boolean) {
-        val until = System.nanoTime() + 10_000_000_000L
+    private suspend fun withTimeoutOrFail(millis: Long = 10_000, condition: () -> Boolean) {
+        val until = System.nanoTime() + millis * 1_000_000
         while (!condition()) {
             check(System.nanoTime() < until) { "timed out" }
             delay(20)

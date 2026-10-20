@@ -128,6 +128,7 @@ class ModuleHostGameTests {
             var context: GameContext? = null
             var tick = 0
             var called: ModuleHost.Called? = null
+            val faults = CopyOnWriteArrayList<Fault>()
             sequence = sequence
                 .thenExecute {
                     val made = GameContext(WorldView(server, helper.narrator().players) { false }, emptyMap())
@@ -136,7 +137,7 @@ class ModuleHostGameTests {
                     val attacker = ModuleHost(
                         "Attack", built.get(), threads, "gametest attack $attack",
                         timeScale = BusyMachine.TIME_SCALE, abandonMarginNanos = ModuleHost.ABANDON_MARGIN_NANOS,
-                    )
+                    ) { faults += it }
                     attacker.start(made)
                     helper.assertTrue(attacker.disabled == null, "$attack: the module started: ${attacker.disabled}")
                     host = attacker
@@ -146,13 +147,18 @@ class ModuleHostGameTests {
                 .thenExecute {
                     tick = server.tickCount
                     val budget = if (attack in GUARDED) ForgeLimits.CALL_NANOS * BusyMachine.TIME_SCALE else ForgeLimits.CALL_NANOS
-                    called = host?.call("timer", budget) { context!!.tasks[index].run() }
-                    helper.assertTrue(called != null, "$attack: the module ran: ${host?.disabled}")
+                    var ran = host?.call("timer", budget) { context!!.tasks[index].run() }
+                    // A call the module thread could not even start in time (a saturated machine) is skipped, nobody's
+                    // fault (M5-LOAD): asked again.
+                    repeat(10) { if (ran?.skipped == true) ran = host?.call("timer", budget) { context!!.tasks[index].run() } }
+                    called = ran
+                    helper.assertTrue(called != null && !called!!.skipped, "$attack: the module ran: ${host?.disabled}")
                 }
-                .thenIdle(2)
+                // A call given up at the server's deadline is judged once its thread computed past its budget, or ended.
+                .thenAwait { helper.assertTrue(host?.busy() != true, "$attack: the call given up is settled") }
                 .thenExecute {
                     val ran = called
-                    if (ran == null) helper.assertTrue(false, "$attack never ran") else measures += Measure(attack, ran, server.tickTimesNanos[tick % 100], host?.disabled)
+                    if (ran == null) helper.assertTrue(false, "$attack never ran") else measures += Measure(attack, ran, server.tickTimesNanos[tick % 100], ran.fault ?: faults.lastOrNull())
                 }
         }
         sequence
@@ -163,33 +169,35 @@ class ModuleHostGameTests {
                 for (measure in measures) {
                     Log.forge.info(
                         "[host] in the server, ${measure.attack}: the module held the tick %.1f ms, the tick took %.1f ms (%.1f ms at most before), %s"
-                            .format(measure.called.nanos / 1e6, measure.tickNanos / 1e6, baseline, measure.called.fault?.text),
+                            .format(measure.called.nanos / 1e6, measure.tickNanos / 1e6, baseline, measure.fault?.text),
                     )
                     // The wall clock of a busy server may add to both (FLAKY-4): without the abandon, the indexOf loop alone
                     // holds its caller about 1 s (measured), until its meter reads the clock between two indexOf.
                     val held = measure.called.nanos / 1e6
                     helper.assertTrue(held < BUDGET_MS + MARGIN_MS + BusyMachine.SLACK_MILLIS, "${measure.attack}: the module held the tick $held ms")
                     helper.assertTrue(measure.tickNanos / 1e6 < BUDGET_MS + TICK_MARGIN_MS + baseline + BusyMachine.SLACK_MILLIS, "${measure.attack}: the tick took ${measure.tickNanos / 1e6} ms")
-                    helper.assertTrue(measure.called.fault != null, "${measure.attack}: stopped")
+                    helper.assertTrue(measure.fault != null, "${measure.attack}: stopped, and its fault counted")
                 }
-                val kinds = measures.associate { it.attack to it.called.fault?.kind }
+                val kinds = measures.associate { it.attack to it.fault?.kind }
                 helper.assertTrue(kinds["endless loop"] == Fault.Kind.LIMIT && kinds["indexOf loop"] == Fault.Kind.LIMIT && kinds["allocation loop"] == Fault.Kind.LIMIT, "$kinds")
-                // One indexOf (75 ms) outlasts the budget: the server gave the call up (or, on a saturated machine, did
-                // not even hand it over in time), never waited for its meter to stop it.
-                val indexOf = measures.first { it.attack == "indexOf loop" }.called.fault!!
-                helper.assertTrue("and was abandoned" in indexOf.cause || "did not start the call" in indexOf.cause, "the indexOf loop was given up: $indexOf")
+                // One indexOf (75 ms) outlasts the budget: the server gave the call up, never waited for its meter to stop
+                // it; its thread computing on past its budget, the call was abandoned (M5-LOAD: judged then).
+                val indexOf = measures.first { it.attack == "indexOf loop" }
+                helper.assertTrue(indexOf.called.fault == null || "and was abandoned" in indexOf.called.fault!!.cause, "given up at the deadline: ${indexOf.called.fault}")
+                helper.assertTrue("and was abandoned" in indexOf.fault!!.cause && indexOf.fault.disables, "the indexOf loop was abandoned: ${indexOf.fault}")
                 // The shared-structure hash is now bounded by the guard (M5-18), and the growing list too: each a clean
                 // ForgeLimit of the guard, an exception, given time enough that the clock never stops it first — no abandon,
                 // no lost thread.
                 helper.assertTrue(kinds["shared hash"] == Fault.Kind.EXCEPTION && kinds["growing list"] == Fault.Kind.EXCEPTION, "$kinds")
-                val shared = measures.first { it.attack == "shared hash" }.called
+                val shared = measures.first { it.attack == "shared hash" }
                 helper.assertTrue(shared.fault!!.cause.startsWith("ForgeLimit: "), "the guard stopped the shared hash: ${shared.fault}")
-                Log.forge.info("[host] in the server, the guard stopped the shared hash in %.1f ms".format(shared.nanos / 1e6))
+                Log.forge.info("[host] in the server, the guard stopped the shared hash in %.1f ms".format(shared.called.nanos / 1e6))
             }
             .thenSucceed()
     }
 
-    private class Measure(val attack: String, val called: ModuleHost.Called, val tickNanos: Long, val disabled: Fault?)
+    /** An attack's call, the tick it was in, and its fault: the call's own, or the one its host counted once it settled the call it gave up. */
+    private class Measure(val attack: String, val called: ModuleHost.Called, val tickNanos: Long, val fault: Fault?)
 
     /** A deployment's context with the game's real `World`, its storage and facts, and acts, creatures and ground that do nothing. */
     private class GameContext(private val world: World, private val arguments: Map<String, Any>) : ModuleContext {

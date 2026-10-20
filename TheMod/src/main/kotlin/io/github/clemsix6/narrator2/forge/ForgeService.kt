@@ -18,6 +18,7 @@ import io.github.clemsix6.narrator2.forge.sandbox.BytecodeGuard
 import io.github.clemsix6.narrator2.forge.sandbox.Instrumenter
 import io.github.clemsix6.narrator2.forge.sandbox.RewriteRefused
 import io.github.clemsix6.narrator2.forge.sim.BenchHost
+import io.github.clemsix6.narrator2.forge.sim.BenchImpl
 import io.github.clemsix6.narrator2.forge.sim.BenchReport
 import io.github.clemsix6.narrator2.forge.sim.BenchRun
 import io.github.clemsix6.narrator2.forge.sim.HostCall
@@ -78,6 +79,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * **Unavailable** ([available] false): the arsenal could not be read, the compiler is stuck (M5 §3.8), too many module
  * threads were lost ([lostThreads]), or the server stops. Every call then throws `DENIED (forge_off): …`.
+ * [onUnavailable] hears it once, with why, but for the server's stop (M5-LOAD, for M5-21's assembly).
+ *
+ * **One build at a time per version**: two callers that miss the cache together (the start's check of the forged
+ * versions and a deployment built again after a restart) share one compilation, the second waiting for the first.
  *
  * **Decisions** `forge` (M5 §15): `tested` (or `refused` when the sandbox refused it), `saved`, `compiled` (a version
  * built for a deployment), `broken`, `approved`, `rejected`, `stuck`.
@@ -91,6 +96,7 @@ class ForgeService(
     private val store: ArsenalStore = ArsenalStore(services.dataDir.resolve(ARSENAL_DIR), services.clock),
     private val dryCheck: suspend (tool: String, args: JsonObject) -> ToolResult? = engineDryCheck(services),
     newCompiler: (onStuck: (label: String, since: Instant) -> Unit) -> EcjCompiler = { onStuck -> EcjCompiler(onStuck = onStuck) },
+    private val onUnavailable: (reason: String) -> Unit = {},
 ) : Forge {
     private val log = Log.forge
     private val decisions = Decisions(services.trace, services.clock)
@@ -104,6 +110,12 @@ class ForgeService(
     val lostThreads = LostThreads(onStuck = ::threadsStuck)
 
     private val cache = BuildCache()
+
+    /** The builds under way, by version: a second caller waits for the first ([construct]). */
+    private val building = ConcurrentHashMap<Key, CompletableDeferred<Unit>>()
+
+    /** Whether [onUnavailable] was told. */
+    private val toldUnavailable = java.util.concurrent.atomic.AtomicBoolean()
     private val loaded = CompletableDeferred<Boolean>()
     private val benches: MutableSet<Job> = ConcurrentHashMap.newKeySet()
     private var startup: Job? = null
@@ -218,6 +230,7 @@ class ForgeService(
             } catch (e: Exception) {
                 failure = "the arsenal cannot be read (${e.javaClass.simpleName}: ${e.message})"
                 log.error("the Forge is unavailable: $failure")
+                unavailableNow()
                 return
             }
             withContext(Dispatchers.IO) { ModuleHost.preload() }
@@ -336,7 +349,9 @@ class ForgeService(
 
     /**
      * Runs [built] at the bench (M5 §6.2, §7): a host of its own (its loader, its meter, its module thread, the
-     * Forge's lost threads), the line of an abandoned call waited for; cancelled with its caller, or by [stop].
+     * Forge's lost threads), the line of an abandoned call waited for, and a busy machine's patience
+     * ([BENCH_PATIENCE_NANOS]: the bench's worker is no server thread, it may wait for a module thread held back);
+     * cancelled with its caller, or by [stop].
      */
     private suspend fun bench(built: Prepared.Ready): BenchReport {
         val job = currentCoroutineContext()[Job]
@@ -346,7 +361,10 @@ class ForgeService(
         try {
             host = withContext(Dispatchers.IO) {
                 try {
-                    ModuleHost(built.manifest.mainClass, built.classes, threads, "bench ${built.manifest.name}", lineWaitMillis = LINE_WAIT_MS)
+                    ModuleHost(
+                        built.manifest.mainClass, built.classes, threads, "bench ${built.manifest.name}",
+                        lineWaitMillis = LINE_WAIT_MS, patienceNanos = BENCH_PATIENCE_NANOS,
+                    )
                 } catch (e: Exception) {
                     log.error("the bench could not load ${built.manifest.name}: a defect of the mod", e)
                     throw ForgeRejected(null, "the bench could not load ${built.manifest.name} (${e.javaClass.simpleName}): a defect of the mod, not of the module", failed = true)
@@ -386,12 +404,33 @@ class ForgeService(
     /**
      * [entry]'s classes, from the cache or built from its source (read again and checked against its hash). One that
      * no longer builds is marked `broken` (M5 §6.7) and throws `FAILED: statues v1 is broken: it no longer builds against
-     * the SDK of now: <first problem>`.
+     * the SDK of now: <first problem>`. One build at a time per version: a caller that finds it under way waits for it,
+     * then takes it from the cache (or its refusal), never compiles it again.
      */
     private suspend fun construct(entry: ArsenalEntry): Built {
         val key = key(entry)
-        cache.get(key)?.let { return Built(entry, it.manifest.mainClass, it.classes) }
         val label = "${entry.name} v${entry.version}"
+        while (true) {
+            cache.get(key)?.let { return Built(entry, it.manifest.mainClass, it.classes) }
+            val mine = CompletableDeferred<Unit>()
+            val other = building.putIfAbsent(key, mine)
+            if (other == null) {
+                try {
+                    return rebuild(entry, key, label)
+                } finally {
+                    building.remove(key, mine)
+                    mine.complete(Unit)
+                }
+            }
+            other.await()
+            store.entry(entry.name, entry.version)?.takeIf { it.status == ModuleStatus.BROKEN }?.let {
+                throw ForgeRejected(null, "$label is broken: ${it.problem}", failed = true)
+            }
+        }
+    }
+
+    /** [construct]'s build, the only one under way for [key]. */
+    private suspend fun rebuild(entry: ArsenalEntry, key: Key, label: String): Built {
         val began = System.nanoTime()
         val source = store.checkedSource(entry.name, entry.version)
         when (val prepared = prepare(entry.name, source)) {
@@ -509,10 +548,24 @@ class ForgeService(
 
     private fun compilerStuck(label: String, since: Instant) {
         decide(STUCK, "compiler", "the compilation of $label started at ${time(since)} ignored its cancellation: the Forge is unavailable until the server restarts", level = Log.Level.ERROR)
+        unavailableNow()
     }
 
     private fun threadsStuck(why: String) {
         decide(STUCK, "module threads", why, level = Log.Level.ERROR)
+        unavailableNow()
+    }
+
+    /** The Forge became unavailable while the server runs: [onUnavailable] is told, once, with why. Any thread. */
+    private fun unavailableNow() {
+        if (stopped) return
+        val reason = unavailableReason ?: return
+        if (!toldUnavailable.compareAndSet(false, true)) return
+        try {
+            onUnavailable(reason)
+        } catch (e: Exception) {
+            log.error("telling that the Forge is unavailable failed", e)
+        }
     }
 
     private fun time(at: Instant): String = CLOCK_TIME.format(at.atZone(services.clock.zone))
@@ -539,15 +592,19 @@ class ForgeService(
 
     private fun key(entry: ArsenalEntry) = Key(entry.name, entry.version, entry.hash, Sdk.VERSION)
 
-    /** The bench's way into the real host (M5-05 handoff): a fault as the bench words it, the module's line, the memory gauge. */
+    /**
+     * The bench's way into the real host (M5-05 handoff): a fault as the bench words it, the module's line, its own
+     * work (what the bench judges, never the wall clock: M5-LOAD), the memory gauge.
+     */
     private class HostBench(private val host: ModuleHost) : BenchHost {
         override val main: Class<*> get() = host.main
 
         override fun call(budgetNanos: Long, body: () -> Unit): HostCall {
             val called = host.call(BENCH_CALL, budgetNanos, body)
-                ?: return HostCall(0, "the module no longer runs: ${host.disabled?.text ?: "it was unloaded"}")
-            val fault = called.fault ?: return HostCall(called.nanos, null)
-            return HostCall(called.nanos, if (fault.kind == Fault.Kind.LIMIT) "ForgeLimit: ${fault.cause}" else fault.cause, fault.line)
+                ?: return HostCall(0, "the module no longer runs: ${host.disabled?.text ?: host.stalled ?: "it was unloaded"}")
+            if (called.skipped) return HostCall(called.nanos, BenchImpl.OVERLOADED, work = 0)
+            val fault = called.fault ?: return HostCall(called.nanos, null, work = called.work)
+            return HostCall(called.nanos, if (fault.kind == Fault.Kind.LIMIT) "ForgeLimit: ${fault.cause}" else fault.cause, fault.line, called.work)
         }
 
         override fun line(error: Throwable): Int = host.line(error)
@@ -585,6 +642,13 @@ class ForgeService(
 
         /** How long the bench waits for the line of an abandoned call (the forger needs it; M5-05 measured 50 to 65 ms). */
         const val LINE_WAIT_MS = 1_000L
+
+        /**
+         * How long past a call's budget the bench waits while the module thread has not computed (M5-LOAD): the bench
+         * judges the module's own work, never what a busy server holds its thread back (FLAKY-4 saw a saturated machine
+         * hold a call of 75 ms of work past 2 s).
+         */
+        const val BENCH_PATIENCE_NANOS = 10_000L * 1_000_000
 
         /** A report's length (`TestReport.text`): within `ForgeLimits.TEST_REPORT_CHARS` with the `Invalid arguments: ` of a refusal. */
         val REPORT_CHARS = ForgeLimits.TEST_REPORT_CHARS - "Invalid arguments: ".length

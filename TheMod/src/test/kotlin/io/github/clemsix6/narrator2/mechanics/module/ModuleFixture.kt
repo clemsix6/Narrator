@@ -33,6 +33,10 @@ import io.github.clemsix6.narrator2.memory.Added
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonEntry
+import io.github.clemsix6.narrator2.memory.CanonStatus
+import io.github.clemsix6.narrator2.memory.MemoryLimits
+import io.github.clemsix6.narrator2.memory.MemoryRejected
+import io.github.clemsix6.narrator2.memory.VoiceGuard
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.Ref
@@ -54,6 +58,7 @@ import kotlinx.serialization.json.JsonObject
 import net.minecraft.world.entity.Entity
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertFailsWith
@@ -78,6 +83,12 @@ internal class ModuleFixture(
         override suspend fun addCanon(draft: CanonDraft, author: Author): Added<CanonEntry> {
             drafts += draft
             return fakeMemory.store.addCanon(draft, author)
+        }
+
+        /** As the real store with the engine's notes: one in the first or second person is refused (`VoiceGuard`). */
+        override suspend fun resolveCanon(ref: Ref, status: CanonStatus, note: String, winners: List<UUID>, author: Author): CanonEntry {
+            VoiceGuard.check(note, "note", MemoryLimits.RESOLUTION, boundQuotes = false)?.let { throw MemoryRejected(it) }
+            return fakeMemory.store.resolveCanon(ref, status, note, winners, author)
         }
     }
     val memory: Memory = object : Memory by fakeMemory {
@@ -106,10 +117,23 @@ internal class ModuleFixture(
     /** Starts the engine on its state, as the server starts. */
     fun start() = engine.begin(null, clock.millis())
 
-    /** One tick of 50 ms. */
+    /**
+     * One tick of 50 ms; then the calls given up in it (a busy machine held the module thread back past the caller's
+     * deadline, M5-LOAD) are waited for and settled, so that what the test reads next does not depend on the machine.
+     */
     fun tick() {
         clock.advance(Duration.ofMillis(TICK_MS))
         engine.tick(clock.millis())
+        settle()
+    }
+
+    /** Waits until no call of a module given up still runs (each settled: its meter's fault, or nobody's). */
+    fun settle() {
+        val until = System.nanoTime() + 300_000_000_000L
+        while (engine.settle()) {
+            check(System.nanoTime() < until) { "a call given up never ended" }
+            Thread.sleep(2)
+        }
     }
 
     fun ticks(n: Int) = repeat(n) { tick() }
@@ -176,13 +200,24 @@ internal class ModuleFixture(
         threads.close()
     }
 
-    /** The server for the engine: the test's thread is its thread; an empty world; Bartok, Mimosa and Josiane have played here. */
+    /**
+     * The server for the engine: the test's thread is its thread; an empty world; Bartok, Mimosa and Josiane have played
+     * here. [heldMillis]: how long its thread is held back while it reads the world's time for a module (a busy machine).
+     */
     class Server : ModuleServer {
+        @Volatile
+        var heldMillis = 0L
+
         override fun execute(task: Runnable) = task.run()
 
         override suspend fun <T> onServer(block: () -> T): T = block()
 
-        override fun world(own: (Entity) -> Boolean): World = EmptyWorld
+        override fun world(own: (Entity) -> Boolean): World = object : World by EmptyWorld {
+            override fun dayTime(): Long {
+                if (heldMillis > 0) Thread.sleep(heldMillis)
+                return 0
+            }
+        }
 
         override fun dimensionOf(name: String): String? = null
 

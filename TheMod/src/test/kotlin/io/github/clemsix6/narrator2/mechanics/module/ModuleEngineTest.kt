@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.event.ChatMessage
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.host.Fault
+import io.github.clemsix6.narrator2.forge.host.Hosts
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.RuleKind
@@ -103,12 +104,63 @@ class ModuleEngineTest {
             assertEquals(CanonStatus.FULFILLED to "Mimosa a gagné la partie", resolved(view.ref))
             assertTrue(logs.messages.any { "${view.ref} finisher: stop ENDED" in it }, logs.messages.toString())
             assertTrue(logs.messages.any { "${view.ref} finisher ended (fulfilled): 1 act, 0 faults, 1 acts dropped" in it }, "its act in stop dropped")
-            f.await("its decision") { ending().isNotEmpty() }
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
             assertEquals(listOf("fulfilled"), ending())
             assertEquals("${view.ref} finisher plan fulfilled, canon fulfilled: 1 act, 0 faults; « Mimosa a gagné la partie »", f.decisions(ModuleEngine.ENDED).single().reason)
             assertEquals(listOf("${view.ref} finisher ended by itself: « Mimosa a gagné la partie » (1 act, 0 faults)"), f.moduleLines())
             assertEquals(emptyList(), f.store.get().modules)
             assertTrue(f.runner.ran.isEmpty(), "nothing asked in stop is done")
+        }
+    }
+
+    @Test
+    fun `a reason in the first or second person the memory refuses still closes its canon, with the engine's words`() {
+        f.module("rude", ModuleFixture.source("rude", body = """m.timers().after(5, () -> m.end("Tu as gagné, je te félicite"));"""))
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("rude", kind = RuleKind.PLAN))
+            f.ticks(5)
+
+            assertEquals(CanonStatus.FULFILLED to ModuleEngine.ENDED_ITSELF_NOTE, resolved(view.ref), "the line closes all the same (M5-16, defect 2)")
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
+            assertTrue(logs.at(Level.WARN).any { "the canon row of ${view.ref} refused its note" in it }, logs.messages.toString())
+            assertEquals(listOf("${view.ref} rude ended by itself: « Tu as gagné, je te félicite » (0 acts, 0 faults)"), f.moduleLines(), "the Director reads its words")
+        }
+    }
+
+    @Test
+    fun `a module the machine holds back is no fault - its call given up, the calls after it wait, none is lost`() {
+        f.module(
+            "reader",
+            ModuleFixture.source(
+                "reader",
+                body = """
+                    m.events().on(GameFact.Chat.class, c -> {
+                        if (c.text().equals("lent")) { m.world().dayTime(); m.world().dayTime(); }
+                        m.storage().put(c.text(), "lu");
+                    });
+                """,
+            ),
+        )
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("reader"))
+            // Its first read holds the server thread 60 ms (a busy machine), past the call's 25 ms: the call is given up,
+            // its next read refused; the second chat waits for it to end, then runs.
+            f.server.heldMillis = 60
+            chat("lent")
+            chat("vite")
+            f.tick()
+            f.server.heldMillis = 0
+            f.tick()
+            f.second()
+
+            assertEquals(1, f.book.list().size, "it runs on")
+            assertEquals(0, f.book.list().single().faults)
+            assertEquals(emptyList(), f.decisions(ModuleEngine.FAULT))
+            assertEquals(mapOf("vite" to "lu"), f.store.get().module(view.ref.id)!!.storage, "the call given up was cut, the next one ran")
+            assertTrue(logs.messages.any { "${view.ref} reader: its fact call was given up" in it }, logs.messages.toString())
+            assertTrue(logs.messages.any { "${view.ref} reader: its fact call, given up, ended without computing past its budget" in it && "nobody's fault" in it }, logs.messages.toString())
         }
     }
 
@@ -125,7 +177,7 @@ class ModuleEngineTest {
 
             assertEquals(CanonStatus.RETIRED to ModuleEngine.EXPIRED_NOTE, resolved(view.ref))
             assertTrue(logs.messages.any { "${view.ref} waiter: stop EXPIRED" in it }, logs.messages.toString())
-            f.await("its decision") { ending().isNotEmpty() }
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
             assertEquals(listOf("expired"), ending())
             assertEquals(listOf("${view.ref} waiter ended: its time is up (0 acts, 0 faults)"), f.moduleLines())
         }
@@ -157,7 +209,7 @@ class ModuleEngineTest {
             assertEquals(listOf("false", "true"), faults.map { it.detail!!.getValue("disables").jsonPrimitive.content })
             assertTrue(faults.all { it.reason!!.startsWith("${view.ref} looper: limit in timer: time budget") }, faults.toString())
             assertEquals(listOf(Fault.Kind.LIMIT, Fault.Kind.LIMIT), f.faults.map { it.second.kind }, "noted on its version")
-            f.await("its decision") { ending().isNotEmpty() }
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
             assertEquals(listOf("disabled"), ending())
             val line = f.moduleLines().single()
             assertTrue(line.startsWith("${view.ref} looper disabled: limit in timer: time budget") && line.endsWith("; ask the forger to fix it"), line)
@@ -167,9 +219,12 @@ class ModuleEngineTest {
 
     @Test
     fun `the budget of a second, a module that takes over 50 ms of each second five seconds in a row is disabled`() {
+        // 4 ms of its own work a tick (rounds of a loop, measured on this machine): 80 ms a second, however long a busy
+        // machine makes them on the wall clock (M5-LOAD: the second counts its work).
+        val rounds = Hosts.rounds(4)
         f.module(
             "sloth",
-            ModuleFixture.source("sloth", body = """m.timers().every(1, () -> { long t = System.nanoTime(); while (System.nanoTime() - t < 4_000_000L) { } });"""),
+            ModuleFixture.source("sloth", "long sink;", """long n = ${rounds}L; m.timers().every(1, () -> { long x = 0; for (long i = 0; i < n; i++) x += i ^ (x >>> 3); sink = x; });"""),
         )
         f.start()
         val view = f.deploy(f.spec("sloth"))

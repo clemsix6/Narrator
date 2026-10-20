@@ -22,10 +22,15 @@ import java.util.concurrent.locks.LockSupport
  *   the server thread work unchanged, and no world access ever races with the server.
  * - **Abandon**: past the budget, the caller gives the call up and goes on. An SDK request it is serving ends first
  *   (an SDK call is short and bounded); none is served after: a request already posted, or a later one, throws
- *   [ForgeLimit] into the abandoned thread, which therefore **never touches the world again**. The caller's
- *   `onAbandon` revokes the module's meter, so the thread ends at the module's next code. A fresh thread takes the
- *   next calls; the abandoned one runs at the lowest priority until its JDK call returns.
- * - **Ceiling** ([LostThreads]): at most [LostThreads.limit] abandoned threads still alive; past it, every call is
+ *   [ForgeLimit] into the abandoned thread, which therefore **never touches the world again**. A fresh thread, started
+ *   then, takes the next calls. By default the given-up thread is **lost** at once ([lose]: the lowest priority,
+ *   counted by [LostThreads]); the host instead tells first whether the module computed (M5-LOAD): a thread the
+ *   machine merely held back finishes its call alone and is never lost.
+ * - **Patience** ([Patience]): a caller that may wait (the bench, a module's start) waits past the budget as long as the
+ *   call's thread has not computed, parked by slices so that the machine runs that thread.
+ * - **Priority**: the module thread runs at its caller's priority (the server thread's is 8 on a machine of more than
+ *   four cores): a call is the caller's own work, handed over; it is not held back by threads the caller outranks.
+ * - **Ceiling** ([LostThreads]): at most [LostThreads.limit] lost threads still alive; past it, every call is
  *   refused ([Ran.STUCK]) until the server restarts, and the Forge is told once.
  *
  * One caller at a time (the server thread, or one bench worker): calls never overlap; a call made from a module thread
@@ -40,15 +45,19 @@ class ModuleThreads(
     private var running = false
     private val made = AtomicInteger()
 
+    /** The nanoseconds the caller spent serving the SDK requests of the last call it handed over ([run]): work done for the module. */
+    var served = 0L
+        private set
+
     /** How a [run] ended. */
     enum class Ran {
         /** The body ran to its end (whatever it threw is the body's own business). */
         DONE,
 
-        /** Past the budget: given up, its thread lost (revoked, lowest priority) until its JDK call returns. */
+        /** Past the budget (and the patience): given up; its thread runs on alone, refused by the SDK. */
         ABANDONED,
 
-        /** The module thread did not even start it within the budget (an overloaded machine): skipped, nobody's fault. */
+        /** The module thread did not even start it in time (an overloaded machine): skipped, nobody's fault. */
         LATE,
 
         /** Too many threads lost: no module code runs any more until the server restarts. */
@@ -56,37 +65,63 @@ class ModuleThreads(
     }
 
     /**
+     * How long past a call's budget its caller may wait while [computing] answers no (the call's thread has not computed
+     * past its budget: the machine holds it back), asked about once a millisecond. A caller that never waits has none.
+     */
+    class Patience(val nanos: Long, val computing: (Thread) -> Boolean)
+
+    /**
      * Runs [body] (a call of a module: arm its meter, call it, disarm it) on the module thread, the calling thread
-     * waiting at most [budgetNanos] and serving the module's SDK requests meanwhile. Past the budget, [onAbandon] gets
-     * the abandoned thread (its stack is still readable) before the caller goes on. Never on two threads at once.
+     * waiting at most [budgetNanos] (and [patience]) and serving the module's SDK requests meanwhile ([served]). Past
+     * them, [onAbandon] gets the given-up thread (its stack is still readable) before the caller goes on; that thread is
+     * lost at once when [lose] (the default), else left to the caller, who may [lose] it later. Never on two threads at
+     * once.
      *
      * **Nested**: called from a module thread itself (at the bench, a scenario's code runs the module's handlers), [body]
      * runs right there, with no new hand-over: the call it nests in keeps its deadline, so the caller waits no longer.
      * On a thread whose call was abandoned, it throws [ForgeLimit] instead, before and after [body].
      */
-    fun run(budgetNanos: Long, onAbandon: (Thread) -> Unit = {}, body: () -> Unit): Ran {
+    fun run(budgetNanos: Long, onAbandon: (Thread) -> Unit = {}, patience: Patience? = null, lose: Boolean = true, body: () -> Unit): Ran {
         val current = Thread.currentThread()
         if (current is Worker) return current.nested(body)
         check(!running) { "a module's call runs already: calls never overlap" }
         if (lost.stuck) return Ran.STUCK
         running = true
+        served = 0
         try {
-            val worker = worker ?: Worker("$name-${made.incrementAndGet()}").also { worker = it; it.start() }
-            val call = Call(body, Thread.currentThread())
+            val worker = worker ?: start()
+            if (worker.priority != current.priority) worker.priority = current.priority
+            val call = Call(body, current)
             val deadline = System.nanoTime() + budgetNanos
+            val givenUpAt = deadline + (patience?.nanos ?: 0)
+            var askedAt = deadline
             worker.post(call)
             while (true) {
                 if (call.state.get() == Phase.DONE) return Ran.DONE
-                if (System.nanoTime() - deadline >= 0) {
-                    if (call.state.compareAndSet(Phase.POSTED, Phase.CANCELLED)) return Ran.LATE
-                    if (call.state.compareAndSet(Phase.RUNNING, Phase.ABANDONED)) {
-                        abandon(worker, call, onAbandon)
+                val now = System.nanoTime()
+                val past = now - deadline >= 0
+                if (past) {
+                    val over = now - givenUpAt >= 0
+                    if (over && call.state.compareAndSet(Phase.POSTED, Phase.CANCELLED)) return Ran.LATE
+                    val computed = !over && patience != null && now - askedAt >= POLL_NANOS && call.thread?.let { thread ->
+                        askedAt = now
+                        patience.computing(thread)
+                    } == true
+                    if ((over || computed) && call.state.compareAndSet(Phase.RUNNING, Phase.ABANDONED)) {
+                        abandon(worker, call, onAbandon, lose)
                         return Ran.ABANDONED
                     }
-                    continue // it ended just now
                 }
                 val request = call.request
-                if (request != null) serve(call, request) else Thread.onSpinWait()
+                when {
+                    request != null -> serve(call, request)
+                    past -> {
+                        // Patient: the machine runs the module thread meanwhile, which wakes the caller for a request.
+                        call.parked = true
+                        if (call.request == null && call.state.get() != Phase.DONE) LockSupport.parkNanos(POLL_NANOS)
+                    }
+                    else -> Thread.onSpinWait()
+                }
             }
         } finally {
             running = false
@@ -100,7 +135,22 @@ class ModuleThreads(
     fun renew() {
         if (worker == null) return
         close()
-        worker = Worker("$name-${made.incrementAndGet()}").also { it.start() }
+        start()
+    }
+
+    /**
+     * Counts [thread], whose call was given up, among the lost threads: it computes on past its budget (M5-LOAD), at the
+     * lowest priority from now on, until its JDK call returns ([LostThreads], whose ceiling may make the Forge stuck).
+     */
+    fun lose(thread: Thread) {
+        thread.priority = Thread.MIN_PRIORITY
+        if (!thread.name.endsWith(LOST_SUFFIX)) thread.name = thread.name.removeSuffix(GIVEN_UP_SUFFIX) + LOST_SUFFIX
+        lost.add(thread)
+    }
+
+    private fun start(): Worker = Worker("$name-${made.incrementAndGet()}").also {
+        worker = it
+        it.start()
     }
 
     /** Ends the live module thread (the server stops, a bench or a test is done); a later [run] makes a new one. */
@@ -113,6 +163,7 @@ class ModuleThreads(
     }
 
     private fun serve(call: Call, request: Request) {
+        val began = System.nanoTime()
         call.request = null
         try {
             request.value = request.body()
@@ -121,24 +172,24 @@ class ModuleThreads(
         }
         request.done = true
         call.thread?.let(LockSupport::unpark)
+        served += System.nanoTime() - began
     }
 
-    private fun abandon(worker: Worker, call: Call, onAbandon: (Thread) -> Unit) {
-        this.worker = null
+    private fun abandon(worker: Worker, call: Call, onAbandon: (Thread) -> Unit, lose: Boolean) {
+        start()
         call.request?.let { pending ->
             call.request = null
             pending.error = ForgeLimit(ABANDONED_MESSAGE)
             pending.done = true
         }
         LockSupport.unpark(worker)
-        worker.priority = Thread.MIN_PRIORITY
-        worker.name = "${worker.name} (abandoned)"
+        worker.name = worker.name + GIVEN_UP_SUFFIX
         try {
             onAbandon(worker)
         } catch (e: Exception) {
             log.error("a module thread was abandoned; its host failed to note it", e)
         }
-        lost.add(worker)
+        if (lose) lose(worker)
     }
 
     private enum class Phase { POSTED, RUNNING, DONE, CANCELLED, ABANDONED }
@@ -154,6 +205,10 @@ class ModuleThreads(
         /** The SDK request the module thread waits for, served by the caller. */
         @Volatile
         var request: Request? = null
+
+        /** The caller waits past the budget, parked by slices: the module thread wakes it for a request, or at its end. */
+        @Volatile
+        var parked = false
     }
 
     /** An SDK call of the module, run on the caller's thread. */
@@ -205,7 +260,9 @@ class ModuleThreads(
                 log.error("a module's call let something through on $name", thrown)
             }
             serving = null
-            return call.state.compareAndSet(Phase.RUNNING, Phase.DONE) // abandoned: this thread is lost, it ends here
+            val done = call.state.compareAndSet(Phase.RUNNING, Phase.DONE) // given up: this thread ends here
+            if (done && call.parked) LockSupport.unpark(call.caller)
+            return done
         }
 
         /** The next call: spins a little (a tick's calls come in a burst), then parks. Null once closed. */
@@ -240,6 +297,7 @@ class ModuleThreads(
             if (call.state.get() != Phase.RUNNING) throw ForgeLimit(ABANDONED_MESSAGE)
             val request = Request(body)
             call.request = request
+            if (call.parked) LockSupport.unpark(call.caller)
             val spinUntil = System.nanoTime() + REQUEST_SPIN_NANOS
             while (!request.done) {
                 if (call.state.get() != Phase.RUNNING) throw ForgeLimit(ABANDONED_MESSAGE)
@@ -264,6 +322,13 @@ class ModuleThreads(
         /** A module thread waiting for its SDK request spins this long, then parks by slices (the caller unparks it). */
         private const val REQUEST_SPIN_NANOS = 200_000L
         private const val REQUEST_PARK_NANOS = 100_000L
+
+        /** A patient caller, past a call's budget, parks by slices of this and asks whether the call's thread computed as often. */
+        private const val POLL_NANOS = 1_000_000L
+
+        /** The name of a module thread whose call was given up, and of one lost. */
+        private const val GIVEN_UP_SUFFIX = " (given up)"
+        private const val LOST_SUFFIX = " (abandoned)"
 
         /**
          * [body], one SDK call of a module: on a module thread, run by the thread that waits for its call (the server

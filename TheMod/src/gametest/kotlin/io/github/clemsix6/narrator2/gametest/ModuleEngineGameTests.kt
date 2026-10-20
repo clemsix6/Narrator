@@ -108,14 +108,13 @@ class ModuleEngineGameTests {
             val chickens = rig.onServer { rig.creatures(view.ref) }
 
             val ended = rig.awaitEnd(view.ref, CanonStatus.CANCELLED)
-            // Its spin is stopped by its meter at 20 ms, and the second such fault disables it. On a busy server, the
-            // meter's unwinding may take longer than the host's 5 ms margin: that call is then abandoned, which disables
-            // it at once (FLAKY-4). Either way a limit in its timer, at most two faults, and only the last one disables.
+            // Its spin is stopped by its meter at 20 ms of its own work, and the second such fault disables it. On a busy
+            // server, the server may give a call up while it unwinds (FLAKY-4 saw 1 in 100 past the 5 ms margin): since
+            // M5-LOAD that call is settled as the meter's fault once its thread ended, never an abandon.
             val resolution = ended.resolution!!
             val faults = rig.decisions(ModuleEngine.FAULT)
-            val abandoned = "and was abandoned" in resolution
-            check(resolution.startsWith(if (abandoned) "disabled: limit in timer: time budget: one call ran past " else "disabled: limit in timer: time budget at Spinner.java:")) { resolution }
-            check(faults.size == 2 || (abandoned && faults.size == 1)) { "two faults, or one abandon: ${faults.map { it.reason }}" }
+            check(resolution.startsWith("disabled: limit in timer: time budget at Spinner.java:")) { resolution }
+            check(faults.size == 2) { "two faults, the second disabling: ${faults.map { it.reason }}" }
             check(rig.endings() == listOf("disabled")) { rig.endings().toString() }
             check(rig.moduleLines().single().let { it.startsWith("${view.ref} spinner disabled: limit in timer: ") && it.endsWith("; ask the forger to fix it") }) {
                 rig.moduleLines().toString()

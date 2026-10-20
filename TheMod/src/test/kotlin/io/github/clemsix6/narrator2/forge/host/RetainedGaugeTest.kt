@@ -1,7 +1,6 @@
 package io.github.clemsix6.narrator2.forge.host
 
 import io.github.clemsix6.narrator2.forge.ForgeLimits
-import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Test
 import java.util.Optional
 import java.util.concurrent.atomic.AtomicReference
@@ -11,11 +10,9 @@ import kotlin.test.assertTrue
 
 /**
  * The gauge of retained memory (M5 §3.7, design review finding 9), on objects of this test's own classes standing for
- * a module's: each object once (a cycle ends), a hard ceiling in objects and in time, never a `hashCode`, `equals` or
+ * a module's: each object once (a cycle ends), hard ceilings in objects and in estimated bytes — work, not time
+ * (M5-LOAD): the same graph gives the same measure on any machine, busy or not —, never a `hashCode`, `equals` or
  * `toString` called.
- *
- * Its clock is a busy machine's ([BusyMachine.PATIENT_NANOS]) but where the ceiling in time is the subject: a cold walk
- * costs about 1 µs an object, and a busy machine may hold the walk back past the game's 5 ms.
  */
 class RetainedGaugeTest {
     private class Node(var next: Node?, val payload: Any?)
@@ -31,7 +28,7 @@ class RetainedGaugeTest {
 
     private val loader = javaClass.classLoader
 
-    private fun gauge(maxObjects: Int = ForgeLimits.GAUGE_MAX_OBJECTS) = RetainedGauge(loader, maxObjects = maxObjects, maxNanos = BusyMachine.PATIENT_NANOS)
+    private fun gauge(maxObjects: Int = ForgeLimits.GAUGE_MAX_OBJECTS, maxBytes: Long = ForgeLimits.RETAINED_BYTES) = RetainedGauge(loader, maxObjects, maxBytes)
 
     @Test
     fun `a cycle is walked once, and each shared object counted once`() {
@@ -65,26 +62,32 @@ class RetainedGaugeTest {
     }
 
     @Test
-    fun `the walk stops at its ceiling in objects, and at its ceiling in time`() {
+    fun `the walk stops at its ceiling in objects, and at its ceiling in bytes, the same on any machine`() {
         val wide = List(1_000) { i -> List(100) { Node(null, i) } }
         val capped = gauge(maxObjects = 5_000).measure(listOf(wide))
         assertFalse(capped.complete)
         assertTrue(capped.objects in 5_001..5_200, "it stops just past 5,000: ${capped.objects}")
+        assertEquals(capped.objects, gauge(maxObjects = 5_000).measure(listOf(wide)).objects, "work, not time: the same stop again")
 
-        // Some 190,000 objects (the payloads past 127 boxed one by one): several milliseconds of walk warm, a hundred or
-        // more cold. A ceiling of 1 ms stops it, its clock read every 256 objects.
-        val whole = gauge(maxObjects = Int.MAX_VALUE).measure(listOf(wide))
-        assertTrue(whole.complete)
-        val timed = RetainedGauge(loader, maxObjects = Int.MAX_VALUE, maxNanos = 1_000_000).measure(listOf(wide))
-        assertFalse(timed.complete)
-        assertTrue(timed.objects < whole.objects, "it stopped before the end: ${timed.objects} of ${whole.objects}")
-        assertTrue(timed.nanos < 1_000_000 + BusyMachine.SLACK_NANOS, "it stops near 1 ms, or as soon as a busy machine lets it: ${timed.nanos / 1e6} ms")
+        // A hundred arrays of 65,536 references to one object: each costs 512 KiB of the estimate, so a ceiling of 1 MiB
+        // stops the walk at the second, its references followed bounded by the bytes they were paid (8 each).
+        val one = Node(null, null)
+        val arrays = List(100) { arrayOfNulls<Any>(65_536).apply { fill(one) } }
+        val heavy = gauge(maxBytes = 1L shl 20).measure(listOf(arrays))
+        assertFalse(heavy.complete)
+        assertTrue(heavy.bytes > 1L shl 20 && heavy.bytes <= (1L shl 20) + 16 + 8 * 65_536, "it stops just past 1 MiB: ${heavy.bytes}")
+        assertEquals(1 + 100 + 1, heavy.objects, "the list, its arrays (seen as the list was walked), their one node")
+        val whole = gauge(maxBytes = Long.MAX_VALUE).measure(listOf(arrays))
+        assertTrue(whole.complete && whole.bytes > 50L shl 20, "${whole.bytes}")
     }
 
     @Test
     fun `static fields of the module's classes are roots, other classes' are not`() {
         Statics.kept += "y".repeat(10_000)
-        val measure = gauge().measure(emptyList(), listOf(Statics::class.java, String::class.java))
+        val gauge = gauge()
+        val statics = gauge.statics(listOf(Statics::class.java, String::class.java))
+        assertTrue(statics.none { it is String && it.isEmpty() } && statics.any { it === Statics.kept }, "the module's classes only: $statics")
+        val measure = gauge.measure(statics)
         assertTrue(measure.bytes >= 20_000, "${measure.bytes}")
         Statics.kept.clear()
     }

@@ -28,18 +28,32 @@ import kotlin.test.assertTrue
 
 /** The Forge's compiler (task M5-02, M5 §5.1): ECJ in memory, blind to all but `java.base` and the SDK, on its own thread, with its limits. */
 class EcjCompilerTest {
-    /** The mod's loader, as the compiler reads the SDK through it, recording what is read, by which thread; each read waits for [gate] when there is one. */
-    private class RecordingLoader : ClassLoader(null) {
+    /**
+     * The mod's loader, as the compiler reads the SDK through it, recording what is read, by which thread; each read
+     * waits for [gate] when there is one: blocked, or computing ([computing]) as a source that is long to compile does
+     * (the compiler's limits count its work, its thread's CPU time: M5-LOAD).
+     */
+    private class RecordingLoader(private val computing: Boolean = false) : ClassLoader(null) {
         val paths = ConcurrentLinkedQueue<String>()
         val threads: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         @Volatile
         var gate: CountDownLatch? = null
 
+        @Volatile
+        var sink = 0L
+
         override fun getResourceAsStream(name: String): InputStream? {
             paths += name
             threads += Thread.currentThread().name
-            gate?.await(10, TimeUnit.SECONDS)
+            val gate = gate
+            if (gate != null && computing) {
+                var x = 0L
+                while (gate.count > 0) repeat(10_000) { x += it.toLong() xor (x ushr 3) }
+                sink = x
+            } else {
+                gate?.await(10, TimeUnit.SECONDS)
+            }
             return ForgeModule::class.java.classLoader.getResourceAsStream(name)
         }
     }
@@ -175,12 +189,12 @@ class EcjCompilerTest {
 
     @Test
     fun `a compilation past its budget answers too long at once, is cancelled at ECJ's next check, and the compiler goes on`() = runBlocking<Unit> {
-        val loader = RecordingLoader()
+        val loader = RecordingLoader(computing = true)
         val gate = loader.closed()
-        val compiler = compiler(loader, budgetMs = 1_000)
+        val compiler = compiler(loader, budgetMs = 200)
 
         LogCapture().use { logs ->
-            // Its caller hears of it at the budget, while ECJ is still held in a read of the SDK.
+            // Its caller hears of it at the budget of work, while ECJ still computes in a read of the SDK.
             val slow = compiler.compile(ForgeSamples.CLASS, ForgeSamples.SOURCE, "slow")
             assertEquals(Outcome.TOO_LONG, slow.outcome)
             assertTrue(slow.classes.isEmpty())
@@ -191,16 +205,31 @@ class EcjCompilerTest {
             val next = compiler.compile("Next", "public class Next {}", "next")
             assertEquals(Outcome.COMPILED, next.outcome, "${next.problems}")
             assertEquals("idle", compiler.status())
-            assertTrue(logs.at(Level.WARN).any { "slow: the compilation took more than 1000 ms; cancelled after" in it }, logs.text)
+            assertTrue(logs.at(Level.WARN).any { "slow: the compilation took more than 200 ms of the compiler's work; cancelled after" in it }, logs.text)
         }
     }
 
     @Test
-    fun `a compilation that ignores its cancellation makes the compiler stuck until the server restarts`() = runBlocking<Unit> {
+    fun `a compilation held back by the machine, without computing, is never too long`() = runBlocking<Unit> {
+        // Blocked in a read (no work: as a compiler thread at the lowest priority that a saturated machine starves, M5-15
+        // saw 13.8 s for 40 ms of work), it outlasts its budget on the wall clock many times, and compiles all the same.
         val loader = RecordingLoader()
         val gate = loader.closed()
+        val compiler = compiler(loader, budgetMs = 50, stuckMs = 100)
+        val held = async { compiler.compile(ForgeSamples.CLASS, ForgeSamples.SOURCE, "held") }
+        delay(1_000)
+        assertTrue(compiler.status().startsWith("compiling held ("), compiler.status())
+        gate.countDown()
+        assertEquals(Outcome.COMPILED, held.await().outcome)
+        assertNull(compiler.stuckSince)
+    }
+
+    @Test
+    fun `a compilation that ignores its cancellation makes the compiler stuck until the server restarts`() = runBlocking<Unit> {
+        val loader = RecordingLoader(computing = true)
+        val gate = loader.closed()
         val told = CompletableDeferred<Pair<String, Instant>>()
-        val compiler = compiler(loader, budgetMs = 50, stuckMs = 400) { label, since -> told.complete(label to since) }
+        val compiler = compiler(loader, budgetMs = 50, stuckMs = 200) { label, since -> told.complete(label to since) }
         val before = Instant.now()
 
         LogCapture().use { logs ->
@@ -208,9 +237,9 @@ class EcjCompilerTest {
             val waiting = async { compiler.compile("Waiting", "public class Waiting {}", "waiting") }
             assertEquals(Outcome.TOO_LONG, stuckOne.await().outcome)
             assertTrue(compiler.status().startsWith("compiling blocked ("), compiler.status())
-            assertNull(compiler.stuckSince)
 
-            assertEquals(Outcome.STUCK, withTimeout(5_000) { waiting.await() }.outcome)
+            // The compiler's thread is at the lowest priority: a busy machine may give it its 200 ms of work slowly.
+            assertEquals(Outcome.STUCK, withTimeout(300_000) { waiting.await() }.outcome)
             val (label, since) = withTimeout(5_000) { told.await() }
             assertEquals("blocked", label)
             assertTrue(!since.isBefore(before.minusSeconds(1)) && since == compiler.stuckSince, "$since")

@@ -90,7 +90,7 @@ internal class BenchImpl(
         val where = "$phase, $what at tick ${world.tick}"
         when {
             result.fault != null -> failure = failure ?: Diagnostics.fault(where, result.fault, result.line)
-            result.nanos > ForgeLimits.CALL_NANOS -> failure = failure ?: Diagnostics.fault(where, slow(result.nanos))
+            result.work > ForgeLimits.CALL_NANOS -> failure = failure ?: Diagnostics.fault(where, slow(result.work))
         }
     }
 
@@ -253,7 +253,7 @@ internal class BenchImpl(
         if (deployment.state == SimState.RUNNING && world.now >= deployment.endsAt) end(StopReason.EXPIRED, EXPIRED)
     }
 
-    /** At each second of the bench: more than 50 ms of calls a second, five seconds in a row, is a fault *slowness* (M5 §3.7). */
+    /** At each second of the bench: more than 50 ms of its own work a second, five seconds in a row, is a fault *slowness* (M5 §3.7). */
     private fun second() {
         if (world.tick % Limits.TICKS_PER_SECOND != 0) return
         slowSeconds = if (secondNanos > ForgeLimits.DEPLOYMENT_MS_PER_SECOND * NANOS_PER_MS) slowSeconds + 1 else 0
@@ -288,7 +288,10 @@ internal class BenchImpl(
         deployment.endWhy?.let { end(StopReason.ENDED, it) }
     }
 
-    /** [body], the module's code, through the host on its thread, for [budgetNanos]: null once the bench has failed (nothing runs any more). */
+    /**
+     * [body], the module's code, through the host on its thread, for [budgetNanos]: null once the bench has failed
+     * (nothing runs any more). The bench judges the call's own work ([HostCall.work]), never its wall time (M5-LOAD).
+     */
     private fun measured(budgetNanos: Long, body: () -> Unit): HostCall? {
         if (failure != null) return null
         val finished = AtomicBoolean(false)
@@ -299,11 +302,9 @@ internal class BenchImpl(
                 finished.set(true)
             }
         }
-        slowestNanos = maxOf(slowestNanos, result.nanos)
-        secondNanos += result.nanos
-        if (!finished.get() && result.fault == null) {
-            return result.copy(fault = "the call was abandoned after ${ms(budgetNanos)} ms")
-        }
+        slowestNanos = maxOf(slowestNanos, result.work)
+        secondNanos += result.work
+        if (!finished.get() && result.fault == null) return result.copy(fault = OVERLOADED)
         return result
     }
 
@@ -339,7 +340,7 @@ internal class BenchImpl(
         guard()
         val result = measured(budgetNanos, body) ?: throw BenchStop(failure)
         result.fault?.let { fail(Diagnostics.fault("$phase, $label", it, result.line)) }
-        if (result.nanos > budgetNanos) fail(Diagnostics.fault("$phase, $label", slow(result.nanos)))
+        if (result.work > budgetNanos) fail(Diagnostics.fault("$phase, $label", slow(result.work)))
     }
 
     override fun check(condition: Boolean, message: String?) {
@@ -415,6 +416,9 @@ internal class BenchImpl(
 
         /** The judged challenge a deployment of the bench referees. */
         const val CHALLENGE_ID = "C-2"
+
+        /** What the bench says of a call the machine held back past the bench's patience, or could not even start. */
+        const val OVERLOADED = "the call could not end: the server held the module's thread back without it computing (an overloaded server, not the module's doing); test again"
 
         /** How long a deployment of a scenario runs before it expires. */
         const val SCENARIO_MINUTES = 10

@@ -60,9 +60,15 @@ class ModuleHostTest {
     fun `a call made from the module thread nests in the running one, metered on its own within what that call has left`() {
         val fake = FakeContext()
         val faults = mutableListOf<Fault>()
-        val source = Hosts.source("Nester", body = "m.timers().every(1, () -> { while (true) { } }); m.timers().every(1, () -> m.log(\"quick\"));")
+        val source = Hosts.source(
+            "Nester",
+            "public static long n; long sink;",
+            "m.timers().every(1, () -> { while (true) { } }); m.timers().every(1, () -> m.log(\"quick\"));" +
+                "m.timers().every(1, () -> { long x = 0; for (long i = 0; i < n; i++) x += i ^ (x >>> 3); sink = x; });",
+        )
         val host = Hosts.host("Nester", source, threads, faults = faults, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
+        host.main.getField("n").setLong(null, Hosts.rounds(100))
         val outer = mutableListOf<Thread>()
         val inner = mutableListOf<Thread>()
         val nested = mutableListOf<ModuleHost.Called?>()
@@ -79,33 +85,37 @@ class ModuleHostTest {
         assertNull(nested[0]!!.fault)
         val looped = nested[1]!!
         assertEquals(Fault.Kind.LIMIT, looped.fault?.kind)
-        val ownBudget = ForgeLimits.CALL_MILLIS.toDouble()..(ForgeLimits.CALL_MILLIS + BusyMachine.SLACK_MILLIS).toDouble()
-        assertTrue(looped.nanos / 1e6 in ownBudget, "the nested loop stopped at its own 20 ms, not the scenario's 10 s: ${looped.nanos / 1e6} ms")
+        // Its own work, which a busy machine does not stretch (M5-LOAD): the meter stops it at 20 ms of it (the CPU clock's
+        // two steps of 15.6 ms may read a little more).
+        val ownBudget = ForgeLimits.CALL_MILLIS.toDouble()..(ForgeLimits.CALL_MILLIS + 32).toDouble()
+        assertTrue(looped.work / 1e6 in ownBudget, "the nested loop stopped at its own 20 ms, not the scenario's 10 s: ${looped.work / 1e6} ms")
         assertNull(nested[2]!!.fault, "the running call resumed, its meter as it was")
         assertEquals(listOf("quick", "quick"), fake.logs.toList())
 
-        // A nested call never outlives the call it nests in: here 600 ms in all, 100 of them spent before it, so it has
-        // 500 ms left of the 2 s it asks for.
-        val bounded = host.call("scenario", 600 * MILLI) {
-            val end = System.nanoTime() + 100 * MILLI
-            while (System.nanoTime() < end) Thread.onSpinWait()
+        // A nested call never outlives the call it nests in: here 600 ms of work in all, about 100 of them spent before it
+        // (a nested call of 100 ms of work, measured on this machine), so it has about 500 ms left of the 2 s it asks for.
+        host.call("scenario", 600 * MILLI) {
+            nested += host.call("timer", SECOND) { fake.timers[2].run() }
             nested += host.call("timer", 2 * SECOND) { fake.timers[0].run() }
         }!!
+        val first = nested[nested.size - 2]!!
         val last = nested.last()!!
+        assertNull(first.fault)
         assertEquals(Fault.Kind.LIMIT, last.fault?.kind)
-        assertTrue(last.nanos / 1e6 < 500 + BusyMachine.SLACK_MILLIS, "it had only what was left, not its 2 s: ${last.nanos / 1e6} ms")
-        assertTrue(bounded.nanos / 1e6 < 600 + BusyMachine.SLACK_MILLIS, "${bounded.nanos / 1e6} ms")
+        val left = 600 - first.work / 1e6
+        // The CPU clock's steps of 15.6 ms may read a little more than the meter counted, for either call.
+        assertTrue(last.work / 1e6 in left - 5..left + 64, "it had only what was left ($left ms), not its 2 s: ${last.work / 1e6} ms of work")
     }
 
     @Test
-    fun `a call nested in an abandoned one is refused, so its thread unwinds`() {
+    fun `a call nested in a call given up is refused, so its thread unwinds`() {
         val fake = FakeContext()
         val host = Hosts.host("Quick", Hosts.source("Quick", body = "m.timers().every(1, () -> m.log(\"ran\"));"), threads, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
         val refused = AtomicReference<Any>()
         val given = CountDownLatch(1)
         val done = CountDownLatch(1)
-        // A call with the game's budget whose code goes on only once its caller has given it up.
+        // A call with the game's budget whose thread waits (no work: the machine's doing) until its caller gave it up.
         val outer = host.call("scenario", ForgeLimits.CALL_NANOS) {
             given.await(60, TimeUnit.SECONDS)
             try {
@@ -116,13 +126,15 @@ class ModuleHostTest {
             done.countDown()
         }!!
         given.countDown()
-        assertEquals(Fault.Kind.LIMIT, outer.fault?.kind, "abandoned")
-        assertTrue(outer.fault!!.cause.endsWith("and was abandoned"), outer.fault!!.cause)
-        // The lost thread runs at the lowest priority: a busy machine may keep it waiting for seconds.
+        assertNull(outer.fault, "given up without computing: nobody's fault (M5-LOAD)")
         assertTrue(done.await(60, TimeUnit.SECONDS))
-        // Refused: the meter's error (the thread must unwind), or nothing ran at all (the module is disabled).
-        assertTrue(refused.get() is io.github.clemsix6.narrator2.forge.rt.ForgeLimit || refused.get() == "nothing ran", "${refused.get()}")
-        assertEquals(emptyList(), fake.logs.toList(), "the module's code never ran on the lost thread")
+        assertTrue(refused.get() is io.github.clemsix6.narrator2.forge.rt.ForgeLimit, "the module threads refuse it: ${refused.get()}")
+        assertEquals(emptyList(), fake.logs.toList(), "the module's code never ran on the thread given up")
+        assertTrue(Hosts.settled(host))
+        assertEquals(0, host.faults)
+        assertEquals(1, host.starved)
+        assertNull(host.call("timer") { fake.timers[0].run() }!!.fault, "the module goes on")
+        assertEquals(listOf("ran"), fake.logs.toList())
     }
 
     @Test
@@ -218,18 +230,35 @@ class ModuleHostTest {
     @Test
     fun `over 50 ms of its code a second, five seconds in a row, disables it`() {
         val fake = FakeContext()
-        val busy = "m.timers().every(1, () -> { long end = System.nanoTime() + 18_000_000L; while (System.nanoTime() < end) { } });"
-        // Calls of 10 s: 18 ms of the module's code each is never stopped, however long a busy machine makes them.
-        val host = Hosts.host("Busy", Hosts.source("Busy", body = busy), threads, timeScale = BusyMachine.TIME_SCALE)
+        // Calls of 10 s: 18 ms of the module's own work each (rounds of a loop, measured on this machine) is never
+        // stopped, and four of them are 72 ms a second, however long a busy machine makes them on the wall clock.
+        val host = Hosts.host("Rounds", Hosts.source("Rounds", Hosts.ROUNDS, Hosts.ROUNDS_BODY), threads, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
+        host.main.getField("n").setLong(null, Hosts.rounds(18))
         host.second()
         repeat(ForgeLimits.SLOW_SECONDS) { second ->
-            repeat(3) { assertNull(host.call("timer") { fake.timers[0].run() }!!.fault, "18 ms is within a call's budget") }
+            repeat(4) { assertNull(host.call("timer") { fake.timers[0].run() }!!.fault, "18 ms is within a call's budget") }
             val fault = host.second()
-            assertTrue(host.msPerSecond > ForgeLimits.DEPLOYMENT_MS_PER_SECOND, "${host.msPerSecond} ms")
             if (second < ForgeLimits.SLOW_SECONDS - 1) assertNull(fault) else assertEquals(Fault.Kind.SLOWNESS, fault?.kind)
         }
         assertEquals(Fault.Kind.SLOWNESS, host.disabled?.kind)
+        assertTrue(host.disabled!!.cause.startsWith("over 50 ms of its code a second, 5 seconds in a row ("), host.disabled!!.cause)
+    }
+
+    @Test
+    fun `a second whose calls a busy machine stretched, but that did little work, is not slow`() {
+        val fake = FakeContext()
+        val host = Hosts.host("Light", Hosts.source("Light", "int n;", "m.timers().every(1, () -> n++);"), threads, timeScale = BusyMachine.TIME_SCALE)
+        assertTrue(host.started(fake.context))
+        host.second()
+        repeat(ForgeLimits.SLOW_SECONDS + 1) {
+            // Each call held back 20 ms by the machine (a sleep on the module thread: no work, no CPU), as a saturated
+            // machine stretched the orbit of M5-15's chickens to 82 ms a second.
+            repeat(4) { assertNull(host.call("timer") { Thread.sleep(20); fake.timers[0].run() }!!.fault) }
+            assertNull(host.second())
+            assertTrue(host.msPerSecond >= 80, "the wall clock says ${host.msPerSecond} ms")
+        }
+        assertNull(host.disabled)
     }
 
     @Test
@@ -266,7 +295,7 @@ class ModuleHostTest {
         repeat(3) { keeper.call("timer") { fake.timers[0].run() } }
         val fault = keeper.gauge()
         assertEquals(Fault.Kind.MEMORY, fault?.kind)
-        assertTrue(fault!!.cause.startsWith("retains about 37 MiB"), fault.cause)
+        assertEquals("retains over 32 MiB (at most 32)", fault!!.cause, "37 MiB kept: the walk stops once past the ceiling, the verdict known")
 
         val wide = Hosts.host(
             "Wide",
@@ -276,23 +305,16 @@ class ModuleHostTest {
             ),
             threads,
             timeScale = BusyMachine.TIME_SCALE,
-            gaugeNanos = ForgeLimits.GAUGE_MAX_NANOS,
         )
         assertTrue(wide.started(fake.context))
         repeat(9) { assertNull(wide.call("timer") { fake.timers.last().run() }?.fault) }
-        // 234,000 objects: past the gauge's ceiling (200,000 objects, or the game's 5 ms three measures in a row).
-        var tooWide: Fault? = null
-        var measures = 0
-        while (tooWide == null && measures < ModuleHost.SLOW_MEASURES) {
-            val start = System.nanoTime()
-            tooWide = wide.gauge()
-            val took = (System.nanoTime() - start) / 1e6
-            assertFalse(wide.retained!!.complete, "each measure stops at its ceiling: ${wide.retained}")
-            assertTrue(took < ForgeLimits.GAUGE_MAX_NANOS / 1e6 + BusyMachine.SLACK_MILLIS, "each measure stops at its ceiling: $took ms (${wide.retained})")
-            measures++
-        }
+        // 234,000 objects: past the gauge's ceiling of 200,000, in one measure, however slow or busy the machine (M5-LOAD:
+        // its ceilings are work, not time).
+        val tooWide = wide.gauge()
+        assertFalse(wide.retained!!.complete, "the measure stops at its ceiling: ${wide.retained}")
+        assertTrue(wide.retained!!.objects in ForgeLimits.GAUGE_MAX_OBJECTS + 1..ForgeLimits.GAUGE_MAX_OBJECTS + 100, "${wide.retained}")
         assertEquals(Fault.Kind.MEMORY, tooWide?.kind)
-        assertTrue(tooWide!!.cause.startsWith("retains too much to measure"), tooWide.cause)
+        assertEquals("retains too much to measure (over ${ForgeLimits.GAUGE_MAX_OBJECTS} objects)", tooWide!!.cause)
     }
 
     @Test
@@ -306,8 +328,8 @@ class ModuleHostTest {
             List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
             shared = new ArrayList<>(); for (int i = 0; i < 10_000; i++) shared.add(l0);
         """.trimIndent()
-        // The gauge's clock at 2.5 s: a cold walk (about 1 µs an object) on a busy machine ends within it. Walked once
-        // each, the 10,000 lists are 11,000 to 22,000 objects; walked as often as they are held, a hundred million.
+        // Walked once each, the 10,000 lists are 11,000 to 22,000 objects; walked as often as they are held, a hundred
+        // million (past the ceiling of 200,000 objects).
         val host = Hosts.host("Graph", Hosts.source("Graph", members, body), threads, timeScale = BusyMachine.TIME_SCALE)
         assertTrue(host.started(fake.context))
         assertNull(host.gauge(), "${host.retained}")
