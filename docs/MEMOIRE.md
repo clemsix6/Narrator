@@ -53,7 +53,7 @@ Inspirations : le *memory stream* et la *réflexion* des Generative Agents (Park
 
   Chaque souvenir porte une importance (1–10), une valence (−3 à +3), les joueurs concernés, des étiquettes (un vocabulaire fixe : `death`, `lava`, `insult`, `gift`…), des identifiants du jeu (`minecraft:trial_chambers`), la position où il s'est passé, des liens vers les événements bruts qui le prouvent, et une force (§7).
 - **Couche 3 — Connaissances** : les **fiches joueurs** (§3), le **canon**, la **Chronique** hiérarchique (§6). Le canon est tout ce que le Narrateur a affirmé, décrété, promis ou inventé : promesses, menaces, défis et paris, lois, prophéties, surnoms, titres, lieux nommés, lore, opinions, running gags, récits. Chaque entrée a un statut (active, tenue, rompue, gagnée, expirée, retirée…) et, s'il y a lieu, une échéance. **Le canon fait loi.** M4 rendra défis, châtiments et récits mécaniques ; M3 les enregistre déjà.
-- **Couche 4 — Le Grimoire** : un document compact (≈ 3 000 tokens, 10 000 caractères, budget fixe) toujours présent dans le briefing, en sept sections : relation avec chaque joueur en une ou deux lignes, running gags et leur fraîcheur, arcs, ce qui marche, ce qui tombe à plat, plans pour la suite, vigilances (ne pas s'acharner sur untel…). Factuel, jamais dans la voix du Narrateur. **Réécrit en entier pendant chaque rêve, dans le même budget** : le prompt ne grossit jamais, même après 500 heures.
+- **Couche 4 — Le Grimoire** : un document compact (≈ 3 000 tokens, 10 000 caractères, budget fixe) toujours présent dans le briefing, en sept sections : relation avec chaque joueur en une ou deux lignes, running gags et leur fraîcheur, arcs, ce qui marche, ce qui tombe à plat, plans pour la suite, vigilances (ne pas s'acharner sur untel…). Factuel, jamais dans la voix du Narrateur. **Réécrit en entier pendant chaque rêve, dans le même budget** : le prompt ne grossit jamais, même après 500 heures. *M6 (design proposé, [design/M6.md](design/M6.md) §6)* : les plans quittent le Grimoire, qui garde six sections ; ils deviennent le **programme** du Scénariste, des idées `P-…` notées, montrées à part dans le briefing (`<programme>`, 3 000 caractères) et servies par `inspire`.
 
 ## 3. La fiche joueur
 
@@ -136,6 +136,7 @@ Toute écriture passe par un seul point, qui vérifie les vocabulaires et les bu
 | En continu | Code | Échéances (un événement `DUE` réveille le Directeur), expirations, châtiments et bienfaits non notés, horloge de jeu |
 | Fin de chapitre, avec ou sans résumé | Chroniqueur (« sieste ») | Souvenirs du chapitre, statut du canon, chronique du chapitre, « depuis la dernière fois » des joueurs partis, souvenirs réellement réutilisés. Un chapitre clos par un arrêt ou un crash est consolidé au démarrage suivant. |
 | Temps mort | Rêveur (« rêve profond ») | Fiches, revue du Narrateur, Chronique, Grimoire, fusions (§5) |
+| Temps mort, après le Grimoire ; et à la demande du Directeur | Scénariste (M6) | Idées `P-…` (le programme, une saison), récits prévus ; jamais de fait sur les joueurs |
 
 ## 5. Les rêves : consolider pendant les temps morts
 
@@ -156,6 +157,12 @@ Avant tout, le code recalcule les stats, les tics et fait le ménage mécanique 
 3. **Chronique** : remonter les résumés d'un niveau (chapitres → session → saison → saga, §6).
 4. **Grimoire** : le réécrire en entier dans son budget fixe, avec les **plans** pour la suite (défis adaptés à la progression réelle, prochain rebondissement d'un arc) ; il peut préparer un récit (statut « prévu »). Commander un module à la Forge ou envoyer l'Éclaireur attendra M4 et M5.
 5. **Fusions** : réunir les souvenirs en double que le code a repérés.
+
+*M6 (design proposé)* : le rêve passe à six étapes. Après le Grimoire, la **salle d'écriture** : le Scénariste lit le
+Grimoire, la revue, les joueurs actifs, le canon, l'historique des interventions et les idées précédentes, et écrit le
+programme (5 à 8 idées notées, une saison) et les récits prévus ; puis les fusions. La revue reçoit aussi, calculés par
+le code, les registres comiques de chaque réplique avec les réactions qu'ils ont eues, et les drapeaux de ton
+([design/M6.md](design/M6.md) §4.6, §6.3).
 
 Un rêve coûte de l'ordre de 200 000 tokens d'entrée (en partie en cache) ; un ou deux par jour. Un rêve interrompu reprend à l'étape où il s'était arrêté.
 
@@ -201,6 +208,7 @@ Un peu de hasard contrôlé fait remonter de vieux souvenirs importants : **reto
    | Section | Budget |
    |---|---|
    | Grimoire | 10 000 caractères (≈ 3k tokens) |
+   | Programme du Scénariste : la saison et les idées ouvertes (M6) | 3 000 |
    | Chronique (saga, saison en cours, deux dernières sessions) | 8 000 |
    | Deux derniers résumés de chapitre | 8 000 |
    | Canon : engagements ouverts avec leur citation et leur échéance (plans du moteur compris), lois, surnoms et titres, lieux, gags, récits ; ce que le moteur suit est marqué `tracked` ou `enforced` | 4 000 |
@@ -260,7 +268,11 @@ Les questions du Narrateur portent surtout sur des entités précises (un joueur
 /narrator memory revert <travail>         # annule tout ce qu'un lot, une sieste ou un rêve a écrit
 /narrator memory chronicle | dream        # force un passage du Chroniqueur, un rêve profond
 /narrator memory pause | resume           # suspend ou reprend les travaux de la mémoire
+/narrator memory ideas [all]              # les idées du Scénariste et ce qu'elles sont devenues (M6)
 ```
+
+Le tableau de bord web (M6) montre aussi la mémoire : canon, souvenirs, interactions, notes, idées, documents versionnés
+et travaux, chaque ligne avec son audit.
 
 ## 13. Mesurer la qualité
 
@@ -288,6 +300,7 @@ Le schéma complet (SQL et types) est au §3 de [design/M3.md](design/M3.md). En
 | `memory_docs` | documents versionnés : Grimoire, revue, sections de fiche |
 | `chronicle` | chronique hiérarchique (`H-`) |
 | `notes` | notes pour le Directeur (`N-`) : incohérences, expirations, pistes de rêve |
+| `ideas` | idées du Scénariste (`P-`, M6) : sorte, pitch, joueurs, notes, références, statut, fois où elles ont été servies |
 | `recalls` | chaque fois qu'une ligne a été montrée à un modèle (renforcement, anti-répétition) |
 | `memory_runs`, `memory_log` | travaux de la mémoire et audit de chaque changement |
 | `search_docs`, `search_postings` | index plein texte |
