@@ -17,8 +17,8 @@ import io.github.clemsix6.narrator2.mechanics.module.ModuleEngine
 import io.github.clemsix6.narrator2.mechanics.module.ModuleEnding
 import io.github.clemsix6.narrator2.mechanics.module.ModuleFixture
 import io.github.clemsix6.narrator2.mechanics.rule.RuleFixture
-import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.Source
