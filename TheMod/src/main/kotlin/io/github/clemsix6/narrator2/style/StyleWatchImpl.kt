@@ -208,12 +208,31 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
 
     override fun lastRegisters(count: Int): List<ComicRegister> = view.labels.take(count).map { it.register }
 
+    /**
+     * The measures of a period ([StyleReport.measures]) on the latest [DIVERSITY_LINES] lines held, each with its labels
+     * when the review gave them: one definition for the window and for any period.
+     */
     override fun diversity(): Diversity {
         val view = view
-        if (view.lines.isEmpty() && view.labels.isEmpty()) return Diversity.NONE
-        val said = view.lines.map { it.said }
-        val crutches = view.labels.flatMap { it.crutches }
-        return DiversityMeasures.measure(said.takeLast(DIVERSITY_LINES), view.labels, crutches, Tics.tics(said).size)
+        if (view.lines.isEmpty()) return Diversity.NONE
+        val labels = view.labels.associateBy { it.eventId }
+        val lines = view.lines.takeLast(DIVERSITY_LINES).map { held -> reportLine(held, labels[held.id]) }
+        val measures = StyleReport.measures(lines, view.names)
+        return Diversity(
+            measures.lines, measures.openersDistinct, measures.topRegister, measures.topRegisterShare, measures.registerEntropy,
+            measures.crutches, measures.tics,
+        )
+    }
+
+    /** [held] as the report reads a line of the Journal, with its [labels] (none: not reviewed). */
+    private fun reportLine(held: Held, labels: LineLabels?): StyleReport.Line {
+        val flaws = labels?.let {
+            mapOf(
+                StyleReport.Flaw.DARK to it.dark, StyleReport.Flaw.CRUEL to it.cruel, StyleReport.Flaw.OUT_OF_CHARACTER to it.outOfCharacter,
+                StyleReport.Flaw.FLAT to it.flat, StyleReport.Flaw.REPEATS to it.repeats,
+            )
+        }
+        return StyleReport.Line(held.id, held.said.ts, held.said.text, labels?.register, flaws.orEmpty(), labels?.crutches.orEmpty())
     }
 
     /**
