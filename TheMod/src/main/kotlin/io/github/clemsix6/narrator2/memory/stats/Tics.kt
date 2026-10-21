@@ -12,9 +12,11 @@ import kotlin.math.roundToInt
  * design), for the briefing's `<notes>`, the Dreamer and the watch of the style (`StyleWatchImpl`).
  *
  * Each line is first **normalized** ([tokens]): its words in lower case, the names of the players and the canon's
- * nicknames ([Names]) as [NAME] (a run of names, « Gaspard, Firmin » or « Pistache et Opaline », is one [NAME]), the
- * numbers in digits or in letters as [NUMBER] (« dix-sept » is one [NUMBER]). « Onze secondes » and « Vingt secondes »
- * are then one construction, `<n> secondes`; « Bonsoir, Mimosa » and « Bonsoir, Lisette, Gaspard » one, `bonsoir <nom>`.
+ * nicknames ([Names]) as [NAME] (a run of names, « Gaspard, Firmin » or « Pistache et Opaline », is one [NAME]; an
+ * elided name, « d'Opaline », is its article written out and a [NAME], `de <nom>`), the numbers in digits or in letters
+ * as [NUMBER] (« dix-sept » is one [NUMBER]). « Onze secondes » and « Vingt secondes » are then one construction,
+ * `<n> secondes`; « Bonsoir, Mimosa » and « Bonsoir, Lisette, Gaspard » one, `bonsoir <nom>`; « le cadeau d'Opaline »
+ * and « le cadeau de Bartok » one, `cadeau de <nom>`.
  *
  * - **openers**: the first [OPENER_TOKENS] tokens of a line that [opens] (said with `say`, [OPENER_MIN_CHARS] characters
  *   or more: a title, a line above the hotbar or a short aside never opens), seen in [OPENER_MIN] lines at least; an
@@ -199,8 +201,13 @@ object Tics {
     /** « … » or « ... » at the end of a sentence. */
     private val ELLIPSIS = Regex("(…|\\.\\.\\.)(?=\\s|$|[»\"”)])")
 
-    /** The kind `SpeechTools` puts before a title, a line above the hotbar or a book in the `chat` table. */
-    private val KIND = Regex("^\\[(?:title|actionbar|book \".*?\")] ")
+    /**
+     * The kind `SpeechTools` puts before a title, a line above the hotbar or a book in the `chat` table, as a regular
+     * expression DuckDB reads too (RE2): `StyleReport.coverage` leaves out in SQL the lines [opens] leaves out.
+     */
+    const val KIND_PATTERN = "^\\[(?:title|actionbar|book \".*?\")] "
+
+    private val KIND = Regex(KIND_PATTERN)
 
     /** The name a nickname gives: what its statement puts between « ». */
     private val NICKNAME = Regex("«\\s*([^«»]{1,40})\\s*»")
@@ -223,7 +230,7 @@ object Tics {
         "il", "elle", "on", "nous", "vous", "ils", "elles", "me", "m", "te", "t", "lui", "y", "ne", "n", "pas", "plus",
         "est", "es", "suis", "sont", "été", "être", "ai", "as", "ont", "avez", "avons", "c", "s", "si", "mais", "donc",
         "car", "ni", "comme", "pendant", "avant", "après", "depuis", "vers", "chez", "entre", "contre", "tout", "tous",
-        "toute", "toutes", "très",
+        "toute", "toutes", "très", "jusqu", "jusque", "lorsqu", "lorsque", "puisqu", "puisque",
     )
 
     /**
@@ -255,47 +262,80 @@ object Tics {
 
     private fun isNumber(key: String): Boolean = key in NUMBER_WORDS || DIGITS.matches(key)
 
-    /** Said with `say` (no kind before it) and [OPENER_MIN_CHARS] characters long at least: it counts for the openers. */
-    fun opens(text: String): Boolean = !KIND.containsMatchIn(text) && text.codePointCount(0, text.length) >= OPENER_MIN_CHARS
+    /** Said with `say`: no kind before it, as a title, a line above the hotbar or a book has (`[title] …`). */
+    fun bySay(text: String): Boolean = !KIND.containsMatchIn(text)
+
+    /**
+     * Said with `say` ([bySay]) and [OPENER_MIN_CHARS] characters long at least: it counts for the openers, and it is a
+     * line the review reads (`LineReviewer`).
+     */
+    fun opens(text: String): Boolean = bySay(text) && text.codePointCount(0, text.length) >= OPENER_MIN_CHARS
 
     /** [text] without the kind `SpeechTools` puts before a title, a line above the hotbar or a book. */
     fun body(text: String): String = KIND.find(text)?.let { text.substring(it.range.last + 1) } ?: text
 
     /**
      * The tokens of [text]: its words in lower case, a run of [names] (also joined by « et ») as one [NAME], a run of
-     * numbers as one [NUMBER].
+     * numbers as one [NUMBER]. A name after an elided stop word (« d'Opaline », « qu'Opaline ») is two tokens: the stop
+     * word written out, its lost `e` back (`de`, `que`, `jusque`; `l'` and `s'` stand for `la` and `si` too, never
+     * before a name), then the [NAME].
      */
     fun tokens(text: String, names: Names): List<Token> {
         val words = WORD.findAll(text).toList()
         val keys = words.map { key(it.value) }
         val tokens = ArrayList<Token>(words.size)
+
+        fun add(token: Token) {
+            val last = tokens.lastOrNull()
+            when {
+                (token.key == NAME || token.key == NUMBER) && last != null && last.key == token.key -> tokens[tokens.lastIndex] = last.copy(end = token.end)
+                token.key == NAME && last?.key == "et" && tokens.getOrNull(tokens.lastIndex - 1)?.key == NAME -> {
+                    tokens.removeAt(tokens.lastIndex)
+                    tokens[tokens.lastIndex] = tokens.last().copy(end = token.end)
+                }
+                else -> tokens += token
+            }
+        }
+
         var i = 0
         while (i < words.size) {
+            val start = words[i].range.first
             val named = if (names.isEmpty) 0 else names.match(keys, i)
+            val elided = if (named > 0 || names.isEmpty) 0 else elidedName(keys, i, names)
+            if (elided > 0) {
+                // The stop word is plain letters: its apostrophe sits at the same place in the key and in the text.
+                val apostrophe = keys[i].indexOf('\'')
+                add(Token(keys[i].substring(0, apostrophe) + "e", start, start + apostrophe + 1))
+                add(Token(NAME, start + apostrophe + 1, words[i + elided - 1].range.last + 1))
+                i += elided
+                continue
+            }
             val span = maxOf(named, 1)
             val key = when {
                 named > 0 -> NAME
                 isNumber(keys[i]) -> NUMBER
                 else -> keys[i]
             }
-            val token = Token(key, words[i].range.first, words[i + span - 1].range.last + 1)
-            val last = tokens.lastOrNull()
-            when {
-                (key == NAME || key == NUMBER) && last != null && last.key == key -> tokens[tokens.lastIndex] = last.copy(end = token.end)
-                key == NAME && last?.key == "et" && tokens.getOrNull(tokens.lastIndex - 1)?.key == NAME -> {
-                    tokens.removeAt(tokens.lastIndex)
-                    tokens[tokens.lastIndex] = tokens.last().copy(end = token.end)
-                }
-                else -> tokens += token
-            }
+            add(Token(key, start, words[i + span - 1].range.last + 1))
             i += span
         }
         return tokens
     }
 
     /**
+     * How many words the name after the elided stop word of [keys] at [from] spans (`d'opaline`, `qu'opaline`); 0 when
+     * the word is no elided stop word, or no name follows its apostrophe.
+     */
+    private fun elidedName(keys: List<String>, from: Int, names: Names): Int {
+        val apostrophe = keys[from].indexOf('\'')
+        if (apostrophe <= 0 || keys[from].substring(0, apostrophe) !in STOP_WORDS) return 0
+        return names.match(listOf(keys[from].substring(apostrophe + 1)) + keys.subList(from + 1, keys.size), 0)
+    }
+
+    /**
      * The content words of [said] ([Token.isWord]), in lower case, an elided article or pronoun dropped (`l'enquête` →
-     * `enquête`, `aujourd'hui` stays): what the watch counts to propose crutch words.
+     * `enquête`, `aujourd'hui` stays): what the watch counts to propose crutch words, and the words a crutch candidate is
+     * looked for in (`LineReviewLabels.inLine`).
      */
     fun words(said: Said): Set<String> = said.tokens.filter { it.isWord }.mapTo(LinkedHashSet()) { token ->
         val apostrophe = token.key.indexOf('\'')

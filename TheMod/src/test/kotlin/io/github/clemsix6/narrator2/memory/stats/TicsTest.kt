@@ -124,6 +124,34 @@ class TicsTest {
         assertTrue(Names.of(listOf("Les", "123")).isEmpty, "a name made of a stop word or a number would hide the word")
     }
 
+    /**
+     * M6 review 1, finding 4: « d'Opaline » is a name after an elided article, written out (`d'` → `de`, `qu'` → `que`),
+     * so that « le cadeau d'Opaline » and « le cadeau de Bartok » are one construction, and « Opaline » never a crutch
+     * candidate.
+     */
+    @Test
+    fun `an elided name is a name, its elided article written out`() {
+        val names = Names.of(listOf("Bartok", "Mimosa", "Opaline", "Client Mécontent", "l'Ancien"))
+        assertEquals(listOf("le", "cadeau", "de", Tics.NAME, "et", "de", Tics.NAME), keys("Le cadeau d'Opaline et de Bartok", names))
+        assertEquals(listOf("que", Tics.NAME, "se", "méfie", Tics.NAME, "approche"), keys("Qu’Opaline se méfie, Bartok approche", names))
+        assertEquals(listOf("lorsque", Tics.NAME, "parle"), keys("Lorsqu'Opaline parle", names))
+        assertEquals(listOf("plainte", "de", Tics.NAME), keys("plainte d'Client Mécontent", names), "a name of two words")
+        assertEquals(listOf("salut", "à", Tics.NAME), keys("Salut à l'Ancien", names), "a name with its own elision")
+        assertEquals(listOf("le", "ministère", "de", "l'aviation"), keys("Le ministère de l'Aviation", names), "no name after the apostrophe: one word")
+        assertEquals(listOf("aujourd'hui", Tics.NAME), keys("Aujourd'hui Bartok", names))
+
+        val qu = Tics.said("Qu'Opaline se méfie : Bartok approche du désert.", start, names)
+        assertEquals(Tics.Opener("que <nom>", "Qu'Opaline", hasWord = false), qu.opener)
+        assertEquals(setOf("cadeau", "brille"), Tics.words(Tics.said("Le cadeau d'Opaline brille.", start, names)), "a name is no crutch candidate")
+
+        val gifts = listOf("Le cadeau d'Opaline brille encore.", "Le cadeau de Bartok brille encore.", "Le cadeau de Mimosa brille encore.")
+        assertEquals(
+            listOf("cadeau de <nom> brille encore" to 3),
+            Tics.phrases(gifts.map { Tics.said(it, start, names) }).map { it.key to it.count },
+            "one construction",
+        )
+    }
+
     @Test
     fun `an opener is two tokens of a line said, long enough, with a content word`() {
         val names = Names.of(listOf("Bartok", "Mimosa", "Gaspard", "Firmin"))

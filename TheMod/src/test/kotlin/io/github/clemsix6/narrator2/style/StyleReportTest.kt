@@ -176,7 +176,8 @@ class StyleReportTest {
             assertEquals(5, now.reviewed)
             assertEquals(mapOf(ComicRegister.DIVINE_BUREAUCRACY to 3, ComicRegister.SPORTS_COMMENTARY to 1, ComicRegister.PLAIN to 1), now.registers)
             assertEquals(ComicRegister.DIVINE_BUREAUCRACY, now.topRegister)
-            assertEquals(0.6, now.topRegisterShare, 1e-9)
+            assertEquals(0.75, now.topRegisterShare, 1e-9, "of the four lines of the voice: plain is no frame")
+            assertEquals(0.2, now.plainShare, 1e-9, "plain apart")
             // plain is not a register of the voice: 3 and 1 over min(16, 4).
             assertEquals((-(0.75 * ln(0.75)) - 0.25 * ln(0.25)) / ln(4.0), now.registerEntropy, 1e-9)
             assertEquals(listOf("céleste" to 2), now.crutches, "words in lower case, once per line")
@@ -223,6 +224,40 @@ class StyleReportTest {
         }
     }
 
+    /**
+     * M6 review 1, finding 7 and decision D3: an evening rich in direct taunts (plain) leads with no frame; the top register
+     * is that of the voice, measured over the lines of the voice, and the share of plain is shown apart.
+     */
+    @Test
+    fun `the top register is one of the voice, plain apart`() {
+        val registers = List(4) { ComicRegister.PLAIN } + List(2) { ComicRegister.COURTROOM } + List(2) { ComicRegister.DIVINE_BUREAUCRACY } +
+            List(2) { ComicRegister.SPORTS_COMMENTARY } + ComicRegister.OTHER
+        val measures = StyleReport.measures(registers.mapIndexed { i, register -> line(i + 1L, "Réplique $i.", register) } + line(20, "Pas relue.", null))
+        assertEquals(ComicRegister.SPORTS_COMMENTARY, measures.topRegister, "two lines each, the enum's order; plain leads no rotation")
+        assertEquals(2.0 / 6, measures.topRegisterShare, 1e-9, "of the six lines of the voice")
+        assertEquals(4.0 / 11, measures.plainShare, 1e-9, "of the eleven lines reviewed")
+        assertEquals(StyleReport.entropy(listOf(2, 2, 2)), measures.registerEntropy, 1e-9)
+
+        val direct = List(3) { line(it + 1L, "Pique $it.", ComicRegister.PLAIN) }
+        val plain = StyleReport.measures(direct)
+        assertEquals(null, plain.topRegister)
+        assertEquals(0.0, plain.topRegisterShare)
+        assertEquals(1.0, plain.plainShare)
+        assertEquals(
+            "<diversity>no register of the voice · plain lines 100% · register entropy 0.00 · no crutch word</diversity>",
+            StyleReport.diversityBlock(direct, null),
+        )
+        val framed = listOf(line(9, "Avant.", ComicRegister.COURTROOM))
+        assertEquals(
+            "<diversity>no register of the voice (before: courtroom 100%) · plain lines 100% (0% before) · register entropy 0.00 (0.00 before) · no crutch word</diversity>",
+            StyleReport.diversityBlock(direct, framed),
+        )
+        assertEquals(
+            "<diversity>top register courtroom 100% (before: none) · plain lines 0% (100% before) · register entropy 0.00 (0.00 before) · no crutch word</diversity>",
+            StyleReport.diversityBlock(framed, direct),
+        )
+    }
+
     @Test
     fun `the entropy spreads from 0 to 1`() {
         assertEquals(1.0, StyleReport.entropy(ComicRegister.VOICE.map { 3 }), 1e-9, "every register of the voice as often")
@@ -249,13 +284,13 @@ class StyleReportTest {
                 - 10-21 21:20 flat 0.80: "Effet lenteur appliqué à Bartok."
                 - 10-21 21:30 repeats 0.75: "Le guichet céleste ferme ses portes, Bartok."
                 </tone_flags>
-                <diversity>openers distinct 1.00 (1.00 before) · top register divine_bureaucracy 60% (before: courtroom 50%) · register entropy 0.41 (0.75 before) · crutch « céleste » 40% (25% before)</diversity>
+                <diversity>openers distinct 1.00 (1.00 before) · top register divine_bureaucracy 75% (before: courtroom 50%) · plain lines 20% (0% before) · register entropy 0.41 (0.75 before) · crutch « céleste » 40% (25% before)</diversity>
                 """.trimIndent(),
                 review,
             )
             val alone = StyleDataset.read(fixture) { StyleReport.review(it, StyleDataset.BEFORE, null, words, utc) }
             assertEquals(
-                "<diversity>openers distinct 1.00 · top register courtroom 50% · register entropy 0.75 · crutch « céleste » 25%</diversity>",
+                "<diversity>openers distinct 1.00 · top register courtroom 50% · plain lines 0% · register entropy 0.75 · crutch « céleste » 25%</diversity>",
                 alone.lines().last(),
                 "no period before",
             )
@@ -283,7 +318,7 @@ class StyleReportTest {
             StyleReport.flagsBlock(clean, utc),
         )
         assertEquals(
-            "<diversity>top register food_critic 100% (before: courtroom 100%) · register entropy 0.00 (0.00 before) · no crutch word (« céleste » 100% before)</diversity>",
+            "<diversity>top register food_critic 100% (before: courtroom 100%) · plain lines 0% (0% before) · register entropy 0.00 (0.00 before) · no crutch word (« céleste » 100% before)</diversity>",
             StyleReport.diversityBlock(clean, listOf(line(2, "Avant.", ComicRegister.COURTROOM, crutches = listOf("céleste")))),
         )
     }
@@ -311,7 +346,7 @@ class StyleReportTest {
         val crutched = listOf(line(1, "Ligne.", ComicRegister.HOROSCOPE, crutches = listOf("<script>" + "x".repeat(500))))
         val diversity = StyleReport.diversityBlock(crutched, crutched)
         assertTrue(diversity.length <= StyleReport.DIVERSITY_MAX, "${diversity.length}")
-        assertTrue(diversity.startsWith("<diversity>top register horoscope 100% (100% before) · register entropy 0.00 (0.00 before) · crutch « ‹script›xxx"), diversity)
+        assertTrue(diversity.startsWith("<diversity>top register horoscope 100% (100% before) · plain lines 0% (0% before) · register entropy 0.00 (0.00 before) · crutch « ‹script›xxx"), diversity)
         assertTrue(diversity.endsWith("…</diversity>"), diversity)
     }
 
@@ -336,6 +371,26 @@ class StyleReportTest {
             fixture.sync()
             val line = StyleDataset.read(fixture) { StyleReport.lines(it, Period(StyleDataset.at("22:00"), StyleDataset.at("23:00"))) }.single()
             assertEquals(ComicRegister.OTHER, line.register, "a label whose register is no longer known counts as other")
+        }
+    }
+
+    /**
+     * M6 review 1, finding 1: the coverage counts the lines the review reads (said with `say`, 25 characters or more), as
+     * `SpeechTools` records them; the titles, the lines above the hotbar, the books and the short lines are never reviewed.
+     */
+    @Test
+    fun `the coverage counts the lines the review reads`() {
+        StyleDataset.journal().use { fixture ->
+            listOf(
+                "[title] DÉFI : LA COURSE AU PIC / Premier au sommet", "[actionbar] Il reste trente secondes, Bartok !",
+                "[book \"Prophétie\"] Le jour où la lave montera, Bartok rira moins.", "Bien joué, Bartok.", "Bravo, ${"🎉".repeat(15)}",
+            ).forEachIndexed { i, text ->
+                fixture.clock.now = StyleDataset.at("22:10").plusSeconds(i.toLong())
+                fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, text, null, 500L + i, null))
+            }
+            fixture.sync()
+            assertEquals(StyleReport.Coverage(10, 9), StyleDataset.read(fixture) { StyleReport.coverage(it, 50) })
+            assertEquals(StyleReport.Coverage(3, 2), StyleDataset.read(fixture) { StyleReport.coverage(it, 3) }, "the line never reviewed is the latest the review reads")
         }
     }
 

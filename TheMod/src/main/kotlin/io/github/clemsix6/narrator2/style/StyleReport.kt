@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.style
 
 import io.github.clemsix6.narrator2.core.ModelText
+import io.github.clemsix6.narrator2.director.StyleNoteKind
 import io.github.clemsix6.narrator2.memory.chronicle.ExchangeLog
 import io.github.clemsix6.narrator2.memory.doubleOrNull
 import io.github.clemsix6.narrator2.memory.enumOfId
@@ -59,13 +60,11 @@ object StyleReport {
         }
     }
 
-    /** A flaw the line review scores from 0 to 1 (M6 §3.3), the most serious first, as the notes of tone rank them. */
-    enum class Flaw {
-        DARK, CRUEL, OUT_OF_CHARACTER, FLAT, REPEATS;
-
-        /** `out_of_character`: the column of `narrator_lines`, and the word shown. */
-        val id: String get() = name.lowercase()
-    }
+    /**
+     * A flaw the line review scores from 0 to 1 (M6 §3.3): the drifts the notes of tone tell, the most serious first. Its
+     * `id` (`out_of_character`) is the column of `narrator_lines`, and the word shown.
+     */
+    typealias Flaw = StyleNoteKind
 
     /**
      * A line of the Director and its latest labels: [register] is null when the line was not reviewed, and [flaws] and
@@ -102,7 +101,8 @@ object StyleReport {
     )
 
     /**
-     * The measures of a period (M6 §3.7). The shares count the reviewed lines.
+     * The measures of a period (M6 §3.7). The shares count the reviewed lines, but the top register's, which counts the
+     * lines of the voice.
      *
      * @property lines the Director's lines said.
      * @property reviewed those the review labeled.
@@ -121,12 +121,21 @@ object StyleReport {
         val openersDistinct: Double,
         val tics: Int,
     ) {
-        /** The register of the most reviewed lines (ties: the enum's order); null without a review. */
-        val topRegister: ComicRegister? =
-            registers.entries.sortedWith(compareByDescending<Map.Entry<ComicRegister, Int>> { it.value }.thenBy { it.key.ordinal }).firstOrNull()?.key
+        /** The reviewed lines labeled with a register of the voice ([ComicRegister.VOICE]): the frames that rotate. */
+        private val voiceLines: Int get() = ComicRegister.VOICE.sumOf { registers[it] ?: 0 }
 
-        /** [topRegister]'s share, 0 to 1. */
-        val topRegisterShare: Double get() = topRegister?.let(::share) ?: 0.0
+        /**
+         * The register of the voice of the most reviewed lines (ties: the enum's order); null without one. `plain` and
+         * `other` are no frames (M6 review 1, D3): an evening of direct taunts leads with no register ([plainShare]).
+         */
+        val topRegister: ComicRegister? = registers.entries.filter { it.key in ComicRegister.VOICE }
+            .sortedWith(compareByDescending<Map.Entry<ComicRegister, Int>> { it.value }.thenBy { it.key.ordinal }).firstOrNull()?.key
+
+        /** [topRegister]'s share of the lines of the voice ([voiceLines]), 0 to 1: how much one frame holds the rotation. */
+        val topRegisterShare: Double get() = topRegister?.let { (registers[it] ?: 0).toDouble() / voiceLines } ?: 0.0
+
+        /** The share of the reviewed lines labeled `plain` (a direct taunt or answer, without a frame), 0 to 1. */
+        val plainShare: Double get() = share(ComicRegister.PLAIN)
 
         /** The registers of the voice's entropy over log(min(K, n)), 0 to 1 ([entropy]). */
         val registerEntropy: Double get() = entropy(ComicRegister.VOICE.map { registers[it] ?: 0 })
@@ -162,12 +171,15 @@ object StyleReport {
             timeoutSeconds = QUERY_TIMEOUT_SECONDS,
         ) { line() }
 
-    /** How many of the Director's [latest] lines the review labeled. */
+    /**
+     * Of the Director's [latest] lines the review reads ([Tics.opens]: said with `say` in 25 characters or more; neither a
+     * title, a line above the hotbar, a book nor a short aside), how many it labeled.
+     */
     fun coverage(connection: Connection, latest: Int): Coverage =
         connection.query(
             "SELECT count(*), count(register) FROM (SELECT n.register FROM narrator_lines n JOIN chat c ON c.id = n.id AND c.channel = 'narrator' " +
-                "WHERE c.turn_id IS NOT NULL ORDER BY n.ts DESC, n.id DESC LIMIT ?) latest",
-            latest,
+                "WHERE c.turn_id IS NOT NULL AND NOT regexp_matches(c.text, ?) AND length(c.text) >= ? ORDER BY n.ts DESC, n.id DESC LIMIT ?) latest",
+            Tics.KIND_PATTERN, Tics.OPENER_MIN_CHARS, latest,
             timeoutSeconds = QUERY_TIMEOUT_SECONDS,
         ) { Coverage(getInt(1), getInt(2)) }.single()
 
@@ -301,10 +313,10 @@ object StyleReport {
     }
 
     /**
-     * `<diversity>openers distinct 0.84 (0.80 before) · top register divine_bureaucracy 38% (44% before) · register
-     * entropy 0.71 (0.65 before) · crutch « céleste » 11% (18% before)</diversity>`: the measures of [lines], their
-     * openers read with [names], and those of [before] in parentheses when given. The openers are left out when no line
-     * opens (none said with `say` in 25 characters or more).
+     * `<diversity>openers distinct 0.84 (0.80 before) · top register divine_bureaucracy 38% (44% before) · plain lines
+     * 20% (12% before) · register entropy 0.71 (0.65 before) · crutch « céleste » 11% (18% before)</diversity>`: the
+     * measures of [lines], their openers read with [names], and those of [before] in parentheses when given. The openers
+     * are left out when no line opens (none said with `say` in 25 characters or more).
      */
     fun diversityBlock(lines: List<Line>, before: List<Line>?, names: Tics.Names = Tics.Names.NONE): String {
         val now = measures(lines, names)
@@ -319,6 +331,7 @@ object StyleReport {
                 add(if (lines.isEmpty()) "nothing said in this period" else "no line reviewed in this period")
             } else {
                 add(topRegister(now, previous))
+                add("plain lines ${percent(now.plainShare)}${previous?.let { " (${percent(it.plainShare)} before)" }.orEmpty()}")
                 add("register entropy ${decimal(now.registerEntropy)}${previous?.let { " (${decimal(it.registerEntropy)} before)" }.orEmpty()}")
                 add(topCrutch(now, previous))
             }
@@ -349,15 +362,17 @@ object StyleReport {
 
     /**
      * `top register divine_bureaucracy 38% (44% before)`; `top register sports_commentary 30% (before: divine_bureaucracy
-     * 44%)` when another register led then.
+     * 44%)` when another register led then; `no register of the voice` when every reviewed line was plain or other.
      */
     private fun topRegister(now: Measures, previous: Measures?): String {
-        val top = now.topRegister!!
+        val before = previous?.topRegister
         val then = when {
             previous == null -> ""
-            previous.topRegister == top -> " (${percent(previous.topRegisterShare)} before)"
-            else -> " (before: ${previous.topRegister!!.id} ${percent(previous.topRegisterShare)})"
+            before == null -> " (before: none)"
+            before == now.topRegister -> " (${percent(previous.topRegisterShare)} before)"
+            else -> " (before: ${before.id} ${percent(previous.topRegisterShare)})"
         }
+        val top = now.topRegister ?: return "no register of the voice$then"
         return "top register ${top.id} ${percent(now.topRegisterShare)}$then"
     }
 
@@ -365,11 +380,11 @@ object StyleReport {
     private fun topCrutch(now: Measures, previous: Measures?): String {
         val top = now.crutches.firstOrNull()?.first
         if (top == null) {
-            val then = previous?.crutches?.firstOrNull()?.first?.let { " (« ${ModelText.escape(it)} » ${percent(previous.crutchShare(it))} before)" }.orEmpty()
+            val then = previous?.crutches?.firstOrNull()?.first?.let { " (${ModelText.guillemets(it)} ${percent(previous.crutchShare(it))} before)" }.orEmpty()
             return "no crutch word$then"
         }
         val then = previous?.let { " (${percent(it.crutchShare(top))} before)" }.orEmpty()
-        return "crutch « ${ModelText.escape(top)} » ${percent(now.crutchShare(top))}$then"
+        return "crutch ${ModelText.guillemets(top)} ${percent(now.crutchShare(top))}$then"
     }
 
     /** [counts] the largest first, then in alphabetical order. */
