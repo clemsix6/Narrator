@@ -21,6 +21,12 @@ sealed interface Added<T> {
 }
 
 /**
+ * An idea written ([row], never a duplicate): the ideas its writing [closed] (the season it replaced, the idea it
+ * superseded beyond the twelve), and how many ideas are [open] once it is written. Its writer needs not read them again.
+ */
+data class IdeaAdded(val row: Idea, val closed: List<Idea>, val open: Int)
+
+/**
  * Which canon entries to list. [kinds]: all when empty; [open]: true for open entries only, false for
  * closed ones, null for both; [player]: the entries that concern this player (or everyone). Archived
  * entries are never listed. Ordered by due time (none last), then importance, then newest.
@@ -51,8 +57,8 @@ data class RecallContext(val conversationId: String?, val turnId: Long?, val eve
  *      its evidence (an `e…` line of the `narrator` or `operator` channel, a `t…` call of `say`,
  *      `give_book` or `show_title`). An interaction quote is words of that player in the run's window;
  *    - [Source.DREAMER] (it reads the players' chat, never hears the Narrator): only observations among
- *      the memories; only planned arcs and lore in the canon, without quote; resolves arcs only; no
- *      interaction. Its running gags change through [setGag];
+ *      the memories; only lore in the canon, without quote; resolves active arcs only (a planned arc is the
+ *      storyteller's, and the Narrator starts it); no interaction. Its running gags change through [setGag];
  *    - [Source.STORYTELLER] (it invents what comes next, M6 §6.5): no memory, no interaction; only planned arcs and
  *      lore in the canon, without quote; resolves a planned arc only, to abandon it. It alone writes ideas;
  *    - a row the mechanics engine tracks (`mechanic`, M4 §3.3) is written by the Director's engine tools
@@ -173,8 +179,9 @@ interface MemoryStore {
      * arsenal is not in the database); no repeat of an idea of the last 14 days (BM25 against it at 0.6 of BM25 against
      * itself). A new season closes the open one (`dropped`, `replaced by P-…`); beyond [MemoryLimits.OPEN_IDEAS] open
      * ideas, the oldest other than the season, never dealt if one is, expires (`superseded by P-…`). Never a duplicate.
+     * Returns the idea with those it closed and the count of open ideas ([IdeaAdded]).
      */
-    suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea>
+    suspend fun addIdea(draft: IdeaDraft, author: Author): IdeaAdded
 
     /** Closes the open idea [ref]: `dropped`, with [reason] (≤ [MemoryLimits.IDEA_DROP_REASON]). Nothing is deleted. */
     suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea

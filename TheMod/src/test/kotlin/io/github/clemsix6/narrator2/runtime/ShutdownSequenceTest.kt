@@ -25,6 +25,7 @@ import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -249,6 +250,42 @@ class ShutdownSequenceTest {
         assertEquals("phase STOPPED", steps.last())
         assertContains(logs.text, "stopped waiting for the Journal")
         assertTrue(claude.isClosed, "the clients are closed anyway")
+    }
+
+    /**
+     * Constat 4 of the M6 review, part 2: a Journal whose close returned with its writer still running holds its database.
+     * The log says so (never "Journal closed"), and a new close waits for that Journal once more, and for nothing else.
+     */
+    @Test
+    fun `a Journal still holding its database after its close is said so, and a new close waits for it alone`() {
+        val held = AtomicBoolean(true)
+        val journal = object : Journal by DisabledJournal("test") {
+            override val holdsDatabase: Boolean get() = held.get()
+
+            override fun close(timeout: Duration) {
+                steps += "journal close (timeout ${timeout.toMillis()} ms)"
+            }
+        }
+        val sequence = sequence(journal = journal)
+        sequence.begin()
+        steps.clear()
+
+        LogCapture().use { logs ->
+            sequence.finish()
+            assertEquals(listOf("observer flushed", "journal close (timeout 10000 ms)", "phase STOPPED"), steps.toList())
+            assertContains(logs.text, "stopping: the Journal did not close within its 10000 ms: its database stays open until its writer ends")
+            assertFalse("Journal closed" in logs.text, logs.text)
+        }
+        assertTrue(claude.isClosed, "the clients are closed all the same")
+
+        steps.clear()
+        sequence.close()
+        assertEquals(listOf("journal close (timeout 10000 ms)"), steps.toList(), "only the Journal, once more")
+
+        held.set(false)
+        steps.clear()
+        sequence.close()
+        assertTrue(steps.isEmpty(), "closed for good: nothing more: $steps")
     }
 
     @Test

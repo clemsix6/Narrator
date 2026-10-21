@@ -3,10 +3,8 @@ package io.github.clemsix6.narrator2.tool.storyteller
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.forge.ModuleStatus
-import io.github.clemsix6.narrator2.memory.Idea
 import io.github.clemsix6.narrator2.memory.IdeaDraft
 import io.github.clemsix6.narrator2.memory.IdeaKind
-import io.github.clemsix6.narrator2.memory.IdeaStatus
 import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
@@ -92,8 +90,8 @@ data class ProposeIdeaArgs(
  * `propose_idea`: writes one idea of the programme, `open`, never told to anyone (M6 §6.2, §12.4). The players are
  * found by name ([knownPlayers]), the refs parsed; an idea `module` names a module ready in the arsenal, and an idea
  * `module` or `forge` needs the Forge running (the arsenal is not in the database: the store cannot check it). The
- * store checks the rest (`DuckMemoryStore.addIdea`). The answer says the ideas the new one closed: the season it
- * replaced, the idea it superseded beyond the twelve.
+ * store checks the rest (`DuckMemoryStore.addIdea`). The answer says the ideas the new one closed (the season it
+ * replaced, the idea it superseded beyond the twelve) and how many are open, as the store returns them.
  */
 class ProposeIdeaTool : MemoryTool<ProposeIdeaArgs>(
     name = "propose_idea",
@@ -125,17 +123,14 @@ class ProposeIdeaTool : MemoryTool<ProposeIdeaArgs>(
             brief = args.brief?.trim(),
             playHours = args.hours,
         )
-        val store = ctx.memory.store
-        val before = store.ideas(IdeaStatus.OPEN).map { it.ref }.toSet()
-        val idea = store.addIdea(draft, ctx.author()).row
-        val open = store.ideas(IdeaStatus.OPEN)
-        val closed = (before - open.map { it.ref }.toSet()).mapNotNull { store.row(it) as? Idea }
-        log.info("${idea.ref} ${idea.kind.id} « ${idea.title} » written by ${ctx.caller.conversationId}${closed.joinToString("") { "; ${it.ref} ${it.status.id}" }}")
-        val also = closed.joinToString("") { "; ${it.ref} ${it.kind.id} « ${ModelText.escape(it.title)} » ${it.status.id}: ${ModelText.escape(it.closeReason.orEmpty())}" }
+        val added = ctx.memory.store.addIdea(draft, ctx.author())
+        val idea = added.row
+        log.info("${idea.ref} ${idea.kind.id} « ${idea.title} » written by ${ctx.caller.conversationId}${added.closed.joinToString("") { "; ${it.ref} ${it.status.id}" }}")
+        val also = added.closed.joinToString("") { "; ${it.ref} ${it.kind.id} « ${ModelText.escape(it.title)} » ${it.status.id}: ${ModelText.escape(it.closeReason.orEmpty())}" }
         val who = if (idea.players.isEmpty()) "whoever is online" else ToolText.names(idea.players)
         return ToolResult.ok(
             "ok: ${idea.ref} ${idea.kind.id} « ${ModelText.escape(idea.title)} » for $who, open for ${args.hours}h of world play$also; " +
-                "${open.size} ${if (open.size == 1) "idea" else "ideas"} open",
+                "${added.open} ${if (added.open == 1) "idea" else "ideas"} open",
         )
     }
 

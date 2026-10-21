@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.memory.dream
 
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.memory.BriefText
@@ -47,6 +48,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.style.StyleReport
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.shownName
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -84,6 +86,7 @@ import kotlin.math.roundToLong
  * - **Step 6** ([merges]): the merge candidates of the hygiene, with both texts.
  */
 internal class DreamInputs(private val services: NarratorServices) {
+    private val log = Log.memory
     private val memory get() = services.memory
     private val journal get() = services.journal
 
@@ -307,28 +310,25 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     /**
      * The first message of step 2; null when there is nothing to review (no line, no gag, no review). Its style blocks
-     * (M6 §4.6) cover the period since the previous review (the first review: since the oldest line read), compared
-     * with the period between the two reviews before it.
+     * (M6 §4.6, [style]) cover the period since the previous review (the first review: since the oldest line read),
+     * compared with the period between the two reviews before it.
      */
     suspend fun review(runId: Long, now: Instant): String? {
         val language = services.settings.get().config.language
         val words = HeuristicWords.bundled(language) ?: HeuristicWords.bundled(DEFAULT_LANGUAGE)
-        val reviews = memory.store.docVersions(DocKey.Review.key)
-        val review = reviews.firstOrNull()
+        val review = memory.store.doc(DocKey.Review.key)
         val read = journal.read(READ_TIMEOUT_MS) { connection ->
             val tics = Tics.render(Tics.read(connection), now)
             val lines = connection.query(
                 "SELECT id, ts, text, recipients FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT ?", LINES_COUNT,
             ) { Said(getLong(1), instant(2), "narrator", getString(3)) }
             val reactions = if (lines.isEmpty() || words == null) emptyList() else Reactions.read(connection, lines.minOf { it.ts }, now.plusMillis(1), words)
-            val from = minOf(review?.writtenAt ?: lines.minOfOrNull { it.ts } ?: now, now)
-            val before = reviews.getOrNull(1)?.let { StyleReport.Period(it.writtenAt, reviews[0].writtenAt) }
-            val style = words?.let { StyleReport.review(connection, StyleReport.Period(from, now), before, it, zone) }
-            Read(tics, lines, reactions, style)
+            Read(tics, lines, reactions)
         }
-        val (tics, lines, reactions, style) = read
+        val (tics, lines, reactions) = read
         val gags = memory.store.canon(CanonFilter(kinds = GAG_KINDS, open = true, limit = GAGS_COUNT))
         if (lines.isEmpty() && gags.isEmpty() && review == null) return null
+        val style = words?.let { style(review, lines, now, it) }
         val byLine = reactions.groupBy { it.lineId }
         val lineItems = lines.map { line ->
             val who = byLine[line.id]?.joinToString(" · ") { "${it.player.shownName} ${it.kind.id}" } ?: "no reaction"
@@ -347,8 +347,26 @@ internal class DreamInputs(private val services: NarratorServices) {
         ).joinToString("\n")
     }
 
-    /** What step 2 reads from the Journal: the tics, the latest lines, their reactions, the style blocks (null without reaction words). */
-    private data class Read(val tics: List<String>, val lines: List<Said>, val reactions: List<Reactions.Reaction>, val style: String?)
+    /** What step 2 reads from the Journal: the tics, the latest lines, their reactions. */
+    private data class Read(val tics: List<String>, val lines: List<Said>, val reactions: List<Reactions.Reaction>)
+
+    /**
+     * The three style blocks of step 2 (M6 §4.6) since the current [review] (without one, since the oldest of [lines]),
+     * compared with the period between it and the version before: two versions read, never the review's every version
+     * (M6 review 2, finding 7). Read apart and never decisive: null when they cannot be read, and the review goes on
+     * without them.
+     */
+    private suspend fun style(review: MemoryDoc?, lines: List<Said>, now: Instant, words: HeuristicWords): String? = try {
+        val from = minOf(review?.writtenAt ?: lines.minOfOrNull { it.ts } ?: now, now)
+        val previous = review?.takeIf { it.version > 1 }?.let { memory.store.doc(DocKey.Review.key, it.version - 1) }
+        val before = if (review != null && previous != null) StyleReport.Period(previous.writtenAt, review.writtenAt) else null
+        journal.read(READ_TIMEOUT_MS) { StyleReport.review(it, StyleReport.Period(from, now), before, words, zone) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.warn("dream: the style of the review could not be read, step 2 goes without it: ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
 
     private fun gagLine(entry: CanonEntry): String {
         val to = entry.players.takeIf { it.isNotEmpty() }?.let { " → ${ToolText.names(it)}" }.orEmpty()

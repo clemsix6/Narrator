@@ -50,6 +50,22 @@ class PricesTest {
     }
 
     @Test
+    fun `a cost is in dollars, one label for the calls without a price, and nothing is guessed from a name`() {
+        val prices = Prices(mapOf("claude-x" to ModelPrice(input = 1.0, output = 2.0, cacheRead = 0.1, cacheWrite = 1.25)))
+        val x = ModelTokens("claude-x", 3, 0, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+        val unknown = ModelTokens("claude-x-2", 2, 1, 1_000, 0, 0, 10)
+        assertEquals(Cost(4.35, 3, 0), prices.costOf(listOf(x)))
+        assertEquals("\$4.35", prices.costOf(listOf(x)).text)
+        assertEquals("\$ ?", prices.costOf(listOf(unknown)).text)
+        assertEquals("\$4.35 + 2 calls at \$ ?", prices.costOf(listOf(x, unknown)).text)
+        assertEquals("\$4.35 + 1 call at \$ ?", prices.costOf(listOf(x, unknown.copy(calls = 1))).text)
+        assertEquals("\$0", prices.costOf(emptyList()).text)
+        assertEquals("\$0", (Cost.NONE + Cost.NONE).text)
+        assertEquals(ModelTokens("all", 5, 1, 1_001_000, 1_000_000, 1_000_000, 1_000_010), ModelTokens.sum("all", listOf(x, unknown)))
+        assertEquals(3_000_000, x.read)
+    }
+
+    @Test
     fun `dollars show cents from a dollar up, two significant digits below`() {
         assertEquals("$0", Prices.dollars(0.0))
         assertEquals("$12.40", Prices.dollars(12.4))

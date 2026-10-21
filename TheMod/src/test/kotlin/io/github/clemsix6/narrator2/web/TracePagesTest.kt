@@ -18,9 +18,10 @@ import io.github.clemsix6.narrator2.trace.Transcripts
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
-import java.nio.file.Files
+import java.nio.file.Path
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.util.concurrent.CopyOnWriteArrayList
@@ -58,11 +59,13 @@ class TracePagesTest {
         data.fixture.sync()
     }
 
+    @TempDir
+    lateinit var dataDir: Path
+
     @AfterEach
     fun close() = data.close()
 
     private val services by lazy {
-        val dataDir = Files.createTempDirectory("narrator2-trace-pages")
         TestServices(
             clock = TestClock(TraceDataset.NOW), journal = recording, dataDir = dataDir,
             transcripts = Transcripts(dataDir.resolve("logs").resolve("conversations"), enabled = true),
@@ -153,6 +156,29 @@ class TracePagesTest {
         assertContains(task, "<p class=\"failure\">refused by the safety filter (category cyber)</p>")
         assertContains(page("/tasks"), "<tr class=\"failure\"><td class=\"num\"><a href=\"/tasks/8\">T-8</a>")
         assertContains(page("/conversations"), "<tr class=\"failure\"><td><a href=\"/conversations/analyst-cccc\">Task T-8</a>")
+    }
+
+    @Test
+    fun `the overview prices the roles as the costs page does, one label for a model without a price, and lists the turns as turns does`() {
+        call(43, "claude-opus-4-7", "end_turn", null) // a model the configuration does not price
+        data.fixture.sync()
+
+        val overview = page("/")
+        // Opus 5.5 at 4 / 20 / 0.20 $ per million: the Director (1 850 in, 244 800 cache read, 412 out), the Analyst
+        // (3 000 in, 200 out); Haiku at 0.10 / 0.50 $: the reflexes (90 in, 30 out).
+        assertContains(overview, ">\$0.065 + 1 call at \$ ? · 5 calls</text>", message = "the Director's bar")
+        assertContains(overview, ">\$0.016 · 1 call</text>")
+        assertContains(overview, ">\$0.000024 · 2 calls, 1 failed</text>")
+        assertContains(overview, "Total \$0.081 + 1 call at \$ ?. At the API")
+        val costs = page("/costs?period=24h")
+        assertContains(costs, ">\$0.065 + 1 call at \$ ? · 5 calls</text>", message = "the same bar on /costs")
+        assertContains(costs, "<dt>Cost</dt><dd>\$0.081 + 1 call at \$ ?</dd>", message = "the same total")
+
+        // The latest turns, in the table of /turns: the chapter links to its conversation, the time taken is there.
+        val turns = overview.substringAfter("<h2>Latest turns</h2>")
+        assertContains(turns, "<th class=\"num\">Took</th>")
+        assertContains(turns, "<a href=\"/turns/42\">#42</a>")
+        assertContains(turns, "<a href=\"/conversations/${TraceDataset.CHAPTER}\">#3</a>")
     }
 
     @Test

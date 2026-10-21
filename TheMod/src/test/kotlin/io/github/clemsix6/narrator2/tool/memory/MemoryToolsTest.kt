@@ -300,7 +300,7 @@ class MemoryToolsTest {
     }
 
     @Test
-    fun `the Dreamer remembers only lore and observations, never with a quote, and resolves only arcs`() = fixture { f ->
+    fun `the Dreamer remembers only lore and observations, never with a quote, and resolves only active arcs`() = fixture { f ->
         val dreamer = f.dreamer(8)
         assertInvalid(
             "the Dreamer remembers only lore or an observation, not a promise: what the Narrator tells the players " +
@@ -332,7 +332,15 @@ class MemoryToolsTest {
             "the Dreamer resolves only arcs, and C-1002 is a promise: the Narrator and the Chronicler settle the rest",
             f.call(resolve, """{"id":"C-1002","outcome":"broken","note":"Le Narrateur a gardé les bottes de Mimosa."}""", dreamer),
         )
-        assertEquals(listOf("active", "active"), f.rows("SELECT status FROM canon ORDER BY id") { getString(1) })
+        // M6 review 2, D6: a planned arc is the storyteller's, and the Narrator starts it; the Dreamer touches it neither way.
+        f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa.","theme":"proces_des_parieurs"}""", f.storyteller(8))
+        listOf("active", "abandoned").forEach { outcome ->
+            assertInvalid(
+                "the Dreamer resolves only an active arc, and C-1003 is planned: a planned arc is the storyteller's, and the Narrator starts it",
+                f.call(resolve, """{"id":"C-1003","outcome":"$outcome","note":"Le procès des parieurs n'aura pas lieu."}""", dreamer),
+            )
+        }
+        assertEquals(listOf("active", "active", "planned"), f.rows("SELECT status FROM canon ORDER BY id") { getString(1) })
     }
 
     @Test

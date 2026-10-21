@@ -13,7 +13,8 @@ import kotlin.test.fail
  * The prompts only name what the model really has (M1_M2 §18.2, T22, M3 §16). The lesson of the v1: tools
  * that did nothing were presented to the model as working. Every identifier quoted between backticks in
  * `director.md`, `analyst.md`, `scout.md`, `forger.md`, `chronicler.md`, `dreamer.md` and `storyteller.md` must be a tool
- * of that role's set, with everything wired (the memory, the mechanics engine and the Forge included, M4 §12.1, M5 §9.4);
+ * of that role's set, with everything wired (the memory, the mechanics engine, the Forge and the storyteller included, M4 §12.1,
+ * M5 §9.4, M6 §12.6);
  * and since each prompt says it lists "all the tools", each role's set must be named in full by its prompt.
  */
 class PromptToolMentionsTest {
@@ -21,7 +22,7 @@ class PromptToolMentionsTest {
     private val services = TestServices()
     private val everythingWired = ToolEnv(
         journalAvailable = true, workerRoles = setOf(Role.ANALYST, Role.SCOUT), memoryAvailable = true, mechanicsAvailable = true,
-        forgeAvailable = true,
+        forgeAvailable = true, storytellerAvailable = true,
     )
 
     private fun toolsOf(role: Role, env: ToolEnv = everythingWired): Set<String> = ToolCatalog.toolSetFor(role, env, services).names.toSet()
@@ -39,7 +40,7 @@ class PromptToolMentionsTest {
 
     @Test
     fun `the Director's prompt names its tools, all of them and nothing else`() {
-        assertEquals(47, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine and the Forge (M5 §9.1): ${toolsOf(Role.DIRECTOR)}")
+        assertEquals(48, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine, the Forge and inspire (M6 §12.6): ${toolsOf(Role.DIRECTOR)}")
         assertNamesExactly("director", Role.DIRECTOR)
     }
 
@@ -72,16 +73,15 @@ class PromptToolMentionsTest {
         assertNamesExactly("dreamer", Role.DREAMER)
     }
 
-    /** The storyteller always sees `inspire` (`MemoryAgents` and `Workers` set `storytellerAvailable` for it, M6 §12.2). */
+    /** The storyteller always sees `inspire` (`MemoryAgents` and `Workers` set `storytellerAvailable` for it, M6 §12.2), never `sql` (M6-16). */
     @Test
     fun `the storyteller's prompt names its tools, all of them and nothing else`() {
-        val storyteller = everythingWired.copy(storytellerAvailable = true)
         assertEquals(
-            setOf("propose_idea", "drop_idea", "inspire", "remember", "resolve", "recall", "player_profile", "sql"),
-            toolsOf(Role.STORYTELLER, storyteller),
-            "the storyteller's tools (M6 §6.5)",
+            setOf("propose_idea", "drop_idea", "inspire", "remember", "resolve", "recall", "player_profile"),
+            toolsOf(Role.STORYTELLER),
+            "the storyteller's tools (M6 §6.5, M6-16)",
         )
-        assertNamesExactly("storyteller", Role.STORYTELLER, storyteller)
+        assertNamesExactly("storyteller", Role.STORYTELLER)
     }
 
     @Test

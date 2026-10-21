@@ -471,7 +471,7 @@ class ModuleEngineTest {
 
         f.engine.stopping()
         val skipped = f.decisions(ModuleEngine.SKIPPED).single()
-        assertEquals("the server stops: 3 modules stopped until the restart (${kept.ref}, ${broken.ref}, ${brief.ref}), 0 acts in their queues dropped", skipped.reason)
+        assertEquals("the Narrator stops: 3 modules stopped until it starts again (${kept.ref}, ${broken.ref}, ${brief.ref}), 0 acts in their queues dropped", skipped.reason)
         val saved = MechanicsState.decode(MechanicsState.encode(f.store.get()))
         assertEquals(mapOf("k" to "v", "n" to "3", "stopped" to "SERVER_STOPPING"), saved.module(kept.ref.id)!!.storage, "its storage, saved in its stop")
         f.forge.arsenal.replace(changed.copy(hash = "sha256:edited"))

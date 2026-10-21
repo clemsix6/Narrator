@@ -41,12 +41,16 @@ fun errorLine(text: String): Component = narratorLine(text, ChatFormatting.RED)
 fun runningNarrator(source: CommandSourceStack): NarratorRuntime? {
     val runtime = NarratorRuntime.current
     when {
-        runtime == null -> source.sendFailure(errorLine("the Narrator is not running, see the server log."))
+        runtime == null -> source.sendFailure(errorLine(notRunning()))
         runtime.phase != Phase.RUNNING -> source.sendFailure(errorLine("the server is stopping."))
         else -> return runtime
     }
     return null
 }
+
+/** Why no Narrator runs: a restart rebuilds it (M6 §9), or it could not start. */
+fun notRunning(): String =
+    if (NarratorRuntime.restarts.running) "a restart is running, try again once it is done." else "the Narrator is not running, see the server log."
 
 /**
  * Runs [work] in the runtime's scope, off the server thread (network, database, files), and sends the

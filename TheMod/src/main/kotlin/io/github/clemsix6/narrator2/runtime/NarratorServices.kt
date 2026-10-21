@@ -35,11 +35,12 @@ enum class Phase {
 }
 
 /**
- * What the Narrator's components use, from the server start to its stop. Implemented by
- * `NarratorRuntime`; unit tests implement it with fakes. No component depends on the runtime class.
+ * What the Narrator's components use, from the runtime's start to its stop: the server's, or a
+ * `/narrator restart` (M6 §9), which replaces the whole runtime. Implemented by `NarratorRuntime`; unit
+ * tests implement it with fakes. No component depends on the runtime class.
  *
- * Everything here lives as long as the server, except [settings], whose content `/narrator reload`
- * replaces.
+ * Everything here lives as long as the runtime, except [server], which outlives it, and [settings],
+ * whose content `/narrator reload` replaces.
  */
 interface NarratorServices {
     val server: MinecraftServer

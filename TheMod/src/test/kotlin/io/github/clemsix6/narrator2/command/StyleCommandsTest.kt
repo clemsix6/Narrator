@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.style.ComicRegister
 import io.github.clemsix6.narrator2.style.DisabledStyle
 import io.github.clemsix6.narrator2.style.Diversity
 import io.github.clemsix6.narrator2.style.StyleDataset
+import io.github.clemsix6.narrator2.style.StyleSamples
 import io.github.clemsix6.narrator2.testing.FakeStyle
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
@@ -21,6 +22,7 @@ import kotlinx.coroutines.runBlocking
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.network.chat.Component
 import org.junit.jupiter.api.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -32,7 +34,7 @@ import kotlin.test.assertTrue
 class StyleCommandsTest {
     private val watch = FakeStyle().apply {
         situation = "Style: crutch words « céleste » (2 of your last 30 lines)"
-        measured = Diversity(50, 0.8, ComicRegister.DIVINE_BUREAUCRACY, 0.38, 0.71, listOf("céleste" to 6, "guichet" to 3), 3)
+        measured = Diversity(50, 0.8, ComicRegister.DIVINE_BUREAUCRACY, 0.38, 0.71, listOf("céleste" to 6, "guichet" to 3), 3, plainShare = 0.2)
     }
 
     private fun report(services: TestServices): List<Component> = runBlocking { StyleCommands.report(services) }
@@ -62,7 +64,7 @@ class StyleCommandsTest {
                         "[Narrator] style of the Director",
                         "Watch: on · line review on · tone notes on · resting openers refused",
                         "Style: crutch words « céleste » (2 of your last 30 lines)",
-                        "Latest 50 lines: openers distinct 0.80 · top register divine_bureaucracy 38% · register entropy 0.71 · crutch « céleste » in 6 lines · 3 tics",
+                        "Latest 50 lines: openers distinct 0.80 · top register divine_bureaucracy 38% · plain lines 20% · register entropy 0.71 · crutch « céleste » in 6 lines · 3 tics",
                         "Review: 9 of the Director's latest 10 lines labeled",
                         "Tone flags, the latest 3 (a flaw at 0.7 or more):",
                         "  21:30:00 repeats 0.75: \"Le guichet céleste ferme ses portes, Bartok.\"",
@@ -106,6 +108,35 @@ class StyleCommandsTest {
             "Latest 12 lines: openers distinct 0.92 · no line labeled · no crutch word · 1 tic",
             StyleCommands.diversityLine(Diversity(12, 0.92, null, 0.0, 0.0, emptyList(), 1)),
         )
+        assertEquals(
+            "Latest 12 lines: openers distinct 0.92 · no register of the voice · plain lines 100% · no crutch word · 1 tic",
+            StyleCommands.diversityLine(Diversity(12, 0.92, null, 0.0, 0.0, emptyList(), 1, plainShare = 1.0)),
+        )
+    }
+
+    @Test
+    fun `the watch's diversity says the register of the voice and the plain lines, even when every labeled line is plain`() {
+        val texts = listOf(
+            "Le ciel observe Bartok avec une patience qui fond à vue d'œil.",
+            "Mimosa creuse encore, et la montagne commence à se plaindre.",
+            "Trois morts ce soir : un record que personne n'avait demandé.",
+            "Vingt secondes pour traverser la lave, Pistache. Bonne chance.",
+        )
+        fun line(vararg registers: ComicRegister): String {
+            val watch = StyleSamples.watch(texts)
+            registers.forEachIndexed { i, register -> watch.labeled(StyleSamples.labels(i + 1L, register)) }
+            return StyleCommands.diversityLine(watch.diversity())
+        }
+
+        assertContains(line(), " · no line labeled · ")
+        // Plain and other are no frames (M6 §3.7): no top register, and not « no line labeled » either.
+        assertContains(line(ComicRegister.PLAIN, ComicRegister.PLAIN, ComicRegister.PLAIN, ComicRegister.OTHER), " · no register of the voice · plain lines 75% · ")
+        assertContains(line(ComicRegister.OTHER), " · no register of the voice · plain lines 0% · ")
+        // The top register's share counts the lines of the voice only: 2 courtroom of 3.
+        assertContains(
+            line(ComicRegister.COURTROOM, ComicRegister.COURTROOM, ComicRegister.PLAIN, ComicRegister.FOOD_CRITIC),
+            " · top register courtroom 67% · plain lines 25% · register entropy 0.58 · ",
+        )
     }
 
     @Test
@@ -122,7 +153,7 @@ class StyleCommandsTest {
             repeat(3) { bus.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Ligne $it.", null, 1, null)) }
             val loud = FakeStyle().apply {
                 situation = "Style: " + "openers at rest « Vingt secondes », « Bonsoir, mortels » · ".repeat(7).take(393)
-                measured = Diversity(50, 0.8, ComicRegister.CLASSIFIED_ADS, 0.38, 0.71, listOf("anticonstitutionnellement" to 6), 13)
+                measured = Diversity(50, 0.8, ComicRegister.CLASSIFIED_ADS, 0.38, 0.71, listOf("anticonstitutionnellement" to 6), 13, plainShare = 0.38)
             }
             val config = NarratorConfig(style = StyleConfig(lineReview = true, toneNotes = false, refuseRestingOpeners = false))
             val reply = report(TestServices(clock = fixture.clock, settings = testSettings(config), bus = bus, journal = fixture.journal, style = loud))

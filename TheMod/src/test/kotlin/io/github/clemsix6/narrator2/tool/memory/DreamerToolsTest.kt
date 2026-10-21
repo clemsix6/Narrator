@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.Author
 import io.github.clemsix6.narrator2.memory.CanonDraft
 import io.github.clemsix6.narrator2.memory.CanonKind
+import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleDraft
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.MemoryDraft
@@ -65,7 +66,7 @@ class DreamerToolsTest {
     }
 
     @Test
-    fun `the Dreamer never commits the Narrator nor plans an arc, keeps lore, and resolves arcs only`() {
+    fun `the Dreamer never commits the Narrator nor plans an arc, keeps lore, and resolves active arcs only`() {
         val e = f.evening()
         invalid(
             f.call(RememberTool(), """{"kind": "threat", "what": "Le Narrateur a menacé Bartok d'une pluie de slimes.", "players": ["Bartok"]}"""),
@@ -96,6 +97,18 @@ class DreamerToolsTest {
         }
         assertTrue(ok(f.call(ResolveTool(), """{"id": "$ref", "outcome": "abandoned", "note": "Le tournoi de pêche n'a pas eu lieu."}""")).startsWith("ok: $ref arc → Bartok is now abandoned"))
         assertTrue(ok(f.call(RememberTool(), """{"kind": "lore", "what": "Le lac de lave du Nether porte le nom de Bain de Bartok."}""")).endsWith("(lore)"))
+
+        // M6 review 2, D6: an arc the storyteller planned is its own until the Narrator starts it; the Dreamer touches it neither way.
+        val planned = f.write {
+            addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), Author(Source.STORYTELLER, runId = 1)).row.ref
+        }
+        listOf("active", "abandoned").forEach { outcome ->
+            invalid(
+                f.call(ResolveTool(), """{"id": "$planned", "outcome": "$outcome", "note": "Le procès des parieurs n'aura pas lieu."}"""),
+                "the Dreamer resolves only an active arc, and $planned is planned: a planned arc is the storyteller's, and the Narrator starts it",
+            )
+        }
+        assertEquals(listOf("planned"), f.rows("SELECT status FROM canon WHERE id = ${planned.id}") { getString(1) })
     }
 
     @Test

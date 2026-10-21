@@ -1,16 +1,32 @@
 package io.github.clemsix6.narrator2.memory.dream
 
+import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonDraft
+import io.github.clemsix6.narrator2.memory.CanonKind
+import io.github.clemsix6.narrator2.memory.CanonStatus
+import io.github.clemsix6.narrator2.memory.DocKey
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaStatus
+import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryJobs
+import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.RunStatus
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.dream.DreamerFixture.Companion.at
 import io.github.clemsix6.narrator2.memory.dream.DreamerFixture.Companion.text
+import io.github.clemsix6.narrator2.testing.Hold
+import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.budgetExceeded
 import io.github.clemsix6.narrator2.testing.httpError
 import io.github.clemsix6.narrator2.testing.reply
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -154,5 +170,101 @@ class DreamerTest {
         assertEquals(RunStatus.DONE, without.status, without.report)
         assertTrue(" · step 5 skipped: memory.programme is false · step 6 done: 1 pair read" in without.report!!, without.report)
         assertEquals(0L, f.count("conversations", "role = 'storyteller'"))
+    }
+
+    /**
+     * M6 review 2, findings 8 and 12: a programme whose conversation fails after a write leaves the dream done, its Grimoire
+     * rewritten; its decision counts the arcs it planned or abandoned with its ideas.
+     */
+    @Test
+    fun `a programme that fails leaves the dream done, and its decision counts the arcs it abandoned`() = runBlocking<Unit> {
+        f.evening()
+        val trial = f.write {
+            addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), Author(Source.STORYTELLER, runId = 1)).row.ref
+        }
+        f.fake.enqueue(
+            reply { text("Rien de neuf sur Bartok.") },
+            reply { text("Rien de neuf sur Mimosa.") },
+            reply { text("Rien à revoir.") },
+            reply { text("Rien à écrire dans la chronique.") },
+            reply { toolUse("write_grimoire", """{"text": "$GRIMOIRE"}""") },
+            reply { text("Grimoire écrit.") },
+            reply { toolUse("resolve", """{"id": "$trial", "outcome": "abandoned", "note": "Personne n'a parié sur le pont."}""") },
+            httpError(400, message = "the programme breaks"),
+            reply { text("Aucun doublon.") },
+        )
+
+        val outcome = f.dreamer.dream(50, 1)
+
+        assertEquals(RunStatus.DONE, outcome.status, outcome.report)
+        assertTrue(" · step 4 done: Grimoire version 1 · step 5 failed: " in outcome.report!! && outcome.report!!.endsWith(" · step 6 done: 1 pair read"), outcome.report)
+        assertEquals("6", f.state.state(MemoryJobs.stepKey(50)))
+        assertEquals(listOf("abandoned"), f.rows("SELECT status FROM canon WHERE id = ${trial.id}") { getString(1) })
+        val programme = f.rows("SELECT reason, CAST(detail AS VARCHAR) FROM engine_decisions WHERE kind = 'memory' AND decision = 'programme'") { getString(1) to getString(2) }.single()
+        assertTrue(programme.first.startsWith("failed: 0 ideas written, 0 closed, 1 arc abandoned ("), programme.first)
+        assertTrue("\"arcs_planned\":0" in programme.second && "\"arcs_abandoned\":1" in programme.second, programme.second)
+    }
+
+    /** M6 review 2, finding 12: the programme's inputs that fail are the step's failure only; the dream is done, its Grimoire written. */
+    @Test
+    fun `a programme whose inputs fail leaves the dream done`() = runBlocking<Unit> {
+        f.evening()
+        f.write { writeDoc(DocKey.Grimoire, GRIMOIRE.replace("\\n", "\n"), emptyList(), Author(Source.DREAMER, runId = 59)) }
+        val unreadable = object : MemoryStore by f.store {
+            override suspend fun ideas(status: IdeaStatus?, limit: Int): List<Idea> = throw IllegalStateException("the ideas cannot be read")
+        }
+        val memory = object : Memory by f.memory {
+            override val store: MemoryStore get() = unreadable
+        }
+        val services = TestServices(clock = f.clock, settings = f.services.settings.get(), journal = f.journal.journal, trace = f.journal.journal, players = f.players, memory = memory)
+        f.fake.enqueue(reply { text("Aucun doublon.") })
+
+        val outcome = Dreamer(services, f.agents, f.hygiene, f.state).dream(60, 5)
+
+        assertEquals(RunStatus.DONE, outcome.status, outcome.report)
+        assertEquals("resumed at step 5 · step 5 failed: inputs: the ideas cannot be read · step 6 done: 1 pair read", outcome.report)
+        assertEquals(1, outcome.conversations.size, "no conversation for the programme")
+        assertEquals("6", f.state.state(MemoryJobs.stepKey(60)))
+    }
+
+    /** M6 review 2, finding 12: a dream cancelled during the programme keeps step 4 as its last, and resumes at step 5. */
+    @Test
+    fun `a dream cancelled during the programme resumes at step 5`() = runBlocking<Unit> {
+        f.evening()
+        val hold = Hold()
+        f.fake.enqueue(
+            reply { text("Rien de neuf sur Bartok.") },
+            reply { text("Rien de neuf sur Mimosa.") },
+            reply { text("Rien à revoir.") },
+            reply { text("Rien à écrire dans la chronique.") },
+            reply { toolUse("write_grimoire", """{"text": "$GRIMOIRE"}""") },
+            reply { text("Grimoire écrit.") },
+            reply {
+                hold(hold)
+                text("Aucune idée ce soir.")
+            },
+        )
+        val dream = async(Dispatchers.Default) { f.dreamer.dream(70, 1) }
+        try {
+            assertTrue(hold.awaitReached(), "the storyteller is talking to Claude")
+            dream.cancel()
+            assertFailsWith<CancellationException> { dream.await() }
+        } finally {
+            hold.release()
+        }
+        assertEquals("4", f.state.state(MemoryJobs.stepKey(70)), "the Grimoire is passed; the programme to do again")
+        f.journal.sync()
+        assertEquals(listOf("cancelled"), f.rows("SELECT end_reason FROM conversations WHERE label = 'Dream run 70, step 5: programme'") { getString(1) })
+
+        f.fake.enqueue(reply { text("Aucune idée ce soir.") }, reply { text("Aucun doublon.") })
+        val resumed = f.dreamer.dream(71, 5)
+
+        assertEquals(RunStatus.DONE, resumed.status, resumed.report)
+        assertEquals("resumed at step 5 · step 5 done: 0 ideas written, 0 closed · step 6 done: 1 pair read", resumed.report)
+    }
+
+    private companion object {
+        /** A Grimoire of the six sections, as the model writes it in JSON. */
+        val GRIMOIRE = GrimoireFormat.SECTIONS.joinToString("\\n") { "## $it\\n- aucun" }
     }
 }

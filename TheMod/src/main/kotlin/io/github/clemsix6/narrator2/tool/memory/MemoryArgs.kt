@@ -111,7 +111,10 @@ data class RememberArgs(
     val evidence: List<String>? = null,
 )
 
-/** How `resolve` settles a canon entry: a [CanonStatus] other than `planned`, which only the Dreamer starts with. */
+/**
+ * How `resolve` settles a canon entry: a [CanonStatus] other than `planned`, which only an arc the storyteller's
+ * programme prepares starts with.
+ */
 @Serializable
 enum class Outcome(val status: CanonStatus) {
     @SerialName("fulfilled") FULFILLED(CanonStatus.FULFILLED),

@@ -32,7 +32,8 @@ import java.time.Duration
  *
  * [finish], on `SERVER_STOPPED`, comes once the players are gone: the Observer publishes what it still holds
  * ([flushObserver]), then [close]: the bus closes, the Journal writes what is queued and closes within
- * [journalTimeout], then the clients close.
+ * [journalTimeout], then the clients close. A Journal whose writer outlives that time keeps its database open until
+ * the writer ends ([Journal.holdsDatabase]): the log says so, and a new [close] waits for it once more.
  */
 class ShutdownSequence(
     private val scope: CoroutineScope,
@@ -57,6 +58,9 @@ class ShutdownSequence(
 
     @Volatile
     private var stoppedWaiting = false
+
+    @Volatile
+    private var closed = false
 
     /** `SERVER_STOPPING`: [stopInGame], then [stopWaiting]. Server thread. */
     fun begin() {
@@ -94,7 +98,7 @@ class ShutdownSequence(
             val start = System.nanoTime()
             val job = scope.coroutineContext.job
             val running = job.children.toList()
-            job.cancel(CancellationException("the server is stopping"))
+            job.cancel(CancellationException("the Narrator stops"))
             val ended = runBlocking { withTimeoutOrNull(workTimeout.toMillis()) { running.joinAll() } } != null
             val ms = (System.nanoTime() - start) / 1_000_000
             if (ended) {
@@ -118,10 +122,16 @@ class ShutdownSequence(
     fun flush() = step("flush the Observer") { flushObserver() }
 
     /**
-     * Closes the bus, the Journal and the clients: the Narrator is [Phase.STOPPED]. Waits for the Journal, bounded. The
-     * server thread at the server's stop, the restart's thread at a restart.
+     * Closes the bus, the Journal and the clients, once: the Narrator is [Phase.STOPPED]. Waits for the Journal, bounded.
+     * Called again while the Journal still [holds its database][Journal.holdsDatabase], it waits for the Journal once more,
+     * as boundedly. The server thread at the server's stop, the restart's thread at a restart.
      */
     fun close() {
+        if (closed) {
+            if (journal.holdsDatabase) step("close the Journal") { closeJournal() }
+            return
+        }
+        closed = true
         step("close the event bus") { bus.close() }
         step("close the Journal") { closeJournal() }
         step("close the clients") { settings.get().close() }
@@ -131,7 +141,8 @@ class ShutdownSequence(
 
     /**
      * Closes the Journal on its own thread: [Journal.close] promises to return within [journalTimeout],
-     * and the caller never waits for it longer than that plus [journalGrace].
+     * and the caller never waits for it longer than that plus [journalGrace]. A Journal that returned
+     * with its writer still running keeps its database open until the writer ends.
      */
     private fun closeJournal() {
         val start = System.nanoTime()
@@ -146,10 +157,12 @@ class ShutdownSequence(
         closer.start()
         closer.join(journalTimeout.plus(journalGrace).toMillis())
         val ms = (System.nanoTime() - start) / 1_000_000
-        if (closer.isAlive) {
-            log.error("stopped waiting for the Journal after $ms ms: it did not close within its ${journalTimeout.toMillis()} ms")
-        } else {
-            log.info("stopping: Journal closed in $ms ms")
+        when {
+            closer.isAlive -> log.error("stopped waiting for the Journal after $ms ms: it did not close within its ${journalTimeout.toMillis()} ms")
+            journal.holdsDatabase -> log.warn(
+                "stopping: the Journal did not close within its ${journalTimeout.toMillis()} ms: its database stays open until its writer ends",
+            )
+            else -> log.info("stopping: Journal closed in $ms ms")
         }
     }
 

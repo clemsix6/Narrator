@@ -1,6 +1,8 @@
 package io.github.clemsix6.narrator2.web
 
 import com.anthropic.models.messages.MessageParam
+import io.github.clemsix6.narrator2.config.JournalConfig
+import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Conversation
@@ -15,6 +17,7 @@ import io.github.clemsix6.narrator2.testing.client
 import io.github.clemsix6.narrator2.testing.httpError
 import io.github.clemsix6.narrator2.testing.reply
 import io.github.clemsix6.narrator2.testing.testConversation
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.testing.toolResult
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
@@ -22,11 +25,14 @@ import io.github.clemsix6.narrator2.trace.Transcripts
 import io.github.clemsix6.narrator2.web.pages.TranscriptPage
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import java.time.ZoneOffset.UTC
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.name
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -221,14 +227,14 @@ class TranscriptPageTest {
     fun `a long transcript is read in parts of whole lines, the next a link away`() {
         val conversation = playChapter()
         val file = (TranscriptPage.locate(services(), relative(markdownOf(conversation))) as TranscriptPage.Located.Found).path
-        val whole = TranscriptPage.read(file, 0)
+        val whole = TranscriptPage.read(file, 0, UTC)
         assertNull(whole.next)
         assertTrue(whole.entries.size >= 10, "${whole.entries.size} entries")
         assertTrue(whole.entries.none { it is TranscriptPage.Entry.Unreadable }, "${whole.entries}")
 
         // Small parts: each ends at a line, the next starts there, and together they are the whole.
         val budget = 2_000
-        val parts = generateSequence(TranscriptPage.read(file, 0, budget)) { part -> part.next?.let { TranscriptPage.read(file, it, budget) } }.toList()
+        val parts = generateSequence(TranscriptPage.read(file, 0, UTC, budget)) { part -> part.next?.let { TranscriptPage.read(file, it, UTC, budget) } }.toList()
         assertTrue(parts.size > 2, "${parts.size} parts")
         assertEquals(whole.entries.map { it.javaClass.simpleName }, parts.flatMap { it.entries }.map { it.javaClass.simpleName })
         assertEquals(whole.entries.filterIsInstance<TranscriptPage.Entry.Note>(), parts.flatMap { it.entries }.filterIsInstance<TranscriptPage.Entry.Note>())
@@ -237,10 +243,101 @@ class TranscriptPageTest {
 
         // A start in the middle of a line goes to the next one.
         val second = parts[0].next!!
-        assertEquals(parts[1].entries, TranscriptPage.read(file, second - 3, budget).entries, "from inside the line before the part's")
-        val later = TranscriptPage.read(file, second + 1, budget).entries.map { it.javaClass.simpleName }
+        assertEquals(parts[1].entries, TranscriptPage.read(file, second - 3, UTC, budget).entries, "from inside the line before the part's")
+        val later = TranscriptPage.read(file, second + 1, UTC, budget).entries.map { it.javaClass.simpleName }
         assertEquals(parts[1].entries.drop(1).map { it.javaClass.simpleName }, later.take(parts[1].entries.size - 1), "from inside the part's first line")
-        assertTrue(TranscriptPage.read(file, bytes.size.toLong(), budget).entries.isEmpty())
+        assertTrue(TranscriptPage.read(file, bytes.size.toLong(), UTC, budget).entries.isEmpty())
+    }
+
+    @Test
+    fun `a line longer than a page is skipped and said, alone in its part, and the reading goes on`() {
+        val file = transcripts.root.resolve("2026-09-25").also { Files.createDirectories(it) }.resolve("director-wide.jsonl")
+        val long = note("x".repeat(5_000))
+        Files.writeString(file, note("before") + long + note("after"))
+
+        val parts = generateSequence(TranscriptPage.read(file, 0, UTC, 1_000)) { part -> part.next?.let { TranscriptPage.read(file, it, UTC, 1_000) } }.toList()
+        assertEquals(3, parts.size, "the long line has a part of its own")
+        assertEquals(TranscriptPage.Entry.Note("19:30:00", "before"), parts[0].entries.single())
+        val skipped = assertIs<TranscriptPage.Entry.Unreadable>(parts[1].entries.single())
+        assertEquals(note("before").length.toLong(), skipped.offset, "the line's first byte")
+        assertEquals("a line of 5 kB, more than a page holds", skipped.why)
+        assertEquals(TranscriptPage.Entry.Note("19:30:00", "after"), parts[2].entries.single(), "the reading goes on after it")
+        assertNull(parts[2].next)
+    }
+
+    @Test
+    fun `the entries' times are in the dashboard's zone, as the header's, whatever the zone they were written in`() {
+        val day = transcripts.root.resolve("2026-09-25").also { Files.createDirectories(it) }
+        // A server in UTC and one in Paris write the same instants with their own offsets.
+        Files.writeString(
+            day.resolve("director-zone.jsonl"),
+            """{"ts":"2026-09-25T19:30:12Z","kind":"note","data":{"text":"written in UTC"}}""" + "\n" +
+                """{"ts":"2026-09-25T21:30:13+02:00","kind":"note","data":{"text":"written in Paris"}}""" + "\n",
+        )
+        record("director-zone", "logs/conversations/2026-09-25/director-zone.md")
+
+        val paris = TestServices(
+            clock = TestClock(NOW), journal = fixture.journal, dataDir = dataDir, transcripts = transcripts,
+            settings = testSettings(NarratorConfig(journal = JournalConfig(timeZone = "Europe/Paris"))),
+        )
+        val inParis = bodyText(get("/conversations/director-zone", paris))
+        assertContains(inParis, "<dt>Started</dt><dd>21:30:00</dd>", message = "the header, in the dashboard's zone")
+        assertContains(inParis, "<em>21:30:12 · note: </em>written in UTC")
+        assertContains(inParis, "<em>21:30:13 · note: </em>written in Paris")
+
+        val inUtc = bodyText(get("/conversations/director-zone"))
+        assertContains(inUtc, "<dt>Started</dt><dd>19:30:00</dd>")
+        assertContains(inUtc, "<em>19:30:12 · note: </em>written in UTC")
+        assertContains(inUtc, "<em>19:30:13 · note: </em>written in Paris")
+    }
+
+    @Test
+    fun `a transcript reached through a link out of the transcripts' folder is not read`() {
+        val elsewhere = base.resolve("elsewhere").also { Files.createDirectories(it) }
+        Files.writeString(elsewhere.resolve("director-link.jsonl"), note(SECRET))
+        val inside = transcripts.root.resolve("2026-09-24").also { Files.createDirectories(it) }
+        Files.writeString(inside.resolve("director-in.jsonl"), note("kept"))
+        val out = linkFolder(transcripts.root.resolve("2026-09-25"), elsewhere)
+        assumeTrue(out != null, "this system makes neither a symbolic link nor a junction")
+        try {
+            val recorded = "logs/conversations/2026-09-25/director-link.md"
+            assertTrue(Files.isRegularFile(dataDir.resolve(recorded.removeSuffix(".md") + ".jsonl")), "the link leads to the file")
+            assertEquals(TranscriptPage.Located.Outside, TranscriptPage.locate(services(), recorded), "under the folder by its name, outside once the link is followed")
+            record("director-link", recorded)
+            val page = bodyText(get("/conversations/director-link"))
+            assertContains(page, "The transcript&#39;s recorded path lies outside the transcripts&#39; folder: it is not read.")
+            assertFalse(SECRET in page)
+
+            // A link that stays within the folder is followed.
+            val within = linkFolder(transcripts.root.resolve("2026-09-26"), inside)!!
+            try {
+                val found = assertIs<TranscriptPage.Located.Found>(TranscriptPage.locate(services(), "logs/conversations/2026-09-26/director-in.md"))
+                assertEquals(inside.resolve("director-in.jsonl").toRealPath(), found.path)
+            } finally {
+                Files.delete(within)
+            }
+        } finally {
+            Files.delete(out!!)
+        }
+    }
+
+    /** A line of the `.jsonl`: a note of [text], at 19:30:00 UTC. */
+    private fun note(text: String) = """{"ts":"2026-09-25T19:30:00Z","kind":"note","data":{"text":"$text"}}""" + "\n"
+
+    /**
+     * A link at [link] to the folder [target]: a symbolic link, else, on Windows without the right to make one, a junction
+     * (which needs no right); null when neither can be made.
+     */
+    private fun linkFolder(link: Path, target: Path): Path? {
+        try {
+            return Files.createSymbolicLink(link, target)
+        } catch (_: Exception) {
+            // Not allowed here: try a junction.
+        }
+        if (!System.getProperty("os.name").startsWith("Windows")) return null
+        val mklink = ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString()).redirectErrorStream(true).start()
+        mklink.inputStream.readAllBytes()
+        return link.takeIf { mklink.waitFor(10, TimeUnit.SECONDS) && mklink.exitValue() == 0 && Files.isDirectory(it) }
     }
 
     @Test

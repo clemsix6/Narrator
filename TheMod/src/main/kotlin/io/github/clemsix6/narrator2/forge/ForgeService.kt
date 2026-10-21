@@ -236,6 +236,7 @@ class ForgeService(
             }
             withContext(Dispatchers.IO) { ModuleHost.preload() }
             val built = builtIns()
+            if (stopped) return
             loaded.complete(true)
             log.info(
                 "the Forge is ready in ${(System.nanoTime() - began) / NANOS_PER_MS} ms: ECJ ${EcjCompiler.version}, " +
@@ -247,7 +248,10 @@ class ForgeService(
         checkForged()
     }
 
-    /** Builds each built-in module of the jar (steps 1 to 6) and lists it; returns how many were. */
+    /**
+     * Builds each built-in module of the jar (steps 1 to 6) and lists it; returns how many were. A Forge stopped meanwhile
+     * (the server stops, or a `/narrator restart`) builds no more, which is no error.
+     */
     private suspend fun builtIns(): Int {
         var built = 0
         for ((name, source) in store.builtInSources) {
@@ -256,6 +260,10 @@ class ForgeService(
             val prepared = try {
                 prepare(name, source)
             } catch (e: ForgeRejected) {
+                if (stopped) {
+                    log.info("the Forge stopped while it built its built-in modules: $built built, $name and the rest not")
+                    break
+                }
                 log.error("the built-in module $name was not built: ${e.message}")
                 continue
             }
@@ -283,6 +291,7 @@ class ForgeService(
             try {
                 construct(entry)
             } catch (e: ForgeRejected) {
+                if (stopped) return
                 if (store.entry(entry.name, entry.version)?.status == ModuleStatus.BROKEN) broken++ else log.warn("arsenal: ${entry.name} v${entry.version} was not checked: ${e.message}")
             }
         }
