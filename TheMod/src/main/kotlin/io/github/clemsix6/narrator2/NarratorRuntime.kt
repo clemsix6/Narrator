@@ -173,7 +173,8 @@ class NarratorRuntime private constructor(
      * restart's thread at a restart; never throws for an unavailable Journal or memory.
      */
     override fun prepare() {
-        journal = openJournalOrDisable(dataDir, settings.get().config.journal, clock)
+        val config = settings.get().config
+        journal = openJournalOrDisable(dataDir, config.journal, clock, dashboard = config.dashboard.enabled)
         players = PlayerStates()
         preparedMemory = prepareMemory(this)
     }
