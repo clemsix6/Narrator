@@ -167,5 +167,7 @@ correctif, les 6 tests de `ModuleBookTest` et tout `ModuleEngineTest` passent. `
   Directeur reste en pause pour `forge_e2e`, le lot suivant (`timed out waiting for: a quiet Director`, avant tout module).
   Relancé seul : « All 398 required tests passed ». Après la fusion de `c8b716c` : 2 254 tests unitaires, 0 échec ; « All
   398 required tests passed » ; `runGameTest` : « All 398 required tests passed ».
-- **Build final** (avec le §5, après la fusion de `0631ef5`, FLAKY-6) : À REMPLIR.
+- **Build final** (avec le §5, après la fusion de `0631ef5`, FLAKY-6) : **2 259 tests unitaires, 0 échec, 0 ignoré** ;
+  **« All 398 required tests passed »**. Puis **`runGameTest` seul** : « All 398 required tests passed ». Aucun `WARN`
+  de `stop` perdu dans ces journaux.
 - Aucun appel réel à Claude, pas de `runServer`, aucune charge ajoutée.
