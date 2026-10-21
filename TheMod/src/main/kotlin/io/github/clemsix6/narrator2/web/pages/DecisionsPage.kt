@@ -42,8 +42,8 @@ object DecisionsPage : WebPage {
         val turn = request.param("turn")?.let { it.trim().toLongOrNull() ?: throw BadRequest("The turn is a number: $it.") }
         val filter = DecisionFilter(
             kind = request.param("kind"),
-            decision = request.param("decision")?.trim()?.lowercase(),
-            subject = request.param("subject")?.trim(),
+            decision = request.param("decision")?.trim()?.lowercase()?.ifEmpty { null },
+            subject = request.param("subject")?.trim()?.ifEmpty { null },
             since = period?.let { context.now - it },
             turn = turn,
         )

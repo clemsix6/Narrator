@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.web.costOf
 import io.github.clemsix6.narrator2.web.link
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
@@ -152,8 +153,12 @@ object TranscriptPage {
         if (!markdown.startsWith(root) || markdown == root || !name.endsWith(".md")) return Located.Outside
         val jsonl = markdown.resolveSibling(name.removeSuffix(".md") + ".jsonl")
         if (!Files.isRegularFile(jsonl)) return Located.Missing
-        val real = jsonl.toRealPath()
-        return if (real.startsWith(root.toRealPath())) Located.Found(real) else Located.Outside
+        val real = try {
+            jsonl.toRealPath() to root.toRealPath()
+        } catch (_: IOException) {
+            return Located.Missing
+        }
+        return if (real.first.startsWith(real.second)) Located.Found(real.first) else Located.Outside
     }
 
     // ── Reading ─────────────────────────────────────────────────────────────────────────────────────
