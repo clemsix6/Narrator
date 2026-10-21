@@ -66,8 +66,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * The creatures of one deployment (M5 §4.5): those its `spawn` acts summon ([adopt]) and those it [claim]s, at most
  * [ForgeLimits.OWN_CREATURES] together (the summonings on their way counted, [reserve]). While they are its own they
- * are the Narrator's ([ModuleCreatures]: they push nobody, aim at none but the player an act sent them to, never kill a
- * bystander), take no fall damage, and are steered at once by their handles ([Creature]); when the deployment ends
+ * are the Narrator's ([ModuleCreatures]: they push nobody, aim at none but the player an act sent them to, never kill),
+ * take no fall damage, and are steered at once by their handles ([Creature]); when the deployment ends
  * ([releaseAll]) a summoned one vanishes and a claimed one gets back to normal, back where it was claimed.
  *
  * Server thread only, from the module's own calls ([ActQueue.invocation]) and from the engine (task M5-11): [adopt]
@@ -237,8 +237,14 @@ class CreatureControl(private val services: NarratorServices, val deployment: Lo
         return given
     }
 
-    /** Makes [mob] its own: the Narrator's and the deployment's tags, the team that pushes nobody, no fall damage. */
+    /**
+     * Makes [mob] its own: the Narrator's and the deployment's tags, the team that pushes nobody, no fall damage. One that
+     * `spawn` summoned as a punishment of the player it was sent at ([NarratorMob.punishment], M4-LEFTOVERS) is that
+     * player's no longer: its module aims it ([ModuleCreatures.aim]), sends it at another player, and keeps it when that
+     * one leaves or dies; its fatal blow is a rescue all the same ([ModuleCreatures.allowDeath]).
+     */
     private fun take(mob: Mob) {
+        mob.getAttached(NarratorMob.TYPE)?.takeIf { it.punishment != null }?.let { mob.setAttached(NarratorMob.TYPE, it.copy(punishment = null)) }
         RuleMarks.mark(mob, owner)
         ModuleCreatures.join(mob)
         mob.getAttribute(Attributes.FALL_DAMAGE_MULTIPLIER)
@@ -452,9 +458,11 @@ class CreatureControl(private val services: NarratorServices, val deployment: Lo
  *   punished them ([aim]), until it ends; never anyone else, player or not ([keepsAway], by `CreatureShield` and its
  *   mixins), and their blows, projectiles, fangs and potions never reach another player ([spares], [sparesFrom]).
  *   Their aims live in memory: after a restart they aim at nobody until their module sends them again.
- * - **Never a bystander's death**: a player who dies by one of them, or within [DEATH_RADIUS] blocks of one, and is no
- *   creature's target, is rescued, never counted ([allowDeath], the engine's `ALLOW_DEATH`, task M5-11); a target's
- *   death is the death guard's, which the attack armed.
+ * - **They never kill** (M5 review, D1: a creature the Narrator summons never kills, a module's included): their fatal
+ *   blow, on their target or anyone, is a rescue where the player stands, nothing lost, never counted; a player who dies
+ *   of anything else within [DEATH_RADIUS] blocks of one, and is no creature's target, is rescued too ([allowDeath], the
+ *   engine's `ALLOW_DEATH`, task M5-11). A target's death of another cause (a fall, lava) is the death guard's, which
+ *   the attack armed.
  * - **Never a creature that blasts everyone around** ([FORBIDDEN]), nor a boss nor one out of scale ([SpawnPolicy]).
  *
  * Server thread only.
@@ -481,7 +489,7 @@ object ModuleCreatures {
         "minecraft:breeze" to "its wind charges throw every player around, not only its target",
     )
 
-    /** A player who dies within this many blocks of a module's creature, and is no creature's target, is rescued. */
+    /** A player who dies of anything within this many blocks of a module's creature, and is no creature's target, is rescued. */
     const val DEATH_RADIUS = 16.0
 
     /** A module's hostile creature never walks to within this many blocks of a player the Narrator spares (M5 design review, finding 3). */
@@ -556,22 +564,32 @@ object ModuleCreatures {
     }
 
     /**
-     * `ALLOW_DEATH` of [player] by [source], for the engine (task M5-11, `ModuleEngine.allowDeath`, before the guards'):
-     * a death by a module's creature, or within [DEATH_RADIUS] blocks of one, of a player no module's creature aims at is
-     * a bystander's: refused, the player rescued ([Guards.rescue]: out of the danger, never counted, shielded a while).
-     * The death of a creature's target goes on to the death guard, which its attack armed (quota, then rescue). Another
-     * player's blow and an operator's `/kill` are never the Narrator's. Server thread.
+     * `ALLOW_DEATH` of [player] by [source], for the engine (task M5-11, `ModuleEngine.allowDeath`, before the guards'). A
+     * module's creature never kills (M5 review, D1, as M4-POST for a punishment's creatures): the fatal blow of one (or of
+     * its arrow, potion, fangs), on its target or anyone, is refused, and the player rescued where they stand
+     * ([Guards.rescue] in place: nothing lost, never counted, shielded a while); the creature stays its module's. A death
+     * of another cause within [DEATH_RADIUS] blocks of one, of a player no module's creature aims at, is a bystander's:
+     * refused, the player rescued out of the danger. A target's death of another cause (a fall, lava) goes on to the death
+     * guard, which the attack armed (quota, then rescue). Another player's blow and an operator's `/kill` are never the
+     * Narrator's. Server thread.
      */
     fun allowDeath(player: ServerPlayer, source: DamageSource, guards: Guards): Boolean {
         if (source.`is`(DamageTypes.GENERIC_KILL)) return true
         val killer = source.entity
         if (killer is Player && killer !== player) return true
-        val creature = behind(source.entity) ?: behind(source.directEntity) ?: nearest(player) ?: return true
-        if (isAimedAt(player.uuid)) return true
         val cause = source.typeHolder().registeredName.removePrefix("minecraft:")
-        guards.rescue(player, "a bystander of C-${ownerOf(creature)}'s ${CreatureControl.shortType(creature)} ($cause): a module's creatures never kill a bystander")
+        (behind(source.entity) ?: behind(source.directEntity))?.let { creature ->
+            guards.rescue(player, "a fatal blow of ${whose(creature)} ($cause): the Narrator's creatures never kill", inPlace = true)
+            return false
+        }
+        val creature = nearest(player) ?: return true
+        if (isAimedAt(player.uuid)) return true
+        guards.rescue(player, "a bystander of ${whose(creature)} ($cause): a module's creatures never kill a bystander")
         return false
     }
+
+    /** `C-70's zombie`. */
+    private fun whose(creature: Entity): String = "C-${ownerOf(creature)}'s ${CreatureControl.shortType(creature)}"
 
     /** The nearest module's creature within [DEATH_RADIUS] blocks of [player]; null when there is none. */
     private fun nearest(player: ServerPlayer): Entity? =

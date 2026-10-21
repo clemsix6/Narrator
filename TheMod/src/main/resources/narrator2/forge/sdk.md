@@ -224,7 +224,7 @@ final class Limits {  // constants: Limits.TICKS_PER_SECOND
 
 ## 4. Acts
 
-Each act calls one of the Narrator's tools, checked as for the Director; the acts of one call of the module are one turn for the guards (a protected player, one already punished in it, one dead minutes ago or in grace, the same punishment too soon, the chaos level: refused). 4 acts a call (refused ones count), 30 a minute; `say`, `sayTo`, `title`: 4 a minute, within the server's speech limit shared with the Director; `hud`: once a second per player. Beyond: `DENIED (module_acts): …`, nothing done.
+Each act calls one of the Narrator's tools, checked as for the Director; the acts of one call of the module are one turn for the guards (a protected player, one already punished in it, one dead minutes ago or in grace, the same punishment too soon, the chaos level: refused). 4 acts a call (refused ones count), 30 a minute (not `hud`, capped at once a second per player); `say`, `sayTo`, `title`: 4 a minute, within the server's speech limit shared with the Director. Beyond: `DENIED (module_acts): …`, nothing done.
 
 `Outcome.status`: `ok`; `invalid` (a bad argument: a player not online, an unknown id); `denied` (a guard or a limit); `failed` (not possible now); `unknown` (no answer in time: maybe done); `dropped` (the deployment ended first). `text` is the tool's answer (`DENIED (protected): …`). Test `ok()`, not a status. Never insist on the same player: in the callback (a new call), try another one, or give up and say something else.
 
@@ -241,9 +241,9 @@ Each act calls one of the Narrator's tools, checked as for the Director; the act
 
 ## 6. Creatures
 
-- Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They drop nothing, break nothing, attack only players, take no fall damage, never push players. A summoned one vanishes at the end of its lifetime (summon again to last) or of the deployment; a claimed one goes back. `CreatureGone`: one died, vanished or unloaded.
+- Its own: those `spawn` summoned (`Outcome.creatures()`, then `ctx.creatures().get(uuid)`) and those it claimed; 32 at most. They attack only players and never kill (a fatal blow is a rescue), take no fall damage, drop and break nothing, push nobody. A summoned one vanishes at the end of its lifetime (summon again to last) or of the deployment; a claimed one goes back. `CreatureGone`: one died, vanished or unloaded.
 - `claim(uuid)`: a wild hostile creature (`zombie`, `skeleton`…) spawn could summon, within 32 blocks of an online player; null for an animal, a villager, a golem, a tamed, named or ridden one, a boss, another's.
-- Steering is immediate, no act; a bad argument throws `ForgeRefusal`. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s.
+- Steering is immediate, no act. `effect` as a law's `mob_effect`: never `resistance`, `regeneration`, `invisibility`, `levitation`, `jump_boost` nor one that wounds. `attribute`: `scale` 0.5 to 2, `movement_speed` 0.25 to 3, `max_health` 1 to 5, `attack_damage` 0 to 2, `jump_strength` 0 to 1, `gravity` 1 to 2. To act on a player, a creature `attack`s.
 
 ## 7. The sandbox
 
@@ -303,7 +303,7 @@ Write two scenarios at least: the normal case, and a refusal of the guards (`ref
 - 4 acts a call: with many players, one timer per player.
 - `tellDirector` notes, `end` reasons, `win` and `lose` notes: French, factual, third person (« Mimosa a gagné », never « tu », « je » nor « vous »), or the memory refuses them.
 - A scenario reads a draw (`ctx.random()`) in `b.acts()` or `b.notes()`, then plays it (§10).
-- `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. SDK lists are unmodifiable. `then` once per act; acts asked in `stop` are dropped.
+- `ctx.world().player(name)` is null for a player offline; a PLAYER parameter may be offline. SDK lists are unmodifiable; `then` once per act.
 - The built-in modules (version 0) are tested examples to `module_read`: `gravity_storm` (short: a refused hostile act tried on another player), `hot_cold` (storage, restart, a timer per player, a challenge), `tag` and `simon_says` (games that referee a challenge).
 
 ```java

@@ -35,7 +35,8 @@ import net.minecraft.world.entity.player.Player
  *   `spawn`) set on Bartok leave Mimosa alone, 20 blocks away, even once Bartok is out of their reach.
  * - **Explosions**: [ExplosionGuard.spares] spares the same players.
  * - **A module's creatures** (M5 §4.5, `forge.sdk.ModuleCreatures`) aim at nobody but the player an act sent them to,
- *   and their blows, projectiles and effects reach nobody else: a module's creatures never hurt a bystander.
+ *   and their blows, projectiles and effects reach nobody else: a module's creatures never hurt a bystander. Their
+ *   fatal blow is a rescue, as a punishment's ([ModuleCreatures.allowDeath], M5 review D1).
  *
  * "The Narrator's doing": a creature carrying the `narrator2` tag, or what one of them owns (an arrow, a
  * potion, an effect cloud, evoker fangs, a vex). Without a running Narrator nobody is spared. Server
@@ -60,13 +61,12 @@ object CreatureShield {
     /**
      * The mark of the punishment's creature that [entity] is, or that owns it ([NarratorMob.punishment]: the
      * guests, the slimes of a rain, a hostile creature of `spawn`); null for anything else. Such a creature is its
-     * player's alone (M4-POST, M4-LEFTOVERS). A module's creature never is: its module aims it (M5 §4.5,
-     * [ModuleCreatures]), although `spawn` marked it when its act summoned it.
+     * player's alone (M4-POST, M4-LEFTOVERS). A module that makes one its own takes that mark off (M5 §4.5,
+     * `CreatureControl`): its module aims it, and [ModuleCreatures.allowDeath] turns its fatal blow into a rescue.
      */
     fun boundTo(entity: Entity?): NarratorMob? = bound(entity) ?: (entity as? TraceableEntity)?.let { bound(it.owner) }
 
-    private fun bound(entity: Entity?): NarratorMob? =
-        entity?.getAttached(NarratorMob.TYPE)?.takeIf { it.punishment != null && !ModuleCreatures.isModules(entity) }
+    private fun bound(entity: Entity?): NarratorMob? = entity?.getAttached(NarratorMob.TYPE)?.takeIf { it.punishment != null }
 
     /** Whether [entity] is a punishment's creature (or what one owns) summoned for another player than [player]. */
     private fun boundElsewhere(entity: Entity?, player: Player): Boolean = boundTo(entity)?.let { it.player != player.uuid } == true
