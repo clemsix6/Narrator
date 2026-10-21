@@ -264,3 +264,14 @@ Aucun fichier commun entre les deux lots.
 Ordre conseillé : FORGE-ABANDON-FIX d'abord (le constat 1 retire un garde-fou de M5 sur une machine chargée) ; le lot de
 la borne peut partir en parallèle. Décision à prendre : le constat 4 (mesurer d'abord, ou corriger tout de suite l'attente
 active de `Worker.ask`, petite et sûre).
+
+## Décisions du superviseur (21/10/2026)
+
+- **Le lot FORGE-ABANDON-FIX est accepté en entier** : chaque reprise est comptée au moment où elle a lieu (budget du
+  tick, `msPerSecond`, lenteur) ; un fil garé sur sa requête n'est pas compté comme perdu au déchargement, et le
+  compteur est révoqué avant la coupure ; le compte d'actes survit à une invocation sautée ; un appel en cours de
+  reprise peut être coupé ; les deux phrases fausses de la passation sont corrigées.
+- **La fausse faute de la preuve CPU est corrigée tout de suite**, sans attendre la recette : une attente dans
+  `Worker.ask` ne doit jamais compter comme du calcul du module. Désactiver un module honnête est pire qu'un léger
+  surcoût de mesure.
+- **`EvilModulesGameTests`** (borne murale de 55 ms contre la patience de 2 s d'un démarrage) revient à FLAKY-6.
