@@ -427,10 +427,13 @@ class Director(
     /**
      * While muted, only what someone waits for is kept: addressed chat, prayers, tasks, reminders,
      * whispers, and the memory's due commitments and notes. Its cues go with the events: a place return
-     * or an anniversary is stale once the silence ends.
+     * or an anniversary is stale once the silence ends; so is a note of tone on a line said before it.
      */
     private fun mute() {
-        val gone = inbox.discard { (it.signal is DirectorSignal.Event && it.urgency != Urgency.IMMEDIATE) || it.signal is DirectorSignal.MemoryCue }
+        val gone = inbox.discard {
+            (it.signal is DirectorSignal.Event && it.urgency != Urgency.IMMEDIATE) || it.signal is DirectorSignal.MemoryCue ||
+                it.signal is DirectorSignal.StyleNote
+        }
         if (gone.isNotEmpty()) log.debug { "${gone.size} events left to the activity digest while silent" }
     }
 
@@ -612,7 +615,7 @@ class Director(
         // A new chapter's first message starts with its briefing, which tells the chat up to these events
         // and the sheets of the players online: it comes before the memory attached to these events.
         val briefing = chapters.briefing(open, now, items.minOfOrNull { it.at } ?: now, pendingReminders(), reducedBriefing)
-        val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
+        val events = items.filterNot(::isNote)
         val remembered = attachments(events, open, now)
         val text = buildString {
             if (events.isNotEmpty() || skipped.isNotEmpty()) append(formatter.events(events, now, skipped)).append('\n')
@@ -620,7 +623,7 @@ class Director(
             shown?.let { append(formatter.heartbeat(it.summary, it.windowMs, it.hint, now)).append('\n') }
             append(situation.render(now, worldTime(), pendingReminders(), recentActions()))
         }
-        val notes = whispers(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
+        val notes = notes(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
         val opening = Pending(carry + listOfNotNull(briefing).map(ContentBlockParam::ofText) + ContentBlockParam.ofText(text), notes)
         val alone = !resumed && carry.isEmpty() && beat == null
         val byPlayers = alone && budget.spent(now) && WakeScheduler.wokenByPlayers(items)
@@ -822,13 +825,13 @@ class Director(
             if (items.isEmpty()) return Pending.EMPTY
             injected += items.mapNotNull { it.eventId }
             indicator.show(items.mapNotNull { it.waitingPlayer }, scope)
-            val events = items.filter { it.signal !is DirectorSignal.OperatorWhisper }
+            val events = items.filterNot(::isNote)
             val text = buildList {
                 if (events.isNotEmpty() || skipped.isNotEmpty()) add(formatter.newEvents(events, now, skipped))
                 attachments(events, chapter, now)?.let(::add)
             }
             val blocks = if (text.isEmpty()) emptyList() else listOf(ContentBlockParam.ofText(text.joinToString("\n")))
-            return Pending(blocks, whispers(items))
+            return Pending(blocks, notes(items))
         }
 
         /**
@@ -1253,9 +1256,24 @@ class Director(
         /** A reference that starts a mechanic's line: `C-50`, `O-812`. */
         private val MECHANIC_REF = Regex("^[A-Z]-\\d+")
 
-        /** The operator whispers among [items], as notes. */
-        private fun whispers(items: List<Item>): List<OperatorNote> =
-            items.mapNotNull { (it.signal as? DirectorSignal.OperatorWhisper)?.let { whisper -> OperatorNote.operator(whisper.from, whisper.text) } }
+        /** Whether [item] reaches the model as a note rather than as a line of `<events>`: an operator's whisper, a note of tone. */
+        private fun isNote(item: Item): Boolean = item.signal is DirectorSignal.OperatorWhisper || item.signal is DirectorSignal.StyleNote
+
+        /**
+         * The notes among [items]: the operators' whispers, then the gravest note of tone (M6 §4.3: one a request at
+         * most, [StyleNoteKind] in order of gravity), `Engine: tone check: …`, escaped again on one line and cut to
+         * [TONE_NOTE_MAX]; the other notes of tone are left out.
+         */
+        private fun notes(items: List<Item>): List<OperatorNote> {
+            val whispers = items.mapNotNull { (it.signal as? DirectorSignal.OperatorWhisper)?.let { whisper -> OperatorNote.operator(whisper.from, whisper.text) } }
+            val tones = items.mapNotNull { it.signal as? DirectorSignal.StyleNote }
+            if (tones.size > 1) Log.director.debug { "${tones.size - 1} notes of tone left out: only the gravest is told" }
+            val tone = tones.minByOrNull { it.kind.ordinal }?.let { OperatorNote.engine("tone check: ${ModelText.escape(ModelText.cut(it.text, TONE_NOTE_MAX))}") }
+            return whispers + listOfNotNull(tone)
+        }
+
+        /** Longest text of a note of tone, after `tone check: `. */
+        private const val TONE_NOTE_MAX = 400
 
         /** What woke the Director, most pressing first. */
         private fun triggerOf(items: List<Item>, beat: Beat?, resumed: Boolean): TurnRecord.Trigger = when {

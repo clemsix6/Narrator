@@ -44,11 +44,18 @@ class ConfigValidationTest {
             assertEquals(30, turnsPerHour)
         }
         assertEquals(WorkersConfig(3, 15, 180), defaults.workers)
-        assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2), defaults.memory)
+        assertEquals(MemoryConfig(true, 10, 20, 24, 8, 10, 2, 180, 40, 6, 2, programme = true), defaults.memory)
         assertEquals(MechanicsConfig(true, 2, 10, 8, 15, 120, 5, 10), defaults.mechanics, "M4 §17")
         assertEquals(ForgeConfig(true, "auto", 4, 40, 20), defaults.forge, "M5 §13")
         assertEquals(ForgeApproval.AUTO, defaults.forge.approvalMode)
         assertEquals(ReflexConfig(true, "claude-haiku-5-5", "low", false, 3_000), defaults.reflex)
+        assertEquals(StyleConfig(lineReview = true, toneNotes = true, refuseRestingOpeners = true), defaults.style, "M6 §12.5")
+        assertEquals(DashboardConfig(enabled = true, port = 8770), defaults.dashboard, "M6 §12.5")
+        assertEquals(
+            mapOf("claude-opus-5-5" to ModelPrice(4.0, 20.0, 0.20, 8.0), "claude-haiku-5-5" to ModelPrice(0.10, 0.50, 0.01, 0.20)),
+            defaults.prices,
+            "M6 §8.7: the prices of the API, cache writes at the 1 h rate",
+        )
     }
 
     @Test
@@ -142,6 +149,12 @@ class ConfigValidationTest {
             defaults.copy(reflex = ReflexConfig(effort = "xhigh")) to "reflex.effort must be one of low, medium, high",
             defaults.copy(reflex = ReflexConfig(timeoutMs = 499)) to "reflex.timeoutMs must be between 500 and 10000",
             defaults.copy(reflex = ReflexConfig(timeoutMs = 10_001)) to "reflex.timeoutMs must be between 500 and 10000",
+            defaults.copy(dashboard = DashboardConfig(port = 1_023)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",
+            defaults.copy(dashboard = DashboardConfig(port = 65_536)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",
+            defaults.copy(dashboard = DashboardConfig(port = -1)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",
+            defaults.copy(prices = mapOf("claude-x" to ModelPrice(1.0, -0.5, 0.0, 0.0))) to
+                "prices.claude-x: input, output, cacheRead and cacheWrite must be dollars per million tokens, zero or more",
+            defaults.copy(prices = mapOf(" " to ModelPrice(1.0, 1.0, 1.0, 1.0))) to "prices: a model id must not be empty",
         )
         cases.forEach { (config, message) -> assertRefused(config, message) }
     }
@@ -167,6 +180,11 @@ class ConfigValidationTest {
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(reflex = ReflexConfig(effort = "high", timeoutMs = 500)),
             defaults.copy(reflex = ReflexConfig(effort = "medium", timeoutMs = 10_000)),
+            defaults.copy(style = StyleConfig(false, false, false), dashboard = DashboardConfig(false, 0)),
+            defaults.copy(dashboard = DashboardConfig(port = 1_024)),
+            defaults.copy(dashboard = DashboardConfig(port = 65_535)),
+            defaults.copy(prices = emptyMap()),
+            defaults.copy(prices = mapOf("claude-x" to ModelPrice(0.0, 0.0, 0.0, 0.0))),
         )
         edges.forEach { assertEquals(emptyList(), problems(it), "$it") }
     }
@@ -247,6 +265,43 @@ class ConfigValidationTest {
         assertContains(message, "forge.approval must be one of auto, operator")
         assertContains(message, "forge.maxActive must be between 1 and 8")
         assertFalse("never" in message, "a value is never quoted")
+    }
+
+    /** M6 §12.5: the style's and the dashboard's sections merge key by key; the prices model by model, a new model whole. */
+    @Test
+    fun `the sections of M6 merge key by key, the prices model by model`() {
+        dir.resolve(ConfigStore.FILE_NAME).writeText(
+            """
+            {
+              "style": { "toneNotes": false },
+              "dashboard": { "port": 0 },
+              "memory": { "programme": false },
+              "prices": {
+                "claude-opus-5-5": { "output": 25.0 },
+                "claude-sonnet-5-5": { "input": 2.0, "output": 10.0, "cacheRead": 0.1, "cacheWrite": 4.0 }
+              }
+            }
+            """.trimIndent(),
+        )
+        val config = ConfigStore.load(dir)
+        assertEquals(StyleConfig(toneNotes = false), config.style)
+        assertEquals(DashboardConfig(enabled = true, port = 0), config.dashboard)
+        assertEquals(false, config.memory.programme)
+        assertEquals(
+            mapOf(
+                "claude-opus-5-5" to ModelPrice(4.0, 25.0, 0.20, 8.0),
+                "claude-haiku-5-5" to ModelPrice(0.10, 0.50, 0.01, 0.20),
+                "claude-sonnet-5-5" to ModelPrice(2.0, 10.0, 0.1, 4.0),
+            ),
+            config.prices,
+        )
+
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "prices": { "claude-sonnet-5-5": { "input": 2.0 } } }""")
+        val message = assertFailsWith<ConfigException>("a new model needs its four prices") { ConfigStore.load(dir) }.message.orEmpty()
+        assertContains(message, "prices")
+
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "dashboard": { "port": 80 } }""")
+        assertContains(assertFailsWith<ConfigException> { ConfigStore.load(dir) }.message.orEmpty(), "dashboard.port must be 0 (any free port) or between 1024 and 65535")
     }
 
     @Test

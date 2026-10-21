@@ -56,6 +56,7 @@ import io.github.clemsix6.narrator2.event.UndergroundChanged
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
@@ -80,6 +81,7 @@ internal enum class AppendTable(val sqlName: String, val columns: Int) {
     CHAT("chat", 9),
     PRIVATE_MESSAGES("private_messages", 6),
     CHAT_SIGNALS("chat_signals", 15),
+    LINE_LABELS("line_labels", 12),
     LLM_CALLS("llm_calls", 24),
     TOOL_CALLS("tool_calls", 14),
     ENGINE_DECISIONS("engine_decisions", 10),
@@ -240,6 +242,7 @@ internal class JournalMapping {
             is ConversationRecord -> conversationRow(record)
             is TaskRecord -> taskRow(record)
             is ChatSignalsRecord -> chatSignalsRow(record)
+            is LineLabelsRecord -> lineLabelsRow(record)
             else -> throw IllegalArgumentException("not a trace record: ${record.javaClass.name}")
         },
     )
@@ -523,6 +526,11 @@ internal class JournalMapping {
             r.eventId, r.ts, r.playerUuid, r.source, r.toNarrator, r.tone?.id, r.toneConfidence, r.intent?.id, r.manipulation,
             r.politeness, r.boastfulness, r.helpfulness, r.aggressiveness, r.humor, r.latencyMs,
         ),
+    )
+
+    private fun lineLabelsRow(r: LineLabelsRecord) = Append(
+        AppendTable.LINE_LABELS,
+        listOf(r.eventId, r.ts, r.source, r.register, r.dark, r.cruel, r.flat, r.outOfCharacter, r.repeats, r.crutches, r.reason, r.latencyMs),
     )
 
     private fun turnRow(r: TurnRecord) = Replace(

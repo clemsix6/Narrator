@@ -534,7 +534,7 @@ class SqlViewsTest {
     @Test
     fun `no view reads a hidden table, and only columns_of names one, to leave it out`() {
         val views = values("SELECT view_name, sql FROM duckdb_views() WHERE NOT internal")
-        assertEquals(24, views.size, "$views")
+        assertEquals(26, views.size, "$views")
         views.forEach { (name, sql) ->
             Journal.HIDDEN_FROM_MODEL.forEach { table -> assertFalse(table in (sql as String).lowercase(), "view $name reads $table") }
         }

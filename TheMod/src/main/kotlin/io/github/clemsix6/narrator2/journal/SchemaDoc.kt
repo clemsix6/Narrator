@@ -21,13 +21,16 @@ import java.time.ZoneId
  * is not, and never a read on the Journal's connections.
  */
 object SchemaDoc {
-    /** The parts of the description, in order, each with its budget in characters (M3 §13), checked by `SchemaDocTest`. */
+    /**
+     * The parts of the description, in order, each with its budget in characters (M3 §13), checked by `SchemaDocTest`.
+     * M6 took 100 from the header (562 used) for the memory's seventh view, the storyteller's ideas (M6 §12.3).
+     */
     enum class Section(val budget: Int) {
-        HEADER(700),
+        HEADER(600),
         VIEWS(2_300),
         MACROS(900),
         TABLES(1_800),
-        MEMORY(1_200),
+        MEMORY(1_300),
         EXAMPLES(500),
     }
 
@@ -39,10 +42,11 @@ object SchemaDoc {
 
     /**
      * Tables left out of the description: `schema_version`, which the model has no use for, and the
-     * memory's tables ([MemorySchema.TABLES]), still readable by `sql`: the model reads the memory through
-     * its own views and tools (M3 §13).
+     * memory's tables ([MemorySchema.TABLES]) and the line review's labels (`line_labels`), still readable
+     * by `sql`: the model reads the memory through its own views and tools (M3 §13), the labels through
+     * the view of the Narrator's lines (`narrator_lines`, M6 §12.3).
      */
-    private val PLUMBING = setOf("schema_version") + MemorySchema.TABLES
+    private val PLUMBING = setOf("schema_version", "line_labels") + MemorySchema.TABLES
 
     /**
      * The engine's traces, listed without their columns to keep the description within its budget

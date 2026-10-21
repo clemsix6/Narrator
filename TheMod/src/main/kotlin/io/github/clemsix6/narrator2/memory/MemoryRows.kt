@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.style.ComicRegister
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -42,7 +43,7 @@ internal class Names(private val names: Map<UUID, String>) {
     }
 }
 
-/** The tables of the five citable kinds hold [ids]: the refs they name. Ids found nowhere are left out. */
+/** The tables of the six citable kinds hold [ids]: the refs they name. Ids found nowhere are left out. */
 internal fun Connection.refsOf(ids: Collection<Long>): Map<Long, Ref> {
     if (ids.isEmpty()) return emptyMap()
     val union = RefKind.entries.joinToString(" UNION ALL ") { "SELECT id, '${it.prefix}' FROM ${it.table} WHERE list_contains(?, id)" }
@@ -172,6 +173,37 @@ internal fun ResultSet.note(names: Names): Pair<Note, List<Long>> = Note(
     shownCount = getInt(8),
 ) to longs(6)
 
+internal const val IDEA_COLUMNS = "id, created_at, kind, title, pitch, fit, players, register, novelty, fun, fairness, refs, module, brief, " +
+    "status, dealt, last_dealt_at, expires_play_s, closed_at, close_reason, source"
+
+/**
+ * An idea, and the ids of its refs (resolved with [refsOf]). A register this version no longer knows (the voice's
+ * registers may be replaced) reads as none: it was only a suggestion.
+ */
+internal fun ResultSet.idea(names: Names): Pair<Idea, List<Long>> = Idea(
+    ref = Ref(RefKind.IDEA, getLong(1)),
+    createdAt = instant(2),
+    kind = code(3),
+    title = getString(4),
+    pitch = getString(5),
+    fit = getString(6),
+    players = names.refs(uuids(7)),
+    register = getString(8)?.let { enumOfId<ComicRegister>(it) },
+    novelty = getInt(9),
+    funScore = getInt(10),
+    fairness = getInt(11),
+    refs = emptyList(),
+    module = getString(13),
+    brief = getString(14),
+    status = code(15),
+    dealt = getInt(16),
+    lastDealtAt = instantOrNull(17),
+    expiresPlaySeconds = getLong(18),
+    closedAt = instantOrNull(19),
+    closeReason = getString(20),
+    source = code(21),
+) to longs(12)
+
 /** Reads the row [ref] names, whatever its table; null when there is none. */
 internal fun Connection.readRow(ref: Ref): MemoryRow? {
     val names = Names.of(this)
@@ -181,6 +213,7 @@ internal fun Connection.readRow(ref: Ref): MemoryRow? {
         RefKind.INTERACTION -> query("SELECT $INTERACTION_COLUMNS FROM interactions WHERE id = ?", ref.id) { interaction() }.singleOrNull()
         RefKind.CHRONICLE -> query("SELECT $CHRONICLE_COLUMNS FROM chronicle WHERE id = ?", ref.id) { chronicleEntry() }.singleOrNull()
         RefKind.NOTE -> notes("SELECT $NOTE_COLUMNS FROM notes WHERE id = ?", ref.id).singleOrNull()
+        RefKind.IDEA -> ideas("SELECT $IDEA_COLUMNS FROM ideas WHERE id = ?", ref.id).singleOrNull()
     }
 }
 
@@ -190,6 +223,14 @@ internal fun Connection.notes(sql: String, vararg parameters: Any?): List<Note> 
     val rows = query(sql, *parameters) { note(names) }
     val refs = refsOf(rows.flatMap { it.second })
     return rows.map { (note, ids) -> note.copy(refs = ids.mapNotNull(refs::get)) }
+}
+
+/** The ideas of [sql] (which selects [IDEA_COLUMNS]), their refs resolved. */
+internal fun Connection.ideas(sql: String, vararg parameters: Any?): List<Idea> {
+    val names = Names.of(this)
+    val rows = query(sql, *parameters) { idea(names) }
+    val refs = refsOf(rows.flatMap { it.second })
+    return rows.map { (idea, ids) -> idea.copy(refs = ids.mapNotNull(refs::get)) }
 }
 
 // ── Rows of the player sheets ─────────────────────────────────────────────────────────────────────────
@@ -233,7 +274,8 @@ internal fun Connection.relations(where: String, vararg parameters: Any?): List<
 /**
  * The text [Indexer] indexes for [row] (M3 §10.3): a memory's `title + content + tags + entities`, a canon
  * entry's `statement + quote + kind`, an interaction's `summary + quote + kind`, a chronicle entry's
- * `title + summary`; null for a note, which is never indexed.
+ * `title + summary`, an idea's `title + pitch` (what a new idea must not repeat, M6 §6.2); null for a note, which is
+ * never indexed.
  */
 internal fun indexText(row: MemoryRow): String? = when (row) {
     is MemoryEntry -> listOf(row.title, row.content, row.tags.joinToString(" "), row.entities.joinToString(" ")).joinToString("\n")
@@ -241,7 +283,10 @@ internal fun indexText(row: MemoryRow): String? = when (row) {
     is Interaction -> interactionText(row.summary, row.quote, row.kind)
     is ChronicleEntry -> "${row.title}\n${row.summary}"
     is Note -> null
+    is Idea -> ideaText(row.title, row.pitch)
 }
+
+internal fun ideaText(title: String, pitch: String): String = "$title\n$pitch"
 
 internal fun canonText(statement: String, quote: String?, kind: CanonKind): String = listOfNotNull(statement, quote, kind.id).joinToString("\n")
 

@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
@@ -28,6 +29,7 @@ class MemoryTraceSink : TraceSink {
     val conversations = CopyOnWriteArrayList<ConversationRecord>()
     val tasks = CopyOnWriteArrayList<TaskRecord>()
     val chatSignals = CopyOnWriteArrayList<ChatSignalsRecord>()
+    val lineLabels = CopyOnWriteArrayList<LineLabelsRecord>()
 
     override fun nextId(kind: IdKind): Long = ids.computeIfAbsent(kind) { AtomicLong(1) }.getAndIncrement()
 
@@ -57,6 +59,10 @@ class MemoryTraceSink : TraceSink {
 
     override fun chatSignals(r: ChatSignalsRecord) {
         chatSignals += r
+    }
+
+    override fun lineLabels(r: LineLabelsRecord) {
+        lineLabels += r
     }
 
     /** The last version of turn [turnId]. */

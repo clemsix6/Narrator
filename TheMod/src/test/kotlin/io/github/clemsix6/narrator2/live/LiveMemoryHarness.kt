@@ -276,6 +276,8 @@ internal class LateMemory : Memory {
 
     override fun situationLines(now: Long) = memory.situationLines(now)
 
+    override fun openIdeas() = memory.openIdeas()
+
     override fun chapterClosed(record: ConversationRecord) = memory.chapterClosed(record)
 
     override fun runContext(conversationId: String) = memory.runContext(conversationId)

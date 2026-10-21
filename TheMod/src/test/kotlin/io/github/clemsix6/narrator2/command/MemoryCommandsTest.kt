@@ -325,7 +325,7 @@ class MemoryCommandsTest {
         assertEquals(listOf("[Narrator] refused: N-9 cannot be archived: only memories, canon entries and interactions can"), MemoryCommands.archive(services, "Clement", "N-9", archived = true, reason = null).text())
         assertEquals(listOf("[Narrator] M-9999 does not exist."), MemoryCommands.show(services, "M-9999", 1).text())
         assertEquals(
-            listOf("[Narrator] T-3 is not a memory ref: M-, C-, I-, H- or N- and a number, like C-45."),
+            listOf("[Narrator] T-3 is not a memory ref: M-, C-, I-, H-, N- or P- and a number, like C-45."),
             MemoryCommands.show(services, "T-3", 1).text(),
         )
     }

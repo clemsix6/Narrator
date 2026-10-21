@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.Reflexes
+import io.github.clemsix6.narrator2.style.StyleWatch
 import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.TraceSink
 import io.github.clemsix6.narrator2.trace.Transcripts
@@ -79,6 +80,12 @@ interface NarratorServices {
 
     /** The Narrator's memory (design M3); `DisabledMemory` when it is off or could not start. */
     val memory: Memory
+
+    /**
+     * The watch of the Narrator's style (design M6 §3): the Director's latest lines and the line review's labels,
+     * read by `say`, the situation and `inspire`; `DisabledStyle` when it does not run. Created after the memory.
+     */
+    val style: StyleWatch
 
     /**
      * The Forge (design M5): the arsenal of modules and the pipeline that makes them; `DisabledForge` when it is off or

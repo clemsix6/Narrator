@@ -37,6 +37,13 @@ data class NarratorConfig(
     val forge: ForgeConfig = ForgeConfig(),
     val safety: SafetyConfig = SafetyConfig(),
     val reflex: ReflexConfig = ReflexConfig(),
+    val style: StyleConfig = StyleConfig(),
+    val dashboard: DashboardConfig = DashboardConfig(),
+    /**
+     * What each model costs (M6 §8.7), by model id: the dashboard's and `/narrator usage`'s dollars. A model without
+     * a price shows `$ ?`. Behind a subscription, an order of magnitude only.
+     */
+    val prices: Map<String, ModelPrice> = DEFAULT_PRICES,
     val logging: LoggingConfig = LoggingConfig(),
 ) {
     /** Settings of [role]. A loaded configuration has every role: the loader fills in the missing ones. */
@@ -67,6 +74,12 @@ data class NarratorConfig(
             Role.STORYTELLER to RoleConfig(effort = "medium"),
             Role.CHRONICLER to RoleConfig(effort = "low"),
             Role.DREAMER to RoleConfig(effort = "high", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
+        )
+
+        /** The API's prices of the models the Narrator uses by default (dollars per million tokens; cache writes at 1 h). */
+        val DEFAULT_PRICES: Map<String, ModelPrice> = mapOf(
+            "claude-opus-5-5" to ModelPrice(input = 4.0, output = 20.0, cacheRead = 0.20, cacheWrite = 8.0),
+            "claude-haiku-5-5" to ModelPrice(input = 0.10, output = 0.50, cacheRead = 0.01, cacheWrite = 0.20),
         )
     }
 }
@@ -232,6 +245,8 @@ data class MemoryConfig(
      * older ones never do. Raising it later naps older chapters at the next catch-up.
      */
     val catchUpDays: Int = 2,
+    /** Each dream ends with the storyteller's programme (M6 §6.3): its ideas for the coming sessions. False skips that step. */
+    val programme: Boolean = true,
 )
 
 /**
@@ -329,6 +344,30 @@ data class ReflexConfig(
     val timeoutMs: Long = 3_000,
 )
 
+/** The watch of the Narrator's style (design M6 §3, §4.3): what the code does with what the Director said. */
+@Serializable
+data class StyleConfig(
+    /** The reflexes' model reviews each line of the Director once said; it needs the reflexes (`reflex.enabled`, the LLMGW key). */
+    val lineReview: Boolean = true,
+    /** A drift of tone the review finds becomes a note of the engine for the Director. */
+    val toneNotes: Boolean = true,
+    /** `say` refuses, once a turn, a line that opens like too many of the latest; without, the `Style:` line still names them. */
+    val refuseRestingOpeners: Boolean = true,
+)
+
+/** The web dashboard (design M6 §8): read only, on `127.0.0.1`, behind a token. Read at startup only. */
+@Serializable
+data class DashboardConfig(
+    /** False: no dashboard. */
+    val enabled: Boolean = true,
+    /** Its port on `127.0.0.1`; 0 takes any free port (tests). */
+    val port: Int = 8770,
+)
+
+/** What a model costs, in dollars per million tokens: input, output, cache reads and cache writes (at the 1 h rate). */
+@Serializable
+data class ModelPrice(val input: Double, val output: Double, val cacheRead: Double, val cacheWrite: Double)
+
 @Serializable
 data class LoggingConfig(
     /** Writes full conversation transcripts (JSONL + Markdown) under world/narrator2/logs. */
@@ -356,8 +395,11 @@ object ConfigStore {
         coerceInputValues = true
     }
 
-    /** Settings whose keys are free-form (a map), so unknown keys there are expected. */
-    private val FREE_FORM = setOf("logging.levels")
+    /**
+     * Settings whose keys are free-form (a map), so unknown keys there are expected. A key the defaults have too (a
+     * model of `prices`) is still merged key by key with its default.
+     */
+    private val FREE_FORM = setOf("logging.levels", "prices")
 
     /** Keys an operator may be tempted to add, which must never be read from the file → what they hold. */
     private val SECRETS = mapOf("gateway.apiKey" to "the LLMGW key")
@@ -411,7 +453,7 @@ object ConfigStore {
             val keyPath = if (path.isEmpty()) key else "$path.$key"
             val default = defaults[key]
             when {
-                path in FREE_FORM -> merged[key] = value
+                path in FREE_FORM -> merged[key] = if (default is JsonObject && value is JsonObject) merge(default, value, keyPath, file) else value
                 default == null && path == "roles" -> throw ConfigException(
                     "$file: unknown role '$key' in roles (known roles: ${Role.entries.joinToString { it.id }})",
                 )
@@ -549,6 +591,16 @@ object ConfigStore {
         if (reflex.model.isBlank()) add("reflex.model must not be empty")
         if (reflex.effort !in NarratorConfig.REFLEX_EFFORTS) add("reflex.effort must be one of ${NarratorConfig.REFLEX_EFFORTS.joinToString()}")
         range("reflex.timeoutMs", reflex.timeoutMs, 500, 10_000)
+
+        val port = config.dashboard.port
+        if (port != 0 && port !in 1_024..65_535) add("dashboard.port must be 0 (any free port) or between 1024 and 65535")
+
+        config.prices.forEach { (model, price) ->
+            if (model.isBlank()) add("prices: a model id must not be empty")
+            if (listOf(price.input, price.output, price.cacheRead, price.cacheWrite).any { !it.isFinite() || it < 0 }) {
+                add("prices.$model: input, output, cacheRead and cacheWrite must be dollars per million tokens, zero or more")
+            }
+        }
     }
 
     private fun MutableList<String>.range(setting: String, value: Long, min: Long, max: Long) {

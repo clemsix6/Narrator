@@ -89,7 +89,7 @@ class SqlRunnerTest {
         assertContains(rows(model("DESCRIBE mining")).text, "\nore|BOOLEAN|")
         assertContains(rows(model("SUMMARIZE SELECT y FROM mining")).text, "\ny|INTEGER|-41|64|")
         assertContains(rows(operator("DESCRIBE private_messages")).text, "\ntext|VARCHAR|")
-        assertEquals(58L, rows(operator("SHOW TABLES")).total, "16 tables of the Journal, 17 of the memory, event_types and 24 views")
+        assertEquals(62L, rows(operator("SHOW TABLES")).total, "17 tables of the Journal, 18 of the memory, event_types and 26 views")
     }
 
     /** The model's file barriers on a Journal on disk, where DuckDB's own files are readable: [SqlFileAccessTest]. */

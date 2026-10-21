@@ -11,8 +11,8 @@ import java.time.Instant
 import java.util.UUID
 
 /*
- * One data class per trace table of `sql/V1__journal.sql`, column for column, in the same order.
- * Enum values are stored as their `id`: the constant's name in lowercase, e.g. `step_limit`.
+ * One data class per trace table of `sql/V1__journal.sql` (and `line_labels`, `sql/V4__style_ideas.sql`), column for
+ * column, in the same order. Enum values are stored as their `id`: the constant's name in lowercase, e.g. `step_limit`.
  */
 
 /**
@@ -81,6 +81,12 @@ data class LlmCallRecord(
 
         /** A request of the Dreamer (a step of a dream, M3 §8). */
         DREAM,
+
+        /** Reflexes: the review of a line of the Director after it was said (M6 §3.3). */
+        LINE_REVIEW,
+
+        /** A request of the storyteller writing the programme, the dream's step of its own (M6 §6.3). */
+        PROGRAMME,
         ;
 
         val id: String get() = name.lowercase()
@@ -260,6 +266,12 @@ data class DecisionRecord(
          * `mechanic` ones.
          */
         FORGE,
+
+        /**
+         * The watch of the Narrator's style (M6 §14): a line `say` refused for its opener (`opener_refused`), a note
+         * of tone posted to the Director (`tone_noted`), the seeds `inspire` dealt (`inspired`).
+         */
+        STYLE,
         ;
 
         val id: String get() = name.lowercase()
@@ -461,3 +473,30 @@ data class ChatSignalsRecord(
         )
     }
 }
+
+/**
+ * The line review's labels on one line of the Director (M6 §3.3). Row of `line_labels`, written whole: a line the
+ * review could not label has no row. Built by the style's own type (`style/LineLabels.record()`): the trace never
+ * depends on the style.
+ *
+ * @property eventId id of the line's `chat` row.
+ * @property source `reflex:<model>`.
+ * @property register a comic register's id (`divine_bureaucracy`, `plain`, `other`…).
+ * @property dark and the other flaws: 0 to 1.
+ * @property crutches the line's crutch words, 3 at most.
+ * @property reason the reviewer's one sentence; it quotes the Narrator, never a player.
+ */
+data class LineLabelsRecord(
+    val eventId: Long,
+    val ts: Instant,
+    val source: String,
+    val register: String,
+    val dark: Double,
+    val cruel: Double,
+    val flat: Double,
+    val outOfCharacter: Double,
+    val repeats: Double,
+    val crutches: List<String>,
+    val reason: String?,
+    val latencyMs: Int?,
+)

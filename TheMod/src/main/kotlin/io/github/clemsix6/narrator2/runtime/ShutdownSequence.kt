@@ -17,8 +17,9 @@ import java.time.Duration
  * and are bounded in time; a step that fails is logged and the next ones still run.
  *
  * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players. No new work
- * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The mechanics
- * engine stops first ([stopMechanics], on the server thread, without waiting: no new act, its queue
+ * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The dashboard
+ * stops first ([stopDashboard], at once: no page is served while the rest stops). Then the mechanics
+ * engine ([stopMechanics], on the server thread, without waiting: no new act, its queue
  * dropped, its boss bars taken down, its modules stopped; its state stays in the world, which the stopping save
  * writes). Then the Forge ([stopForge], a second at most: its compiler thread ends, its bench runs are cancelled).
  * Then the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
@@ -46,17 +47,22 @@ class ShutdownSequence(
     private val memoryTimeout: Duration = MEMORY_TIMEOUT,
     private val stopMechanics: () -> Unit = {},
     private val stopForge: () -> Unit = {},
+    private val stopDashboard: () -> Unit = {},
 ) {
     private val log = Log.main
 
     @Volatile
     private var begun = false
 
-    /** `SERVER_STOPPING`: takes no new work, stops the mechanics engine (its modules first), then the Forge, then the memory, then cancels the work in flight. */
+    /**
+     * `SERVER_STOPPING`: takes no new work, stops the dashboard, the mechanics engine (its modules first), then the
+     * Forge, then the memory, then cancels the work in flight.
+     */
     fun begin() {
         if (begun) return
         begun = true
         setPhase(Phase.STOPPING)
+        step("stop the dashboard") { stopDashboard() }
         step("stop the mechanics") { stopMechanics() }
         step("stop the Forge") { stopForge() }
         step("stop the memory") {

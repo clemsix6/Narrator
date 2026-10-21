@@ -36,11 +36,17 @@ import io.github.clemsix6.narrator2.runtime.SettingsHolder
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
 import io.github.clemsix6.narrator2.runtime.ShutdownSequence
 import io.github.clemsix6.narrator2.runtime.TickClock
+import io.github.clemsix6.narrator2.style.StyleWatch
+import io.github.clemsix6.narrator2.style.createLineReviewer
+import io.github.clemsix6.narrator2.style.createStyle
 import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.trace.TraceSink
 import io.github.clemsix6.narrator2.trace.Transcripts
+import io.github.clemsix6.narrator2.web.Dashboard
+import io.github.clemsix6.narrator2.web.createDashboard
+import io.github.clemsix6.narrator2.web.dashboardState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -57,15 +63,18 @@ import java.time.Clock
 /**
  * Everything the Narrator runs while a server is up (M1_M2 §2), from `SERVER_STARTED` to
  * `SERVER_STOPPED`: the bus, the Journal, the player states, the Observer, the guards, the reflexes,
- * the workers, the memory, the Forge, the mechanics engine and the Director. None of them is ever rebuilt while
- * the server runs: `/narrator reload` only replaces the [settings] (configuration, prompts, texts and clients).
+ * the workers, the memory, the style watch and the line review, the Forge, the mechanics engine, the Director and the
+ * dashboard. None of them is ever rebuilt while the server runs: `/narrator reload` only replaces the [settings]
+ * (configuration, prompts, texts and clients).
  *
  * Components depend on [NarratorServices], never on this class. They are created in this order, each
  * factory receiving the runtime with the services created before it: Journal, bus, player states,
- * guards, Observer, reflexes, workers, memory, Forge, mechanics, Director. The Forge comes before the mechanics, whose
- * modules' part builds and runs its modules; it starts off the server thread (its arsenal, the built-in modules
- * compiled) while the rest starts. At `SERVER_STOPPING` ([ShutdownSequence]) the mechanics stop first (their modules
- * stop with the server, then the modules' thread ends), then the Forge (its compiler thread ends), then the memory.
+ * guards, Observer, reflexes, workers, memory, style watch, line review, Forge, mechanics, Director, dashboard. The
+ * Forge comes before the mechanics, whose modules' part builds and runs its modules; it starts off the server thread
+ * (its arsenal, the built-in modules compiled) while the rest starts. The dashboard comes last: it reads the others,
+ * nothing reads it. At `SERVER_STOPPING` ([ShutdownSequence]) the dashboard stops first, then the mechanics (their
+ * modules stop with the server, then the modules' thread ends), then the Forge (its compiler thread ends), then the
+ * memory.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -127,6 +136,9 @@ class NarratorRuntime private constructor(
     final override lateinit var memory: Memory
         private set
 
+    final override lateinit var style: StyleWatch
+        private set
+
     final override lateinit var forge: Forge
         private set
 
@@ -134,6 +146,10 @@ class NarratorRuntime private constructor(
         private set
 
     final override lateinit var director: DirectorControl
+        private set
+
+    /** The web dashboard (M6 §8), for `/narrator dashboard`: no component depends on it. */
+    lateinit var dashboard: Dashboard
         private set
 
     private lateinit var shutdown: ShutdownSequence
@@ -151,12 +167,15 @@ class NarratorRuntime private constructor(
         reflexes = createReflexes(this)
         workers = createWorkers(this)
         memory = createMemory(this)
+        style = createStyle(this)
+        createLineReviewer(this)
         forge = createForge(this, ::tellOperatorsOnline)
         mechanics = createMechanics(this)
         director = createDirector(this)
+        dashboard = createDashboard(this)
         shutdown = ShutdownSequence(
             scope, bus, journal, settings, observer::flushAll, { phase = it }, stopMemory = memory::stop, stopMechanics = mechanics::stop,
-            stopForge = forge::stop,
+            stopForge = forge::stop, stopDashboard = dashboard::stop,
         )
         phase = Phase.RUNNING
     }
@@ -176,6 +195,7 @@ class NarratorRuntime private constructor(
     private fun abandon() {
         phase = Phase.STOPPED
         scope.cancel()
+        if (::dashboard.isInitialized) dashboard.stop()
         if (::forge.isInitialized) forge.stop()
         if (::bus.isInitialized) bus.close()
         if (::journal.isInitialized) runCatching { journal.close() }.onFailure { log.error("the Journal failed to close", it) }
@@ -272,7 +292,8 @@ class NarratorRuntime private constructor(
                     "Journal ${if (runtime.journal.available) "available" else "unavailable"} · " +
                     "memory ${if (runtime.memory.available) "on" else "off (${runtime.memory.unavailableReason})"} · " +
                     "mechanics ${if (runtime.mechanics.available) "on" else "off (${runtime.mechanics.unavailableReason})"} · " +
-                    "forge ${forgeState(runtime.forge, runtime.mechanics.modules.halted)} · data in ${runtime.dataDir}",
+                    "forge ${forgeState(runtime.forge, runtime.mechanics.modules.halted)} · dashboard ${dashboardState(runtime.dashboard)} · " +
+                    "data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }

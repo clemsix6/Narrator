@@ -140,7 +140,7 @@ class HybridRecall(
         fun structured(kind: RefKind): Boolean = when (kind) {
             RefKind.MEMORY -> query.players.isNotEmpty() || query.tags.isNotEmpty() || query.entities.isNotEmpty()
             RefKind.CANON, RefKind.INTERACTION -> query.players.isNotEmpty() || query.tags.isNotEmpty()
-            RefKind.CHRONICLE, RefKind.NOTE -> false
+            RefKind.CHRONICLE, RefKind.NOTE, RefKind.IDEA -> false
         }
     }
 
@@ -158,7 +158,7 @@ class HybridRecall(
             RefKind.CANON -> canon(CandidateQuery(connection, match, kind, "created_at"))
             RefKind.INTERACTION -> interactions(CandidateQuery(connection, match, kind, "ts"))
             RefKind.CHRONICLE -> chronicle(CandidateQuery(connection, match, kind, "period_to"))
-            RefKind.NOTE -> emptyList()
+            RefKind.NOTE, RefKind.IDEA -> emptyList() // never searched (RefKind.searchable)
         }
     }
 

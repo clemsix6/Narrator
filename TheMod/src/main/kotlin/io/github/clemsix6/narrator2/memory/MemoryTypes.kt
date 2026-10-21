@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.style.ComicRegister
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -18,18 +19,18 @@ import java.util.UUID
 /** The constant of [E] whose `id` (lowercase name) is [id]; null for anything else. */
 inline fun <reified E : Enum<E>> enumOfId(id: String): E? = enumValues<E>().firstOrNull { it.name.lowercase() == id }
 
-/** The tables of the memory schema (`V2__memory.sql`), readable by `sql` but not described to the model. */
+/** The memory's tables (`V2__memory.sql`, and `ideas`), readable by `sql` but not described to the model. */
 object MemorySchema {
     /**
-     * The latest migration the memory reads: `V3__mechanics.sql` adds `canon.mechanic` and `canon.theme` (M4
-     * §3.3) to the tables of `V2__memory.sql`. A Journal below it leaves the memory off.
+     * The latest migration the memory reads: `V4__style_ideas.sql` adds the storyteller's `ideas` (M6 §12.3) to the
+     * tables of `V2__memory.sql` and the columns of `V3__mechanics.sql`. A Journal below it leaves the memory off.
      */
-    const val MIGRATION = "V3__mechanics.sql"
+    const val MIGRATION = "V4__style_ideas.sql"
 
     val TABLES: List<String> = listOf(
         "memory_state", "memories", "canon", "interactions", "player_traits", "player_skills", "player_relations",
         "sheet_stats", "pair_stats", "memory_docs", "chronicle", "notes", "recalls", "memory_runs", "memory_log",
-        "search_docs", "search_postings",
+        "search_docs", "search_postings", "ideas",
     )
 }
 
@@ -80,6 +81,32 @@ object MemoryLimits {
 
     /** An arc's theme (`canon.theme`): lowercase letters, digits and `_`, 2 to 40 characters. */
     val THEME = Regex("[a-z0-9_]{2,40}")
+
+    // The storyteller's ideas (M6 §6.2, §12.4).
+
+    const val IDEA_TITLE = 60
+    const val IDEA_PITCH = 500
+    const val IDEA_FIT = 200
+
+    /** The brief of an idea of kind `forge`, ready for `forge_module` (whose own brief takes 40 characters at least). */
+    const val IDEA_BRIEF_MIN = 40
+    const val IDEA_BRIEF = 1_500
+
+    /** Why an idea is dropped. */
+    const val IDEA_DROP_REASON = 160
+
+    /** The memory rows an idea builds on, at most. */
+    const val IDEA_REFS = 6
+
+    /** The storyteller's notes of an idea: novelty, fun, fairness; an average idea is 3. */
+    val IDEA_SCORE = 1..5
+
+    /** How long an idea stays open, in hours of world play, and by default. */
+    val IDEA_PLAY_HOURS = 1..168
+    const val IDEA_DEFAULT_PLAY_HOURS = 48
+
+    /** Ideas open at once, the season included: beyond, the oldest never dealt expires (`superseded`). */
+    const val OPEN_IDEAS = 12
 }
 
 /** The tables whose rows the model can cite, with the prefix of their reference (M3 §3.1). */
@@ -89,14 +116,23 @@ enum class RefKind(val prefix: String, val table: String) {
     INTERACTION("I", "interactions"),
     CHRONICLE("H", "chronicle"),
     NOTE("N", "notes"),
+
+    /** The storyteller's ideas (M6 §6.2): what the Narrator may do, never a fact; neither recalled nor evidence. */
+    IDEA("P", "ideas"),
     ;
 
     /** `memory`, `canon`…: also the value of `search_docs.kind`. */
     val id: String get() = name.lowercase()
 
     companion object {
-        /** What recall searches: notes are shown, never searched. */
+        /** What recall searches: notes are shown, never searched; ideas are dealt, never recalled. */
         val searchable: Set<RefKind> = setOf(MEMORY, CANON, INTERACTION, CHRONICLE)
+
+        /** What the full-text index holds: what recall searches, and the ideas, that a new idea must not repeat (M6 §6.2). */
+        val indexed: Set<RefKind> = searchable + IDEA
+
+        /** What a row may cite as its evidence, or a note as its refs: the facts of the memory, every kind but the ideas. */
+        val facts: Set<RefKind> = entries.toSet() - IDEA
 
         /** The kind whose prefix is [prefix], whatever its case; null for anything else. */
         fun ofPrefix(prefix: String): RefKind? = entries.firstOrNull { it.prefix.equals(prefix, ignoreCase = true) }
@@ -104,7 +140,7 @@ enum class RefKind(val prefix: String, val table: String) {
 }
 
 /**
- * A citable memory row: `C-45`. The id alone names the row (one sequence for the five tables,
+ * A citable memory row: `C-45`. The id alone names the row (one sequence for the six tables,
  * `IdKind.MEMORY`); the kind says which table it is in.
  */
 data class Ref(val kind: RefKind, val id: Long) {
@@ -136,9 +172,9 @@ data class Ref(val kind: RefKind, val id: Long) {
     }
 }
 
-/** Who wrote a row (`source` columns). */
+/** Who wrote a row (`source` columns). [STORYTELLER]: the storyteller's ideas and planned arcs (M6 §6.3, §6.5). */
 enum class Source {
-    DIRECTOR, CHRONICLER, DREAMER, ENGINE, OPERATOR;
+    DIRECTOR, CHRONICLER, DREAMER, ENGINE, OPERATOR, STORYTELLER;
 
     val id: String get() = name.lowercase()
 }
@@ -427,6 +463,47 @@ enum class GagState {
     val id: String get() = name.lowercase()
 }
 
+/**
+ * What an idea of the storyteller is (M6 §6.2): which lever of the Narrator it uses. Never an order: the Director takes
+ * it, bends it or ignores it.
+ */
+@Serializable
+enum class IdeaKind {
+    /** The thread of the coming sessions: one open at most, due at the end of the chronicle's season (M6 §6.8). */
+    @SerialName("season") SEASON,
+
+    /** The next step of an arc (its `C-` row among the refs). */
+    @SerialName("arc_step") ARC_STEP,
+    @SerialName("challenge") CHALLENGE,
+    @SerialName("duel") DUEL,
+    @SerialName("punishment") PUNISHMENT,
+    @SerialName("favor") FAVOR,
+    @SerialName("law") LAW,
+    @SerialName("plan") PLAN,
+
+    /** A ready module of the arsenal, with its parameters. */
+    @SerialName("module") MODULE,
+
+    /** A module to order (`forge_module`), its brief ready. */
+    @SerialName("forge") FORGE,
+
+    /** Words only: a prophecy to write in a book, a running gag back, a dream to tell. */
+    @SerialName("speech") SPEECH,
+
+    /** A turn of a situation in progress. */
+    @SerialName("twist") TWIST,
+    ;
+
+    val id: String get() = name.lowercase()
+}
+
+/** Where an idea stands: open (dealt to the Director while it fits), dropped by the storyteller, or expired. Rows stay. */
+enum class IdeaStatus {
+    OPEN, DROPPED, EXPIRED;
+
+    val id: String get() = name.lowercase()
+}
+
 /** What a memory job does (`memory_runs.kind`). */
 enum class RunKind {
     BATCH, NAP, DREAM, HYGIENE;
@@ -440,6 +517,15 @@ enum class RecallChannel {
 
     /** The Narrator took it up in a line (the nap's `mark_used`). */
     USED,
+
+    /** `inspire` dealt it to the Director: an idea, or a memory as a seed's hook (M6 §5.4). */
+    INSPIRE,
+
+    /** A heartbeat carried it to the Director: an idea (M6 §5.6). */
+    HEARTBEAT,
+
+    /** The storyteller read it while it wrote the programme (M6 §6.3): the Narrator did not see it. */
+    PROGRAMME,
     ;
 
     val id: String get() = name.lowercase()
@@ -505,7 +591,7 @@ sealed interface DocKey {
 
 // ── Rows ──────────────────────────────────────────────────────────────────────────────────────────────
 
-/** A row of one of the five citable tables, as `recall`, `/narrator memory show` and the briefing see it. */
+/** A row of one of the six citable tables, as `recall`, `/narrator memory show` and the briefing see it. */
 sealed interface MemoryRow {
     val ref: Ref
 }
@@ -668,6 +754,37 @@ data class Note(
 ) : MemoryRow
 
 /**
+ * A row of `ideas` (M6 §6.2): an idea of the storyteller, `P-41`. [players]: who it is for, empty for whoever is
+ * online; [register]: the comic register it suggests; [novelty], [funScore], [fairness]: the storyteller's notes, 1 to
+ * 5; [refs]: the memory rows it builds on; [module]: the arsenal's module of an idea `module`; [brief]: the brief of an
+ * idea `forge`; [dealt]: times it was put before the Director ([lastDealtAt] the last); [expiresPlaySeconds]: the world
+ * play clock at which it expires; [closedAt], [closeReason]: why it is no longer open.
+ */
+data class Idea(
+    override val ref: Ref,
+    val createdAt: Instant,
+    val kind: IdeaKind,
+    val title: String,
+    val pitch: String,
+    val fit: String,
+    val players: List<PlayerRef>,
+    val register: ComicRegister?,
+    val novelty: Int,
+    val funScore: Int,
+    val fairness: Int,
+    val refs: List<Ref>,
+    val module: String?,
+    val brief: String?,
+    val status: IdeaStatus,
+    val dealt: Int,
+    val lastDealtAt: Instant?,
+    val expiresPlaySeconds: Long,
+    val closedAt: Instant?,
+    val closeReason: String?,
+    val source: Source,
+) : MemoryRow
+
+/**
  * A row of `memory_log`: one change. [rowKey]: `812`, `b1f…:boldness`, `grimoire:12`; [before] null for
  * an insert, [after] the row's columns after the change.
  */
@@ -790,4 +907,25 @@ data class NoteDraft(
     val text: String,
     val players: List<UUID> = emptyList(),
     val refs: List<Ref> = emptyList(),
+)
+
+/**
+ * An idea to write (M6 §6.2, §12.4), as `propose_idea` gives it: [players] empty for whoever is online, [refs] the
+ * memory rows it builds on, [module] for an idea `module`, [brief] for an idea `forge`, [playHours] the hours of world
+ * play it stays open ([MemoryLimits.IDEA_PLAY_HOURS]).
+ */
+data class IdeaDraft(
+    val kind: IdeaKind,
+    val title: String,
+    val pitch: String,
+    val fit: String,
+    val players: List<UUID> = emptyList(),
+    val register: ComicRegister? = null,
+    val novelty: Int,
+    val funScore: Int,
+    val fairness: Int,
+    val refs: List<Ref> = emptyList(),
+    val module: String? = null,
+    val brief: String? = null,
+    val playHours: Int = MemoryLimits.IDEA_DEFAULT_PLAY_HOURS,
 )

@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsHolder
+import io.github.clemsix6.narrator2.style.StyleWatch
 import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.TraceSink
 import io.github.clemsix6.narrator2.trace.Transcripts
@@ -40,8 +41,8 @@ fun testSettings(config: NarratorConfig = NarratorConfig(), claude: ClaudeClient
 /**
  * The services of a runtime, for unit tests: every part is a constructor parameter, with a harmless
  * default (a real bus, a disabled Journal, traces in memory, fakes for the guards, the reflexes, the
- * Director, the workers, the memory, the Forge and the mechanics engine). There is no Minecraft server: [server]
- * fails unless one is given.
+ * Director, the workers, the memory, the style watch, the Forge and the mechanics engine). There is no Minecraft
+ * server: [server] fails unless one is given.
  * [phase] can be changed to test the stopping server.
  */
 class TestServices(
@@ -60,6 +61,7 @@ class TestServices(
     override val director: DirectorControl = FakeDirector(clock),
     override val workers: WorkersControl = FakeWorkers(),
     override val memory: Memory = FakeMemory(clock),
+    override val style: StyleWatch = FakeStyle(),
     override val forge: Forge = FakeForge(clock),
     override val mechanics: Mechanics = FakeMechanics(clock),
 ) : NarratorServices {

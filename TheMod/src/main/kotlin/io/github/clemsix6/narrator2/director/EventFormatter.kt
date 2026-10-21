@@ -293,6 +293,7 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
             is DirectorSignal.MemoryNote -> "NOTE"
             is DirectorSignal.MemoryCue -> signal.kind.name
             is DirectorSignal.Mechanic -> signal.kind.name
+            is DirectorSignal.StyleNote -> "TONE CHECK"
             else -> "OTHER"
         }
 

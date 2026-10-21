@@ -215,7 +215,7 @@ class SetSkillTool : MemoryTool<SetSkillArgs>(
 ) {
     override suspend fun act(ctx: ToolContext, args: SetSkillArgs): ToolResult {
         val player = ctx.knownPlayers(listOf(args.player), "player").single()
-        val evidence = refsOf(args.evidence, "evidence", RefKind.entries.toSet())
+        val evidence = refsOf(args.evidence, "evidence", RefKind.facts)
         val skill = ctx.memory.store.setSkill(player.uuid, args.skill, args.score, args.rationale.trim(), evidence, ctx.author())
         return ToolResult.ok("ok: ${player.shownName} ${skill.skill.id} ${skill.score}/10", listOf(player))
     }
@@ -252,7 +252,7 @@ class SetRelationTool : MemoryTool<SetRelationArgs>(
 ) {
     override suspend fun act(ctx: ToolContext, args: SetRelationArgs): ToolResult {
         val (player, other) = ctx.knownPlayers(listOf(args.player), "player").single() to ctx.knownPlayers(listOf(args.other), "other").single()
-        val evidence = refsOf(args.evidence, "evidence", RefKind.entries.toSet())
+        val evidence = refsOf(args.evidence, "evidence", RefKind.facts)
         val relation = ctx.memory.store.setRelation(player.uuid, other.uuid, args.kind, args.note.trim(), evidence, ctx.author())
         return ToolResult.ok("ok: ${player.shownName} → ${relation.other.shownName}: ${relation.kind.id}", listOf(player, other))
     }
@@ -301,7 +301,7 @@ class WriteSheetTool : MemoryTool<WriteSheetArgs>(
 ) {
     override suspend fun act(ctx: ToolContext, args: WriteSheetArgs): ToolResult {
         val player = ctx.knownPlayers(listOf(args.player), "player").single()
-        val evidence = refsOf(args.evidence, "evidence", RefKind.entries.toSet())
+        val evidence = refsOf(args.evidence, "evidence", RefKind.facts)
         val doc = ctx.memory.store.writeDoc(DocKey.Sheet(player.uuid, args.section.section), args.text.trim(), evidence, ctx.author())
         return ToolResult.ok("ok: wrote the ${args.section.section.id} of ${player.shownName} (version ${doc.version})", listOf(player))
     }

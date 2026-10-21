@@ -169,6 +169,10 @@ data class Caller(val role: Role, val conversationId: String, val turnId: Long?,
  *   `punish` and `favor` included (M4 §12.1).
  * @property forgeAvailable the Forge runs (`Forge.available`) and no operator switched it off
  *   (`ModuleControl.halted`): every tool of M5 needs it, with the engine (M5 §9.1).
+ * @property storytellerAvailable the storyteller can work (`Role.STORYTELLER` among the workers' roles, for a chapter
+ *   of the Director), or the conversation is the storyteller's own: `inspire` needs it, with the Journal, and nothing
+ *   else does (M6 §12.2). The role `storyteller` of `delegate` is in a static enum: it is refused with its reason,
+ *   never hidden.
  */
 data class ToolEnv(
     val journalAvailable: Boolean,
@@ -176,6 +180,7 @@ data class ToolEnv(
     val memoryAvailable: Boolean = false,
     val mechanicsAvailable: Boolean = false,
     val forgeAvailable: Boolean = false,
+    val storytellerAvailable: Boolean = false,
 )
 
 /**

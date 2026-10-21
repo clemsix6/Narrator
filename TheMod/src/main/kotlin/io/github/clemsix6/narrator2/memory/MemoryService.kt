@@ -13,8 +13,9 @@ import io.github.clemsix6.narrator2.trace.ConversationRecord
  *   `<memory>` block of a wake-up ([WakeAttachments]);
  * - [situationLines] and [chapterClosed]: the jobs' cache of the situation lines, and the nap of a closed
  *   chapter;
- * - [runContext]: the run of a Chronicler's or Dreamer's conversation, from [MemoryAgents], the same
- *   instance the Chronicler and the Dreamer run their conversations with.
+ * - [runContext]: the run of a Chronicler's, Dreamer's or storyteller's conversation, from [MemoryAgents], the same
+ *   instance the Chronicler and the Dreamer run their conversations with;
+ * - [openIdeas]: the storyteller's open ideas, from a cache.
  *
  * Available from the start of the server to its stop, even through an outage of the Journal: each read or
  * write then fails with the Journal's reason, and works again once it is back.
@@ -38,6 +39,9 @@ class MemoryService(
     override suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long): String? = wake.block(signals, chapter, now)
 
     override fun situationLines(now: Long): List<String> = jobs.situationLines()
+
+    /** None yet: the memory keeps no cache of the open ideas so far, and this never reads the database. */
+    override fun openIdeas(): List<Idea> = emptyList()
 
     override fun chapterClosed(record: ConversationRecord) = jobs.chapterClosed(record)
 

@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
@@ -271,6 +272,8 @@ internal class DuckJournal private constructor(
 
     override fun chatSignals(r: ChatSignalsRecord) = writer.submit(r)
 
+    override fun lineLabels(r: LineLabelsRecord) = writer.submit(r)
+
     private fun start(repair: RepairReport?) {
         lastReport = Report(0, currentHookNanos(), System.nanoTime())
         writer.start()
@@ -487,6 +490,7 @@ internal class DuckJournal private constructor(
         private val SEED_COLUMNS: Map<IdKind, List<String>> = mapOf(
             IdKind.EVENT to listOf(
                 "events.id", "chat.id", "private_messages.id", "chat_signals.event_id", "engine_decisions.event_id", "recalls.event_id",
+                "line_labels.event_id",
             ),
             IdKind.SESSION to listOf("sessions.session_id", "events.session_id", "positions.session_id"),
             IdKind.TURN to listOf(
@@ -499,13 +503,14 @@ internal class DuckJournal private constructor(
             IdKind.TOOL_CALL to listOf("tool_calls.id"),
             IdKind.DECISION to listOf("engine_decisions.id"),
             IdKind.MEMORY to listOf(
-                "memories.id", "canon.id", "interactions.id", "chronicle.id", "notes.id", "memories.merged_into", "canon.replaces",
-                "interactions.canon_id", "interactions.memory_id", "chronicle.superseded_by", "recalls.ref_id", "search_docs.ref_id",
+                "memories.id", "canon.id", "interactions.id", "chronicle.id", "notes.id", "ideas.id", "memories.merged_into",
+                "canon.replaces", "interactions.canon_id", "interactions.memory_id", "chronicle.superseded_by", "recalls.ref_id",
+                "search_docs.ref_id",
             ),
             IdKind.MEMORY_RUN to listOf(
                 "memory_runs.run_id", "memories.run_id", "canon.run_id", "interactions.run_id", "player_traits.run_id",
                 "player_skills.run_id", "player_relations.run_id", "memory_docs.run_id", "chronicle.run_id", "notes.run_id",
-                "memory_log.run_id",
+                "ideas.run_id", "memory_log.run_id",
             ),
         )
 

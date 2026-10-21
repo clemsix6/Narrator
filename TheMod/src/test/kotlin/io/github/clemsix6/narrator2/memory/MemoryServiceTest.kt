@@ -245,7 +245,7 @@ class MemoryServiceTest {
         }
         val broken = createMemory(TestServices(journal = journal.journal))
         assertFalse(broken.available)
-        assertEquals("the Journal lacks the memory's schema (V3__mechanics.sql): schema version 1; tables missing: search_postings", broken.unavailableReason)
+        assertEquals("the Journal lacks the memory's schema (V4__style_ideas.sql): schema version 1; tables missing: search_postings", broken.unavailableReason)
     }
 
     @Test
@@ -279,6 +279,8 @@ class MemoryServiceTest {
         override suspend fun attachments(signals: List<DirectorSignal>, chapter: ChapterMemory, now: Long) = memory.attachments(signals, chapter, now)
 
         override fun situationLines(now: Long) = memory.situationLines(now)
+
+        override fun openIdeas() = memory.openIdeas()
 
         override fun chapterClosed(record: ConversationRecord) = memory.chapterClosed(record)
 

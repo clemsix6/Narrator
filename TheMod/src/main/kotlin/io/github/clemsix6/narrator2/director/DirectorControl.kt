@@ -83,6 +83,15 @@ sealed interface DirectorSignal {
      */
     data class Mechanic(val kind: MechanicSignal, val line: String, val at: Long, val priority: Boolean) : DirectorSignal
 
+    /**
+     * A drift of tone the watch of the style found in the Director's lines (M6 §4.3). Urgency [Urgency.NEXT]: it never
+     * wakes; it reaches the model as a note of the engine, `Engine: tone check: <text>`, with the next request (the next
+     * wake-up, or between two tool calls), the gravest one only when several wait ([StyleNoteKind] is in order of
+     * gravity); a silence of the Director drops it. [text]: what follows `tone check: `, English, the line it quotes
+     * escaped, e.g. `your line « … » reads dark; find its absurd version, or drop the idea`.
+     */
+    data class StyleNote(val kind: StyleNoteKind, val text: String, val at: Long) : DirectorSignal
+
     /** `/narrator pause`: the running turn ends first, then the Director stays silent. */
     data object Pause : DirectorSignal
 
@@ -121,6 +130,27 @@ enum class MechanicSignal {
      * failed) or tells the Director something (`tellDirector`, once every 5 minutes). No priority (M5 §9.2).
      */
     MODULE,
+}
+
+/** The drifts of tone a [DirectorSignal.StyleNote] tells (M6 §4.3), the gravest first. */
+enum class StyleNoteKind {
+    /** A line that reads dark. */
+    DARK,
+
+    /** A line that mocks the person rather than the play. */
+    CRUEL,
+
+    /** A line that steps out of character. */
+    OUT_OF_CHARACTER,
+
+    /** Lines that report without a punchline. */
+    FLAT,
+
+    /** Lines that reuse a recent construction. */
+    REPEATS,
+    ;
+
+    val id: String get() = name.lowercase()
 }
 
 /** What brought a memory back by itself (M3 §10.5). */
