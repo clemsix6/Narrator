@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * FakeAnthropic().use { fake ->
  *     fake.enqueue(reply { thinking("Checking the line."); text("Pong.") })
  *     fake.enqueue(reply { toolUse("say", """{"text": "Hello"}""") })  // stop_reason tool_use
+ *     fake.enqueue(reply { fallback(); text("No.") })                    // a fallback model answered (claude-opus-4-8)
  *     fake.enqueue(httpError(529))                                       // overloaded_error
  *     fake.enqueue { request -> reply { text("${request.json.path("messages").size()} messages") } }
  *     fake.enqueueFor("director-1234", reply { text("Only for this conversation.") })
@@ -288,10 +289,18 @@ class FakeAnthropic(
 
 /**
  * The blocks of an assistant turn as the fake compares them: blank text left out, and only the fields
- * that make the turn (text; thinking and signature; tool call id, name and input).
+ * that make the turn (text; thinking and signature; tool call id, name and input). After a server-side
+ * fallback, the turn sent back is what the API documents: the `fallback` blocks are an ignored audit
+ * marker (left out here, so a client may keep or drop them only by dropping them), and before the last
+ * of them only text counts (the declined model's thinking and tool calls must be omitted).
  */
 private fun normalized(content: JsonNode): List<JsonNode> {
-    val blocks = if (content.isTextual) listOf(obj("text").put("text", content.asText())) else content.toList()
+    val all = if (content.isTextual) listOf(obj("text").put("text", content.asText())) else content.toList()
+    val boundary = all.indexOfLast { it.path("type").asText() == "fallback" }
+    val blocks = all.filterIndexed { index, block ->
+        val type = block.path("type").asText()
+        type != "fallback" && (index > boundary || type == "text")
+    }
     return blocks.mapNotNull { block ->
         when (block.path("type").asText()) {
             "text" -> block.path("text").asText().takeIf { it.isNotBlank() }?.let { obj("text").put("text", it) }
@@ -434,6 +443,7 @@ class ReplyBuilder internal constructor() {
     private var stopReason: String? = null
     private var stopDetails: ObjectNode? = null
     private var usage = Usage()
+    private var model: String? = null
 
     /** A thinking block whose text is [summary], as returned with `thinking.display: summarized`. */
     fun thinking(summary: String) {
@@ -476,6 +486,31 @@ class ReplyBuilder internal constructor() {
         stopReason = reason
     }
 
+    /**
+     * A `fallback` block, as the API sends it with server-side fallbacks: a safety classifier declined the
+     * request on [from] and [to] goes on. First in the reply (declined before any output), the stream's
+     * `message_start` already names [to]; after other blocks (declined mid-stream), it names the requested model.
+     */
+    fun fallback(from: String = "claude-opus-5-5", to: String = "claude-opus-4-8", category: String? = "cyber") {
+        val block = obj("fallback")
+        block.putObject("from").put("model", from)
+        block.putObject("to").put("model", to)
+        block.putObject("trigger").put("type", "refusal").put("category", category)
+        steps += Step.Raw(block, servedBy = to)
+    }
+
+    /** A block given as raw JSON, e.g. a type newer than the SDK; sent whole, without deltas. */
+    fun block(json: String) {
+        val block = MAPPER.readTree(json)
+        require(block.isObject && block.path("type").isTextual) { "a content block is a JSON object with a type: $json" }
+        steps += Step.Raw(block as ObjectNode, servedBy = null)
+    }
+
+    /** The model `message_start` names, e.g. a fallback model serving a conversation already moved to it, without any block. */
+    fun model(model: String) {
+        this.model = model
+    }
+
     /** Ends the reply with `stop_reason: refusal` and its `stop_details`. */
     fun refusal(category: String = "cyber", explanation: String = "Simulated refusal.") {
         stopReason = "refusal"
@@ -489,7 +524,8 @@ class ReplyBuilder internal constructor() {
 
     internal fun build(): FakeResponse {
         val stop = stopReason ?: if (steps.any { it is Step.ToolUse }) "tool_use" else "end_turn"
-        return ReplyResponse(steps.toList(), stop, stopDetails, usage)
+        val servedBy = model ?: (steps.firstOrNull { it !is Step.Pause } as? Step.Raw)?.servedBy
+        return ReplyResponse(steps.toList(), stop, stopDetails, usage, servedBy)
     }
 }
 
@@ -516,6 +552,9 @@ private sealed class Step {
     data class ToolUse(val id: String, val name: String, val input: String) : Step()
     data class Pause(val hold: Hold) : Step()
     data object Cut : Step()
+
+    /** A whole block sent as is; [servedBy] is the model `message_start` names when it comes first (a fallback's). */
+    data class Raw(val block: ObjectNode, val servedBy: String?) : Step()
 }
 
 private data class Usage(val input: Long = 10, val output: Long = 10, val cacheRead: Long = 0, val cacheWrite: Long = 0)
@@ -525,6 +564,8 @@ private class ReplyResponse(
     val stopReason: String,
     val stopDetails: ObjectNode?,
     val usage: Usage,
+    /** The model that answers, when not the requested one. */
+    val servedBy: String?,
 ) : FakeResponse() {
     override fun writeTo(exchange: HttpExchange, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
         val holds = steps.filterIsInstance<Step.Pause>().map { it.hold }
@@ -549,12 +590,13 @@ private class ReplyResponse(
                     val input = runCatching { MAPPER.readTree(step.input) }.getOrNull()
                     content.add(obj("tool_use").put("id", step.id).put("name", step.name).also { it.set<JsonNode>("input", input) })
                 }
+                is Step.Raw -> content.add(step.block.deepCopy())
             }
         }
         val message = obj("message")
             .put("id", nextId("msg"))
             .put("role", "assistant")
-            .put("model", request.json.path("model").asText("claude-opus-5-5"))
+            .put("model", servedBy ?: request.json.path("model").asText("claude-opus-5-5"))
             .put("stop_reason", stopReason)
             .putNull("stop_sequence")
         message.set<JsonNode>("content", content)
@@ -568,7 +610,7 @@ private class ReplyResponse(
     }
 
     private fun write(sse: SseWriter, request: RecordedRequest, succeeded: (List<JsonNode>) -> (() -> Unit)?) {
-        sse.messageStart(request, usage)
+        sse.messageStart(request, usage, servedBy)
         sse.event("ping", obj("ping"))
         val content = MAPPER.createArrayNode() // the blocks as the API would return them whole
         var index = 0
@@ -596,8 +638,12 @@ private class ReplyResponse(
                     val input = runCatching { MAPPER.readTree(step.input) }.getOrNull()
                     content.add(obj("tool_use").put("id", step.id).put("name", step.name).also { it.set<JsonNode>("input", input) })
                 }
+                is Step.Raw -> {
+                    sse.blockStart(index, step.block)
+                    content.add(step.block.deepCopy())
+                }
             }
-            if (step is Step.Thinking || step is Step.Text || step is Step.ToolUse) {
+            if (step is Step.Thinking || step is Step.Text || step is Step.ToolUse || step is Step.Raw) {
                 sse.event("content_block_stop", obj("content_block_stop").put("index", index))
                 index++
             }
@@ -617,13 +663,19 @@ private class ReplyResponse(
         }
     }
 
-    /** Whether the client commits this reply: a usable stop reason, whole tool calls, and something besides blank text. */
+    /**
+     * Whether the client commits this reply: a usable stop reason, whole tool calls, and something besides
+     * blank text; after a fallback, text or a tool call (anything less is a refusal).
+     */
     private fun isUsable(content: JsonNode): Boolean {
-        val calls = content.filter { it.path("type").asText() == "tool_use" }
+        val answer = normalized(content)
+        val calls = answer.filter { it.path("type").asText() == "tool_use" }
+        val fellBack = content.any { it.path("type").asText() == "fallback" }
         return stopReason in USABLE_STOP_REASONS &&
             (stopReason != "tool_use" || calls.isNotEmpty()) &&
             calls.all { it.path("input").isObject } &&
-            normalized(content).isNotEmpty()
+            answer.isNotEmpty() &&
+            (!fellBack || answer.any { it.path("type").asText() in setOf("text", "tool_use") })
     }
 }
 
@@ -662,11 +714,11 @@ private class SseWriter(private val out: OutputStream) {
         out.flush()
     }
 
-    fun messageStart(request: RecordedRequest, usage: Usage) {
+    fun messageStart(request: RecordedRequest, usage: Usage, servedBy: String? = null) {
         val message = obj("message")
             .put("id", nextId("msg"))
             .put("role", "assistant")
-            .put("model", request.json.path("model").asText("claude-opus-5-5"))
+            .put("model", servedBy ?: request.json.path("model").asText("claude-opus-5-5"))
             .putNull("stop_reason")
             .putNull("stop_sequence")
         message.putArray("content")

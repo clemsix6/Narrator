@@ -16,6 +16,7 @@ import com.anthropic.models.messages.OutputConfig
 import com.anthropic.models.messages.RawMessageStreamEvent
 import com.anthropic.models.messages.StopReason
 import com.anthropic.models.messages.ThinkingConfigAdaptive
+import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.RoleConfig
 import io.github.clemsix6.narrator2.core.Log
@@ -111,7 +112,7 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
                 try {
                     execute(conversation, history, pending).also { exchange ->
                         val result = (exchange as? Exchange.Answered)?.result
-                        if (result is SendResult.Reply) committed = pending + replayOf(result.message)
+                        if (result is SendResult.Reply) committed = pending + result.replay
                     }
                 } finally {
                     conversation.endCall(committed)
@@ -192,7 +193,16 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
                     continue
                 }
                 currentCoroutineContext().ensureActive()
-                return Exchange.Answered(finish(call, number, attempt, message))
+                return try {
+                    Exchange.Answered(finish(call, number, attempt, message))
+                } catch (e: Exception) {
+                    // A reply the client cannot read is still a call: it is traced as a failure, never thrown.
+                    val stats = call.stats(number, attempt.requestId)
+                        .copy(messageId = runCatching { message.id() }.getOrNull(), error = "unreadable reply: ${describeFailure(e)}")
+                    log.error("${conversation.id} · ${stats.error} · ${stats.ids()}", e)
+                    conversation.transcripts?.error(conversation, e, stats)
+                    Exchange.Failed(e, stats)
+                }
             }
         } catch (e: CancellationException) {
             log.info("${conversation.id} · cancelled after ${call.elapsedMs()} ms, during attempt $number")
@@ -201,12 +211,22 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
         }
     }
 
-    /** Measures the reply, decides whether it is usable, and records it. */
+    /**
+     * Measures the reply, decides whether it is usable, and records it. The measurements come first: a
+     * reply that cannot be sent back is [SendResult.Incomplete], never an exception.
+     *
+     * A server-side fallback (a `fallback` block, see [Fallback]) is logged as a warning and noted in the
+     * transcript; the call is measured as the model that answered ([CallStats.model]), with the
+     * fallback's category as [CallStats.refusalCategory] when the API gave no `stop_details`. A fallback
+     * that answers with neither text nor a tool call is a refusal.
+     */
     private fun finish(call: CallContext, number: Int, attempt: Attempt, message: Message): SendResult {
         val conversation = call.conversation
         val usage = message.usage()
         val stopReason = message.stopReason().orElse(null)
+        val fallbacks = fallbacksOf(message)
         val stats = call.stats(number, attempt.requestId).copy(
+            model = fallbacks.lastOrNull()?.to ?: message.model().asString(),
             messageId = message.id(),
             timeToFirstTokenMs = attempt.timeToFirstTokenMs,
             inputTokens = usage.inputTokens(),
@@ -214,15 +234,17 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             cacheWriteTokens = usage.cacheCreationInputTokens().orElse(0L),
             outputTokens = usage.outputTokens(),
             stopReason = stopReason?.asString(),
-            refusalCategory = message.stopDetails().flatMap { it.category() }.map { it.asString() }.orElse(null),
+            refusalCategory = message.stopDetails().flatMap { it.category() }.map { it.asString() }.orElse(null)
+                ?: fallbacks.lastOrNull()?.category,
         )
         val result = when {
             stopReason == StopReason.REFUSAL -> SendResult.Refused(message, stats)
             attempt.incompleteToolUse -> SendResult.Incomplete(message, stats, "a tool call was cut off (${stats.stopReason})")
-            stopReason == StopReason.TOOL_USE && message.content().none { it.isToolUse() } ->
+            fallbacks.isNotEmpty() && !hasAnswer(message) -> SendResult.Refused(message, stats)
+            stopReason == StopReason.TOOL_USE && answerOf(message).none { it.isToolUse() } ->
                 SendResult.Incomplete(message, stats, "stop reason tool_use without any tool call")
             stopReason != null && stopReason in USABLE && isEmptyReply(message) -> SendResult.Incomplete(message, stats, EMPTY_REPLY)
-            stopReason != null && stopReason in USABLE -> SendResult.Reply(message, stats)
+            stopReason != null && stopReason in USABLE -> replyOf(conversation, message, stats)
             stopReason == StopReason.MAX_TOKENS -> SendResult.Incomplete(message, stats, "max_tokens (${call.role.maxTokens}) reached")
             else -> SendResult.Incomplete(message, stats, "unexpected stop reason ${stats.stopReason}")
         }
@@ -231,6 +253,14 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             is SendResult.Refused -> "refusal"
             is SendResult.Incomplete -> result.reason
             is SendResult.Reply -> null
+        }
+        if (fallbacks.isNotEmpty()) {
+            val switches = fallbacks.joinToString(", ") { it.describe() }
+            log.warn(
+                "${conversation.id} · server-side fallback: $switches; requested ${call.role.model}, answered by ${stats.model}" +
+                    if (result is SendResult.Refused) ", without an answer: treated as a refusal" else "",
+            )
+            conversation.transcripts?.note(conversation, "server-side fallback: $switches, answered by ${stats.model}")
         }
         conversation.transcripts?.response(conversation, message, stats, notCommitted)
         log.info("${conversation.id} · ${stats.summary()} · ${stats.ids()}")
@@ -243,6 +273,14 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             is SendResult.Reply -> Unit
         }
         return result
+    }
+
+    /** A [SendResult.Reply] with the turn it commits, or [SendResult.Incomplete] when that turn cannot be built. */
+    private fun replyOf(conversation: Conversation, message: Message, stats: CallStats): SendResult = try {
+        SendResult.Reply(message, stats, replayOf(message))
+    } catch (e: Exception) {
+        log.error("${conversation.id} · the reply cannot be sent back, nothing committed", e)
+        SendResult.Incomplete(message, stats, "the reply cannot be sent back: ${e.message ?: e.javaClass.simpleName}")
     }
 
     private fun params(conversation: Conversation, role: RoleConfig, messages: List<MessageParam>): MessageCreateParams =
@@ -355,12 +393,15 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
         var sawContent = false
             private set
 
+        private val cutToolUses = mutableListOf<Long>() // indexes of tool_use blocks whose arguments are not a whole object
+        private var lastFallback = -1L // index of the last `fallback` block
+
         /**
-         * A tool call whose arguments are not a whole JSON object: cut off by `max_tokens`. (The SDK's
-         * accumulator silently replaces such arguments with `{}`, so they are checked here.)
+         * A tool call of the answer whose arguments are not a whole JSON object: cut off by `max_tokens`.
+         * (The SDK's accumulator silently replaces such arguments with `{}`, so they are checked here.) A
+         * call before a fallback is not part of the answer ([answerOf]): a declined model may stop mid-call.
          */
-        var incompleteToolUse = false
-            private set
+        val incompleteToolUse: Boolean get() = cutToolUses.any { it > lastFallback }
 
         suspend fun run(params: MessageCreateParams, options: RequestOptions): Message {
             val response = client.messages().withRawResponse().createStreaming(params, options)
@@ -374,13 +415,16 @@ class ClaudeClient(private val config: NarratorConfig, private val apiKey: Strin
             event.contentBlockStart().ifPresent { start ->
                 sawContent = true
                 if (start.contentBlock().isToolUse()) toolInputs[start.index()] = StringBuilder()
+                if (start.contentBlock()._json().map { mapper.valueToTree<JsonNode>(it).path("type").asText() == "fallback" }.orElse(false)) {
+                    lastFallback = start.index()
+                }
             }
             event.contentBlockDelta().ifPresent { delta ->
                 if (timeToFirstTokenMs == null) timeToFirstTokenMs = (System.nanoTime() - start) / 1_000_000
                 delta.delta().inputJson().ifPresent { toolInputs[delta.index()]?.append(it.partialJson()) }
             }
             event.contentBlockStop().ifPresent { stop ->
-                toolInputs[stop.index()]?.let { if (!isWholeObject(it.toString())) incompleteToolUse = true }
+                toolInputs[stop.index()]?.let { if (!isWholeObject(it.toString())) cutToolUses += stop.index() }
             }
             if (event.isMessageStop()) stopped = true
             accumulator.accumulate(event)
@@ -421,23 +465,6 @@ sealed interface Exchange {
     /** The call failed after its last attempt, with nothing committed; [stats] carries its error. */
     class Failed(val error: Throwable, val stats: CallStats) : Exchange
 }
-
-/**
- * The reply as it joins the history: its blocks, minus blank text blocks, which the API rejects in a
- * request (a streamed text block can end up empty).
- */
-internal fun replayOf(message: Message): MessageParam =
-    MessageParam.builder()
-        .role(MessageParam.Role.ASSISTANT)
-        .contentOfBlockParams(message.content().filterNot { it.isText() && it.asText().text().isBlank() }.map { it.toParam() })
-        .build()
-
-/**
- * True when [message] has nothing to commit: no block but blank text. The API rejects an empty
- * assistant turn, so such a reply is never committed (it happens after tool results, when the model
- * considers the turn over). A reply with only thinking is not empty.
- */
-fun isEmptyReply(message: Message): Boolean = message.content().all { it.isText() && it.asText().text().isBlank() }
 
 /**
  * Runs the blocking [block] on this thread and closes [resource] as soon as the calling coroutine is
