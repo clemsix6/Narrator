@@ -134,6 +134,9 @@ interface ChronicleRunner {
 
     /** The nap of a closed chapter, with or without a summary. */
     suspend fun nap(runId: Long, chapter: ConversationRecord): RunOutcome
+
+    /** The memory stops, no job running: ends the conversation the jobs share (M6-FIX-12), if one is open. */
+    fun close() {}
 }
 
 /** The Dreamer (M3 §8), run by `MemoryJobs`. Implemented by `dream/Dreamer.kt` (M3-11). */

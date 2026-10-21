@@ -182,16 +182,20 @@ class MemoryJobs(
 
     /**
      * Stops everything (`STOPPING`, M3-18): the world play clock is saved first, then the running job ends
-     * `cancelled` (a dream keeps its step to resume) and the queue is dropped. [STOP_WAIT_MS] at most for
-     * each of the two: a job that does not let go is left behind.
+     * `cancelled` (a dream keeps its step to resume), the Chronicler's conversation ends, and the queue is dropped.
+     * [STOP_WAIT_MS] at most for each of the two: a job that does not let go is left behind.
      */
     suspend fun stop() {
         stopping = true
         withTimeoutOrNull(STOP_WAIT_MS) {
             runCatching { hooks.saveClock(clock.millis()) }.onFailure { log.warn("could not save the world play clock: ${it.message}") }
         } ?: log.warn("could not save the world play clock within ${ToolText.duration(STOP_WAIT_MS)}")
-        withTimeoutOrNull(STOP_WAIT_MS) { root?.cancelAndJoin() ?: Unit }
-            ?: log.warn("the memory jobs did not end within ${ToolText.duration(STOP_WAIT_MS)}: left behind")
+        val ended = withTimeoutOrNull(STOP_WAIT_MS) { root?.cancelAndJoin() ?: Unit }
+        if (ended == null) {
+            log.warn("the memory jobs did not end within ${ToolText.duration(STOP_WAIT_MS)}: left behind")
+        } else {
+            chronicler.close() // no job runs: the Chronicler's conversation ends with them
+        }
         val dropped = synchronized(lock) { queue.size.also { queue.clear() } }
         log.info("memory jobs stopped${if (dropped > 0) ", $dropped queued job(s) dropped" else ""}")
     }

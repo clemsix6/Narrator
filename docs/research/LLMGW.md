@@ -113,7 +113,9 @@ Le README de LLMGW liste explicitement deux routes réécrites côté sortie, `P
     passerelle, et notre prompt système est rendu **après le premier message**. Une retouche du prompt laisse
     relire le premier message déjà vu, ce qui n'est possible que si le prompt vient après. Nos octets sont
     identiques d'une conversation à l'autre ; le correctif est côté passerelle (un marqueur à la fin de notre
-    prompt, laissé dans `system`).
+    prompt, laissé dans `system`). Remesuré en M6-FIX-12 (21/10/2026) : 5 272 tokens relus (outils et bloc de la
+    passerelle), environ 5 240 tokens de `chronicler.md` réécrits à chaque conversation, au prix d'écriture d'une
+    heure. Le Chroniqueur garde depuis une conversation pour ses travaux successifs, ce qui contourne ce coût pour lui.
   - Ce comportement (un bloc portant déjà un `cache_control` `ttl=1h` avant l'application du nôtre) est,
     d'après la lecture du code (§ *Résumé compte amont clé API vs OAuth* ci-dessous), un signe de cloaking
     OAuth côté compte amont, pas d'un compte clé API nu.

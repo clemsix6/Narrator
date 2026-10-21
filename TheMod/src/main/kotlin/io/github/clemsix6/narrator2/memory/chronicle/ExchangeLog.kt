@@ -186,9 +186,10 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
      * The `<known>` block of a window that starts at [from] (M3 §7.2): the [players] of the window, the open
      * canon that concerns them (or everyone, or written in the window), the open challenges, what the memory
      * got since [from] (until [now]), and the memories the Director of [chapter] was shown since [from].
-     * [MAX_KNOWN_CHARS] at most.
+     * Without [window], the canon and the challenges only: the nap's `<written>` and `<shown>` say the rest for the
+     * whole chapter. [MAX_KNOWN_CHARS] at most.
      */
-    suspend fun known(chapter: String, from: Instant, now: Instant, players: Set<String>): String {
+    suspend fun known(chapter: String, from: Instant, now: Instant, players: Set<String>, window: Boolean = true): String {
         val zone = zone
         return services.journal.read(READ_TIMEOUT_MS) { connection ->
             val names = Names.of(connection)
@@ -197,15 +198,17 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
             val open = connection.query(OPEN_CANON_SQL) { canonEntry(names) }
                 .filter { it.players.isEmpty() || it.players.any { p -> p.uuid in uuids } || !it.createdAt.isBefore(from) }
             val (challenges, canon) = open.partition { it.kind == CanonKind.CHALLENGE }
-            val noted = written(connection, names, from, now, zone).filterNot { it.open }
-            val shown = shown(connection, chapter, from, now)
+            val noted = if (window) written(connection, names, from, now, zone).filterNot { it.open } else emptyList()
+            val shown = if (window) shown(connection, chapter, from, now) else emptyList()
             val lines = buildList {
                 add("<known>")
                 add("Players: " + (refs.joinToString { ModelText.name(it.name) }.ifEmpty { "none" }))
                 section("Open canon", canon.map { canonLine(it, from, zone) }, MAX_ITEMS)
                 section("Open challenges", challenges.map { canonLine(it, from, zone) }, MAX_ITEMS)
-                section("Already noted in this window", noted.map { it.line }, MAX_ITEMS)
-                section("Memories shown to the Narrator in this window", shown.map { it.line(zone, withText = false) }, MAX_ITEMS)
+                if (window) {
+                    section("Already noted in this window", noted.map { it.line }, MAX_ITEMS)
+                    section("Memories shown to the Narrator in this window", shown.map { it.line(zone, withText = false) }, MAX_ITEMS)
+                }
                 add("</known>")
             }
             fit(lines, MAX_KNOWN_CHARS)
