@@ -33,6 +33,7 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
@@ -83,7 +84,7 @@ class ArsenalCreaturesGameTests {
                 val seen = mutableListOf<Seen>()
                 rig.onServer { rig.afterTick = { seen += rig.ownCreatures().map { Seen.of(rig.ticks, it, bob.live.position()) } } }
                 val view = rig.deploy(ORBITING_CHICKENS, """{"player": "${bob.name}", "chickens": 4, "seconds": 10}""")
-                val ended = rig.awaitEnd(view.ref, CanonStatus.FULFILLED)
+                val ended = rig.awaitEnd(view.ref, CanonStatus.FULFILLED, ORBIT_END_TICKS)
                 check(ended.resolution == LANDED) { "it ended by itself once landed: ${ended.resolution}" }
                 check(rig.moduleLines().single().let { it.startsWith("${view.ref} orbiting_chickens ended by itself: « $LANDED » (") && it.endsWith(" acts, 0 faults)") }) {
                     "the Director is told: ${rig.moduleLines()}"
@@ -121,7 +122,7 @@ class ArsenalCreaturesGameTests {
                     val drop = fall.zipWithNext { a, b -> a.dy - b.dy }.maxOrNull() ?: 0.0
                     check(drop < 0.35) { "$chicken comes down gently: $drop blocks in one tick" }
                 }
-                rig.await("its chickens gone with it") { rig.ownCreatures(view.ref).isEmpty() }
+                rig.await("its chickens gone with it", GONE_TICKS) { rig.ownCreatures(view.ref).isEmpty() }
                 check(bob.packets.filterIsInstance<ClientboundSetTitleTextPacket>().any { it.text().string == TITLE }) { "Bob saw the title « $TITLE »" }
 
                 val ticks = rig.onServer { rig.tickNanos(orbit) }
@@ -153,18 +154,20 @@ class ArsenalCreaturesGameTests {
             rig.running(bob) {
                 val view = rig.deploy(PARADE, """{"player": "${bob.name}", "creature": "chicken", "count": 3}""")
                 val deployed = rig.onServer { rig.ticks }
-                rig.await("its three chickens", PARADE_WAIT_MS, view.ref) { rig.ownCreatures(view.ref).size == 3 }
+                rig.await("its three chickens", SUMMON_TICKS, view.ref, PARADE_WAIT_MS) { rig.ownCreatures(view.ref).size == 3 }
                 val first = rig.onServer { rig.ownCreatures(view.ref).associate { it.uuid to it.position() } }
 
                 // Bob walks east, a block every half second; the parade steps twice a second.
                 val walk = ArrayDeque((WALK_FROM + 1..WALK_TO).map { helper.absoluteVec(Vec3(it + 0.5, 1.0, LANE + 0.5)) })
                 rig.onServer { rig.afterTick = { if (rig.ticks % WALK_TICKS == 0) walk.removeFirstOrNull()?.let { bob.live.teleportTo(it.x, it.y, it.z) } } }
-                rig.await("Bob's walk", PARADE_WAIT_MS, view.ref) { walk.isEmpty() }
+                rig.await("Bob's walk", WALK_TICKS * (WALK_TO - WALK_FROM) + SLACK_TICKS, view.ref, PARADE_WAIT_MS) { walk.isEmpty() }
                 val walked = rig.onServer { rig.ticks }
                 // Once the line settled behind Bob, its longest link at each tick of WATCH_TICKS.
                 val watched = mutableListOf<Double>()
                 rig.onServer { rig.afterTick = { if (rig.ticks > walked + SETTLE_TICKS) watched += file(rig.ownCreatures(view.ref), bob.live.position()) } }
-                rig.await("the line settled behind Bob, then watched", PARADE_WAIT_MS, view.ref) { rig.ticks >= walked + SETTLE_TICKS + WATCH_TICKS }
+                rig.await("the line settled behind Bob, then watched", SETTLE_TICKS + WATCH_TICKS + SLACK_TICKS, view.ref, PARADE_WAIT_MS) {
+                    rig.ticks >= walked + SETTLE_TICKS + WATCH_TICKS
+                }
                 val links = rig.onServer {
                     rig.afterTick = {}
                     watched.toList()
@@ -189,15 +192,15 @@ class ArsenalCreaturesGameTests {
                     rig.ticks
                 }
                 check(victim.isDeadOrDying) { "the chicken is dead" }
-                rig.await("a new chicken in the line", PARADE_WAIT_MS, view.ref) {
+                rig.await("a new chicken in the line", SUMMON_TICKS, view.ref, PARADE_WAIT_MS) {
                     val now = rig.ownCreatures(view.ref)
                     now.size == 3 && now.any { it.uuid !in first } && file(now, bob.live.position()) <= LINK
                 }
-                rig.await("Bob told of the fallen chicken", alive = view.ref) { bob.chat().any { FALLEN in it.content().string } }
+                rig.await("Bob told of the fallen chicken", SLACK_TICKS, view.ref) { bob.chat().any { FALLEN in it.content().string } }
 
                 rig.book.stop(view.ref, "Le test est fini.", Author(Source.OPERATOR, operator = "gametest"))
-                rig.awaitEnd(view.ref, CanonStatus.CANCELLED)
-                rig.await("its chickens gone") { rig.ownCreatures(view.ref).isEmpty() }
+                rig.awaitEnd(view.ref, CanonStatus.CANCELLED, SLACK_TICKS)
+                rig.await("its chickens gone", GONE_TICKS) { rig.ownCreatures(view.ref).isEmpty() }
                 val ticks = rig.onServer { rig.tickNanos(null) }
                 val slowest = rig.onServer { rig.slowestTicks() }
                 Log.forge.info(
@@ -224,17 +227,26 @@ class ArsenalCreaturesGameTests {
 
     /**
      * The modules' engine of one test on the server's runtime: its state in memory, its own clock (50 ms a tick), its
-     * own Forge and Director, the real host, SDK, tools and guards. The test's [GameTestHelper.onEachTick] ticks it once
-     * a server tick, as the server ticks its own engine; [afterTick] then looks at the world.
+     * own Forge, Director and speech limits, the real host, SDK, tools and guards. The test's [GameTestHelper.onEachTick]
+     * ticks it once a server tick, as the server ticks its own engine; [afterTick] then looks at the world. Its waits
+     * count its ticks ([await]): what it waits for comes with them.
      */
     private class Rig(val helper: GameTestHelper, private val module: String) {
         val runtime = helper.narrator()
         val clock = TestClock(Instant.ofEpochMilli(runtime.clock.millis()), runtime.clock.zone)
         val director = FakeDirector(clock)
         val forge = ForgeService(runtime, ArsenalStore(Files.createTempDirectory("narrator2-gametest-arsenal").resolve(ForgeService.ARSENAL_DIR), runtime.clock, builtInNames = listOf(module)))
+
+        /**
+         * Speech limits of its own, on its clock (FLAKY-5): the server's are shared by the batch, whose other tests spent
+         * the engine's lines of the minute, and the parade's word to Bob about its fallen chicken was refused.
+         */
+        private val limits = ToolLimits(clock)
+
         val services: NarratorServices = object : NarratorServices by runtime {
             override val director: DirectorControl get() = this@Rig.director
             override val forge: Forge get() = this@Rig.forge
+            override val toolLimits: ToolLimits get() = limits
         }
         val store = StateStore.inMemory()
         private val actions = EngineActions(services, speechTools(services) + playerActionTools(services) + worldActionTools(services) + punishTools(services) + moduleOnlyTools())
@@ -251,7 +263,8 @@ class ArsenalCreaturesGameTests {
         /** Whether [tick] ticks the engine: from its start to its stop. Server thread. */
         private var started = false
 
-        /** Engine ticks so far, and what each one took. Server thread. */
+        /** Engine ticks so far, and what each one took. Server thread; [ticks] read from any. */
+        @Volatile
         var ticks = 0
             private set
         private val nanos = mutableListOf<Long>()
@@ -303,17 +316,20 @@ class ArsenalCreaturesGameTests {
         suspend fun <T> onServer(block: () -> T): T = helper.level.server.onServerThread(10_000, block)
 
         /**
-         * Waits until [condition] holds on the server thread, the engine ticking with the server meanwhile; fails at once,
-         * with its reason, when the deployment [alive] ends before.
+         * Waits until [condition] holds on the server thread, the engine ticking with the server meanwhile: [ticks] of the
+         * engine's ticks, and [timeoutMs] of the wall clock for the acts' tools, both spent before it fails ([awaitTicks]:
+         * a busy batch slows the server down, never the module's ticks). Fails at once, with its reason, when the
+         * deployment [alive] ends before.
          */
-        suspend fun await(what: String, timeoutMs: Long = 15_000, alive: Ref? = null, condition: () -> Boolean) = awaitCondition(what, timeoutMs) {
-            val (met, gone) = onServer { condition() to (alive != null && store.snapshot.module(alive.id) == null) }
-            if (!met && gone) {
-                awaitCondition("$alive resolved") { runtime.memory.store.canon(alive!!)?.status != CanonStatus.ACTIVE }
-                error("$alive ended while waiting for $what: « ${runtime.memory.store.canon(alive!!)?.resolution} »")
+        suspend fun await(what: String, ticks: Int, alive: Ref? = null, timeoutMs: Long = 15_000, condition: () -> Boolean) =
+            awaitTicks(what, ticks, { this.ticks }, timeoutMs) {
+                val (met, gone) = onServer { condition() to (alive != null && store.snapshot.module(alive.id) == null) }
+                if (!met && gone) {
+                    awaitCondition("$alive resolved") { runtime.memory.store.canon(alive!!)?.status != CanonStatus.ACTIVE }
+                    error("$alive ended while waiting for $what: « ${runtime.memory.store.canon(alive!!)?.resolution} »")
+                }
+                met
             }
-            met
-        }
 
         suspend fun deploy(module: String, params: String): ModuleView = book.deploy(
             DeploySpec(
@@ -329,9 +345,9 @@ class ArsenalCreaturesGameTests {
             mob.isAlive && owner != null && (if (ref == null) store.snapshot.module(owner) != null else owner == ref.id)
         }
 
-        /** [ref] ended: its canon row closed [status] by the engine (another end fails with its reason). */
-        suspend fun awaitEnd(ref: Ref, status: CanonStatus): CanonEntry {
-            await("$ref closed $status") { store.snapshot.module(ref.id) == null }
+        /** [ref] ended within [ticks] of the engine: its canon row closed [status] by the engine (another end fails with its reason). */
+        suspend fun awaitEnd(ref: Ref, status: CanonStatus, ticks: Int): CanonEntry {
+            await("$ref closed $status", ticks) { store.snapshot.module(ref.id) == null }
             awaitCondition("$ref closed $status") { runtime.memory.store.canon(ref)?.status != CanonStatus.ACTIVE }
             val canon = runtime.memory.store.canon(ref)!!
             check(canon.status == status) { "$ref closed ${canon.status}, not $status: « ${canon.resolution} »" }
@@ -371,6 +387,24 @@ class ArsenalCreaturesGameTests {
         /** Ticks of orbit at least: 10 s asked, the take-off left out. */
         const val ORBIT_TICKS = 150
 
+        /**
+         * Engine ticks the orbit gets to end by itself: its 10 s (200 ticks) once its chickens are in, its landing (60), its
+         * puff; about 270 ticks measured (FLAKY-5), twice that allowed.
+         */
+        const val ORBIT_END_TICKS = 600
+
+        /** Engine ticks for anything that follows within a tick or two of an act's answer: a word said, an end, a creature gone. */
+        const val SLACK_TICKS = 100
+
+        /** Engine ticks for a module's creatures to go with it, released as it ends. */
+        const val GONE_TICKS = SLACK_TICKS
+
+        /**
+         * Engine ticks for the parade to summon its marchers and see them in line: a summoning refused (the cap of the
+         * Narrator's creatures is the server's, shared with the batch) pauses the next one for 30 s of the game, 600 ticks.
+         */
+        const val SUMMON_TICKS = 1_200
+
         // The parade: a floor of the field, Bob's lane, his walk.
         const val FIELD_FLOOR = 24
         const val LANE = 12
@@ -397,6 +431,8 @@ class ArsenalCreaturesGameTests {
          * load (M5-FIX-1), a break lasted 7 ticks at most, 0 to 10 ticks in a run.
          */
         const val MEND_TICKS = 20
+
+        /** Wall-clock time the parade's waits leave the acts' tools, besides their ticks ([Rig.await]). */
         const val PARADE_WAIT_MS = 30_000L
 
         /**

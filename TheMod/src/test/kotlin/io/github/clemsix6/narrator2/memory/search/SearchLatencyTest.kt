@@ -7,7 +7,9 @@ import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.RefKind
 import io.github.clemsix6.narrator2.memory.SqlArray
 import io.github.clemsix6.narrator2.memory.update
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Test
+import java.lang.management.ManagementFactory
 import java.util.Locale
 import java.util.UUID
 import kotlin.random.Random
@@ -17,7 +19,7 @@ import kotlin.test.assertTrue
  * The search stays fast as the memory grows (M3 §10.1, §19.2): 20 000 synthetic memories made from the
  * spike's corpus (names swapped, sentences mixed, importances, ages and strengths drawn), indexed through
  * [SearchIndex] like the store does, then [HybridRecall] run end to end (BM25, candidates, score, lines):
- * under 50 ms per search on average. The figures are printed for the report.
+ * under 50 ms per search on average, of the searching thread's CPU time. The figures are printed for the report.
  */
 class SearchLatencyTest {
     private class Doc(val players: List<String>, val labels: List<String>, val text: String)
@@ -93,6 +95,9 @@ class SearchLatencyTest {
 
             queries.forEach { fixture.search(it) } // warm-up
             val byPurpose = HashMap<String, MutableList<Double>>()
+            val process = ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
+            val processCpu = process.processCpuTime
+            val threadCpu = ManagementFactory.getThreadMXBean().currentThreadCpuTime
             val times = buildList {
                 repeat(5) {
                     queries.forEach { query ->
@@ -103,6 +108,8 @@ class SearchLatencyTest {
                     }
                 }
             }.sorted()
+            val ownCpu = (ManagementFactory.getThreadMXBean().currentThreadCpuTime - threadCpu) / 1e6 / times.size
+            val allCpu = (process.processCpuTime - processCpu) / 1e6 / times.size
             val bm25 = queries.mapNotNull { it.text }.let { texts ->
                 buildList {
                     repeat(5) {
@@ -125,10 +132,19 @@ class SearchLatencyTest {
             val similarity = timed { fixture.index.similarity(fixture.connection, docs[0].text, (1L..20L).map { Ref(RefKind.MEMORY, it) }) }
 
             println(
-                "SearchLatency: %,d memories, %,d postings; %,d indexed one by one in %.0f ms (%.2f ms each); %d searches: average %.1f ms, p95 %.1f ms, max %.1f ms; +50 rows in %.1f ms; similarity against 20 rows %.1f ms"
-                    .format(Locale.ROOT, count, postings, ONE_BY_ONE, indexMs, indexMs / ONE_BY_ONE, times.size, average, p95, times.last(), adding, similarity),
+                "SearchLatency: %,d memories, %,d postings; %,d indexed one by one in %.0f ms (%.2f ms each); %d searches: average %.1f ms, p95 %.1f ms, max %.1f ms; +50 rows in %.1f ms; similarity against 20 rows %.1f ms; CPU a search: %.1f ms of the searching thread, %.1f ms of the whole process"
+                    .format(Locale.ROOT, count, postings, ONE_BY_ONE, indexMs, indexMs / ONE_BY_ONE, times.size, average, p95, times.last(), adding, similarity, ownCpu, allCpu),
             )
-            assertTrue(average < 50.0, "average search over $count memories: $average ms")
+            // Measured on CPU time (FLAKY-5): the wall clock of a busy machine is also the time the thread waits for a core (61
+            // to 80 ms under 32 spinning threads, 24 to 27 ms without), its CPU time is not (21 to 23 ms in both). A thread's
+            // CPU time is a lower bound of its latency, and close to it here: the searching thread computes nine tenths of the
+            // search's time (22 of 24 ms), DuckDB's second thread (native, unseen by the JVM's thread clocks) beside it. So
+            // 50 ms of latency are 45 ms of its CPU. DuckDB's thread is bounded with the whole process: two threads busy for
+            // 50 ms (36 to 40 ms measured). The wall clock still bounds a search that would wait instead of computing, with a
+            // busy machine's slack.
+            assertTrue(ownCpu < 45.0, "average search over $count memories: $ownCpu ms of the searching thread's CPU")
+            assertTrue(allCpu < 2 * 50.0, "average search over $count memories: $allCpu ms of the whole process's CPU")
+            assertTrue(average < 50.0 + BusyMachine.SLACK_MILLIS, "average search over $count memories: $average ms of the wall clock")
         }
     }
 
