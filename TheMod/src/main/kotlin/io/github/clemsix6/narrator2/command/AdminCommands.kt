@@ -18,6 +18,8 @@ import io.github.clemsix6.narrator2.runtime.RestartSequence
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
 import io.github.clemsix6.narrator2.trace.TraceQueries
+import io.github.clemsix6.narrator2.web.Dashboard
+import io.github.clemsix6.narrator2.web.dashboardState
 import kotlinx.coroutines.withTimeoutOrNull
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
@@ -108,8 +110,8 @@ object AdminCommands {
 
     /**
      * What runs and how well (M1_M2 §14.4): phase, settings, gateway, key presence (never its value),
-     * Director, chapter, tasks, Journal, reflexes, guards, memory, mechanics, Forge, folders, roles; then, read from the Journal
-     * off the server thread, the model calls of the last 24 hours.
+     * Director, chapter, tasks, Journal, reflexes, guards, memory, mechanics, Forge, style, storyteller and its programme,
+     * dashboard (M6), folders, roles; then, read from the Journal off the server thread, the model calls of the last 24 hours.
      */
     private fun status(source: CommandSourceStack): Int {
         val runtime = NarratorRuntime.current
@@ -117,7 +119,7 @@ object AdminCommands {
             source.sendFailure(errorLine(notRunning()))
             return 0
         }
-        statusLines(runtime, NarratorRuntime.configDir).forEach { line -> source.sendSuccess({ line }, false) }
+        statusLines(runtime, NarratorRuntime.configDir, runtime.dashboard).forEach { line -> source.sendSuccess({ line }, false) }
         if (runtime.phase != Phase.RUNNING) return 1
         if (!runtime.journal.available) {
             source.sendSuccess({ detailLine("Usage: unknown, the Journal is unavailable") }, false)
@@ -132,8 +134,8 @@ object AdminCommands {
         return 1
     }
 
-    /** The lines of `/narrator status` that come from memory, in the order of [status]. Any thread. */
-    internal fun statusLines(services: NarratorServices, configDir: Path): List<Component> {
+    /** The lines of `/narrator status` that come from memory, in the order of [status]; [dashboard], the runtime's. Any thread. */
+    internal fun statusLines(services: NarratorServices, configDir: Path, dashboard: Dashboard): List<Component> {
         val settings = services.settings.get()
         val config = settings.config
         val key = if (settings.claude != null) "present" else "missing"
@@ -153,6 +155,9 @@ object AdminCommands {
             add(detailLine(MemoryCommands.statusLine(services.memory, text)))
             add(detailLine(MechanicsCommands.statusLine(services.mechanics, BlockRestorer.pending())))
             add(detailLine(ForgeCommands.statusLine(services)))
+            add(detailLine(StyleCommands.statusLine(services)))
+            add(detailLine(storytellerLine(services, text)))
+            add(detailLine("Dashboard: ${dashboardState(dashboard)}"))
             add(detailLine("Config: $configDir"))
             add(detailLine("Data: ${services.dataDir}"))
             add(detailLine("Transcripts (${if (services.transcripts.enabled) "on" else "off"}): ${services.transcripts.root}"))
@@ -234,6 +239,29 @@ object AdminCommands {
         val protectedOnline = services.players.online.filter { guards.isProtected(it.ref.uuid) }.joinToString { it.ref.name }
         return "Guards: chaos ${services.settings.get().config.chaos} · creatures ${guards.mobs.count()} of ${caps.livingMobs} · " +
             "protected online: ${protectedOnline.ifEmpty { "nobody" }}"
+    }
+
+    /**
+     * `Storyteller: on · programme: 5 open ideas, 2 dealt · the newest P-47 written 03:12:40`: whether `delegate` reaches the
+     * storyteller (M6 §6.4), and the programme it wrote (the memory's open ideas, from its cache). Also the dashboard's
+     * overview. Any thread.
+     */
+    internal fun storytellerLine(services: NarratorServices, text: TraceText): String {
+        val state = storytellerState(services)
+        if (!services.memory.available) return "Storyteller: $state"
+        val ideas = services.memory.openIdeas()
+        val programme = ideas.maxByOrNull { it.createdAt }?.let { newest ->
+            "${ideas.size} open ${TraceText.plural(ideas.size, "idea")}, ${ideas.count { it.dealt > 0 }} dealt · the newest ${newest.ref} written ${text.time(newest.createdAt)}"
+        } ?: "no open idea"
+        return "Storyteller: $state · programme: $programme"
+    }
+
+    /** The storyteller in the `ready` line and `/narrator status`: `on` while it takes tasks, else `off (why)`. */
+    fun storytellerState(services: NarratorServices): String = when {
+        Role.STORYTELLER in services.workers.roles -> "on"
+        !services.memory.available -> "off (the memory is unavailable)"
+        services.phase != Phase.RUNNING -> "off (the server is stopping)"
+        else -> "off (no worker takes its tasks)"
     }
 
     private fun megabytes(bytes: Long): String = String.format(Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)

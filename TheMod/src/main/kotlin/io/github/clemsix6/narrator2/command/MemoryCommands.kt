@@ -798,7 +798,7 @@ object MemoryCommands {
 
     /** `/narrator memory dream`: a deep dream now (sheets, the Narrator's review, the chronicle, the Grimoire). */
     internal fun dream(services: NarratorServices, operator: String): Reply = started(services, operator, "memory_dream", services.memory.jobs.requestDream(operator)) { run ->
-        "a deep dream is queued (run $run): it rewrites the sheets, the review of the Narrator, the chronicle and the Grimoire."
+        "a deep dream is queued (run $run): it rewrites the sheets, the review of the Narrator, the chronicle and the Grimoire, then the storyteller writes its programme."
     }
 
     /** The answer to a job [result]: queued (with a word when the jobs wait), or why not. */

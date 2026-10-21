@@ -93,7 +93,7 @@ class StyleCommandsTest {
         )
         val quiet = FakeStyle()
         val lines = report(TestServices(style = quiet)).unwrapped()
-        assertEquals("Watch: on · line review off (no reflex model: see /narrator status) · tone notes on · resting openers refused", lines[1])
+        assertEquals("Watch: on · line review off (no reflex model: no LLMGW key) · tone notes on · resting openers refused", lines[1])
         assertEquals("Style: nothing at rest, no register overused", lines[2])
         assertEquals("Latest lines: none measured yet", lines[3])
     }

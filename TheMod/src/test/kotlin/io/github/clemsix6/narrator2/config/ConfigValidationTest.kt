@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.testing.LogCapture
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import java.time.ZoneId
 import kotlin.io.path.writeText
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -204,6 +205,14 @@ class ConfigValidationTest {
                 "journal.timeZone must be empty (the server's zone) or a named time zone such as Europe/Paris or UTC, not an offset",
             )
         }
+    }
+
+    @Test
+    fun `the Journal's times are shown in its zone, else in the server's`() {
+        val server = ZoneId.of("UTC")
+        assertEquals(ZoneId.of("Europe/Paris"), JournalConfig(timeZone = "Europe/Paris").zone(server))
+        assertEquals(server, JournalConfig().zone(server))
+        assertEquals(server, JournalConfig(timeZone = "Mars/Olympus").zone(server), "a zone the validation refuses never fails a page or a command")
     }
 
     @Test

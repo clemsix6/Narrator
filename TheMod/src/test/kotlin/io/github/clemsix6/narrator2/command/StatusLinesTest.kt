@@ -4,22 +4,36 @@ import io.github.clemsix6.narrator2.agent.WorkersControl
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.config.ReflexConfig
+import io.github.clemsix6.narrator2.config.StyleConfig
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.director.PendingReminder
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.DisabledMemory
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaKind
+import io.github.clemsix6.narrator2.memory.IdeaStatus
+import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.ReflexClient
+import io.github.clemsix6.narrator2.style.DisabledStyle
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.FakeGuards
+import io.github.clemsix6.narrator2.testing.FakeMemory
+import io.github.clemsix6.narrator2.testing.FakeWorkers
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.TaskRecord
+import io.github.clemsix6.narrator2.web.Dashboard
+import io.github.clemsix6.narrator2.web.DisabledDashboard
 import org.junit.jupiter.api.Test
 import java.nio.file.Path
 import java.time.Instant
@@ -32,7 +46,8 @@ class StatusLinesTest {
     private val clock = TestClock()
     private val now = clock.millis()
 
-    private fun lines(services: TestServices) = AdminCommands.statusLines(services, Path.of("config", "narrator2")).map { it.string }
+    private fun lines(services: TestServices, dashboard: Dashboard = DisabledDashboard(DisabledDashboard.SWITCHED_OFF)) =
+        AdminCommands.statusLines(services, Path.of("config", "narrator2"), dashboard).map { it.string }
 
     @Test
     fun `a quiet server without key nor Journal`() {
@@ -49,7 +64,40 @@ class StatusLinesTest {
         assertTrue(lines.any { it.startsWith("  director: claude-opus-5-5 · effort medium") }, lines.toString())
         assertEquals("Mechanics: on · 0 challenges · 0 rules · 0 trap blocks pending", lines[11], "the engine of the tests (FakeMechanics), no trap set")
         assertEquals("Forge: on · 0 modules running", lines[12], "the Forge of the tests (FakeForge), no module")
-        assertTrue(lines.size <= 24, "status stays short: ${lines.size} lines")
+        assertEquals("Style: watch on · line review off (no reflex model: no LLMGW key) · tone notes on · resting openers refused", lines[13])
+        assertEquals("Storyteller: off (no worker takes its tasks) · programme: no open idea", lines[14], "the workers of the tests (FakeWorkers): the Analyst only")
+        assertEquals("Dashboard: off (dashboard.enabled is false)", lines[15])
+        assertTrue(lines.size <= 27, "status stays short: ${lines.size} lines")
+    }
+
+    /** What M6 adds (M6-17): the style, the storyteller and its programme, the dashboard. */
+    @Test
+    fun `the style, the storyteller's programme and the dashboard`() {
+        val at = clock.instant()
+        fun idea(id: Long, minutesAgo: Long, dealt: Int) = Idea(
+            Ref(RefKind.IDEA, id), at.minusSeconds(minutesAgo * 60), IdeaKind.CHALLENGE, "La course au pic", "Une course.", "en soirée",
+            emptyList(), null, 4, 4, 4, emptyList(), null, null, IdeaStatus.OPEN, dealt, null, 100_000, null, null, Source.STORYTELLER,
+        )
+        val memory = object : Memory by FakeMemory(clock) {
+            override fun openIdeas() = listOf(idea(41, 90, 2), idea(47, 10, 0), idea(44, 30, 1))
+        }
+        val dashboard = object : Dashboard by DisabledDashboard("unused") {
+            override val url = "http://127.0.0.1:8770/"
+        }
+        val storyteller = FakeWorkers(setOf(Role.ANALYST, Role.STORYTELLER))
+        val lines = lines(TestServices(clock = clock, memory = memory, workers = storyteller), dashboard)
+        assertEquals("Storyteller: on · programme: 3 open ideas, 2 dealt · the newest P-47 written 19:20:00", lines[14])
+        assertEquals("Dashboard: on http://127.0.0.1:8770/", lines[15])
+
+        val noMemory = lines(TestServices(clock = clock, memory = DisabledMemory("memory.enabled is false")))
+        assertEquals("Storyteller: off (the memory is unavailable)", noMemory[14])
+        val off = testSettings(NarratorConfig(style = StyleConfig(lineReview = false, toneNotes = false, refuseRestingOpeners = false)))
+        assertEquals(
+            "Style: watch off (no Journal, or not wired: see the server log) · line review off (style.lineReview is false) · tone notes off · resting openers only named",
+            lines(TestServices(clock = clock, settings = off, style = DisabledStyle))[13],
+        )
+        assertEquals("Style: watch on · line review off (no reflex model: reflex.enabled is false) · tone notes on · resting openers refused",
+            lines(TestServices(clock = clock, settings = testSettings(NarratorConfig(reflex = ReflexConfig(enabled = false)))))[13])
     }
 
     @Test

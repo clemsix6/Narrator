@@ -96,7 +96,7 @@ interface WebPage {
 class PageContext internal constructor(val services: NarratorServices, private val reads: Semaphore) {
     val now: Long = services.clock.millis()
 
-    val zone: ZoneId = zoneOf(services)
+    val zone: ZoneId = services.settings.get().config.journal.zone(services.clock.zone)
 
     val prices: Prices = Prices.of(services.settings.get().config)
 
@@ -161,12 +161,6 @@ class PageContext internal constructor(val services: NarratorServices, private v
             over = true
             if (!running) reads.release()
         }
-    }
-
-    private companion object {
-        /** The zone of `journal.timeZone`, or the server's. */
-        fun zoneOf(services: NarratorServices): ZoneId =
-            services.settings.get().config.journal.timeZone.ifBlank { null }?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: services.clock.zone
     }
 }
 

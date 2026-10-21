@@ -43,6 +43,7 @@ import io.github.clemsix6.narrator2.testing.MemorySamples
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.web.DisabledDashboard
 import kotlinx.coroutines.runBlocking
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.network.chat.Component
@@ -104,7 +105,7 @@ class MemoryCommandsTest {
         val disabled = DisabledMemory("not wired yet")
         assertEquals("[Narrator] the memory is unavailable (not wired yet): nothing to read nor change.", MemoryCommands.refusal(disabled)!!.string)
         assertNull(MemoryCommands.refusal(FakeMemory()), "an available memory refuses nothing")
-        val status = AdminCommands.statusLines(TestServices(memory = disabled), Path.of("config"))
+        val status = AdminCommands.statusLines(TestServices(memory = disabled), Path.of("config"), DisabledDashboard(DisabledDashboard.SWITCHED_OFF))
         assertEquals("Memory: unavailable (not wired yet)", status[10].string)
         assertEquals("Guards: chaos 3 · creatures 0 of 16 · protected online: nobody", status[9].string, "the lines before it stay in place")
     }
@@ -159,7 +160,7 @@ class MemoryCommandsTest {
         fake.jobs.status = fake.jobs.status.copy(paused = true, running = null, queued = emptyList(), lastDream = MemorySamples.run.copy(kind = RunKind.DREAM, startedAt = now.minusSeconds(7_200), endedAt = now.minusSeconds(6_000)))
         assertEquals(
             "Memory: available · jobs paused (/narrator memory resume) · nothing queued · last dream 18:00:00 done",
-            AdminCommands.statusLines(services, Path.of("config"))[10].string,
+            AdminCommands.statusLines(services, Path.of("config"), DisabledDashboard(DisabledDashboard.SWITCHED_OFF))[10].string,
         )
         val blocked = fake.jobs.status.copy(paused = false, blockedUntil = now.plusSeconds(600), running = fake.jobs.status.lastBatch, lastDream = null)
         fake.jobs.status = blocked
@@ -477,7 +478,7 @@ class MemoryCommandsTest {
         fake.jobs.status = fake.jobs.status.copy(paused = true)
         assertEquals(
             listOf(
-                "[Narrator] a deep dream is queued (run 2): it rewrites the sheets, the review of the Narrator, the chronicle and the Grimoire.",
+                "[Narrator] a deep dream is queued (run 2): it rewrites the sheets, the review of the Narrator, the chronicle and the Grimoire, then the storyteller writes its programme.",
                 "The memory jobs are paused: it starts after /narrator memory resume.",
             ),
             MemoryCommands.dream(services, "Clement").text(),

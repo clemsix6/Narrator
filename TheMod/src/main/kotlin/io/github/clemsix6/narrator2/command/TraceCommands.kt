@@ -140,7 +140,8 @@ object TraceCommands {
         log.info("${source.textName}: narrator $what")
         replyLater(source, runtime, what) {
             withTimeoutOrNull(BARRIER_MS) { runtime.journal.barrier() }
-            val text = TraceText(runtime.clock.zone, runtime.clock.millis())
+            // The Journal's times in its zone, like the dashboard's (M6-FIX-7).
+            val text = TraceText(runtime.settings.get().config.journal.zone(runtime.clock.zone), runtime.clock.millis())
             val prices = Prices.of(runtime.settings.get().config)
             runtime.journal.read(READ_TIMEOUT_MS) { connection -> query(connection, text, prices) }
         }
