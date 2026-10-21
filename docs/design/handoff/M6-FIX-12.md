@@ -259,4 +259,6 @@ de M3 le mesureraient).
 
 - Tests ciblés (`ChroniclerTest`, `ChroniclerReplayTest`, `MemoryAgentsTest`, `PromptsTest`, `MemoryJobsTest`,
   `MemoryServiceTest`, `ExchangeLogTest`, `Config*`, `DreamReplayTest`) verts à chaque étape.
-- Build complet après `git merge main` : voir le commit.
+- Build complet (`.\gradlew.bat build --continue`) après `git merge main` (`ab852b3`, M6-POLISH et M6-FIX-13), sans
+  conflit : **2 280 tests unitaires, 0 échec, 0 ignoré** ; **« All 402 required tests passed »** (GameTests), en
+  10 min 35 s. Aucun test instable rencontré.
