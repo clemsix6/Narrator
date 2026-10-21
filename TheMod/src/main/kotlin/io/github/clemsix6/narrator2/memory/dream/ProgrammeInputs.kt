@@ -323,7 +323,8 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         val after = since?.let { " closed_since=\"${inputs.dayTime(it)}\"" }.orEmpty()
         if (open.isEmpty() && read.closed.isEmpty()) return "<ideas open=\"0\"$after>(none open, none closed lately)</ideas>"
         val head = listOf("<ideas open=\"${open.size}\" closed=\"${read.closed.size}\"$after>", if (open.isEmpty()) "Open: none" else "Open, the latest first:")
-        val closed = mutableListOf(if (read.closed.isEmpty()) "Closed since ${inputs.dayTime(closedSince)}: none" else "Closed since ${inputs.dayTime(closedSince)}, those dealt first:")
+        val part = "Closed since ${inputs.dayTime(closedSince)}"
+        val closed = mutableListOf(if (read.closed.isEmpty()) "$part: none" else "$part, those dealt first:")
         var room = CLOSED_MAX
         for (idea in read.closed) {
             val line = ModelText.cut(closedLine(idea, read), CLOSED_LINE_MAX)
