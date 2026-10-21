@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.sql.Connection
 import java.sql.ResultSet
+import java.text.Normalizer
+import java.util.Locale
 import java.util.UUID
 
 /*
@@ -287,6 +289,17 @@ internal fun indexText(row: MemoryRow): String? = when (row) {
 }
 
 internal fun ideaText(title: String, pitch: String): String = "$title\n$pitch"
+
+/**
+ * [title] as two titles are compared (M6-18, finding 7): lower case, without accents, ligatures written out, its
+ * punctuation and spaces as one space. « Le procès du « Fer Suspect » » and « le proces du fer suspect » are the same.
+ */
+internal fun titleKey(title: String): String =
+    Normalizer.normalize(title, Normalizer.Form.NFD).replace(MARKS, "").lowercase(Locale.ROOT).replace("œ", "oe").replace("æ", "ae")
+        .replace(NOT_WORD, " ").trim()
+
+private val MARKS = Regex("\\p{M}+")
+private val NOT_WORD = Regex("[^\\p{L}\\p{N}]+")
 
 internal fun canonText(statement: String, quote: String?, kind: CanonKind): String = listOfNotNull(statement, quote, kind.id).joinToString("\n")
 
