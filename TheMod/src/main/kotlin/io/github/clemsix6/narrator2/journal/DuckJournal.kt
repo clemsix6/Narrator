@@ -141,7 +141,11 @@ internal class DuckJournal private constructor(
 
     override suspend fun barrier() = writer.barrier()
 
-    /** [query] runs on a read thread; a [ReadWatch] in the caller's context is told when it starts and when it ends. */
+    /**
+     * [query] runs on a read thread; a [ReadWatch] in the caller's context is told when it starts and when it ends, and
+     * may refuse it ([IllegalStateException] with its reason). The caller resumes only once the connection is back in
+     * the pool and the watch has heard the end: a read that follows at once finds both ready.
+     */
     override suspend fun <T> read(timeoutMs: Long, query: (Connection) -> T): T {
         if (!available) throw JournalUnavailableException(unavailableReason())
         val result = CompletableFuture<T>()
@@ -156,19 +160,23 @@ internal class DuckJournal private constructor(
                     return@execute
                 }
                 // Its caller may have given up while it waited for the connection: then nobody wants its result.
-                if (result.isDone || watch?.start() == false) {
+                if (result.isDone) {
                     giveBack(connection)
-                    result.completeExceptionally(JournalTimeoutException(timeoutMs))
                     return@execute
                 }
+                val refusal = watch?.start()
+                if (refusal != null) {
+                    giveBack(connection)
+                    result.completeExceptionally(IllegalStateException(refusal))
+                    return@execute
+                }
+                val outcome = runCatching { query(connection) }
                 try {
-                    result.complete(query(connection))
-                } catch (e: Throwable) {
-                    result.completeExceptionally(e)
-                } finally {
                     endQuery(connection)
                     giveBack(connection)
+                } finally {
                     watch?.end()
+                    outcome.fold({ result.complete(it) }, { result.completeExceptionally(it) })
                 }
             }
         } catch (_: RejectedExecutionException) {
