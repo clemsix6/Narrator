@@ -215,12 +215,13 @@ class ModuleHost(
     /**
      * Whether a call given up before still runs (its thread held back): the module waits for it, and nothing of it
      * runs meanwhile ([call] skips). Settles that call first, which may count a fault and disable the module; when its
-     * thread waits for an SDK request, resumes it first ([resume]).
+     * thread waits for an SDK request, resumes it first ([resume]), and then answers true even if it ended: the turn of a
+     * resume is the call's, the module's next calls wait for the next one (its caller first sees what it asked, an end).
      */
     fun busy(): Boolean {
         settle()
-        resume()
-        return given != null && disabled == null && stalled == null
+        val resumed = resume()
+        return resumed || (given != null && disabled == null && stalled == null)
     }
 
     /**
@@ -424,17 +425,19 @@ class ModuleHost(
      * The call given up, when its thread waits for an SDK request (FORGE-ABANDON): the caller waits for it again, at most
      * a call's budget, serving its requests as [call] does, so that the call runs to its end with all its effects, never
      * half of them. Given up again (the machine still holds its thread back), it stays held for the next [busy]. Never
-     * while the call computes or is held back between two requests: the caller does not wait for that.
+     * while the call computes or is held back between two requests: the caller does not wait for that. Whether it
+     * resumed the call.
      */
-    private fun resume() {
-        val call = given ?: return
-        if (disabled != null || stalled != null || unloaded || !call.held.asking) return
+    private fun resume(): Boolean {
+        val call = given ?: return false
+        if (disabled != null || stalled != null || unloaded || !call.held.asking) return false
         val started = System.nanoTime()
         val ran = threads.resume(call.held, call.budget + abandonMarginNanos)
         spentThisSecond += System.nanoTime() - started
         call.served += threads.served
         if (ran == ModuleThreads.Ran.ABANDONED) log.debug { "$label: its ${call.what} call, resumed, was given up again: its thread still held back" }
         settle()
+        return true
     }
 
     /**

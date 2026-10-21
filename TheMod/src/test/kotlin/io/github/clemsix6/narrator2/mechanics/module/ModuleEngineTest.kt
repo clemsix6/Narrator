@@ -261,6 +261,38 @@ class ModuleEngineTest {
     }
 
     @Test
+    fun `a call given up that asks its end once resumed ends its module before any other call`() {
+        f.module(
+            "quitter",
+            ModuleFixture.source(
+                "quitter",
+                body = """
+                    m.events().on(GameFact.Chat.class, c -> {
+                        m.log("heard " + c.text());
+                        if (c.text().equals("fin")) {
+                            m.world().dayTime();
+                            m.end("Bartok a dit fin");
+                        }
+                    });
+                """,
+            ),
+        )
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("quitter", kind = RuleKind.PLAN))
+            f.server.heldOnce = 60 // given up after its read, its end asked once the engine resumes it
+            chat("fin")
+            f.engine.tick(f.clock.millis())
+            chat("encore") // waits for a tick after the one that resumes the call
+            f.await("${view.ref} ended") { ending().isNotEmpty() }
+
+            assertEquals(listOf("fulfilled"), ending())
+            assertTrue(logs.messages.any { "${view.ref} quitter: its fact call was given up" in it }, logs.messages.toString())
+            assertTrue(logs.messages.none { "heard encore" in it }, "the turn of a resume is the call's: its end comes before any other call: ${logs.messages}")
+        }
+    }
+
+    @Test
     fun `a module whose time ran out is stopped with EXPIRED, a law retired, the Director told`() {
         f.module("waiter", ModuleFixture.source("waiter", members = """public void stop(ModuleContext m, StopReason why) { m.log("stop " + why); }"""))
         f.start()
