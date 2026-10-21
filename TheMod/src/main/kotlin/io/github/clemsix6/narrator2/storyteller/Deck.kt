@@ -330,7 +330,6 @@ object Deck {
     private const val ATTENTION_S = HOUR
     private const val FRESH_NETHER_DAYS = 3L
     private const val WORLD_CANON = 30
-    private const val IDEAS_READ = 50
     private const val HOOK_CUT = 80
     private const val LABEL_CUT = 110
     private const val BOOST = 2.0
@@ -710,8 +709,8 @@ object Deck {
 
     /**
      * Gathers a draw's [Table] for [players] ([named] when the caller named them) and [kind] at [now]: the history from
-     * the Journal (after a barrier, so that a draw just recorded counts), the levers, and from the memory (2 s at most)
-     * the open ideas and the players' hooks. What cannot be read is said in [Table.missing], never failed. Never on the
+     * the Journal (after a barrier, so that a draw just recorded counts), the levers, the open ideas (the memory's cache)
+     * and the players' hooks (2 s at most). What cannot be read is said in [Table.missing], never failed. Never on the
      * server thread.
      */
     suspend fun table(services: NarratorServices, players: List<PlayerRef>, named: Boolean, kind: InspireKind, now: Instant): Table {
@@ -781,7 +780,7 @@ object Deck {
 
     private suspend fun readMemory(memory: Memory, players: List<PlayerRef>, now: Instant): FromMemory {
         val millis = now.toEpochMilli()
-        val ideas = memory.store.ideas(IdeaStatus.OPEN, IDEAS_READ)
+        val ideas = memory.openIdeas() // the cache, read again by the store after each dealt: never stale for a draw
         val own = players.take(HOOK_PLAYERS).flatMap { player ->
             memory.sheets.sheet(player.uuid, millis)?.let { hooks(it, memory.clock.playerPlaySeconds(player.uuid, millis), now) }.orEmpty()
         }
