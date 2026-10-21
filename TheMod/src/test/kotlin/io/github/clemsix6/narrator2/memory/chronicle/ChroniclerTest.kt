@@ -14,8 +14,10 @@ import io.github.clemsix6.narrator2.memory.RunStatus
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerFixture.Companion.at
 import io.github.clemsix6.narrator2.memory.chronicle.ChroniclerReplayTest.Companion.text
+import io.github.clemsix6.narrator2.testing.TEST_API_KEY
 import io.github.clemsix6.narrator2.testing.budgetExceeded
 import io.github.clemsix6.narrator2.testing.reply
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.trace.ConversationRecord.EndReason
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import kotlinx.coroutines.runBlocking
@@ -150,9 +152,10 @@ class ChroniclerTest {
         f.fake.enqueue(reply { toolUse("mark_used", """{"refs": ["${e.lava}"]}""") }, reply { text("Rien de nouveau.") })
         val again = f.chronicler.nap(11, chapter)
         assertEquals(RunStatus.DONE, again.status)
+        assertEquals(outcome.conversations, again.conversations, "the second nap is a turn of the same conversation")
         assertEquals(1L, f.count("chronicle"))
         assertEquals(1L, f.count("recalls", "channel = 'used'"))
-        assertContains(f.rows("SELECT result FROM tool_calls WHERE conversation_id = '${again.conversations.single()}'") { getString(1) }.single(), "already marked")
+        assertContains(f.rows("SELECT result FROM tool_calls WHERE conversation_id = '${again.conversations.single()}' ORDER BY id") { getString(1) }.last(), "already marked")
     }
 
     @Test
@@ -194,61 +197,146 @@ class ChroniclerTest {
         val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
 
         assertEquals(RunStatus.FAILED, outcome.status)
-        assertEquals(3, outcome.conversations.size, "the third block is read after the second failed")
+        assertEquals(2, outcome.conversations.size, "the third block is read after the second failed, in a new conversation: the refusal ended the first")
         assertEquals("refused by the safety filter (category cyber)", outcome.report)
         val ends = f.rows("SELECT conversation_id, end_reason FROM conversations WHERE role = 'chronicler'") { getString(1) to getString(2) }.toMap()
-        assertEquals(listOf("done", "failed", "done"), outcome.conversations.map { ends[it] }, "in the order of the blocks")
+        assertEquals(listOf("failed", null), outcome.conversations.map { ends[it] }, "the first ended on the refusal of its second turn; the second stays open")
+        assertEquals(listOf(2, 1), outcome.conversations.map { id -> f.fake.requests.count { it.conversation == id } })
 
         f.runRow(8, RunKind.BATCH, "20:00", "20:10")
         f.fake.enqueue(budgetExceeded(resetAt = "2026-10-01T21:00:00Z"))
         val spent = f.chronicler.batch(8, f.chapter, at("20:00"), at("20:10"))
 
         assertEquals(RunStatus.FAILED, spent.status)
-        assertEquals(1, spent.conversations.size, "the next blocks would hit the same 402")
+        assertEquals(listOf(outcome.conversations.last()), spent.conversations, "the open conversation; the next blocks would hit the same 402")
         assertEquals(Instant.parse("2026-10-01T21:00:00Z"), spent.budget?.resetAt)
     }
 
     /**
-     * M3-19 §21.3: a new conversation of the Chronicler read the tools from the gateway's cache, but wrote the
-     * system prompt again. Nothing of ours varies in that prefix: the batch, the nap's last batch and its
-     * consolidation send the same tools then the same system prompt, byte for byte, with the role's session.
+     * M6-FIX-12: LLMGW renders the system prompt after the first message, so a new conversation of the Chronicler
+     * wrote its prompt to the cache again, at twice the input price (M3-POST §3). A batch and the nap are now two turns
+     * of one conversation: each request repeats the previous one, byte for byte, then adds to it; the same tools and
+     * system prompt, the role's session, no cache marker of ours. The nap reads the end of the chapter in its own turn.
      */
     @Test
-    fun `every conversation of the Chronicler sends the same tools and system prompt, byte for byte`() = runBlocking<Unit> {
+    fun `the Chronicler's jobs are turns of one conversation, each request extending the previous one`() = runBlocking<Unit> {
         closed(summary, EndReason.QUIET_LIMIT)
         f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
         f.clock.now = at("20:30:30")
         f.journal.sync()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")
         f.fake.enqueue(reply { text("Rien.") })
-        f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+        val batch = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
         f.runRow(12, RunKind.NAP, "20:10", "20:30")
-        f.fake.enqueue(reply { text("Rien.") }, reply { text("Chapitre consolidé.") })
-        f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
+        f.fake.enqueue(reply { text("Chapitre consolidé.") })
+        val nap = f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
 
-        val openings = f.fake.requests.groupBy { it.conversation }.values.map { it.first() }
-        assertEquals(3, openings.size, "the batch, then the nap's last batch and its consolidation")
-        val prefixes = openings.map { listOf(it.raw("tools"), it.raw("system")) }
-        assertTrue(prefixes.first().all { !it.isNullOrEmpty() }, "tools and system are sent")
-        assertEquals(1, prefixes.toSet().size, "the same tools and system prompt in every conversation")
-        assertEquals(setOf(ClaudeClient.sessionOf(Role.CHRONICLER)), openings.map { it.session }.toSet())
-        assertTrue(openings.all { it.json.path("cache_control").isMissingNode }, "no cache marker of ours: LLMGW places its own")
+        assertEquals(batch.conversations, nap.conversations)
+        val requests = f.fake.requests
+        assertEquals(listOf(batch.conversations.single()), requests.map { it.conversation }.distinct())
+        assertEquals(emptyList(), f.fake.rejections, "append-only, as the strict fake checks")
+        val jobs = requests.map { text(it.json.path("messages").last()).substringBefore("\n").substringBefore(" day=") }
+        assertEquals(listOf("<job kind=\"batch\" run=\"7\" chapter=\"13\"/>", "<job kind=\"nap\" run=\"12\" chapter=\"13\""), jobs, "each request's last message is its job")
+        requests.zipWithNext().forEach { (before, after) ->
+            val previous = before.json.path("messages")
+            val next = after.json.path("messages")
+            assertTrue(next.size() > previous.size(), "each turn adds to the conversation")
+            for (i in 0 until previous.size()) assertEquals(previous[i], next[i], "messages.$i is sent again as it was")
+        }
+        assertEquals(1, requests.map { listOf(it.raw("tools"), it.raw("system")) }.toSet().size, "the same tools and system prompt")
+        assertTrue(requests.first().raw("system")!!.isNotEmpty())
+        assertEquals(setOf(ClaudeClient.sessionOf(Role.CHRONICLER)), requests.map { it.session }.toSet())
+        assertTrue(requests.all { it.json.path("cache_control").isMissingNode }, "no cache marker of ours: LLMGW places its own")
     }
 
     @Test
-    fun `a nap whose last batch fails goes on to its consolidation, and its window is passed with a warning and a decision`() = runBlocking<Unit> {
+    fun `a conversation idle for 45 minutes takes no more jobs, and the memory stopping ends the open one`() = runBlocking<Unit> {
+        f.scenario()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") })
+        val first = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+        f.narrator("20:40:00", "Bartok, encore toi ?")
+        f.clock.now = at("20:55:05")
+        f.journal.sync()
+        f.runRow(8, RunKind.BATCH, "20:10", "20:55")
+        f.fake.enqueue(reply { text("Toujours rien.") })
+
+        val second = f.chronicler.batch(8, f.chapter, at("20:10"), at("20:55"))
+
+        assertEquals(RunStatus.DONE, second.status)
+        assertTrue(first.conversations.single() != second.conversations.single(), "45 minutes after its last job, the cache would be gone")
+        fun ends() = f.rows("SELECT conversation_id, end_reason, summary FROM conversations WHERE role = 'chronicler' ORDER BY started_at") {
+            Triple(getString(1), getString(2), getString(3))
+        }
+        assertEquals(listOf(Triple(first.conversations.single(), "done", "Rien."), Triple(second.conversations.single(), null, null)), ends())
+        f.chronicler.close()
+        assertEquals("done" to "Toujours rien.", ends().last().let { it.second to it.third })
+    }
+
+    @Test
+    fun `a conversation whose context is full, or whose effort changed, takes no more jobs`() = runBlocking<Unit> {
+        f.scenario()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(
+            reply {
+                usage(input = 10, cacheRead = Chronicler.MAX_CONTEXT_TOKENS, cacheWrite = 100)
+                text("Rien.")
+            },
+        )
+        val full = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+        f.runRow(8, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") })
+        val fresh = f.chronicler.batch(8, f.chapter, at("20:00"), at("20:10"))
+        assertTrue(full.conversations.single() != fresh.conversations.single(), "a new conversation reads less than one of 40 000 tokens")
+
+        val config = f.services.settings.get().config
+        val medium = config.copy(roles = config.roles + (Role.CHRONICLER to config.role(Role.CHRONICLER).copy(effort = "medium")))
+        f.services.settings.swap(testSettings(medium, ClaudeClient(medium, TEST_API_KEY)))
+        f.runRow(9, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") })
+        val reloaded = f.chronicler.batch(9, f.chapter, at("20:00"), at("20:10"))
+
+        assertTrue(fresh.conversations.single() != reloaded.conversations.single(), "a conversation keeps the effort it began with")
+        assertEquals("medium", f.fake.requests.last().json.path("output_config").path("effort").asText())
+        assertEquals(listOf("done", "done", null), f.rows("SELECT end_reason FROM conversations WHERE role = 'chronicler' ORDER BY started_at") { getString(1) })
+    }
+
+    @Test
+    fun `a job counts the refusals of its own turns, not those of the jobs before it in the conversation`() = runBlocking<Unit> {
+        f.scenario()
+        f.runRow(7, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { toolUse("use_canon", """{"id": "C-99999", "evidence": ["e1"]}""") }, reply { text("Rien.") })
+        val first = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
+        f.clock.now = at("20:10:10")
+        f.runRow(8, RunKind.BATCH, "20:00", "20:10")
+        f.fake.enqueue(reply { text("Rien.") })
+
+        val second = f.chronicler.batch(8, f.chapter, at("20:00"), at("20:10"))
+
+        assertEquals(first.conversations, second.conversations)
+        assertEquals(1, first.rejected)
+        assertEquals(0, second.rejected)
+    }
+
+    /** The end of the chapter too long for the nap's message: batch turns read it first, as before M6-FIX-12. */
+    @Test
+    fun `a nap whose unread end takes several blocks reads it in batch turns first, a failed one passed with a warning and a decision`() = runBlocking<Unit> {
         closed(summary, EndReason.QUIET_LIMIT)
-        f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
+        val sentence = "Le pont de Mimosa tient encore, mais pour combien de temps, personne ne le sait vraiment ici. "
+        repeat(150) { i -> f.chat(at("20:11").plusSeconds(2L * i).toString().substring(11, 19), f.bartok, "$i " + sentence.repeat(3)) }
         f.clock.now = at("20:30:30")
         f.journal.sync()
         f.runRow(12, RunKind.NAP, "20:10", "20:30")
-        f.fake.enqueue(reply { refusal(category = "cyber") }, reply { text("Chapitre consolidé.") })
+        f.fake.enqueue(reply { refusal(category = "cyber") }, reply { text("Rien.") }, reply { text("Rien.") }, reply { text("Chapitre consolidé.") })
 
         val outcome = f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
 
         assertEquals(RunStatus.DONE, outcome.status, outcome.report)
-        assertEquals(2, outcome.conversations.size)
-        assertEquals("failed: refused by the safety filter (category cyber) / Chapitre consolidé.", outcome.report)
+        assertEquals(2, outcome.conversations.size, "the refusal ended the first conversation")
+        assertEquals("failed: refused by the safety filter (category cyber) / Rien. / Rien. / Chapitre consolidé.", outcome.report)
+        val nap = text(f.fake.requests.last().json.path("messages").last())
+        assertTrue(nap.startsWith("<job kind=\"nap\" run=\"12\""), nap)
+        assertFalse("unread_from" in nap, "the batches read the end of the chapter: $nap")
         assertEquals(
             listOf(
                 "run 12" to "the last batch of the nap of chapter 13 (20:10–20:30) failed; the nap went on without it: " +
@@ -259,8 +347,13 @@ class ChroniclerTest {
         assertEquals(listOf("punishment", "gift"), f.rows("SELECT kind FROM interactions WHERE source = 'engine' ORDER BY id") { getString(1) })
     }
 
+    /**
+     * M6-FIX-12: the nap reads, in its own turn, the end of the chapter that no batch read (`unread_from`, its block and
+     * the open canon), instead of a last batch in a turn of its own; it reads what was written during the chapter, not
+     * what came after.
+     */
     @Test
-    fun `the nap of an old chapter reads what was written during it and by its own job, not what came after`() = runBlocking<Unit> {
+    fun `the nap of an old chapter reads its unread end in its own turn, and what was written during it, not what came after`() = runBlocking<Unit> {
         val e = closed(summary, EndReason.QUIET_LIMIT)
         val thanks = f.chat("20:15:00", f.mimosa, "merci pour les bottes, Narrateur")
         f.journal.sync()
@@ -279,18 +372,24 @@ class ChroniclerTest {
                        "quote": "merci pour les bottes", "evidence": ["e$thanks"]}""",
                 )
             },
-            reply { text("Remerciement de Mimosa noté.") },
-            reply { text("Chapitre consolidé.") },
+            reply { text("Remerciement de Mimosa noté, chapitre consolidé.") },
         )
 
         val outcome = f.chronicler.nap(12, f.chapterRow(ended = "20:30", summary = summary, reason = EndReason.QUIET_LIMIT))
 
         assertEquals(RunStatus.DONE, outcome.status, outcome.report)
-        val thanked = f.rows("SELECT id FROM interactions WHERE run_id = 12 AND source = 'chronicler'") { getLong(1) }.single()
-        val opening = text(f.fake.requests.last().json.path("messages").first())
+        assertEquals(2, f.fake.requests.size, "one turn: no last batch of its own")
+        assertEquals(1, f.rows("SELECT count(*) FROM interactions WHERE run_id = 12 AND source = 'chronicler'") { getInt(1) }.single())
+        val opening = text(f.fake.requests.first().json.path("messages").last())
+        assertTrue(opening.startsWith("<job kind=\"nap\" run=\"12\" chapter=\"13\""), opening)
+        assertContains(opening.substringBefore("\n"), " unread_from=\"20:10:00\"/>")
+        assertContains(opening, "<exchange chapter=\"13\" day=\"2026-10-01\" from=\"20:10:00\" to=\"20:30:00\"")
+        assertContains(opening, "[20:15:00] e$thanks CHAT Mimosa (not triaged): \"merci pour les bottes, Narrateur\"")
+        val known = opening.substringAfter("<known>\n").substringBefore("\n</known>")
+        assertContains(known, "Open canon (")
+        assertFalse("Already noted" in known || "Memories shown" in known, "<written> and <shown> say them for the whole chapter: $known")
         val written = opening.substringAfter("<written>\n").substringBefore("\n</written>")
         assertTrue("- ${e.threat} threat → Mimosa (by the director at 20:06" in written, written)
-        assertTrue("- I-$thanked Mimosa compliment +1 at " in written, "what the nap's last batch wrote: $written")
         assertFalse("$later" in written, "written later, for another chapter: $written")
     }
 
@@ -361,7 +460,7 @@ class ChroniclerTest {
     }
 
     @Test
-    fun `a window too long for one block is chronicled in one conversation per block`() = runBlocking<Unit> {
+    fun `a window too long for one block is chronicled in one turn per block`() = runBlocking<Unit> {
         longWindow()
         f.runRow(7, RunKind.BATCH, "20:00", "20:10")
         f.fake.enqueue(reply { text("Rien.") }, reply { text("Rien non plus.") }, reply { text("Toujours rien.") })
@@ -369,9 +468,9 @@ class ChroniclerTest {
         val outcome = f.chronicler.batch(7, f.chapter, at("20:00"), at("20:10"))
 
         assertEquals(RunStatus.DONE, outcome.status)
-        assertEquals(3, outcome.conversations.toSet().size)
+        assertEquals(1, outcome.conversations.size, "three turns of one conversation")
         assertEquals("Rien. / Rien non plus. / Toujours rien.", outcome.report)
-        val openings = f.fake.requests.map { text(it.json.path("messages").first()) }
+        val openings = f.fake.requests.map { text(it.json.path("messages").last()) }
         assertEquals(listOf("1 of 3", "2 of 3", "3 of 3"), openings.map { Regex("part=\"([^\"]+)\"").find(it)!!.groupValues[1] })
         assertTrue(openings.all { "\n<known>\n" in it })
     }

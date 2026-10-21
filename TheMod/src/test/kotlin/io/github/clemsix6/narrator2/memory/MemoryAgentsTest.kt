@@ -100,6 +100,35 @@ class MemoryAgentsTest {
         assertEquals(listOf("done"), f.rows("SELECT end_reason FROM conversations WHERE role = 'storyteller'") { getString(1) })
     }
 
+    /** M6-FIX-12: the Chronicler's successive jobs are turns of one conversation, each with its own run behind the tools. */
+    @Test
+    fun `a session runs successive jobs as turns of one conversation, and ends once`() = runBlocking<Unit> {
+        val session = f.agents.open(Role.CHRONICLER, "Chronicle")
+        val next = RunContext(8, RunKind.NAP, at("20:10"), at("20:30"), "director-c13")
+        f.fake.enqueue(reply { text("Premier.") })
+        f.fake.enqueue { request ->
+            assertEquals(next.copy(role = Role.CHRONICLER), f.agents.runContext(request.conversation!!), "the tools write for the second job")
+            reply { text("Second.") }
+        }
+
+        val first = session.run(context, "Batch", "<job kind=\"batch\"/>", TurnLimits(2), Duration.ofMinutes(1))
+        val second = session.run(next, "Nap", "<job kind=\"nap\"/>", TurnLimits(2), Duration.ofMinutes(1))
+
+        assertEquals(listOf("Premier.", "Second."), listOf(first.report, second.report))
+        assertEquals(setOf(session.id), setOf(first.conversationId, second.conversationId))
+        assertEquals(listOf(1, 3), f.fake.requests.map { it.json.path("messages").size() }, "the second job follows the first and its reply")
+        assertEquals(2, session.jobs)
+        assertNull(session.stale(f.clock.instant(), Duration.ofMinutes(45), 40_000))
+        assertEquals("idle for 45m", session.stale(f.clock.instant().plus(Duration.ofMinutes(45)), Duration.ofMinutes(45), 40_000))
+        assertEquals(listOf<String?>(null), endReasons(), "open until closed")
+
+        session.close("done with it")
+        session.close("again")
+        assertEquals(listOf("done"), endReasons())
+        assertEquals(listOf("Second."), f.rows("SELECT summary FROM conversations WHERE role = 'chronicler'") { getString(1) })
+        assertEquals("it is closed", session.stale(f.clock.instant(), Duration.ofMinutes(45), 40_000))
+    }
+
     @Test
     fun `only the memory's roles run here`() = runBlocking<Unit> {
         val error = assertFailsWith<IllegalArgumentException> {

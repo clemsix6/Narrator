@@ -37,18 +37,26 @@ import java.util.Locale
  * its window, its chapter): the store checks quotes against that window.
  *
  * - **A batch** ([batch]) over a window of an open chapter: the exchange log of the window ([ExchangeLog],
- *   cut into blocks of 24 000 characters, one conversation each) with what the memory already knows
+ *   cut into blocks of 24 000 characters, one turn each) with what the memory already knows
  *   (`<known>`). The model records the commitments the Director forgot, settles what was settled, notes
  *   the interactions that matter and the incoherences; then the code covers the punishments and benefits
  *   left unnoted ([Sanctions]). A window with no line of chat, no line of the Narrator, no tool call and no
  *   news of a mechanic ([ExchangeLog.Line.worthABatch]) is skipped: its facts and the ledger's news (an M2
  *   confiscation given back, a stake held) are no reason for a batch, only the context of one.
  * - **A nap** ([nap]) when a chapter closed, with or without a summary: the code turns the summary into the
- *   chapter's chronicle entry (`H-`, source `director`); a last batch covers the rest of the window; then
- *   one conversation consolidates the whole chapter (episodes, statuses, `write_chapter` when there is no
- *   summary, `since_last` for the players who left, `mark_used`, notes), and the code covers the punishments
- *   and benefits of the whole chapter.
- * - **No retry, and no block stops the others**: a conversation that fails (refusal, cut-off, empty
+ *   chapter's chronicle entry (`H-`, source `director`); then one turn consolidates the whole chapter (episodes,
+ *   statuses, `write_chapter` when there is no summary, `since_last` for the players who left, `mark_used`,
+ *   notes), and the code covers the punishments and benefits of the whole chapter. The end of the chapter that no
+ *   batch read is in that turn's message, for a batch's work first (`unread_from`, M6-FIX-12); when it does not
+ *   fit one block, batch turns read it before.
+ * - **One conversation for the successive jobs** (M6-FIX-12): each batch block and each consolidation is a turn of
+ *   the same conversation ([MemoryAgents.Session]), append-only, whatever the chapter. The gateway renders the
+ *   system prompt after the first message, so a new conversation writes its 5 000 tokens to the cache again, at
+ *   twice the input price; a turn of an open one reads them, and what the earlier jobs said, at a twentieth. A new
+ *   conversation begins when the open one is idle for [MAX_IDLE] (the cache's hour would run out), when its
+ *   context reaches [MAX_CONTEXT_TOKENS] (reading it would cost more than writing the prompt again), when the
+ *   prompt, the tools, the model or the effort changed, and after a turn that did not end well.
+ * - **No retry, and no block stops the others**: a turn that fails (refusal, cut-off, empty
  *   replies, step limit, timeout, gateway error) does not stop the next blocks; a batch with one ends
  *   `failed`, with the reasons. `MemoryJobs` passes a window that fails twice. The nap goes on to its
  *   consolidation, which alone decides whether it is done: a last batch that failed is then passed (`WARN`,
@@ -66,6 +74,10 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
     private val decisions = Decisions(services.trace, clock)
     private val sanctions = Sanctions(services)
     private val exchange = ExchangeLog(services, sanctions)
+
+    /** The conversation the jobs share; null before the first job and after one that ended it. One job at a time. */
+    @Volatile
+    private var session: MemoryAgents.Session? = null
 
     override suspend fun batch(runId: Long, chapter: String, from: Instant, to: Instant): RunOutcome {
         val work = Work(runId)
@@ -86,22 +98,27 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         val context = RunContext(runId, RunKind.NAP, from, to, chapter.conversationId)
         log.info("nap run $runId of chapter $name (${chapter.endReason?.id ?: "open"}): rest ${exchange.time(from)}–${exchange.time(to)}")
         val entry = chapterEntry(runId, chapter, end)
-        val rest = chronicle(work, context, name, from, to, last = true)
+        // The end of the chapter that no batch read: in the nap's own turn when it fits one block, else in batch turns first.
+        services.journal.barrier()
+        val rest = exchange.lines(chapter.conversationId, from, to).takeIf { lines -> lines.any { it.worthABatch } }
+            ?.let { exchange.blocks(it, name, from, to, clock.instant()) }
+        val unread = rest?.singleOrNull()?.let { Unread(from, it.text, exchange.known(chapter.conversationId, from, clock.instant(), it.players, window = false)) }
+        val turns = if (rest != null && unread == null) chronicle(work, context, name, from, to, last = true) else Step.NOTHING
         var report: String? = null
         val status = if (work.budget != null) {
             RunStatus.FAILED // the gateway's budget is spent: the nap comes back once it resets
         } else {
-            val opening = napOpening(runId, chapter, end, name, entry)
+            val opening = napOpening(runId, chapter, end, name, entry, unread)
             if (opening == null) {
                 report = "nothing happened in the chapter"
                 RunStatus.SKIPPED
             } else {
-                val run = agents.run(Role.CHRONICLER, context, "Nap of chapter $name (run $runId)", opening, TurnLimits(NAP_STEPS), TIMEOUT)
+                val run = converse(context, "Nap of chapter $name (run $runId)", opening, TurnLimits(NAP_STEPS))
                 if (work.add(run)) RunStatus.DONE else RunStatus.FAILED
             }
         }
         sanctions.cover(chapter.conversationId, chapter.startedAt, end, runId)
-        if (rest == Step.FAILED && status != RunStatus.FAILED) {
+        if (turns == Step.FAILED && status != RunStatus.FAILED) {
             decisions.record(
                 log, DecisionRecord.Kind.MEMORY, "window_passed", "run $runId",
                 "the last batch of the nap of chapter $name (${exchange.time(from)}–${exchange.time(to)}) failed; the nap went on without it: ${work.errors()}",
@@ -111,10 +128,39 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         return work.outcome(status, report)
     }
 
+    /** Ends the conversation the jobs share, if one is open: the server stops. */
+    override fun close() {
+        session?.close("the memory stops")
+        session = null
+    }
+
+    /**
+     * One turn of the conversation the jobs share, for the job [context], named [job]: the open conversation when it
+     * may take it ([MemoryAgents.Session.stale]), else a new one. A turn that did not end well ended its conversation:
+     * the next job begins a new one.
+     */
+    private suspend fun converse(context: RunContext, job: String, opening: String, limits: TurnLimits): AgentRun {
+        val reused = session?.let { open ->
+            val why = open.stale(clock.instant(), MAX_IDLE, MAX_CONTEXT_TOKENS) ?: return@let open
+            open.close(why)
+            null
+        }
+        val current = reused ?: agents.open(Role.CHRONICLER, "Chronicle from run ${context.runId}")
+        session = current
+        return current.run(context, job, opening, limits, TIMEOUT).also { if (current.closed) session = null }
+    }
+
     private enum class Step { DONE, NOTHING, FAILED }
 
     /**
-     * The batch over `]from, to]` of [context]'s chapter: one conversation per block of its exchange log, the
+     * The end of a closed chapter that no batch read, from [from], for the nap to read in its own turn: its `<exchange>`
+     * block ([block], shown unless the chapter's whole log is) and its `<known>` (the open canon and challenges: the
+     * nap's `<written>` and `<shown>` say the rest).
+     */
+    private class Unread(val from: Instant, val block: String, val known: String)
+
+    /**
+     * The batch over `]from, to]` of [context]'s chapter: one turn per block of its exchange log, the
      * known rows read again before each one (a block sees what the previous ones wrote). A block that fails
      * does not stop the next ones, but a 402 does: they would fail the same way. [last]: the batch that
      * closes a nap.
@@ -131,7 +177,7 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
             val job = "<job kind=\"batch\" run=\"${context.runId}\" chapter=\"${ModelText.attribute(name)}\"${if (last) " closes=\"chapter\"" else ""}/>"
             val part = if (blocks.size > 1) ", part ${index + 1} of ${blocks.size}" else ""
             val label = "Batch of chapter $name (run ${context.runId}$part)"
-            val run = agents.run(Role.CHRONICLER, context, label, listOf(job, block.text, known).joinToString("\n"), TurnLimits(BATCH_STEPS), TIMEOUT)
+            val run = converse(context, label, listOf(job, block.text, known).joinToString("\n"), TurnLimits(BATCH_STEPS))
             if (work.add(run)) continue
             step = Step.FAILED
             if (run.budget != null) break
@@ -164,12 +210,14 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
     }
 
     /**
-     * The first message of the nap's consolidation (M3 §7.4): the summary, what the memory got during the
+     * The message of the nap's consolidation (M3 §7.4): the summary, what the memory got during the
      * chapter or from this job (not what came after: the nap of an old chapter is not read against today's
      * rows), its notable facts, its exchange log when it has no summary (three blocks at most), the players
-     * who left and the memories the Director was shown. Null when nothing at all happened.
+     * who left and the memories the Director was shown. With [unread] (M6-FIX-12), the end of the chapter that no
+     * batch read: `unread_from` in the head, its block (unless the whole log is there) and its `<known>`, for the
+     * nap to do a batch's work on it first. Null when nothing at all happened.
      */
-    private suspend fun napOpening(runId: Long, chapter: ConversationRecord, end: Instant, name: String, entry: String?): String? {
+    private suspend fun napOpening(runId: Long, chapter: ConversationRecord, end: Instant, name: String, entry: String?, unread: Unread?): String? {
         services.journal.barrier()
         val now = clock.instant()
         val zone = exchange.zone
@@ -186,19 +234,24 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         }
         if (summary == null && facts.isEmpty() && all.isEmpty() && written.isEmpty() && left.isEmpty()) return null
         val chronicle = entry ?: "none: write it with write_chapter"
+        val unreadFrom = unread?.let { " unread_from=\"${ExchangeLog.seconds(it.from, zone)}\"" }.orEmpty()
         val head = "<job kind=\"nap\" run=\"$runId\" chapter=\"${ModelText.attribute(name)}\" day=\"${DAY.withZone(zone).format(start)}\" " +
-            "from=\"${exchange.time(start)}\" to=\"${exchange.time(end)}\" end_reason=\"${chapter.endReason?.id ?: "open"}\" chronicle=\"$chronicle\"/>"
+            "from=\"${exchange.time(start)}\" to=\"${exchange.time(end)}\" end_reason=\"${chapter.endReason?.id ?: "open"}\" chronicle=\"$chronicle\"$unreadFrom/>"
         val parts = mutableListOf(head)
         parts += "<summary>\n" + (summary?.let(ModelText::lines) ?: "(no summary: ${chapter.endReason?.id ?: "the chapter is open"})") + "\n</summary>"
         parts += ExchangeLog.fit(listOf("<written>") + written.map { "- ${it.line}" }.ifEmpty { listOf("(nothing)") } + "</written>", WRITTEN_MAX)
         parts += ExchangeLog.fit(listOf("<notable>") + facts.map { it.text }.ifEmpty { listOf("(nothing)") } + "</notable>", NOTABLE_MAX)
-        if (summary == null && all.isNotEmpty()) {
-            val blocks = exchange.blocks(all, name, start, end, now)
-            parts += if (blocks.size <= MAX_NAP_BLOCKS) {
-                blocks.map { it.text }
+        val log = if (summary == null && all.isNotEmpty()) exchange.blocks(all, name, start, end, now) else emptyList()
+        if (log.isNotEmpty()) {
+            parts += if (log.size <= MAX_NAP_BLOCKS) {
+                log.map { it.text }
             } else {
-                listOf("(the exchange log of the chapter takes ${blocks.size} blocks of ${ExchangeLog.MAX_CHARS} characters: too long; the notable facts and what was written stand for it)")
+                listOf("(the exchange log of the chapter takes ${log.size} blocks of ${ExchangeLog.MAX_CHARS} characters: too long; the notable facts and what was written stand for it)")
             }
+        }
+        if (unread != null) {
+            if (log.isEmpty() || log.size > MAX_NAP_BLOCKS) parts += unread.block
+            parts += unread.known
         }
         parts += ExchangeLog.fit(listOf("<left>") + left.map { "- ${it.line}" }.ifEmpty { listOf("(nobody)") } + "</left>", LEFT_MAX)
         parts += ExchangeLog.fit(listOf("<shown>") + shown.map { "- ${it.line(zone, withText = true)}" }.ifEmpty { listOf("(nothing)") } + "</shown>", SHOWN_MAX)
@@ -226,6 +279,8 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
 
     /** What a job did so far: its conversations, their reports, and why some failed. */
     private inner class Work(val runId: Long) {
+        /** When the job began: its tool calls are those of its conversations since then (a conversation outlives a job). */
+        private val started = clock.instant()
         private val conversations = mutableListOf<String>()
         private val reports = mutableListOf<String>()
         private val failures = mutableListOf<String>()
@@ -234,9 +289,9 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         var budget: GatewayError.Budget? = null
             private set
 
-        /** Adds a conversation of the job; whether it is done. */
+        /** Adds a turn of the job; whether it is done. */
         fun add(run: AgentRun): Boolean {
-            conversations += run.conversationId
+            if (run.conversationId !in conversations) conversations += run.conversationId
             if (run.status == RunStatus.DONE) {
                 run.report?.let { reports += it }
                 return true
@@ -271,7 +326,7 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         private suspend fun counts(): Pair<Int, Int> {
             services.journal.barrier() // the tool calls of its conversations
             return services.journal.read(READ_TIMEOUT_MS) { connection ->
-                connection.query(COUNTS_SQL, runId, stringArray(conversations)) { getInt(1) to getInt(2) }.single()
+                connection.query(COUNTS_SQL, runId, stringArray(conversations), started) { getInt(1) to getInt(2) }.single()
             }
         }
     }
@@ -283,8 +338,21 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         /** Requests of a nap's turn (M3 §7.4). */
         const val NAP_STEPS = 16
 
-        /** Longest conversation of the Chronicler. */
+        /** Longest turn of the Chronicler. */
         val TIMEOUT: Duration = Duration.ofMinutes(10)
+
+        /**
+         * An open conversation idle this long takes no more jobs: LLMGW caches for an hour (`ttl=1h`), and a job on a
+         * conversation whose cache is gone writes its whole history again.
+         */
+        val MAX_IDLE: Duration = Duration.ofMinutes(45)
+
+        /**
+         * An open conversation whose context reached this many tokens takes no more jobs. Each turn reads the
+         * context twice or so, at a twentieth of the input price; past this size, writing the prompt again in a new
+         * conversation (5 000 tokens at twice the input price) costs less than reading on.
+         */
+        const val MAX_CONTEXT_TOKENS = 40_000L
 
         /** Blocks of the exchange log a nap without summary reads at most; beyond, its notable facts only. */
         const val MAX_NAP_BLOCKS = 3
@@ -306,6 +374,6 @@ class Chronicler(private val services: NarratorServices, private val agents: Mem
         private const val CHAPTER_ENTRY_SQL = "SELECT id FROM chronicle WHERE level = 'chapter' AND conversation_id = ? AND superseded_by IS NULL"
 
         private const val COUNTS_SQL = "SELECT (SELECT count(*) FROM memory_log WHERE run_id = ?)::INTEGER, " +
-            "(SELECT count(*) FROM tool_calls WHERE list_contains(?, conversation_id) AND status = 'invalid')::INTEGER"
+            "(SELECT count(*) FROM tool_calls WHERE list_contains(?, conversation_id) AND status = 'invalid' AND ts >= ?)::INTEGER"
     }
 }

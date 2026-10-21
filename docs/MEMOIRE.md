@@ -131,10 +131,10 @@ Toute écriture passe par un seul point, qui vérifie les vocabulaires et les bu
 | Quand | Qui | Quoi |
 |---|---|---|
 | En direct | Directeur (outils) | `remember` (canon : promesses, menaces, défis, lois, surnoms, titres, lieux, récits… ; ou une observation sur un joueur), `resolve` (une promesse tenue, un défi gagné), `note_interaction` |
-| Toutes les 10 min | Chroniqueur (lots) | Relit le Journal de la fenêtre (chat, répliques et actions du Narrateur, faits notables, nouvelles du moteur des mécaniques : fins de défis, de duels et de règles, offrandes, jokers ; une fenêtre sans chat, sans réplique, sans action ni nouvelle d'une mécanique est sautée) : engagements oubliés, statuts, interactions notées, gags resservis, contradictions — le filet de sécurité. Une promesse n'est enregistrée que si le Narrateur l'a vraiment dite : la citation est vérifiée dans ses répliques. |
+| Toutes les 10 min | Chroniqueur (lots) | Relit le Journal de la fenêtre (chat, répliques et actions du Narrateur, faits notables, nouvelles du moteur des mécaniques : fins de défis, de duels et de règles, offrandes, jokers ; une fenêtre sans chat, sans réplique, sans action ni nouvelle d'une mécanique est sautée) : engagements oubliés, statuts, interactions notées, gags resservis, contradictions — le filet de sécurité. Une promesse n'est enregistrée que si le Narrateur l'a vraiment dite : la citation est vérifiée dans ses répliques. Les lots et les siestes successifs sont les tours d'**une même conversation** en ajout seul (M6-FIX-12) : le prompt et ce que les travaux précédents ont lu restent en cache, chaque travail ne paie que son propre message. Une nouvelle conversation commence après 45 min sans travail (le cache de LLMGW dure une heure), quand le contexte atteint 40 000 tokens, quand le prompt, les outils, le modèle ou l'effort changent, et après un tour qui a mal fini. |
 | Toutes les 10 min, et à chaque départ | Code (SQL, sans LLM) | Stats et lieux des fiches, temps passé ensemble |
 | En continu | Code | Échéances (un événement `DUE` réveille le Directeur), expirations, châtiments et bienfaits non notés, horloge de jeu |
-| Fin de chapitre, avec ou sans résumé | Chroniqueur (« sieste ») | Souvenirs du chapitre, statut du canon, chronique du chapitre, « depuis la dernière fois » des joueurs partis, souvenirs réellement réutilisés. Un chapitre clos par un arrêt ou un crash est consolidé au démarrage suivant. |
+| Fin de chapitre, avec ou sans résumé | Chroniqueur (« sieste ») | Souvenirs du chapitre, statut du canon, chronique du chapitre, « depuis la dernière fois » des joueurs partis, souvenirs réellement réutilisés. La fin du chapitre qu'aucun lot n'a lue est dans le message de la sieste, qui fait d'abord dessus le travail d'un lot : un tour au lieu de deux (M6-FIX-12) ; si elle dépasse un bloc de 24 000 caractères, des lots la lisent avant. Un chapitre clos par un arrêt ou un crash est consolidé au démarrage suivant. |
 | Temps mort | Rêveur (« rêve profond ») | Fiches, revue du Narrateur, Chronique, Grimoire, fusions (§5) |
 | Temps mort, après le Grimoire ; et à la demande du Directeur | Scénariste (M6) | Idées `P-…` (le programme, une saison), récits prévus ; jamais de fait sur les joueurs |
 
@@ -143,6 +143,7 @@ Toute écriture passe par un seul point, qui vérifie les vocabulaires et les bu
 Le Narrateur « dort » quand personne ne joue, et c'est là qu'il fait son travail de fond.
 
 ### La sieste — à chaque fin de chapitre (toutes les 1–2 h de jeu actif)
+- Lire d'abord la fin du chapitre qu'aucun lot n'a lue, avec le travail d'un lot (engagements, interactions, gags resservis), dans le même tour.
 - Rédiger les souvenirs épisodiques du chapitre (3 à 10, importance honnête, étiquettes, preuves).
 - Mettre à jour le canon : promesse tenue ? menace exécutée ? défi gagné ?
 - Écrire la chronique du chapitre si le Directeur n'a pas pu la résumer (arrêt, erreur).

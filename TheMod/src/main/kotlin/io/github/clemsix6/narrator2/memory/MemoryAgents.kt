@@ -24,6 +24,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -49,18 +50,20 @@ data class AgentRun(
  * of a dream, its programme (M6 §6.3). The pattern of the workers (`agent/Workers`), without anything sent back to
  * the Director: a memory job never wakes it.
  *
- * - **One conversation per call** of [run]: `chronicler-<8 hex>`, `dreamer-<8 hex>` or `storyteller-<8 hex>`, with
- *   the role's prompt and tools (`ToolCatalog.toolSetFor`, the memory's tools shown, and `inspire` to the
- *   storyteller), one turn of [AgentLoop] within its limits and its timeout, then its ending. Its `conversations`
- *   row (role, label, end reason `done`, `failed`, `timeout` or `cancelled`, the report as `summary`) and its
- *   transcript are written.
+ * - **A conversation** ([Session], opened by [open]): `chronicler-<8 hex>`, `dreamer-<8 hex>` or `storyteller-<8 hex>`,
+ *   with the role's prompt and tools (`ToolCatalog.toolSetFor`, the memory's tools shown, and `inspire` to the
+ *   storyteller), and one turn of [AgentLoop] per job given to it, within the job's limits and timeout. Its
+ *   `conversations` row (role, label, end reason `done`, `failed`, `timeout` or `cancelled`, the last report as
+ *   `summary`) and its transcript are written. [run] is a conversation for one job; the Chronicler keeps one for
+ *   its successive jobs (M6-FIX-12), append-only like the Director's chapter.
  * - **One engine for the whole memory**: one [AgentLoop] and one [ToolRunner]; the calls go to
  *   `llm_calls` with the purpose `chronicle`, `dream` or `programme`.
- * - **The run behind the tools**: while a conversation runs, [runContext] gives its [RunContext] (job,
+ * - **The run behind the tools**: while a conversation runs a job, [runContext] gives the job's [RunContext] (job,
  *   window, chapter, and the conversation's role). `Memory.runContext` asks this, so that the tools write as the
  *   job's author ([RunContext.author]) and the store checks quotes against the job's window.
  * - **No retry.** A refusal, a cut-off or empty reply, a step limit, a timeout or a gateway error fails
- *   the conversation with its reason; the catch-up and the next dream come back later.
+ *   the job with its reason, and ends its conversation (its history may end with tool calls left unanswered);
+ *   the catch-up and the next dream come back later.
  *
  * @param toolSet the tools of a conversation: `ToolCatalog.toolSetFor` in production.
  */
@@ -77,50 +80,139 @@ class MemoryAgents(
     fun runContext(conversationId: String): RunContext? = contexts[conversationId]
 
     /**
-     * One conversation of [role] (`chronicler`, `dreamer`, `storyteller`) for the job [context]: [opening] as its first
-     * message, one turn of at most [limits], within [timeout]. Throws the cancellation of the caller (the
-     * server stops) once the conversation is recorded as cancelled.
+     * One conversation of [role] (`chronicler`, `dreamer`, `storyteller`) for the job [context] alone: [opening] as
+     * its first message, one turn of at most [limits], within [timeout], then its end. Throws the cancellation of
+     * the caller (the server stops) once the conversation is recorded as cancelled.
      */
     suspend fun run(role: Role, context: RunContext, label: String, opening: String, limits: TurnLimits, timeout: Duration): AgentRun {
+        val session = open(role, label)
+        return session.run(context, label, opening, limits, timeout).also { session.close("its job is over") }
+    }
+
+    /** A conversation of [role] (`chronicler`, `dreamer`, `storyteller`) named [label], for jobs to come ([Session.run]). */
+    fun open(role: Role, label: String): Session {
         val purpose = PURPOSES[role] ?: throw IllegalArgumentException("${role.id} is not a memory role")
+        return Session(role, label, purpose)
+    }
+
+    /**
+     * A conversation of a memory role that successive jobs share, one turn each ([run]), append-only: its prompt and
+     * tools are those of its first job, and each job's opening follows the previous jobs and their replies. The
+     * gateway caches what came before (M6-FIX-12): a job pays for its own opening, not for the prompt again.
+     *
+     * It is created with its first job. A job that does not end well (refused, cut off, timed out, a gateway or an
+     * engine error, cancelled) ends it with its reason: its history may end with tool calls left unanswered. Else it
+     * lasts until [close], or until [stale] says it should not take another job. One job at a time.
+     */
+    inner class Session internal constructor(val role: Role, private val label: String, private val purpose: LlmCallRecord.Purpose) {
         val id = "${role.id}-${UUID.randomUUID().toString().take(8)}"
-        val started = clock.instant()
-        var opened: Opened? = null
-        contexts[id] = context.copy(role = role)
-        try {
+        private var opened: Opened? = null
+        private var report: String? = null
+
+        /** Jobs it ran. */
+        var jobs = 0
+            private set
+
+        /** When its last job ended; null before its first. */
+        var lastUsed: Instant? = null
+            private set
+
+        /** True once ended: it takes no more jobs. */
+        @Volatile
+        var closed = false
+            private set
+
+        /** The context of its latest request, in tokens (`Conversation.contextTokens`). */
+        val contextTokens: Long get() = opened?.conversation?.contextTokens ?: 0
+
+        /**
+         * Why it should not take another job at [now], or null when it can: closed, idle for [maxIdle] (the gateway's
+         * cache would be gone: the whole history would be written again), a context of [maxContext] tokens or more (a
+         * new conversation reads less), or a prompt, tools, model or effort that changed since it began (its prefix is
+         * frozen).
+         */
+        fun stale(now: Instant, maxIdle: Duration, maxContext: Long): String? {
+            val current = opened ?: return if (closed) "it is closed" else null
+            val idle = lastUsed?.let { Duration.between(it, now) } ?: Duration.ZERO
             val settings = services.settings.get()
-            val env = ToolEnv(
-                services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available,
-                storytellerAvailable = role == Role.STORYTELLER,
-            )
-            val tools = toolSet(role, env)
-            val system = listOf(TextBlockParam.builder().text(settings.prompts.get(role.id)).build())
-            val conversation = Conversation(role, label, system, tools, services.transcripts, id)
-            val row = ConversationRecord(id, role, label, null, null, started, null, null, null, transcriptOf(conversation))
-            opened = Opened(conversation, row)
-            services.trace.conversation(row)
-            services.transcripts.note(conversation, "${context.kind.id} run ${context.runId}, with ${tools.tools.size} tools: ${tools.names.joinToString()}")
-            log.info("run ${context.runId}: $id started ($label), ${tools.tools.size} tools")
-            val caller = Caller(role, id, turnId = null, taskId = null)
-            val outcome = withTimeoutOrNull(timeout.toMillis()) {
-                agent.runTurn(conversation, Pending.text(opening), caller, limits, purpose = purpose)
+            val config = settings.config.role(role)
+            return when {
+                closed -> "it is closed"
+                idle >= maxIdle -> "idle for ${ToolText.duration(idle.toMillis())}"
+                contextTokens >= maxContext -> "its context reached $contextTokens tokens"
+                current.system != settings.prompts.get(role.id) -> "the prompt changed"
+                current.tools != toolSet(role, env()).names -> "the tools changed"
+                current.model != config.model || current.effort != config.effort -> "the model or the effort changed"
+                else -> null
             }
-            if (outcome is TurnOutcome.Cancelled) currentCoroutineContext().ensureActive() // the caller was cancelled: throws
-            val ending = if (outcome == null) Ending(EndReason.TIMEOUT, null, "no end within ${ToolText.duration(timeout.toMillis())}", null) else endingOf(outcome)
-            close(opened, ending)
-            return AgentRun(id, if (ending.reason == EndReason.DONE) RunStatus.DONE else RunStatus.FAILED, ending.report, ending.error, ending.budget, outcome?.calls ?: 0)
-        } catch (e: CancellationException) {
-            opened?.let { close(it, Ending(EndReason.CANCELLED, null, "the server stopped", null)) }
-            throw e
-        } catch (e: Exception) {
-            log.error("run ${context.runId}: $id failed on an engine error", e)
-            val ending = Ending(EndReason.FAILED, null, "engine error: ${e.message ?: e.javaClass.simpleName}", null)
-            opened?.let { close(it, ending) }
-            return AgentRun(id, RunStatus.FAILED, null, ending.error, null, 0)
-        } finally {
-            contexts.remove(id)
+        }
+
+        /**
+         * One turn for the job [context], named [job] in the transcript: [opening] as its message, at most [limits],
+         * within [timeout]. Throws the cancellation of the caller (the server stops) once the conversation is
+         * recorded as cancelled.
+         */
+        suspend fun run(context: RunContext, job: String, opening: String, limits: TurnLimits, timeout: Duration): AgentRun {
+            check(!closed) { "$id is closed" }
+            contexts[id] = context.copy(role = role)
+            try {
+                val current = opened ?: create(context)
+                services.transcripts.note(current.conversation, "$job: ${context.kind.id} run ${context.runId}")
+                log.info("run ${context.runId}: $id takes its job ${jobs + 1} ($job)")
+                val caller = Caller(role, id, turnId = null, taskId = null)
+                val outcome = withTimeoutOrNull(timeout.toMillis()) {
+                    agent.runTurn(current.conversation, Pending.text(opening), caller, limits, purpose = purpose)
+                }
+                if (outcome is TurnOutcome.Cancelled) currentCoroutineContext().ensureActive() // the caller was cancelled: throws
+                jobs++
+                lastUsed = clock.instant()
+                val ending = if (outcome == null) Ending(EndReason.TIMEOUT, null, "no end within ${ToolText.duration(timeout.toMillis())}", null) else endingOf(outcome)
+                if (ending.reason == EndReason.DONE) report = ending.report else end(ending, "its job ${ending.reason.id}")
+                return AgentRun(id, if (ending.reason == EndReason.DONE) RunStatus.DONE else RunStatus.FAILED, ending.report, ending.error, ending.budget, outcome?.calls ?: 0)
+            } catch (e: CancellationException) {
+                end(Ending(EndReason.CANCELLED, null, "the server stopped", null), "its job was cancelled")
+                throw e
+            } catch (e: Exception) {
+                log.error("run ${context.runId}: $id failed on an engine error", e)
+                val ending = Ending(EndReason.FAILED, null, "engine error: ${e.message ?: e.javaClass.simpleName}", null)
+                end(ending, "an engine error")
+                return AgentRun(id, RunStatus.FAILED, null, ending.error, null, 0)
+            } finally {
+                contexts.remove(id)
+            }
+        }
+
+        /** Ends it, done, after its last job's report; [why] goes to its transcript and the log. Never throws; once. */
+        fun close(why: String) = end(Ending(EndReason.DONE, report, null, null), why)
+
+        /** The conversation, its row and its transcript, with the role's prompt and tools as they are now. */
+        private fun create(context: RunContext): Opened {
+            val settings = services.settings.get()
+            val tools = toolSet(role, env())
+            val system = settings.prompts.get(role.id)
+            val config = settings.config.role(role)
+            val conversation = Conversation(role, label, listOf(TextBlockParam.builder().text(system).build()), tools, services.transcripts, id)
+            val row = ConversationRecord(id, role, label, null, null, clock.instant(), null, null, null, transcriptOf(conversation))
+            return Opened(conversation, row, system, tools.names, config.model, config.effort).also {
+                opened = it
+                services.trace.conversation(row)
+                services.transcripts.note(conversation, "${context.kind.id} run ${context.runId}, with ${tools.tools.size} tools: ${tools.names.joinToString()}")
+                log.info("run ${context.runId}: $id started ($label), ${tools.tools.size} tools")
+            }
+        }
+
+        private fun end(ending: Ending, why: String) {
+            if (closed) return
+            closed = true
+            opened?.let { close(it, ending, jobs, why) }
         }
     }
+
+    /** What a memory conversation is given: the journal, the memory, and `inspire` for the storyteller. */
+    private fun Session.env() = ToolEnv(
+        services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available,
+        storytellerAvailable = role == Role.STORYTELLER,
+    )
 
     /** What a turn's [outcome] makes of the conversation. */
     private fun endingOf(outcome: TurnOutcome): Ending = when (outcome) {
@@ -138,15 +230,15 @@ class MemoryAgents(
         else -> error.description
     }
 
-    /** Ends the `conversations` row and the transcript of [opened]. Never throws. */
-    private fun close(opened: Opened, ending: Ending) {
+    /** Ends the `conversations` row and the transcript of [opened], after [jobs] jobs, because of [why]. Never throws. */
+    private fun close(opened: Opened, ending: Ending, jobs: Int, why: String) {
         try {
             val ended = clock.instant()
             services.trace.conversation(opened.row.copy(endedAt = ended, endReason = ending.reason, summary = ending.report ?: ending.error))
-            services.transcripts.note(opened.conversation, "${opened.row.label} ${ending.reason.id}" + (ending.error?.let { ": $it" } ?: ""))
+            services.transcripts.note(opened.conversation, "${opened.row.label} ${ending.reason.id}" + (ending.error?.let { ": $it" } ?: "") + " ($why)")
             opened.conversation.close()
             val took = ToolText.duration(ended.toEpochMilli() - opened.row.startedAt.toEpochMilli())
-            val head = "${opened.conversation.id} ${ending.reason.id} in $took"
+            val head = "${opened.conversation.id} ${ending.reason.id} in $took after $jobs job${if (jobs == 1) "" else "s"} ($why)"
             if (ending.reason == EndReason.DONE || ending.reason == EndReason.CANCELLED) log.info("$head${ending.error?.let { ": $it" }.orEmpty()}") else log.warn("$head: ${ending.error}")
         } catch (e: Exception) {
             log.error("${opened.conversation.id}: its end was not recorded", e)
@@ -161,7 +253,10 @@ class MemoryAgents(
         return if (file.startsWith(services.dataDir)) services.dataDir.relativize(file).toString().replace('\\', '/') else file.toString()
     }
 
-    private class Opened(val conversation: Conversation, val row: ConversationRecord)
+    /** A conversation created, with what it was created with: its prompt, its tools' names, its model and effort. */
+    private class Opened(
+        val conversation: Conversation, val row: ConversationRecord, val system: String, val tools: List<String>, val model: String, val effort: String,
+    )
 
     private data class Ending(val reason: EndReason, val report: String?, val error: String?, val budget: GatewayError.Budget?)
 

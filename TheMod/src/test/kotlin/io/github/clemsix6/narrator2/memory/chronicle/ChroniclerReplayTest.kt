@@ -121,11 +121,15 @@ class ChroniclerReplayTest {
             interactions,
         )
 
-        // Its conversation: a row, a transcript, two calls of purpose chronicle; its run context is gone.
-        val row = f.rows("SELECT role, label, end_reason, summary, transcript FROM conversations WHERE conversation_id = '$conversation'") {
+        // Its conversation: a row, a transcript, two calls of purpose chronicle; its run context is gone. It stays open
+        // for the next jobs (M6-FIX-12), and ends when the memory stops, with the last report.
+        fun row() = f.rows("SELECT role, label, end_reason, summary, transcript FROM conversations WHERE conversation_id = '$conversation'") {
             listOf(getString(1), getString(2), getString(3), getString(4), getString(5))
         }.single()
-        assertEquals(listOf("chronicler", "Batch of chapter 13 (run 7)", "done", outcome.report), row.take(4))
+        assertEquals(listOf("chronicler", "Chronicle from run 7", null, null), row().take(4))
+        f.chronicler.close()
+        val row = row()
+        assertEquals(listOf("chronicler", "Chronicle from run 7", "done", outcome.report), row.take(4))
         assertTrue(row[4]!!.endsWith("$conversation.md"), row[4])
         assertEquals(listOf("chronicle", "chronicle"), f.rows("SELECT purpose FROM llm_calls WHERE conversation_id = '$conversation' ORDER BY id") { getString(1) })
         assertNull(f.agents.runContext(conversation))
