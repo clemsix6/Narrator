@@ -262,3 +262,16 @@ de M3 le mesureraient).
 - Build complet (`.\gradlew.bat build --continue`) après `git merge main` (`ab852b3`, M6-POLISH et M6-FIX-13), sans
   conflit : **2 280 tests unitaires, 0 échec, 0 ignoré** ; **« All 402 required tests passed »** (GameTests), en
   10 min 35 s. Aucun test instable rencontré.
+
+## Décisions du superviseur (22/10/2026)
+
+Fusionnée en dernier de la vague, après M6-FIX-11.
+
+1. **−30 % accepté** (≈ 0,78 → 0,58 $ par heure chargée), à qualité égale. Il n'y a pas d'autre levier sûr que le modèle.
+2. **Le modèle du Chroniqueur ne change pas** sans le propriétaire. Sonnet 5.5 (≈ 0,31 $/h) entre dans sa liste, avec une
+   condition : une éval E1/E2 avant tout changement.
+3. **La conversation peut traverser les chapitres : accepté.** C'est moins cher, et les transcriptions restent lisibles
+   par leurs en-têtes de travail.
+4. **Le prompt système que LLMGW déplace** touche tous les rôles. On ne modifie jamais LLMGW nous-mêmes : le constat entre
+   dans le point déjà ouvert avec le propriétaire, « placement du cache LLMGW ».
+5. **Le commit de fusion `bff9eba`, sans trailers**, reste tel quel : on ne réécrit pas l'historique.
