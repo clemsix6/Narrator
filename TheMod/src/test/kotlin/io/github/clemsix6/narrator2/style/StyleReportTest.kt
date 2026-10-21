@@ -11,6 +11,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.memory.stats.Reactions
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.reflex.HeuristicWords
 import io.github.clemsix6.narrator2.reflex.Tone
 import io.github.clemsix6.narrator2.style.StyleReport.Flaw
@@ -121,7 +122,6 @@ internal object StyleDataset {
 class StyleReportTest {
     private val words = HeuristicWords.bundled("fr")!!
     private val utc = ZoneOffset.UTC
-    private val latest = Diversity(50, 0.8, ComicRegister.DIVINE_BUREAUCRACY, 0.38, 0.71, listOf("céleste" to 6), 3)
 
     @Test
     fun `a period holds the Director's lines only, with their latest labels`() {
@@ -190,6 +190,39 @@ class StyleReportTest {
         }
     }
 
+    /**
+     * M6-03: a period's openers and tics are normalized with the names of the Journal (`player_names`), as the watch's
+     * are: « Bartok, encore » and « Mimosa, encore » are one opener, « Onze secondes » and « Vingt secondes » another.
+     */
+    @Test
+    fun `a period's openers and tics are normalized with the Journal's names`() {
+        StyleDataset.journal().use { fixture ->
+            val texts = listOf(
+                "Bartok, encore une chute dans la lave.", "Mimosa, encore un pont qui s'effondre.", "Bartok, encore un coffre vide ce soir.",
+                "Mimosa, encore une prière refusée.", "Onze secondes ! Le record de la soirée tombe.", "Douze secondes, et la foule applaudit poliment.",
+                "Vingt secondes : le désert retient son souffle.", "Seize secondes ! Personne ne bat ce temps-là.",
+            )
+            texts.forEachIndexed { i, text ->
+                fixture.clock.now = StyleDataset.at("22:10").plusSeconds(60L * i)
+                fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, text, null, 400L + i, null))
+            }
+            fixture.sync()
+            val period = Period(StyleDataset.at("22:00"), StyleDataset.at("23:00"))
+            val (named, unnamed) = StyleDataset.read(fixture) { connection ->
+                val lines = StyleReport.lines(connection, period)
+                StyleReport.measures(lines, Tics.Names.of(Tics.names(connection))) to StyleReport.measures(lines)
+            }
+            assertEquals(8, named.lines)
+            assertEquals(2.0 / 8, named.openersDistinct, 1e-9, "`<nom> encore` ×4, `<n> secondes` ×4")
+            assertEquals(2, named.tics)
+            assertEquals(3.0 / 8, unnamed.openersDistinct, 1e-9, "without the names, Bartok and Mimosa open apart")
+            assertEquals(1, unnamed.tics, "the numbers are normalized all the same")
+
+            val review = StyleDataset.read(fixture) { StyleReport.review(it, period, StyleDataset.PERIOD, words, utc) }
+            assertEquals("<diversity>openers distinct 0.25 (1.00 before) · no line reviewed in this period</diversity>", review.lines().last())
+        }
+    }
+
     @Test
     fun `the entropy spreads from 0 to 1`() {
         assertEquals(1.0, StyleReport.entropy(ComicRegister.VOICE.map { 3 }), 1e-9, "every register of the voice as often")
@@ -204,7 +237,7 @@ class StyleReportTest {
     @Test
     fun `the Dreamer's three blocks, compared with the period before`() {
         StyleDataset.journal().use { fixture ->
-            val review = StyleDataset.read(fixture) { StyleReport.review(it, StyleDataset.PERIOD, StyleDataset.BEFORE, words, latest, utc) }
+            val review = StyleDataset.read(fixture) { StyleReport.review(it, StyleDataset.PERIOD, StyleDataset.BEFORE, words, utc) }
             assertEquals(
                 """
                 <registers from="10-21 21:00" to="10-21 22:00" lines="6" reviewed="5">
@@ -216,15 +249,15 @@ class StyleReportTest {
                 - 10-21 21:20 flat 0.80: "Effet lenteur appliqué à Bartok."
                 - 10-21 21:30 repeats 0.75: "Le guichet céleste ferme ses portes, Bartok."
                 </tone_flags>
-                <diversity>openers distinct 0.80 in the latest 50 lines · top register divine_bureaucracy 60% (before: courtroom 50%) · register entropy 0.41 (0.75 before) · crutch « céleste » 40% (25% before)</diversity>
+                <diversity>openers distinct 1.00 (1.00 before) · top register divine_bureaucracy 60% (before: courtroom 50%) · register entropy 0.41 (0.75 before) · crutch « céleste » 40% (25% before)</diversity>
                 """.trimIndent(),
                 review,
             )
-            val alone = StyleDataset.read(fixture) { StyleReport.review(it, StyleDataset.BEFORE, null, words, Diversity.NONE, utc) }
+            val alone = StyleDataset.read(fixture) { StyleReport.review(it, StyleDataset.BEFORE, null, words, utc) }
             assertEquals(
-                "<diversity>top register courtroom 50% · register entropy 0.75 · crutch « céleste » 25%</diversity>",
+                "<diversity>openers distinct 1.00 · top register courtroom 50% · register entropy 0.75 · crutch « céleste » 25%</diversity>",
                 alone.lines().last(),
-                "no period before, no line measured by the watch",
+                "no period before",
             )
             assertTrue(alone.contains("- 10-21 20:40 dark 0.90: \"Ciel couvert sur Bartok, avec de fortes chances d'enclume.\""), alone)
         }
@@ -234,7 +267,7 @@ class StyleReportTest {
     fun `an empty period, a period never reviewed, and a period without a flag say so`() {
         val period = Period(StyleDataset.at("21:00"), StyleDataset.at("22:00"))
         assertEquals("<registers from=\"10-21 21:00\" to=\"10-21 22:00\">(the Director said nothing in this period)</registers>", StyleReport.registersBlock(period, emptyList(), emptyList(), utc))
-        assertEquals("<diversity>nothing said in this period</diversity>", StyleReport.diversityBlock(emptyList(), null, Diversity.NONE))
+        assertEquals("<diversity>nothing said in this period</diversity>", StyleReport.diversityBlock(emptyList(), null))
 
         val unreviewed = listOf(line(1, "Une réplique.", null))
         assertEquals(
@@ -242,7 +275,7 @@ class StyleReportTest {
             StyleReport.registersBlock(period, unreviewed, emptyList(), utc),
         )
         assertEquals("<tone_flags>(no line reviewed in this period)</tone_flags>", StyleReport.flagsBlock(unreviewed, utc))
-        assertEquals("<diversity>openers distinct 0.80 in the latest 50 lines · no line reviewed in this period</diversity>", StyleReport.diversityBlock(unreviewed, null, latest))
+        assertEquals("<diversity>no line reviewed in this period</diversity>", StyleReport.diversityBlock(unreviewed, null))
 
         val clean = listOf(line(1, "Une réplique.", ComicRegister.FOOD_CRITIC, mapOf(Flaw.FLAT to 0.69)))
         assertEquals(
@@ -251,7 +284,7 @@ class StyleReportTest {
         )
         assertEquals(
             "<diversity>top register food_critic 100% (before: courtroom 100%) · register entropy 0.00 (0.00 before) · no crutch word (« céleste » 100% before)</diversity>",
-            StyleReport.diversityBlock(clean, listOf(line(2, "Avant.", ComicRegister.COURTROOM, crutches = listOf("céleste"))), Diversity.NONE),
+            StyleReport.diversityBlock(clean, listOf(line(2, "Avant.", ComicRegister.COURTROOM, crutches = listOf("céleste")))),
         )
     }
 
@@ -276,9 +309,9 @@ class StyleReportTest {
         assertTrue(registers.endsWith("(… cut: the rest went over the budget)\n</registers>"), registers)
 
         val crutched = listOf(line(1, "Ligne.", ComicRegister.HOROSCOPE, crutches = listOf("<script>" + "x".repeat(500))))
-        val diversity = StyleReport.diversityBlock(crutched, crutched, latest)
+        val diversity = StyleReport.diversityBlock(crutched, crutched)
         assertTrue(diversity.length <= StyleReport.DIVERSITY_MAX, "${diversity.length}")
-        assertTrue(diversity.startsWith("<diversity>openers distinct 0.80 in the latest 50 lines · top register horoscope 100% (100% before) · register entropy 0.00 (0.00 before) · crutch « ‹script›xxx"), diversity)
+        assertTrue(diversity.startsWith("<diversity>top register horoscope 100% (100% before) · register entropy 0.00 (0.00 before) · crutch « ‹script›xxx"), diversity)
         assertTrue(diversity.endsWith("…</diversity>"), diversity)
     }
 
