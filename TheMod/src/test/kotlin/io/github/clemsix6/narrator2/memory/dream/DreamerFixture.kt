@@ -78,13 +78,13 @@ import java.util.concurrent.ConcurrentHashMap
  * recall, sheets and hygiene, and the strict fake Anthropic server: what a dream writes can be read back,
  * with the traces of its conversations. [evening] writes the reference evening of 2026-10-01 (UTC): Bartok
  * and Mimosa play from 20:00 to 21:45, chapter 13 runs until 21:40; the clock is then at 22:10, the server
- * empty for 25 minutes.
+ * empty for 25 minutes. [programme] false sets `memory.programme` false: the dream skips the storyteller's step.
  */
-internal class DreamerFixture : AutoCloseable {
+internal class DreamerFixture(programme: Boolean = true) : AutoCloseable {
     val clock = TestClock(at("19:00"), ZoneId.of("UTC"))
     val journal = JournalFixture(clock = clock)
     val fake = FakeAnthropic()
-    private val config = testConfig(fake.baseUrl)
+    private val config = testConfig(fake.baseUrl).let { it.copy(memory = it.memory.copy(programme = programme)) }
     private val client = ClaudeClient(config, TEST_API_KEY)
     private val index = SearchIndex()
     val playClock = FakeMemory.FakePlayClock()

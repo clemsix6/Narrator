@@ -13,25 +13,26 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Duration
 
 /**
- * Stops the Narrator in the two steps the server offers (M1_M2 §2.4). Both run on the server thread
- * and are bounded in time; a step that fails is logged and the next ones still run.
+ * Stops the Narrator in the two steps the server offers (M1_M2 §2.4), each made of a part that never waits and a part
+ * that waits, bounded in time; a step that fails is logged and the next ones still run. At the server's stop, everything
+ * runs on the server thread; at `/narrator restart` (M6 §9), the parts that never wait run on the server thread and the
+ * parts that wait on the restart's own thread.
  *
- * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players. No new work
- * is taken ([Phase.STOPPING]: the Director, the workers, the memory and the tools check it). The dashboard
- * stops first ([stopDashboard], at once: no page is served while the rest stops). Then the mechanics
- * engine ([stopMechanics], on the server thread, without waiting: no new act, its queue
- * dropped, its boss bars taken down, its modules stopped; its state stays in the world, which the stopping save
- * writes). Then the Forge ([stopForge], a second at most: its compiler thread ends, its bench runs are cancelled).
- * Then the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
- * cancelled and the world play clock saved, while the Journal still writes. Then the work in flight is
- * cancelled: every coroutine of [scope] (Director, workers, model calls, which close their streams
- * without appending anything, SQL reads, reloads), waited for at most [workTimeout]. The
- * subscriptions of [DIRECTOR_OWNER] close; the Journal, the player states and the Observer stay
- * subscribed, because the players' departures come after this step.
+ * [begin], on `SERVER_STOPPING`, comes before the server saves and disconnects the players:
+ * - [stopInGame], which never waits: no new work is taken ([Phase.STOPPING]: the Director, the workers, the memory and
+ *   the tools check it); the dashboard stops first ([stopDashboard], at once: no page is served while the rest stops);
+ *   then the mechanics engine ([stopMechanics], on the server thread, without waiting: no new act, its queue dropped,
+ *   its boss bars taken down, its modules stopped; its state stays in the world, which the stopping save writes); then
+ *   the Forge ([stopForge], never waits: its compiler thread ends, its bench runs are cancelled);
+ * - [stopWaiting]: the memory ([stopMemory], waited for at most [memoryTimeout]): its running job is recorded as
+ *   cancelled and the world play clock saved, while the Journal still writes. Then the work in flight is cancelled:
+ *   every coroutine of [scope] (Director, workers, model calls, which close their streams without appending anything,
+ *   SQL reads, reloads), waited for at most [workTimeout]. The subscriptions of [DIRECTOR_OWNER] close; the Journal,
+ *   the player states and the Observer stay subscribed, because the players' departures come after this step.
  *
- * [finish], on `SERVER_STOPPED`, comes once the players are gone: the Observer publishes what it still
- * holds, the bus closes, the Journal writes what is queued and closes within [journalTimeout], then the
- * clients close.
+ * [finish], on `SERVER_STOPPED`, comes once the players are gone: the Observer publishes what it still holds
+ * ([flushObserver]), then [close]: the bus closes, the Journal writes what is queued and closes within
+ * [journalTimeout], then the clients close.
  */
 class ShutdownSequence(
     private val scope: CoroutineScope,
@@ -52,19 +53,37 @@ class ShutdownSequence(
     private val log = Log.main
 
     @Volatile
-    private var begun = false
+    private var stoppedInGame = false
+
+    @Volatile
+    private var stoppedWaiting = false
+
+    /** `SERVER_STOPPING`: [stopInGame], then [stopWaiting]. Server thread. */
+    fun begin() {
+        stopInGame()
+        stopWaiting()
+    }
 
     /**
-     * `SERVER_STOPPING`: takes no new work, stops the dashboard, the mechanics engine (its modules first), then the
-     * Forge, then the memory, then cancels the work in flight.
+     * The part of [begin] that never waits, once: takes no new work, stops the dashboard, the mechanics engine (its
+     * modules first), then the Forge. Server thread.
      */
-    fun begin() {
-        if (begun) return
-        begun = true
+    fun stopInGame() {
+        if (stoppedInGame) return
+        stoppedInGame = true
         setPhase(Phase.STOPPING)
         step("stop the dashboard") { stopDashboard() }
         step("stop the mechanics") { stopMechanics() }
         step("stop the Forge") { stopForge() }
+    }
+
+    /**
+     * The part of [begin] that waits, bounded, once: stops the memory, then cancels the work in flight, then closes the
+     * Director's subscriptions. The server thread at the server's stop, the restart's thread at a restart.
+     */
+    fun stopWaiting() {
+        if (stoppedWaiting) return
+        stoppedWaiting = true
         step("stop the memory") {
             val start = System.nanoTime()
             val stopped = runBlocking { withTimeoutOrNull(memoryTimeout.toMillis()) { stopMemory() } } != null
@@ -88,10 +107,21 @@ class ShutdownSequence(
         step("close the Director's subscriptions") { bus.unsubscribeOwner(DIRECTOR_OWNER) }
     }
 
-    /** `SERVER_STOPPED`: publishes what the Observer holds, then closes the bus, the Journal and the clients. */
+    /** `SERVER_STOPPED`: [begin] if it did not run, then publishes what the Observer holds, then [close]. Server thread. */
     fun finish() {
         begin()
-        step("flush the Observer") { flushObserver() }
+        flush()
+        close()
+    }
+
+    /** The Observer publishes what it still holds, while the bus is open. Server thread. */
+    fun flush() = step("flush the Observer") { flushObserver() }
+
+    /**
+     * Closes the bus, the Journal and the clients: the Narrator is [Phase.STOPPED]. Waits for the Journal, bounded. The
+     * server thread at the server's stop, the restart's thread at a restart.
+     */
+    fun close() {
         step("close the event bus") { bus.close() }
         step("close the Journal") { closeJournal() }
         step("close the clients") { settings.get().close() }
@@ -101,7 +131,7 @@ class ShutdownSequence(
 
     /**
      * Closes the Journal on its own thread: [Journal.close] promises to return within [journalTimeout],
-     * and the server never waits for it longer than that plus [journalGrace].
+     * and the caller never waits for it longer than that plus [journalGrace].
      */
     private fun closeJournal() {
         val start = System.nanoTime()

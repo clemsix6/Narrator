@@ -522,15 +522,15 @@ class WriteChronicleTool : MemoryTool<WriteChronicleArgs>(
 @Serializable
 data class WriteGrimoireArgs(
     @Doc(
-        "The whole Grimoire, in French, factual, in the third person, 10 000 characters at most: the seven headings ## Players, " +
-            "## Running gags, ## Arcs, ## What works, ## What falls flat, ## Plans, ## Watch out, in this order, each with at least one " +
+        "The whole Grimoire, in French, factual, in the third person, 10 000 characters at most: the six headings ## Players, " +
+            "## Running gags, ## Arcs, ## What works, ## What falls flat, ## Watch out, in this order, each with at least one " +
             "line (« - aucun » when there is nothing).",
     )
     @MaxLen(MemoryLimits.GRIMOIRE)
     val text: String,
 )
 
-/** `write_grimoire` (M3 §8.4): the Grimoire rewritten whole, checked by [GrimoireFormat] before the store writes it. */
+/** `write_grimoire` (M3 §8.4, six sections since M6): the Grimoire rewritten whole, checked by [GrimoireFormat] before the store writes it. */
 class WriteGrimoireTool : MemoryTool<WriteGrimoireArgs>(
     name = "write_grimoire",
     description = "Rewrites the Grimoire whole, as a new version: the Narrator's compact memory, always in its briefing. What " +

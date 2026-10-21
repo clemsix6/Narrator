@@ -159,8 +159,9 @@ class DuckMemoryStore(
 
         /**
          * Who may put what in the canon (decision 8): the Narrator's commitments come from its own words.
-         * - The Dreamer ([DREAMER_CANON]) and the storyteller ([STORYTELLER_CANON]) plan arcs (`planned`) and keep
-         *   lore, without quote: they never heard the Narrator.
+         * - The Dreamer keeps lore ([DREAMER_CANON]), and the storyteller plans arcs (`planned`) and keeps lore
+         *   ([STORYTELLER_CANON]; M6 §6.5: one pen per subject, the Dreamer looks back), without quote: they never heard
+         *   the Narrator.
          * - The Chronicler copies the Narrator's words: for the kinds said to players ([SAID_KINDS]) a quote
          *   is required, and any quote must be [Quotes.substantial] and inside a Narrator line cited in the
          *   evidence ([Quotes.narratorLines]).
@@ -168,17 +169,23 @@ class DuckMemoryStore(
          */
         fun canonSource(draft: CanonDraft, status: CanonStatus) {
             when (author.source) {
-                Source.DREAMER -> planner("the Dreamer", DREAMER_CANON, draft, status)
-                Source.STORYTELLER -> planner("the storyteller", STORYTELLER_CANON, draft, status)
+                Source.DREAMER -> keeper("the Dreamer", DREAMER_CANON, draft, status)
+                Source.STORYTELLER -> keeper("the storyteller", STORYTELLER_CANON, draft, status)
                 Source.CHRONICLER -> narratorQuote(draft.kind, draft.quote, draft.evidenceEvents, draft.evidenceTools)
                 Source.DIRECTOR, Source.ENGINE, Source.OPERATOR -> Unit
             }
         }
 
-        /** What [who], which plans and never heard the Narrator, may put in the canon: [kinds], an arc planned, without quote. */
-        private fun planner(who: String, kinds: Set<CanonKind>, draft: CanonDraft, status: CanonStatus) {
+        /** What [who], which never heard the Narrator, may put in the canon: [kinds], an arc planned, without quote. */
+        private fun keeper(who: String, kinds: Set<CanonKind>, draft: CanonDraft, status: CanonStatus) {
             if (draft.kind !in kinds) {
-                reject("$who plans arcs and keeps lore; ${an(draft.kind.id)} is recorded from the Narrator's own words, not by $who")
+                val may = if (CanonKind.ARC in kinds) "plans arcs and keeps lore" else "keeps lore only"
+                val why = if (draft.kind == CanonKind.ARC) {
+                    "an arc to come is planned by the storyteller"
+                } else {
+                    "${an(draft.kind.id)} is recorded from the Narrator's own words, not by $who"
+                }
+                reject("$who $may; $why")
             }
             if (draft.kind == CanonKind.ARC && status != CanonStatus.PLANNED) reject("an arc $who prepares starts planned: the Narrator starts it")
             if (draft.quote != null) reject("quote: $who never heard the Narrator, it quotes nobody: remove quote")
@@ -1217,8 +1224,11 @@ class DuckMemoryStore(
             CanonKind.NICKNAME, CanonKind.TITLE, CanonKind.PLACE,
         )
 
-        /** What the Dreamer may add to the canon: an arc it plans, lore. Its running gags only change freshness ([setGag]). */
-        val DREAMER_CANON = setOf(CanonKind.ARC, CanonKind.LORE)
+        /**
+         * What the Dreamer may add to the canon: lore. An arc to come is the storyteller's (M6 §6.5); the Dreamer still
+         * settles arcs ([resolveCanon]), and its running gags only change freshness ([setGag]).
+         */
+        val DREAMER_CANON = setOf(CanonKind.LORE)
 
         /** What the storyteller may add to the canon (M6 §6.5): an arc it plans, lore. */
         val STORYTELLER_CANON = setOf(CanonKind.ARC, CanonKind.LORE)

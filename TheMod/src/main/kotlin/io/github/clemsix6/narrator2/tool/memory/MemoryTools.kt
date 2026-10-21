@@ -104,12 +104,12 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
  * `remember` (M3 §5.1): a commitment or decision of the Narrator in the canon (`C-`), or a fact about a
  * player in the memories (`M-`). A nickname or title replaces the player's active one; a place is where
  * [RememberArgs.atPlayer] stands now; a due time posts a `DUE` event to the Director then. An arc the
- * Dreamer or the storyteller remembers starts `planned` (M3 §8.2, step 4; M6 §6.5): the Director starts it with
- * `resolve … active`.
+ * storyteller remembers starts `planned` (M6 §6.5, §6.8): the Director starts it with `resolve … active`.
  *
  * Who may remember what (M3 review, finding 1), checked before the store: the Director anything; the
  * Chronicler what was told to the players ([RememberKind.told]) only with the Narrator's words in `quote`;
- * the Dreamer only [DREAMER_KINDS], the storyteller only [STORYTELLER_KINDS], never with a quote.
+ * the Dreamer only [DREAMER_KINDS] (it looks back: an arc to come is the storyteller's since M6), the storyteller
+ * only [STORYTELLER_KINDS], never with a quote.
  *
  * Mechanics (M4 §12.3, §10): while the engine runs, the Director starts a challenge with `start_challenge`,
  * which tracks it, never with `remember`; a plan exists only through `create_rule` (no kind here); an arc
@@ -139,7 +139,7 @@ class RememberTool : MemoryTool<RememberArgs>(
     private suspend fun addCanon(ctx: ToolContext, args: RememberArgs, kind: CanonKind, players: List<PlayerRef>, evidence: Evidence): ToolResult {
         val place = args.atPlayer?.let { name -> ctx.players.byName(name)?.pos ?: refuse(ctx.notOnline(name)) }
         val due = args.dueInMinutes?.let { ctx.clock.instant().plusSeconds(it * 60L) }
-        val planned = kind == CanonKind.ARC && ctx.caller.role in PLANNERS
+        val planned = kind == CanonKind.ARC && ctx.caller.role == Role.STORYTELLER
         val room = (EVIDENCE_MAX - evidence.events.size - evidence.tools.size).coerceAtLeast(0)
         val said = ctx.linesHolding(args.quote).filter { it !in evidence.events }.take(room)
         val draft = CanonDraft(
@@ -188,12 +188,12 @@ class RememberTool : MemoryTool<RememberArgs>(
         val kind = args.kind
         val role = ctx.caller.role
         if (role == Role.DREAMER && kind !in DREAMER_KINDS) {
-            refuse(
-                ToolResult.invalid(
-                    "the Dreamer remembers only an arc (planned), lore or an observation, not ${an(kind.id)}: " +
-                        "what the Narrator tells the players is recorded from its own words, by itself or the Chronicler",
-                ),
-            )
+            val why = if (kind == RememberKind.ARC) {
+                "an arc to come is the storyteller's, who writes the programme after the Grimoire"
+            } else {
+                "what the Narrator tells the players is recorded from its own words, by itself or the Chronicler"
+            }
+            refuse(ToolResult.invalid("the Dreamer remembers only lore or an observation, not ${an(kind.id)}: $why"))
         }
         if (role == Role.STORYTELLER && kind !in STORYTELLER_KINDS) {
             refuse(
@@ -246,14 +246,11 @@ class RememberTool : MemoryTool<RememberArgs>(
     }
 
     private companion object {
-        /** What the Dreamer remembers: it plans arcs, keeps lore and observes players; it never commits the Narrator. */
-        val DREAMER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE, RememberKind.OBSERVATION)
+        /** What the Dreamer remembers: it keeps lore and observes players; it never commits the Narrator, nor plans an arc (M6 §6.5). */
+        val DREAMER_KINDS = setOf(RememberKind.LORE, RememberKind.OBSERVATION)
 
-        /** What the storyteller remembers (M6 §6.5): it plans arcs and keeps lore; no fact about a player, no commitment. */
+        /** What the storyteller remembers (M6 §6.5): it plans arcs (they start planned) and keeps lore; no fact about a player, no commitment. */
         val STORYTELLER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE)
-
-        /** The roles whose arcs start planned: they prepare them, the Director starts them. */
-        val PLANNERS = setOf(Role.DREAMER, Role.STORYTELLER)
 
         /** The Narrator's lines said in a turn, and its or an operator's lines among the events that woke the turn. */
         const val TURN_LINES_SQL = "SELECT id, text FROM chat WHERE channel IN ('narrator', 'operator') " +

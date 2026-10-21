@@ -10,6 +10,7 @@ import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
+import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents
 
 /**
  * The mod's entry point. Everything here is registered once per JVM (M1_M2 §2.1): attachment types,
@@ -29,6 +30,8 @@ object Narrator2 : ModInitializer {
         // The world was saved: the Journal checkpoints too, so a copy of the world folder is consistent.
         ServerLifecycleEvents.AFTER_SAVE.register { _, _, _ -> NarratorRuntime.current?.journal?.checkpointAsync() }
         ServerTickEvents.END_SERVER_TICK.register { server -> NarratorRuntime.current?.onTick(server) }
+        // While `/narrator restart` runs, a login waits for its end: nobody enters a world without a Narrator (M6 §9).
+        ServerLoginConnectionEvents.QUERY_START.register { _, _, _, synchronizer -> NarratorRuntime.restarts.holdLogin(synchronizer) }
         CommandRegistrationCallback.EVENT.register { dispatcher, _, _ -> NarratorCommand.register(dispatcher) }
         Log.main.info("mod initialized")
     }

@@ -1,12 +1,14 @@
 package io.github.clemsix6.narrator2.memory.dream
 
 /**
- * The form of the Grimoire (M3 §8.4), checked before it is written. The Grimoire is the Narrator's compact
+ * The form of the Grimoire (M3 §8.4, M6 §2.6), checked before it is written. The Grimoire is the Narrator's compact
  * core memory, always in its briefing, rewritten whole by every dream within the same budget:
  *
- * - the seven sections of [SECTIONS], each as a `## ` heading in English, in this order, nothing before the
+ * - the six sections of [SECTIONS], each as a `## ` heading in English, in this order, nothing before the
  *   first one and no other heading (a line starting with `#`);
  * - at least one non-blank line under each heading (`- aucun` when there is nothing to say).
+ *
+ * The Grimoire looks back (the Dreamer's pen): what comes next is the storyteller's programme, not a section of it.
  *
  * Its budget, its chevrons and its voice are left to the store: `MemoryStore.writeDoc` checks them like
  * any document's, with the names of the players masked first (a player called `Moi` is not the Narrator's
@@ -16,7 +18,7 @@ package io.github.clemsix6.narrator2.memory.dream
  */
 object GrimoireFormat {
     /** The sections of the Grimoire, in order: their headings are `## Players`, `## Running gags`… */
-    val SECTIONS: List<String> = listOf("Players", "Running gags", "Arcs", "What works", "What falls flat", "Plans", "Watch out")
+    val SECTIONS: List<String> = listOf("Players", "Running gags", "Arcs", "What works", "What falls flat", "Watch out")
 
     /** Every problem of form of [text] as a Grimoire, in English, each with its fix; empty when the store may check the rest. */
     fun problems(text: String): List<String> = buildList {
@@ -28,7 +30,7 @@ object GrimoireFormat {
             add("headings: ${unknown.joinToString { "\"${it.value.trim().take(40)}\"" }} ${if (unknown.size > 1) "are" else "is"} not a section; the only headings are ${headingList()}")
         }
         val missing = SECTIONS.filter { it !in names }
-        if (missing.isNotEmpty()) add("sections: ${missing.joinToString { "## $it" }} missing; write all seven: ${headingList()}")
+        if (missing.isNotEmpty()) add("sections: ${missing.joinToString { "## $it" }} missing; write all six: ${headingList()}")
         val repeated = SECTIONS.filter { section -> names.count { it == section } > 1 }
         if (repeated.isNotEmpty()) add("sections: ${repeated.joinToString { "## $it" }} written twice; each section once")
         val order = names.filter { it in SECTIONS }.distinct()
