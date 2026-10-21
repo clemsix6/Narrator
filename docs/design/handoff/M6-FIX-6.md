@@ -35,7 +35,7 @@ Ce que voit l'opérateur :
 ```
 > narrator restart
 [Narrator] restarting the Narrator; the logins wait until it is done…
-[Narrator] the restart failed after 17.4 s, the Narrator stays off: the old Narrator did not stop: its Journal is still
+[Narrator] the restart failed after 15.0 s, the Narrator stays off: the old Narrator did not stop: its Journal is still
 closing after 10 s, its database open until its writer ends; /narrator restart tries again.
 > narrator restart                        (une fois le fil d'écriture fini)
 [Narrator] Narrator restarted in 0.6 s: Journal available · memory on · mechanics on · forge on
@@ -66,7 +66,8 @@ garde ce qui précède ` (` ; sans nom, c'est `a connection`. Un nom ne contient
   serveur s'arrête, aucun nouveau Narrateur n'est créé ni préparé (aucun Journal ouvert, aucune lecture de la mémoire), et
   la raison est `the server is stopping`. Le cas d'un arrêt pendant la préparation reste traité au câblage, comme avant.
 - **`RestartReport.times()`** : sans `· N ms without a Narrator` quand le redémarrage échoue (le Narrateur reste
-  éteint).
+  éteint). Le temps d'un arrêt qui échoue compte désormais son attente (`stop 15000 ms`, et non plus `stop 0 ms`, vu
+  dans le premier build : la mesure sautait quand la fermeture levait).
 - **KDoc** : le Journal, « 10 s and 2 s of grace » (et non 14 s).
 - **Pendant l'échange**, `/narrator status` et toute commande qui passe par `runningNarrator` répondent `a restart is
   running, try again once it is done.` (`Replies.notRunning()`, lu aussi par `AdminCommands.status`). Ailleurs, la
@@ -123,4 +124,33 @@ exactement le défaut vu par M6-13 : `[Forge] the built-in module parade was not
 
 ## Vérifications
 
-(à compléter)
+- **Tests ciblés** (`RestartSequenceTest`, `ShutdownSequenceTest`, `DuckJournalTest`, `ForgeStopTest`, `RuleEngineTest`,
+  `ModuleEngineTest`) : verts. Les cinq sondes ci-dessus sont rouges, chacune sur sa vérification. Les fichiers ont
+  ensuite été remis depuis une copie, et l'arbre vérifié par recherche des marques de sonde.
+- **Premier build complet** (`.\gradlew.bat build --continue`, après la fusion de `main` à `68807c1`, M6-FIX-2) :
+  vert en 10 min 43 s, **2 232 tests unitaires, 0 échec, 0 ignoré**, **« All 398 required tests passed »**. Dans le
+  journal du GameTest :
+  - le redémarrage au Journal retenu échoue après 15,0 s avec la raison exacte, puis
+    `restart: the Narrator an earlier restart could not close is closed`, puis `Narrator restarted in 0.1 s: Journal
+    available · memory on · mechanics on · forge on` ;
+  - une Forge arrêtée pendant sa construction par le redémarrage suivant écrit `INFO the Forge stopped while it built
+    its built-in modules: 1 built, parade and the rest not`, au lieu de l'`ERROR` vu par M6-13.
+- **Correctif après ce build** : le temps d'arrêt d'un échec (voir le constat 6). `RestartSequenceTest` et
+  `RestartGameTests` le vérifient (`stopMs` ≥ 50 ms, et ≥ 10 s en jeu).
+- **Serveur réel** (`runServer`, `TheServer/` neuf du worktree, monde plat, port 25971, RCON 25972,
+  `gateway.baseUrl` = `http://127.0.0.1:1`, Directeur et réflexes coupés, EULA acceptée). Par RCON, avec un petit
+  client PowerShell dans le dossier de travail de la session :
+  - `narrator restart` puis, aussitôt, `narrator status` : `[Narrator] restarting the Narrator; the logins wait until
+    it is done…`, puis `[Narrator] a restart is running, try again once it is done.` ;
+  - le redémarrage prend 0,1 s (`stop 38 ms · prepare 69 ms · wire 1 ms · 107 ms without a Narrator`), un second 1,2 s
+    plus tard aussi, et `/narrator status` est entier ensuite ;
+  - `stop` est propre (`Journal closed in 26 ms`, `stopped`) et la JVM sort avec le code 0 ;
+  - aucune exception ni `ERROR` du mod (seul `No key layers` de Minecraft). La Forge a construit ses 7 modules en
+    140 à 168 ms, trop vite pour être prise en pleine construction : ce cas est vu par le GameTest.
+
+  Serveur fermé, `TheServer/` supprimé.
+- **Build final** (`.\gradlew.bat build --continue`, après la fusion de `main` à `4ba51ba`, M6-FIX-7 et M6-FIX-8) :
+  vert en 6 min 54 s, **2 237 tests unitaires, 0 échec, 0 ignoré**, **« All 398 required tests passed »**. Le
+  redémarrage au Journal retenu y dit `the restart failed after 15.0 s, … (stop 15002 ms · prepare 0 ms · wire 0 ms)`.
+  Aucun test sans rapport n'a échoué, dans ce build comme dans le premier.
+- Aucun appel réel à Claude. Journaux sous des noms `m6fix6-*` (dossier de travail de la session).
