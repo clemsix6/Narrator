@@ -139,7 +139,7 @@ class MemoryEndToEndTests {
 
     /** The model: a plain text for everyone (the Director, the Chronicler, the Dreamer): nothing to do. */
     private fun answer(request: RecordedRequest): FakeResponse =
-        if (isDirector(request) && "<chapter_end chapter=" in lastUser(request).wakeText()) reply { text("Joueurs vus : aucun fait marquant.") } else reply { text("Rien à dire.") }
+        if (isDirector(request) && "<chapter_end chapter=" in lastUser(request).wakeText()) reply { text(EMPTY_SUMMARY) } else reply { text("Rien à dire.") }
 }
 
 /** The test environment of [MemoryEndToEndTests]: a batch of its own, apart from the tests that expect a sleeping Director. */
@@ -147,5 +147,10 @@ const val MEMORY_ENVIRONMENT = "narrator2-gametest:memory"
 
 /** Budget of the script: at least two minutes of wall-clock time (see `runScript`). */
 private const val MEMORY_SCRIPT_MAX_TICKS = 120_000
+
+/** The Director's summary of a chapter: the shortest the format allows (`chapter_summary.md`), seven empty sections. */
+private const val EMPTY_SUMMARY =
+    "Joueurs vus : aucun.\nFaits marquants : aucun.\nInterventions du Narrateur : aucun.\nEngagements en cours : aucun.\n" +
+        "Fils ouverts : aucun.\nRépertoire utilisé : aucun.\nÉtat des joueurs : aucun."
 
 private val cleanupLog = LoggerFactory.getLogger("narrator2-gametest")

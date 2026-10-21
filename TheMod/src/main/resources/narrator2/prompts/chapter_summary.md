@@ -1,4 +1,4 @@
-Le chapitre se ferme. N'appelle aucun outil et ne parle pas aux joueurs : réponds à ce message par le résumé du chapitre, et par rien d'autre (ni introduction, ni conclusion).
+Le chapitre se ferme. N'appelle aucun outil et ne parle pas aux joueurs : réponds à ce message par le résumé du chapitre, et par rien d'autre (ni introduction, ni conclusion). Ce n'est pas une fin de tour : le résumé n'est jamais « Fin. », ni une ligne, ni le silence.
 
 Ce résumé est le seul récit que tu garderas de cette conversation : le prochain chapitre commencera par un briefing qui le contient, sans le reste. Il entre aussi, tel quel, dans la chronique de ta mémoire. Il sert à tenir tes engagements et à reprendre le fil, pas à briller.
 

@@ -288,7 +288,7 @@ class MemoryScenariosTest {
     fun `every chapter that closes is told to the memory once, with or without its summary`() = DirectorHarness(dir).use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
-        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
+        h.fake.enqueue(reply { text(EMPTY_SUMMARY) })
         h.fake.enqueue(reply { text("…") })
 
         h.chat("Bartok", "narrateur ?")
@@ -300,7 +300,7 @@ class MemoryScenariosTest {
         val first = h.memory.closed.single()
         assertEquals(h.sessionOf(0), first.conversationId)
         assertEquals(ConversationRecord.EndReason.OPERATOR, first.endReason)
-        assertEquals("Joueurs vus : Bartok.", first.summary)
+        assertEquals(EMPTY_SUMMARY, first.summary)
 
         h.chat("Bartok", "re")
         h.advance(1_500)
@@ -348,3 +348,8 @@ class MemoryScenariosTest {
             h.assertInvariants()
         }
 }
+
+/** The shortest summary the format allows (`chapter_summary.md`): its seven sections, nothing in them. */
+private const val EMPTY_SUMMARY =
+    "Joueurs vus : Bartok.\nFaits marquants : aucun.\nInterventions du Narrateur : aucun.\nEngagements en cours : aucun.\n" +
+        "Fils ouverts : aucun.\nRépertoire utilisé : aucun.\nÉtat des joueurs : aucun."

@@ -34,7 +34,7 @@ class PersonaFrozenTest {
         h.memory.situation = listOf("Favor: Bartok -31 $MARKER")
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
-        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
+        h.fake.enqueue(reply { text(SUMMARY) })
         h.fake.enqueue(reply { text("…") })
         h.fake.enqueue(reply { text("…") })
 
@@ -75,5 +75,10 @@ class PersonaFrozenTest {
 
     private companion object {
         const val MARKER = "MEMORY-7f3a"
+
+        /** The shortest summary the format allows (`chapter_summary.md`): its seven sections, nothing in them. */
+        const val SUMMARY =
+            "Joueurs vus : Bartok.\nFaits marquants : aucun.\nInterventions du Narrateur : aucun.\nEngagements en cours : aucun.\n" +
+                "Fils ouverts : aucun.\nRépertoire utilisé : aucun.\nÉtat des joueurs : aucun."
     }
 }

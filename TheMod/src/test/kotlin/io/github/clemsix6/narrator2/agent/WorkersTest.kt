@@ -83,7 +83,7 @@ import kotlin.test.fail
  * task per conversation and session, the limit of tasks at once and the line, the timeout, the
  * cancellation, the failures (402 budget, refusal, empty report), and the report posted to the Director;
  * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits, one task at a time, the switch;
- * the storyteller (M6 §6.4): wired with the memory only, `inspire` in its conversation, six requests at most.
+ * the storyteller (M6 §6.4): wired with the memory and the Journal only, `inspire` in its conversation, six requests at most.
  * Virtual time, except where the test needs real threads.
  */
 class WorkersTest {
@@ -133,6 +133,10 @@ class WorkersTest {
         /** The memory, running unless the rig is made without it: the storyteller works with it only. */
         val memory = FakeMemory(clock).apply { available = memoryAvailable }
 
+        /** Whether the Journal runs: a test may make it fall, as when its writer fails. */
+        @Volatile
+        var journalUp = journalAvailable
+
         /** Queries the fake `sql` got, in order. */
         val queries = CopyOnWriteArrayList<String>()
 
@@ -144,7 +148,7 @@ class WorkersTest {
             val config = defaults.copy(workers = WorkersConfig(maxConcurrent, maxSteps, timeoutSeconds), forge = forgeConfig)
             client = ClaudeClient(config, TEST_API_KEY)
             val disabled = DisabledJournal("unit test", clock)
-            val journal: Journal = if (journalAvailable) object : Journal by disabled { override val available = true } else disabled
+            val journal: Journal = object : Journal by disabled { override val available get() = journalUp }
             base = TestServices(
                 clock = clock,
                 scope = scope,
@@ -742,6 +746,25 @@ class WorkersTest {
         assertTrue(fake.requests.isEmpty())
     }
 
+    /** M6 review 3, finding 4: the memory still says it runs once the Journal fell, but no idea can be written any more. */
+    @Test
+    fun `the storyteller is no longer offered once the Journal fell, and delegate says so`() {
+        val rig = Rig()
+        assertTrue(Role.STORYTELLER in rig.workers.roles)
+
+        rig.journalUp = false
+        assertTrue(rig.memory.available, "the memory never says it fell")
+        assertEquals(setOf(Role.FORGER), rig.workers.roles)
+        val refused = rig.call(DelegateTool(), """{"role": "storyteller", "brief": "Bartok revient après une semaine : trois idées pour son retour."}""")
+        assertTrue(refused.path("is_error").asBoolean(), "$refused")
+        assertEquals("FAILED: no storyteller can take a task: the Journal is unavailable", refused.path("content").asText())
+        assertTrue(rig.workers.list().isEmpty())
+        assertTrue(fake.requests.isEmpty())
+
+        rig.journalUp = true
+        assertTrue(Role.STORYTELLER in rig.workers.roles, "offered again once the Journal is back")
+    }
+
     /** M6 §6.4: its own prompt and effort, `inspire` among its tools, and six requests at most whatever `workers.maxSteps` allows. */
     @Test
     fun `a storyteller task has the storyteller's prompt, sees inspire, and runs within six requests`() {
@@ -786,7 +809,7 @@ class WorkersTest {
         assertEquals(setOf(Role.FORGER), closed.workers.roles, "the forger does not need the Journal")
         assertEquals("no analyst can take a task: the Journal is unavailable", closed.workers.submit(Role.ANALYST, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
         assertEquals("no scout can take a task: the Journal is unavailable", closed.workers.submit(Role.SCOUT, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
-        assertEquals("no storyteller can take a task: the memory is unavailable", closed.workers.submit(Role.STORYTELLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no storyteller can take a task: the Journal is unavailable", closed.workers.submit(Role.STORYTELLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
         assertEquals("no chronicler can take a task: there is no chronicler yet", closed.workers.submit(Role.CHRONICLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
 
         val rig = Rig()

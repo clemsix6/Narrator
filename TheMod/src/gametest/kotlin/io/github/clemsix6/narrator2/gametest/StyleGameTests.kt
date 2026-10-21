@@ -187,7 +187,7 @@ class StyleGameTests {
 
         companion object {
             const val STATEMENT = "Le Narrateur a décrété une loi d'essai du style."
-            const val SUMMARY = "Résumé de chapitre du style."
+            const val SUMMARY = "Résumé de chapitre du style. Faits marquants : aucun. Interventions du Narrateur : aucune. Engagements en cours : aucun."
         }
     }
 

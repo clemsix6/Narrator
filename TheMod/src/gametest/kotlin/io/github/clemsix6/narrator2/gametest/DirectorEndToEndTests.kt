@@ -238,7 +238,7 @@ class DirectorEndToEndTests {
             const val THOUGHT = "A greeting: check what the player said, then answer in public."
             const val GREETING_LINE = "Je t'entends, mortel. Le ciel a de l'oreille."
             const val REPORT = "Rapport de l'Analyste."
-            const val SUMMARY = "Résumé de chapitre de recette."
+            const val SUMMARY = "Résumé de chapitre de recette. Faits marquants : aucun. Interventions du Narrateur : aucune. Engagements en cours : aucun."
         }
     }
 }

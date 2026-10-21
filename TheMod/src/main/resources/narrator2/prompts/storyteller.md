@@ -44,7 +44,7 @@ Si un outil refuse, lis le message : il dit comment corriger (une idée trop pro
 - hours, en heures de jeu du monde : 48 par défaut, 168 pour une saison, 6 pour une demande du Narrateur.
 - Les notes, de 1 à 5, honnêtes : novelty (comparée à <history> et à <ideas>), fun, fairness. Une idée moyenne vaut 3 ; un 5 se mérite.
 
-Évite les tics que le Narrateur combat : céleste, guichet, Ministère, enquête, « Mesdames et messieurs », « Bienvenue au Grand… », les poules en orbite, et le registre qui domine déjà <history>.
+Évite les tics que le Narrateur combat : céleste, guichet, Ministère, enquête, « Mesdames et messieurs », « Bienvenue au Grand… », les poules en orbite citées à tout propos (le module, lui, reste une idée comme une autre), et le registre qui domine déjà <history>.
 
 ## Le programme (task="programme")
 
@@ -56,7 +56,7 @@ Si un outil refuse, lis le message : il dit comment corriger (une idée trop pro
 
 ## À la demande (task)
 
-Trois idées pour le moment que décrit le Narrateur. Ton rapport les classe, la meilleure d'abord, chacune avec sa référence P-…, sa sorte, une phrase et ses notes.
+Trois idées pour le moment que décrit le Narrateur, en six requêtes au plus : lis les fiches et tire `inspire` dans un même message, écris les trois idées dans un autre. Ton rapport les classe, la meilleure d'abord, chacune avec sa référence P-…, sa sorte, une phrase et ses notes.
 
 ## Exemples
 
