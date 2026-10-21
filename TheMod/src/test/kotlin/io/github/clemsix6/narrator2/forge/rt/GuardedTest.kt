@@ -282,6 +282,29 @@ class GuardedTest {
         // A duplicate composite: refused as the JDK refuses it, its text within the limit.
         assertEquals("duplicate element: [1]", assertFailsWith<IllegalArgumentException> { Guarded.setOf(listOf(1), listOf(1)) }.message)
         assertEquals("duplicate key: [1]", assertFailsWith<IllegalArgumentException> { Guarded.mapOf(listOf(1), 1, listOf(1), 2) }.message)
+        // The JDK's message for a duplicate holds its whole text: 1,000 texts of 65,000 characters would make one of
+        // 65 million in one call. Here the text is made within the limit, so the refusal is the limit's.
+        val chunk = "x".repeat(65_000)
+        val texts = java.util.ArrayList<String>().apply { repeat(1_000) { add(chunk) } }
+        val same = java.util.ArrayList(texts)
+        assertEquals("a text over $chars characters", assertFailsWith<ForgeLimit> { Guarded.setOf(texts, same) }.message)
+        assertEquals("a text over $chars characters", assertFailsWith<ForgeLimit> { Guarded.mapOf(texts, 1, same, 2) }.message)
+    }
+
+    @Test
+    fun `many small walks in one call are metered together`() {
+        // 65,536 references to one list of 2,000: each walk is under the meter's sampling stride, and no code of the
+        // module runs between them, so only the checkpoint that ends each composite walk sees their sum (M5-FIX-2).
+        val small = java.util.ArrayList<Any?>((0 until 2_000).toList())
+        val many = Array<Any?>(Limits.MAX_ARRAY) { small }
+        val meter = Meter(javaClass.classLoader)
+        meter.arm(20_000_000L, Long.MAX_VALUE)
+        try {
+            assertTrue("time budget" in assertFailsWith<ForgeLimit> { Guarded.arraysHashCode(many) }.message!!)
+        } finally {
+            meter.disarm()
+        }
+        assertEquals(java.util.Arrays.hashCode(many), Guarded.arraysHashCode(many), "unmetered, the same hash as the JDK's")
     }
 
     private fun l1b() = java.util.ArrayList<Any?>().apply { val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList()); repeat(10_000) { add(l0) } }

@@ -1,9 +1,9 @@
 // expect: limit time budget
-// Availability (M5-18's residual, closed by M5-FIX-2): a list of 10,000 records, each wrapping a shared list, hashed in
-// one call. The guard's deep walk treats a record as a leaf (it does not call the module's own hashCode), so the walk
-// of the list itself is small; but each record's generated hashCode goes through Guarded's record bootstrap, whose
-// per-component deep walk ends on a meter checkpoint (Guarded.deep). Their sum trips the meter's time budget well before
-// the host would abandon the call: a clean stop, no lost thread.
+// Availability (the record aggregate of M5-18's residual, M5_REVIEW finding 1): a list of 10,000 references to a record
+// that wraps a list, hashed in one call. The guard's deep walk treats a record as a leaf, so the walk of the list itself
+// is small; but each record's generated hashCode is the module's own rewritten method (its entry ticks the meter) and its
+// component goes through Guarded's record bootstrap. The meter stops the call at its time budget, cleanly, no lost
+// thread. Measured by M5-FIX-2 (before and after its change alike): stopped at ~20 ms, never abandoned.
 import io.github.clemsix6.narrator2.forge.api.*;
 import java.util.*;
 

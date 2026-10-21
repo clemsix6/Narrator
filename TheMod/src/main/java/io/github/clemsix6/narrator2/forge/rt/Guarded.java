@@ -765,8 +765,9 @@ public final class Guarded {
                 nextSample = visited + DEEP_SAMPLE;
             }
         }
-        // Each composite walk ends on a checkpoint too: a JDK loop may make many small walks with no module code
-        // between them (a collector, distinct, a record's components; M5-FIX-2), and their sum is what counts.
+        // Each composite walk ends on a checkpoint too: one call here may make many small walks, each under the stride
+        // above, with no module code between them (Arrays.hashCode/equals of 65,536 elements, Objects.hash, the elements
+        // of a factory; M5-FIX-2), and their sum is what counts.
         Meter.sample();
     }
 

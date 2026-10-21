@@ -252,6 +252,44 @@ class InstrumenterTest {
     }
 
     @Test
+    fun `copies of a hash table, immutable factories and one-probe lookups go through Guarded`() {
+        val classes = Rewrites.compile(
+            "Hashes",
+            Rewrites.source(
+                "Hashes",
+                "",
+                """
+                List<Object> l = new ArrayList<>(); Map<Object, Object> map = new HashMap<>(); Deque<Object> q = new ArrayDeque<>();
+                var a = new HashSet<>(l); var b = new LinkedHashSet<>(l); var c = new HashMap<>(map); var d = new LinkedHashMap<>(map);
+                Object e = a.clone(); Object f = c.clone();
+                var g = Set.of(1, 2, 3); var h = Set.of(new Object[] { 1 }); var i = Set.copyOf(l);
+                var j = Map.of(1, 2); var k = Map.ofEntries(Map.entry(1, 2)); var n = Map.copyOf(map);
+                a.remove(1); map.remove(1); map.remove(1, 2); map.getOrDefault(1, 2); map.replace(1, 2); map.replace(1, 2, 3);
+                map.computeIfPresent(1, (x, y) -> y); map.containsValue(1); l.indexOf(1); l.lastIndexOf(1);
+                Collections.frequency(l, 1); Collections.disjoint(l, a); q.removeFirstOccurrence(1); q.removeLastOccurrence(1);
+                m.log("" + e + f + g + h + i + j + k + n + b + d);
+                """.trimIndent(),
+            ),
+        )
+        val calls = Calls(Instrumenter.rewrite("Hashes", classes).getValue("Hashes")).methods.getValue("start(Lio/github/clemsix6/narrator2/forge/api/ModuleContext;)V")
+        val guarded = calls.filter { it.startsWith("io/github/clemsix6/narrator2/forge/rt/Guarded.") }.map { it.substringAfter("Guarded.").substringBefore('(') }
+        assertEquals(2, guarded.count { it == "hashedElements" }, "$guarded")
+        assertEquals(2, guarded.count { it == "hashedKeys" }, "$guarded")
+        assertEquals(2, guarded.count { it == "clone" }, "$guarded")
+        assertEquals(3, guarded.count { it == "remove" }, "$guarded")
+        assertEquals(2, guarded.count { it == "replace" }, "$guarded")
+        for (name in listOf("setOf", "setCopyOf", "mapOf", "mapOfEntries", "mapCopyOf", "getOrDefault", "computeIfPresent", "containsValue",
+            "indexOf", "lastIndexOf", "frequency", "disjoint", "removeFirstOccurrence", "removeLastOccurrence")) {
+            assertTrue(name in guarded, "$name goes through Guarded: $guarded")
+        }
+        assertEquals(2, guarded.count { it == "setOf" }, "the fixed and the varargs Set.of")
+        val wrapped = setOf("of", "copyOf", "ofEntries", "clone", "remove", "getOrDefault", "replace", "computeIfPresent", "containsValue", "indexOf",
+            "lastIndexOf", "frequency", "disjoint", "removeFirstOccurrence", "removeLastOccurrence")
+        val left = calls.filter { it.startsWith("java/util/") && it.substringAfter('.').substringBefore('(') in wrapped }
+        assertEquals(emptyList(), left, "no such call left to the JDK")
+    }
+
+    @Test
     fun `a method reference to the JDK goes through a bridge, the module's own lambdas do not`() {
         val classes = Rewrites.compile(
             "Refs",
