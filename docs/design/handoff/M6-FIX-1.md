@@ -144,5 +144,9 @@ Je n'ai touché que les fichiers du lot. Restent, chacun de quelques lignes :
 - **Verts après** : `style.*`, `TicsTest`, `ModelTextTest`, `SayRestingOpenerTest`, `SpeechToolsTest`,
   `StyleCommandsTest`, `DreamInputsTest`, `DreamReplayTest`, `BriefingMemoryTest`, `TestMethodsReturnUnitTest` :
   115 tests, 0 échec.
-- **Build complet** : voir ci-dessous.
+- **Build complet** (`build --continue`) :
+  - sur `main` à `879c957` (M6-11 fusionné) avec le correctif : **2 184 tests unitaires**, 0 échec, 0 ignoré ; **« All
+    398 required tests passed »** ;
+  - après la fusion de `main` à `1f3f2d9` (M6-FIX-3, aucun fichier commun) : **2 187 tests unitaires**, 0 échec,
+    0 ignoré ; **« All 398 required tests passed »**. Aucun test instable rencontré.
 - Aucun appel réel à Claude. Journaux de build sous des noms `m6-fix-1-*` (dossier de travail de la session).
