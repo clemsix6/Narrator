@@ -33,10 +33,15 @@ import java.util.SequencedCollection;
 import java.util.SequencedMap;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.BinaryOperator;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collector;
+import java.util.stream.Collectors;
 import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -63,8 +68,9 @@ import java.util.stream.Stream;
  * <p>The deep hash and equality of a shared structure, one call of the JDK the meter cannot see (M5-05, M5-18,
  * M5-FIX-2): each value the JDK is about to hash or compare whole is walked first and bounded ({@link #deep}) — the
  * explicit {@code hashCode}/{@code equals}, the lookups and removals, the insertions into a hash table, the copies of
- * one (constructors, {@code clone}) and the immutable factories ({@code Set.of}, {@code Map.of}, {@code copyOf}).
- * {@code Stream.distinct} and the hashing collectors stay the host's to abandon (M5 §3.8, the documented residual).
+ * one (constructors, {@code clone}), the immutable factories ({@code Set.of}, {@code Map.of}, {@code copyOf}),
+ * {@code Stream.distinct} and the collectors that hash (M5-FIX-2b). What stays the host's to abandon is an O(n·m)
+ * algorithm in one call (M5 §3.8).
  *
  * <p>A module's class is never a {@code Collection}, a {@code Map} or a {@code CharSequence} (the rewriting refuses
  * it: the JDK trusts their sizes), so every receiver here is the JDK's own and its {@code size()} tells the truth.
@@ -1152,6 +1158,143 @@ public final class Guarded {
             Object key = Objects.requireNonNull(keysAndValues[i]);
             Objects.requireNonNull(keysAndValues[i + 1]);
             if (!seen.add(key)) throw new IllegalArgumentException("duplicate key: " + Texts.of(key));
+        }
+    }
+
+    // ── Stream.distinct and the collectors that hash, in a JDK loop without the module's code (M5-FIX-2b) ──────────
+
+    /** In place of {@code Stream.distinct()}: each element bounded as it reaches the JDK's set of the ones seen. */
+    public static <T> Stream<T> distinct(Stream<T> stream) {
+        return stream.peek(new Each<T, T>(null)).distinct();
+    }
+
+    public static <T> Collector<T, ?, Set<T>> toSet() {
+        return Collectors.mapping(new Each<T, T>(null), Collectors.toSet());
+    }
+
+    /** In place of {@code Collectors.toUnmodifiableSet()}: as the JDK makes it, a set, then {@code Set.of} of its elements. */
+    @SuppressWarnings("unchecked")
+    public static <T> Collector<T, ?, Set<T>> toUnmodifiableSet() {
+        return Collectors.collectingAndThen(Guarded.<T>toSet(), set -> {
+            Object[] all = set.toArray();
+            elements(all);
+            return (Set<T>) Set.of(all);
+        });
+    }
+
+    public static <T, C extends Collection<T>> Collector<T, ?, C> toCollection(Supplier<C> factory) {
+        return Collectors.mapping(new Each<T, T>(null), Collectors.toCollection(factory));
+    }
+
+    /**
+     * In place of {@code Collectors.toMap(keyMapper, valueMapper)}: the JDK's, each key bounded, and a duplicate key
+     * refused with the JDK's message made within the limit (the JDK makes the whole text of the key and both values).
+     */
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper) {
+        Function<? super T, ? extends K> key = keyed(keyMapper);
+        Objects.requireNonNull(valueMapper);
+        return Collector.<T, Map<K, U>>of(
+            HashMap::new,
+            (map, element) -> unique(map, key.apply(element), valueMapper.apply(element)),
+            (left, right) -> {
+                right.forEach((k, v) -> unique(left, k, v));
+                return left;
+            },
+            Collector.Characteristics.IDENTITY_FINISH);
+    }
+
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                            BinaryOperator<U> merge) {
+        return Collectors.toMap(keyed(keyMapper), valueMapper, merge);
+    }
+
+    public static <T, K, U, M extends Map<K, U>> Collector<T, ?, M> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                                         BinaryOperator<U> merge, Supplier<M> factory) {
+        return Collectors.toMap(keyed(keyMapper), valueMapper, merge, factory);
+    }
+
+    /** In place of {@code Collectors.toUnmodifiableMap}: as the JDK makes it, a map, then a copy of its entries. */
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toUnmodifiableMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper) {
+        return Collectors.collectingAndThen(Guarded.<T, K, U>toMap(keyMapper, valueMapper), Guarded::mapCopyOf);
+    }
+
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toUnmodifiableMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                                        BinaryOperator<U> merge) {
+        return Collectors.collectingAndThen(Collectors.toMap(keyed(keyMapper), valueMapper, merge, HashMap::new), Guarded::mapCopyOf);
+    }
+
+    public static <T, K> Collector<T, ?, Map<K, List<T>>> groupingBy(Function<? super T, ? extends K> classifier) {
+        return Collectors.groupingBy(keyed(classifier));
+    }
+
+    public static <T, K, A, D> Collector<T, ?, Map<K, D>> groupingBy(Function<? super T, ? extends K> classifier, Collector<? super T, A, D> downstream) {
+        return Collectors.groupingBy(keyed(classifier), downstream);
+    }
+
+    public static <T, K, D, A, M extends Map<K, D>> Collector<T, ?, M> groupingBy(Function<? super T, ? extends K> classifier, Supplier<M> factory,
+                                                                                 Collector<? super T, A, D> downstream) {
+        return Collectors.groupingBy(keyed(classifier), factory, downstream);
+    }
+
+    public static <T, K> Collector<T, ?, ConcurrentMap<K, List<T>>> groupingByConcurrent(Function<? super T, ? extends K> classifier) {
+        return Collectors.groupingByConcurrent(keyed(classifier));
+    }
+
+    public static <T, K, A, D> Collector<T, ?, ConcurrentMap<K, D>> groupingByConcurrent(Function<? super T, ? extends K> classifier,
+                                                                                         Collector<? super T, A, D> downstream) {
+        return Collectors.groupingByConcurrent(keyed(classifier), downstream);
+    }
+
+    public static <T, K, D, A, M extends ConcurrentMap<K, D>> Collector<T, ?, M> groupingByConcurrent(Function<? super T, ? extends K> classifier,
+                                                                                                     Supplier<M> factory, Collector<? super T, A, D> downstream) {
+        return Collectors.groupingByConcurrent(keyed(classifier), factory, downstream);
+    }
+
+    private static <T, K> Function<T, K> keyed(Function<? super T, ? extends K> keyMapper) {
+        return new Each<>(Objects.requireNonNull(keyMapper));
+    }
+
+    /** A key put once, as the JDK's {@code toMap} does; a duplicate's message within the limit. */
+    private static <K, V> void unique(Map<K, V> map, K key, V value) {
+        V present = map.putIfAbsent(key, Objects.requireNonNull(value));
+        if (present != null) {
+            throw new IllegalStateException(String.format("Duplicate key %s (attempted merging values %s and %s)", Texts.of(key), Texts.of(present), Texts.of(value)));
+        }
+    }
+
+    /** How many elements an {@link Each} lets through between two checks of the call's budget. */
+    private static final int EACH_SAMPLE = 1_024;
+
+    /**
+     * Bounds each element (or the key a mapper makes of it) that a JDK loop is about to hash ({@code distinct}, a
+     * collector), and checks the call's budget every {@link #EACH_SAMPLE} elements: no code of the module runs in such
+     * a loop, so this is its meter.
+     */
+    private static final class Each<T, R> implements Function<T, R>, Consumer<T> {
+        private final Function<? super T, ? extends R> mapper;
+        private int count;
+
+        /** @param mapper what makes the bounded value of an element; null: the element itself. */
+        Each(Function<? super T, ? extends R> mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public R apply(T element) {
+            R value = mapper == null ? (R) element : mapper.apply(element);
+            bound(value);
+            return value;
+        }
+
+        @Override
+        public void accept(T element) {
+            bound(element);
+        }
+
+        private void bound(Object value) {
+            deep(value, false);
+            if (++count % EACH_SAMPLE == 0) Meter.sample();
         }
     }
 

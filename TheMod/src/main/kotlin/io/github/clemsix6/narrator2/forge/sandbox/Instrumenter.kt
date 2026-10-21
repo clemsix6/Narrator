@@ -64,6 +64,8 @@ object Instrumenter {
     private const val SET = "java/util/Set"
     private const val ARRAYS = "java/util/Arrays"
     private const val COLLECTIONS = "java/util/Collections"
+    private const val STREAM = "java/util/stream/Stream"
+    private const val COLLECTORS = "java/util/stream/Collectors"
     private const val OBJECT_TYPE = "Ljava/lang/Object;"
 
     private const val CONCAT_BOOTSTRAP =
@@ -297,8 +299,23 @@ object Instrumenter {
         for (pairs in 1..10) add(static(MAP, "of", "(${OBJECT_TYPE.repeat(2 * pairs)})L$MAP;", "mapOf"))
         add(static(MAP, "ofEntries", "([Ljava/util/Map\$Entry;)L$MAP;", "mapOfEntries"))
         add(static(MAP, "copyOf", "(L$MAP;)L$MAP;", "mapCopyOf"))
-        // Stream.distinct and the hashing collectors (toSet, toMap, groupingBy…) are NOT wrapped: they stay the host's
-        // to abandon (M5 §3.8, the documented residual of M5-FIX-2). Closing them would be a lazy-stream wrapper.
+        // Stream.distinct and the collectors that hash (M5-FIX-2b): each element, or the key made of it, bounded as the
+        // JDK's loop reaches it, the call's budget checked as it goes.
+        add(instance(STREAM, "distinct", "()L$STREAM;"))
+        val function = "Ljava/util/function/Function;"
+        val supplier = "Ljava/util/function/Supplier;"
+        val merge = "Ljava/util/function/BinaryOperator;"
+        val collector = "Ljava/util/stream/Collector;"
+        for ((name, parameters) in listOf(
+            "toSet" to "", "toUnmodifiableSet" to "", "toCollection" to supplier,
+            "toMap" to function + function, "toMap" to function + function + merge, "toMap" to function + function + merge + supplier,
+            "toUnmodifiableMap" to function + function, "toUnmodifiableMap" to function + function + merge,
+            "groupingBy" to function, "groupingBy" to function + collector, "groupingBy" to function + supplier + collector,
+            "groupingByConcurrent" to function, "groupingByConcurrent" to function + collector,
+            "groupingByConcurrent" to function + supplier + collector,
+        )) {
+            add(static(COLLECTORS, name, "($parameters)$collector"))
+        }
     }
 
     private val CALLS_BY_SIGNATURE: Map<String, List<CallRule>> = CALLS.groupBy { it.member.name + it.member.descriptor }

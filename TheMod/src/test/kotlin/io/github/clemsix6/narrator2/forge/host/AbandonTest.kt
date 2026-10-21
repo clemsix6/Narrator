@@ -71,8 +71,8 @@ class AbandonTest {
     }
 
     @Test
-    fun `hashing L2 = 10,000 × L1, ten minutes of one JDK call, holds the caller no longer - in a JVM of its own`() {
-        // The lost thread would run for ten minutes and lengthen every safepoint of this JVM: another JVM, ended at once.
+    fun `an equality scan of minutes in one JDK call holds the caller no longer - in a JVM of its own`() {
+        // The lost thread would run for minutes and lengthen every safepoint of this JVM: another JVM, ended at once.
         val javaBinary = ProcessHandle.current().info().command().orElse("java")
         // The test classpath is too long for a Windows command line: a jar whose manifest lists it, as URLs.
         val entries = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).toURI().toASCIIString() }
@@ -98,22 +98,21 @@ class AbandonTest {
         assertEquals("true", values["disables"], line)
         assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", values["cause"]?.replace('_', ' '), line)
         assertEquals("1", values["stillAlive"], "the lost thread burns on: $line")
-        println("[host] L2 = 10,000 × L1 in a JVM of its own: $line (System.gc() ms, each a safepoint)")
+        println("[host] an equality scan of 10,000 comparisons in a JVM of its own: $line (System.gc() ms, each a safepoint)")
     }
 
     @Test
     fun `at the bench the caller may wait for the line of the abandoned call`() {
-        // A mid-size shared structure (10 × L1) fed to Stream.distinct(), which the guard does not wrap (M5-FIX-2's
-        // residual): ~0.75 s in one JDK call — long enough that the lost thread's stack is still in it when read,
-        // short enough to end before the test does. (HashSet(Collection) is now bounded by the guard, M5-FIX-2.)
+        // The equality scan of SCAN_SETUP over 35 references: ~0.75 s in one JDK call — long enough that the lost
+        // thread's stack is still in it when read, short enough to end before the test does. (It hashed 10 × L1 through
+        // Stream.distinct() before M5-FIX-2b, which the guard now bounds.)
         val module = Hosts.source(
             "Search",
-            "List<Object> deep;",
+            "List<?> target; List<List<Integer>> near; List<Object> few;",
             """
-                List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
-                List<List<Integer>> l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
-                deep = new ArrayList<>(); for (int i = 0; i < 10; i++) deep.add(l1);
-                m.timers().every(1, () -> m.log("" + deep.stream().distinct().count()));
+                $SCAN_SETUP
+                few = new ArrayList<>(); for (int i = 0; i < 35; i++) few.add(near);
+                m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(few, target)));
             """.trimIndent(),
         )
         val fake = FakeContext()
@@ -172,7 +171,7 @@ class AbandonTest {
             val fake = FakeContext()
             val host = attacked("Shared", shared, strict)
             assertTrue(host.started(fake.context))
-            // timer 2: Stream.distinct of 10 × L1, ~0.75 s of one JDK call: lost while it runs, once it computed past its budget.
+            // timer 2: the equality scan over 35 references, ~0.75 s of one JDK call: lost while it runs, once it computed past its budget.
             host.attack { fake.timers[2].run() }
             assertTrue(Hosts.settled(host))
             assertEquals(Fault.Kind.LIMIT, host.disabled?.kind)
@@ -222,27 +221,42 @@ class AbandonTest {
         val BUDGET_MS = ForgeLimits.CALL_MILLIS + ModuleHost.ABANDON_MARGIN_NANOS / 1_000_000
 
         /**
+         * The equality scan the host alone can stop (M5-FIX-2b), as Java statements of a module's `start`: `target`, a
+         * list holding one list of 300 lists of 10,000 numbers, and `near`, a list of 300 references to another list of
+         * the same numbers, equal to it up to its last element. `Collections.indexOfSubList(list, target)` over a list of
+         * n references to `near` compares the two n times, each a walk of ~3 million elements (~20 ms measured): one call
+         * of the JDK of O(n·m), with no code of the module in it. The guard bounds the size of what one comparison walks
+         * (4 million element slots), not how many comparisons a scan makes. Needs the fields `List<?> target` and
+         * `List<List<Integer>> near`.
+         */
+        const val SCAN_SETUP = """
+            List<Integer> a = new ArrayList<>(); for (int i = 0; i < 10_000; i++) a.add(i);
+            List<Integer> b = new ArrayList<>(); for (int i = 0; i < 10_000; i++) b.add(i);
+            near = new ArrayList<>(); for (int i = 0; i < 300; i++) near.add(a);
+            List<List<Integer>> probe = new ArrayList<>(); for (int i = 0; i < 299; i++) probe.add(b); probe.add(List.of(-1));
+            target = List.of(probe);
+        """
+
+        /**
          * Attacks the meter and the guard cannot see: one long call of the JDK that is neither a backward jump of the
-         * module nor a collection hash/equality the guard now bounds (M5-18). timer 0 is an O(n·m) `indexOf` of 32,768
-         * characters in 65,536 (≈ 75 ms in one call); timer 1 feeds the shared structure of M5-04's finding 1
-         * (L2 = 10,000 × L1 = 10,000 × L0) to `Stream.distinct()`, a factory the guard does not wrap, which hashes it
-         * in one call that runs for minutes; timer 2 feeds 10 × L1 to the same `Stream.distinct()`, ~0.75 s (the
-         * copy constructor it used before is now bounded by the guard, M5-FIX-2).
-         * All are given up by the host at the budget, their thread lost once it computed past its budget.
+         * module nor a hash or a comparison the guard bounds (M5-18, M5-FIX-2, M5-FIX-2b). timer 0 is an O(n·m)
+         * `indexOf` of 32,768 characters in 65,536 (≈ 75 ms in one call); timer 1 is the equality scan of [SCAN_SETUP]
+         * over 10,000 references, a single call that runs for minutes; timer 2 the same over 35, ~0.75 s. (They hashed a
+         * shared structure through `Stream.distinct()` before M5-FIX-2b, which the guard now bounds.) All are given up by
+         * the host at the budget, their thread lost once it computed past its budget.
          */
         val SHARED = Hosts.source(
             "Shared",
-            "List<List<List<Integer>>> l2; List<Object> deep; String text; String pattern;",
+            "List<?> target; List<List<Integer>> near; List<Object> many; List<Object> few; String text; String pattern;",
             """
-                List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
-                List<List<Integer>> l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
-                l2 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l2.add(l1);
-                deep = new ArrayList<>(); for (int i = 0; i < 10; i++) deep.add(l1);
+                $SCAN_SETUP
+                many = new ArrayList<>(); for (int i = 0; i < 10_000; i++) many.add(near);
+                few = new ArrayList<>(); for (int i = 0; i < 35; i++) few.add(near);
                 text = "a".repeat(65_535) + "b";
                 pattern = "a".repeat(32_767) + "b";
                 m.timers().every(1, () -> { if (text.indexOf(pattern) < 0) m.log("never"); });
-                m.timers().every(1, () -> m.log("" + Stream.of(l2).distinct().count()));
-                m.timers().every(1, () -> m.log("" + deep.stream().distinct().count()));
+                m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(many, target)));
+                m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(few, target)));
             """.trimIndent(),
         )
 
@@ -264,7 +278,20 @@ class AbandonTest {
             patienceNanos = patienceNanos,
         ) { faults += it }
 
-        /** One call of the module's code with the game's budget ([ForgeLimits.CALL_NANOS]): the attack. */
-        fun ModuleHost.attack(body: () -> Unit): ModuleHost.Called? = call("timer", ForgeLimits.CALL_NANOS, body)
+        /** How many times an attack is asked while its module thread does not even start it. */
+        private const val ATTACK_TRIES = 20
+
+        /**
+         * One call of the module's code with the game's budget ([ForgeLimits.CALL_NANOS]): the attack. A busy machine may
+         * not start the module thread within the call's deadline: the call is then skipped (`LATE`: nothing of it ran,
+         * nobody's fault, M5-LOAD), and it is asked again, as the engine replays a skipped call, until it runs. What the
+         * tests check is the call that ran; never started in [ATTACK_TRIES] tries, the last skipped call is returned.
+         */
+        fun ModuleHost.attack(body: () -> Unit): ModuleHost.Called? {
+            var called = call("timer", ForgeLimits.CALL_NANOS, body)
+            var tries = 1
+            while (called != null && called.skipped && tries++ < ATTACK_TRIES) called = call("timer", ForgeLimits.CALL_NANOS, body)
+            return called
+        }
     }
 }

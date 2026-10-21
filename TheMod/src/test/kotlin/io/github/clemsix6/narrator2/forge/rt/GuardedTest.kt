@@ -292,6 +292,47 @@ class GuardedTest {
     }
 
     @Test
+    fun `distinct and the collectors that hash bound each element or key, and otherwise give the JDK's result`() {
+        val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList())
+        val l1 = java.util.ArrayList<Any?>().apply { repeat(10_000) { add(l0) } }
+        // A shared structure reaching the JDK's set or map, inside its loop (M5-FIX-2b).
+        assertFailsWith<ForgeLimit> { Guarded.distinct(Stream.of<Any?>(l1, 1)).count() }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toSet<Any?>()) }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toUnmodifiableSet<Any?>()) }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toCollection<Any?, java.util.HashSet<Any?>> { java.util.HashSet() }) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toMap<Int, Any, Int>({ l1 }, { it })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toMap<Int, Any, Int>({ l1 }, { it }, { a, _ -> a })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toUnmodifiableMap<Int, Any, Int>({ l1 }, { it })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.groupingBy<Int, Any> { l1 }) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.groupingByConcurrent<Int, Any> { l1 }) }
+
+        // Normal use: the JDK's own result.
+        val words = listOf("b", "a", "b", "c", "a")
+        assertEquals(words.stream().distinct().toList(), Guarded.distinct(words.stream()).toList())
+        assertEquals(words.stream().collect(Collectors.toSet()), words.stream().collect(Guarded.toSet<String>()))
+        assertEquals(words.stream().collect(Collectors.toUnmodifiableSet()), words.stream().collect(Guarded.toUnmodifiableSet<String>()))
+        assertEquals(words.stream().collect(Collectors.groupingBy { it.length }), words.stream().collect(Guarded.groupingBy<String, Int> { it.length }))
+        assertEquals(
+            words.stream().collect(Collectors.toMap({ it }, { 1 }, { a: Int, b: Int -> a + b })),
+            words.stream().collect(Guarded.toMap<String, String, Int>({ it }, { 1 }, { a, b -> a + b })),
+        )
+        assertEquals(mapOf("x" to 1, "y" to 2), Stream.of("x", "y").collect(Guarded.toMap<String, String, Int>({ it }, { if (it == "x") 1 else 2 })))
+        assertFailsWith<NullPointerException> { Stream.of("x").collect(Guarded.toMap<String, String, Int?>({ it }, { null })) }
+        var made = 0
+        assertEquals(
+            "Duplicate key a (attempted merging values 1 and 2)",
+            assertFailsWith<IllegalStateException> { Stream.of("a", "a").collect(Guarded.toMap<String, String, Int>({ it }, { ++made })) }.message,
+        )
+        // A duplicate whose values are huge texts: the JDK would make a message of 130 million characters in one call.
+        val chunk = "x".repeat(65_000)
+        val texts = java.util.ArrayList<String>().apply { repeat(1_000) { add(chunk) } }
+        assertEquals(
+            "a text over $chars characters",
+            assertFailsWith<ForgeLimit> { Stream.of(1, 1).collect(Guarded.toMap<Int, Int, Any>({ it }, { texts })) }.message,
+        )
+    }
+
+    @Test
     fun `many small walks in one call are metered together`() {
         // 65,536 references to one list of 2,000: each walk is under the meter's sampling stride, and no code of the
         // module runs between them, so only the checkpoint that ends each composite walk sees their sum (M5-FIX-2).
