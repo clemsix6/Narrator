@@ -111,9 +111,8 @@ class StyleGameTests {
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
             check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
         } finally {
-            // As found: no key, the Director asleep, no law of this test.
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            // As found: the Director asleep, no law of this test.
+            putTheDirectorToSleep(helper, runtime)
             for (rule in runtime.mechanics.rules.list().filter { it.spec.statement == ScriptedModel.STATEMENT }) {
                 runCatching { runtime.mechanics.rules.remove(rule.ref, "Levée à la fin d'un test.", CLEANUP) }
             }

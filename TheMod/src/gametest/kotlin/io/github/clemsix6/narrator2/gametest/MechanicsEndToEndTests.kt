@@ -151,9 +151,8 @@ class MechanicsEndToEndTests {
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
             check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
         } finally {
-            // As found: no key, the Director asleep, nothing of this test running on the server's engine, the pace.
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            // As found: the Director asleep, nothing of this test running on the server's engine, the pace.
+            putTheDirectorToSleep(helper, runtime)
             for (view in runtime.mechanics.challenges.list().filter { view -> view.participants.any { it.name == player.name } }) {
                 runCatching { runtime.mechanics.challenges.end(view.ref, ChallengeOutcome.CANCELLED, emptyList(), "Annulé à la fin d'un test.", CLEANUP) }
             }
