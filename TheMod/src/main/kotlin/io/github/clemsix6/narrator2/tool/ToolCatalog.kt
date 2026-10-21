@@ -21,6 +21,8 @@ import io.github.clemsix6.narrator2.tool.oracle.surveyTools
 import io.github.clemsix6.narrator2.tool.pacing.pacingTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
 import io.github.clemsix6.narrator2.tool.sql.sqlTools
+import io.github.clemsix6.narrator2.tool.storyteller.inspireTools
+import io.github.clemsix6.narrator2.tool.storyteller.storytellerTools
 import io.github.clemsix6.narrator2.tool.task.taskTools
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
@@ -30,17 +32,16 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * Every tool of the Narrator, and the tool set of each conversation (M1_M2 §8.6, §9; M3 §5, §7.5, §8.3).
+ * Every tool of the Narrator, and the tool set of each conversation (M1_M2 §8.6, §9; M3 §5, §7.5, §8.3; M6 §6.5).
  * Each family lives in its own file and belongs to its own task; this catalog only lists them and says
  * which role has which tool:
  *
  * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's), the
- *   scout's own ([SCOUT_OWN]) and the forger's ([FORGER_TOOLS]);
+ *   scout's own ([SCOUT_OWN]), the forger's ([FORGER_TOOLS]) and the storyteller's own ([STORYTELLER_OWN]);
  * - the Analyst has its reads ([ANALYST_TOOLS]), the scout its own ([SCOUT_TOOLS]), the forger its own
  *   ([FORGER_TOOLS]);
- * - the Chronicler and the Dreamer have their own family, plus the tools they share with others
- *   ([CHRONICLER_SHARED], [DREAMER_SHARED]);
- * - the other roles have none yet;
+ * - the Chronicler, the Dreamer and the storyteller have their own family, plus the tools they share with others
+ *   ([CHRONICLER_SHARED], [DREAMER_SHARED], [STORYTELLER_SHARED]);
  * - the rules' own tools ([RULE_ONLY]) and the modules' ([MODULE_ONLY]) are nobody's: only the mechanics engine
  *   runs them.
  */
@@ -84,11 +85,22 @@ object ToolCatalog {
      */
     private val DREAMER_SHARED = setOf("remember", "resolve", "recall", "note_to_director")
 
+    /** The storyteller's own tools (M6 §6.5), never the Director's: the ideas of the programme. */
+    private val STORYTELLER_OWN = setOf("propose_idea", "drop_idea")
+
     /**
-     * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1) and of
-     * M5 (M5 §8.3, §9.1) are listed once and for all here; each is filled by its own task. Each Director's tool of M4
-     * is shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]), each tool of M5 only while the
-     * Forge runs too ([ToolEnv.forgeAvailable]).
+     * What the storyteller has besides its own (M6 §6.5): `inspire`, which it shares with the Director, the memory's
+     * reads and the writes of planned arcs and lore (the store holds the rest), and `sql`. Nothing that acts on the
+     * world, speaks to players or delegates.
+     */
+    private val STORYTELLER_SHARED = setOf("inspire", "remember", "resolve", "recall", "player_profile", "sql")
+
+    /**
+     * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1), of
+     * M5 (M5 §8.3, §9.1) and of M6 (M6 §12.6) are listed once and for all here; each is filled by its own task. Each
+     * Director's tool of M4 is shown only while the mechanics engine runs ([ToolEnv.mechanicsAvailable]), each tool of
+     * M5 only while the Forge runs too ([ToolEnv.forgeAvailable]), `inspire` only while the storyteller can work
+     * ([ToolEnv.storytellerAvailable]).
      */
     fun allTools(services: NarratorServices): List<NarratorTool<*>> = listOf(
         speechTools(services),
@@ -110,6 +122,8 @@ object ToolCatalog {
         surveyTools(services),
         moduleTools(services),
         forgerTools(services),
+        inspireTools(services),
+        storytellerTools(services),
     ).flatten()
 
     /**
@@ -150,20 +164,22 @@ object ToolCatalog {
                 put("memory_available", env.memoryAvailable)
                 put("mechanics_available", env.mechanicsAvailable)
                 put("forge_available", env.forgeAvailable)
+                put("storyteller_available", env.storytellerAvailable)
                 putJsonArray("worker_roles") { env.workerRoles.map { it.id }.sorted().forEach { add(JsonPrimitive(it)) } }
             },
         )
         return set
     }
 
-    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14; M5 §8.1, §9.1). */
+    /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14; M5 §8.1, §9.1; M6 §6.5). */
     private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = name !in RULE_ONLY && name !in MODULE_ONLY && when (role) {
-        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN && name !in FORGER_TOOLS
+        Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN && name !in FORGER_TOOLS &&
+            name !in STORYTELLER_OWN
         Role.ANALYST -> name in ANALYST_TOOLS
         Role.SCOUT -> name in SCOUT_TOOLS
         Role.CHRONICLER -> name in jobs.chronicler || name in CHRONICLER_SHARED
         Role.DREAMER -> name in jobs.dreamer || name in DREAMER_SHARED
         Role.FORGER -> name in FORGER_TOOLS
-        else -> false
+        Role.STORYTELLER -> name in STORYTELLER_OWN || name in STORYTELLER_SHARED
     }
 }

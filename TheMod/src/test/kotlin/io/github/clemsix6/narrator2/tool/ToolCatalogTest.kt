@@ -2,13 +2,21 @@ package io.github.clemsix6.narrator2.tool
 
 import com.anthropic.core.jsonMapper
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.IdeaKind
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
 import io.github.clemsix6.narrator2.tool.memory.dreamerTools
 import io.github.clemsix6.narrator2.tool.memory.memoryTools
+import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaArgs
+import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaTool
+import io.github.clemsix6.narrator2.tool.storyteller.InspireArgs
+import io.github.clemsix6.narrator2.tool.storyteller.InspireTool
+import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaArgs
+import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaTool
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
@@ -16,7 +24,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** The catalog of every tool, and the tool set of each conversation (M1_M2 §8.6, §9.7; M3 §5, §7.5, §8.3). */
+/** The catalog of every tool, and the tool set of each conversation (M1_M2 §8.6, §9.7; M3 §5, §7.5, §8.3; M6 §6.5, §12.6). */
 class ToolCatalogTest {
     private val services = TestServices()
     private val decisions = Decisions(services.traces, services.clock)
@@ -77,11 +85,11 @@ class ToolCatalogTest {
     }
 
     @Test
-    fun `the Analyst and the scout get their reads, the memory ones included, the roles without tools nothing`() {
+    fun `the Analyst and the scout get their reads, the memory ones included, the forger nothing of these`() {
         assertEquals(listOf("list_players", "player_profile", "recall", "sql"), names(Role.ANALYST))
         assertEquals(listOf("list_players", "recall", "sql", "survey"), names(Role.SCOUT))
         assertEquals(emptyList(), names(Role.FORGER))
-        assertEquals(emptyList(), names(Role.STORYTELLER))
+        assertEquals(listOf("player_profile", "recall", "remember", "resolve", "sql"), names(Role.STORYTELLER), "the tools the storyteller shares")
     }
 
     @Test
@@ -150,7 +158,7 @@ class ToolCatalogTest {
             Json.parseToJsonElement(
                 """{"tools":["list_players","remind_me","say"],"left_out":["delegate","note_interaction","player_profile","recall",""" +
                     """"remember","resolve","sql"],"journal_available":false,"memory_available":false,"mechanics_available":false,""" +
-                    """"forge_available":false,"worker_roles":[]}""",
+                    """"forge_available":false,"storyteller_available":false,"worker_roles":[]}""",
             ) as JsonObject,
             decision.detail,
         )
@@ -263,10 +271,71 @@ class ToolCatalogTest {
         assertTrue(sizes.values.sum() <= FORGE_DEFINITIONS_BUDGET, "the three definitions take ${sizes.values.sum()} characters: $sizes")
     }
 
+    /**
+     * The storyteller (M6 §6.5, §12.6): its own two tools and the six it shares, nothing that acts on the world, speaks
+     * to players or delegates (its writes, effect `ENGINE`, are the memory's); its own are never another role's.
+     */
+    @Test
+    fun `the storyteller gets its eight tools, none that acts, speaks or delegates, and its own are nobody else's`() {
+        val wired = everythingWired.copy(mechanicsAvailable = true, forgeAvailable = true, storytellerAvailable = true)
+        val set = ToolCatalog.toolSetFor(Role.STORYTELLER, wired, services)
+        assertEquals(listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"), set.names)
+        assertEquals(emptyList(), set.tools.filter { it.effect in setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK) }.map { it.name })
+        assertEquals(listOf("drop_idea", "propose_idea", "remember", "resolve"), set.tools.filter { it.effect == ToolEffect.ENGINE }.map { it.name })
+        for (role in Role.entries - Role.STORYTELLER) {
+            val names = ToolCatalog.toolSetFor(role, wired, services).names
+            assertTrue("propose_idea" !in names && "drop_idea" !in names, "the storyteller's own tools reach the ${role.id}: $names")
+        }
+
+        assertEquals(
+            listOf("drop_idea", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"),
+            ToolCatalog.toolSetFor(Role.STORYTELLER, everythingWired, services).names,
+            "inspire needs the storyteller",
+        )
+        assertEquals(listOf("inspire", "sql"), ToolCatalog.toolSetFor(Role.STORYTELLER, memoryOff.copy(storytellerAvailable = true), services).names)
+    }
+
+    /**
+     * `inspire` (M6 §5, §12.6) is the Director's 48th tool, shown only while the storyteller can work and the Journal
+     * runs. Its definition, as the SDK sends it, enters the cached prefix of every chapter: 1,200 characters at most.
+     */
+    @Test
+    fun `with the storyteller the Director gets inspire, its 48th tool, whose definition fits its budget`() {
+        val wired = everythingWired.copy(mechanicsAvailable = true, forgeAvailable = true)
+        val without = ToolCatalog.toolSetFor(Role.DIRECTOR, wired, services).names
+        assertEquals(47, without.size, "without the storyteller, the Director keeps its 47 tools: $without")
+        val set = ToolCatalog.toolSetFor(Role.DIRECTOR, wired.copy(storytellerAvailable = true), services)
+        assertEquals(48, set.names.size, "${set.names}")
+        assertEquals(listOf("inspire"), set.names - without.toSet())
+        assertEquals("true", services.traces.decisions.last().detail?.get("storyteller_available").toString())
+
+        val size = jsonMapper().writeValueAsString(ToolSchema.definition(set["inspire"]!!)).length
+        assertTrue(size <= INSPIRE_DEFINITION_BUDGET, "inspire's definition takes $size characters")
+        val noJournal = wired.copy(journalAvailable = false, storytellerAvailable = true)
+        assertTrue("inspire" !in ToolCatalog.toolSetFor(Role.DIRECTOR, noJournal, services).names, "inspire needs the Journal")
+        assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).storytellerAvailable, "off unless said otherwise")
+    }
+
+    /** M6 §12.6: the three tools of M6 are declared whole, and answer `FAILED` until their runs are wired. */
+    @Test
+    fun `the tools of M6 answer FAILED until they are wired`() = runBlocking<Unit> {
+        val ctx = ToolContext(services, Caller(Role.STORYTELLER, "storyteller-1", turnId = null, taskId = null), services.clock, 5_000)
+        val idea = ProposeIdeaArgs(
+            IdeaKind.CHALLENGE, "La course au pic", "Une course au sommet du pic enneigé.", "Bartok en ligne", novelty = 4, funScore = 4, fairness = 5,
+        )
+        val results = listOf(
+            InspireTool().run(ctx, InspireArgs()),
+            ProposeIdeaTool().run(ctx, idea),
+            DropIdeaTool().run(ctx, DropIdeaArgs("P-41", "Le moment est passé.")),
+        )
+        results.forEach { assertEquals(ToolResult.failed("not wired yet"), it) }
+    }
+
     private companion object {
         val MECHANICS_TOOLS = listOf("create_rule", "end_challenge", "favor", "propose_duel", "punish", "remove_rule", "start_challenge")
         const val MECHANICS_DEFINITIONS_BUDGET = 14_000
         val FORGE_TOOLS = listOf("deploy_module", "forge_module", "stop_module")
         const val FORGE_DEFINITIONS_BUDGET = 5_000
+        const val INSPIRE_DEFINITION_BUDGET = 1_200
     }
 }

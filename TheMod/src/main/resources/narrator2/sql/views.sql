@@ -62,6 +62,16 @@ WHERE effect IN ('speech', 'world');
 COMMENT ON VIEW narrator_actions IS 'What the Narrator already did: its speech and world tool calls (the engine''s acts: engine_decisions)';
 COMMENT ON COLUMN narrator_actions.status IS 'ok, invalid, denied, failed, timeout or unknown';
 
+-- The line review (M6 §3.3): the latest labels of each line, if any.
+CREATE OR REPLACE VIEW narrator_lines AS
+SELECT c.id, c.ts, c.recipients, c.text, l.register, l.dark, l.cruel, l.flat, l.out_of_character, l.repeats, l.crutches
+FROM chat c
+LEFT JOIN (SELECT DISTINCT ON (event_id) * FROM line_labels ORDER BY event_id, ts DESC) l ON l.event_id = c.id
+WHERE c.channel = 'narrator';
+COMMENT ON VIEW narrator_lines IS 'The Narrator''s lines and their review: comic register, flaws 0 to 1 (NULL: not reviewed)';
+COMMENT ON COLUMN narrator_lines.register IS 'comic register: divine_bureaucracy, sports_commentary…, plain (no frame) or other';
+COMMENT ON COLUMN narrator_lines.crutches IS 'words the line uses as a tic of style, not as content';
+
 CREATE OR REPLACE VIEW mining AS
 SELECT id, ts, player, bare(subject) AS block,
        ends_with(subject, '_ore') OR subject = 'minecraft:ancient_debris' AS ore,
@@ -369,3 +379,16 @@ WHERE superseded_by IS NULL;
 COMMENT ON VIEW mem_chronicle IS 'The chronicle (French) by chapter, session, season and saga';
 COMMENT ON COLUMN mem_chronicle.ref IS 'its reference for the memory tools, e.g. H-88';
 COMMENT ON COLUMN mem_chronicle.level IS 'chapter, session, season or saga';
+
+-- The storyteller's ideas (M6 §6.2): what the Narrator may do, never what it promised.
+CREATE OR REPLACE VIEW mem_ideas AS
+WITH n AS (SELECT map(list(player_uuid), list(name)) AS names FROM players)
+SELECT 'P-' || i.id AS ref, i.kind, i.status, i.title, i.pitch, i.fit,
+       list_transform(i.players, u -> coalesce(n.names[u], CAST(u AS VARCHAR))) AS players,
+       i.register, i.dealt, i.created_at
+FROM ideas i, n;
+COMMENT ON VIEW mem_ideas IS 'The storyteller''s ideas (French), not promises: open, dropped or expired; dealt: times shown';
+COMMENT ON COLUMN mem_ideas.ref IS 'its reference, e.g. P-41';
+COMMENT ON COLUMN mem_ideas.kind IS 'season, arc_step, challenge, duel, punishment, favor, law, plan, module, forge, speech or twist';
+COMMENT ON COLUMN mem_ideas.players IS 'who it is for; empty: whoever is online';
+COMMENT ON COLUMN mem_ideas.dealt IS 'times it was put before the Narrator (inspire, a heartbeat)';

@@ -15,6 +15,7 @@ internal enum class Audited(val table: String, val keys: List<String>, val ref: 
     INTERACTIONS("interactions", listOf("id"), RefKind.INTERACTION),
     CHRONICLE("chronicle", listOf("id"), RefKind.CHRONICLE),
     NOTES("notes", listOf("id"), RefKind.NOTE),
+    IDEAS("ideas", listOf("id"), RefKind.IDEA),
     TRAITS("player_traits", listOf("player_uuid", "trait")),
     SKILLS("player_skills", listOf("player_uuid", "skill")),
     RELATIONS("player_relations", listOf("player_uuid", "other_uuid")),
@@ -131,7 +132,7 @@ internal object MemoryLog {
         val ref = row.table.ref?.let { Ref(it, keyValues.single().toLong()) }
         if (row.firstOp == LogOp.INSERT || row.before == null) {
             connection.update("DELETE FROM ${row.table.table} WHERE $where", *typed.toTypedArray())
-            if (ref != null && ref.kind in RefKind.searchable) indexer.remove(connection, ref)
+            if (ref != null && ref.kind in RefKind.indexed) indexer.remove(connection, ref)
             append(connection, at, author, row.table, row.rowKey, LogOp.REVERT, now, null, "revert of run $runId", runId)
             return
         }
@@ -139,7 +140,7 @@ internal object MemoryLog {
             "INSERT OR REPLACE INTO ${row.table.table} BY NAME SELECT unnest(from_json(?::JSON, '${structure(connection, row.table)}'))",
             row.before,
         )
-        if (ref != null && ref.kind in RefKind.searchable) {
+        if (ref != null && ref.kind in RefKind.indexed) {
             val restored = connection.readRow(ref) ?: error("$ref vanished while it was put back")
             indexer.remove(connection, ref)
             indexText(restored)?.let { indexer.index(connection, ref, it) }

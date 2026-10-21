@@ -3,9 +3,9 @@ package io.github.clemsix6.narrator2.trace
 import io.github.clemsix6.narrator2.journal.IdKind
 
 /**
- * Where the engine's traces go: model calls, tool calls, decisions, turns, conversations, tasks and
- * chat verdicts. Implemented by the Journal, which queues every record for its writer thread (a call
- * never writes on the caller's thread and never blocks); tests use an in-memory sink.
+ * Where the engine's traces go: model calls, tool calls, decisions, turns, conversations, tasks, chat
+ * verdicts and the line review's labels. Implemented by the Journal, which queues every record for its
+ * writer thread (a call never writes on the caller's thread and never blocks); tests use an in-memory sink.
  *
  * Records are whole rows. For turns, conversations and tasks, the first record with a given id inserts
  * the row and each later one replaces it: send the full, updated record each time.
@@ -35,4 +35,7 @@ interface TraceSink {
     fun task(r: TaskRecord)
 
     fun chatSignals(r: ChatSignalsRecord)
+
+    /** The labels of a line of the Director (M6 §3.3), appended like the chat verdicts. */
+    fun lineLabels(r: LineLabelsRecord)
 }

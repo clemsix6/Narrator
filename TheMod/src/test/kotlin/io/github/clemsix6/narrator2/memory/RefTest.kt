@@ -37,9 +37,18 @@ class RefTest {
     @Test
     fun `a ref shows as prefix and id`() {
         assertEquals("C-45", Ref(RefKind.CANON, 45).toString())
-        assertEquals(listOf("M", "C", "I", "H", "N"), RefKind.entries.map { it.prefix })
+        assertEquals(listOf("M", "C", "I", "H", "N", "P"), RefKind.entries.map { it.prefix })
         assertEquals(setOf("memory", "canon", "interaction", "chronicle"), RefKind.searchable.map { it.id }.toSet())
         assertFailsWith<IllegalArgumentException> { Ref(RefKind.MEMORY, 0) }
+    }
+
+    /** M6 §6.2: an idea is cited, indexed against repeats, never recalled nor taken for evidence. */
+    @Test
+    fun `an idea is indexed but neither searched nor a fact`() {
+        assertEquals(Ref(RefKind.IDEA, 41), Ref.parse("P-41"))
+        assertEquals(RefKind.searchable + RefKind.IDEA, RefKind.indexed)
+        assertEquals(RefKind.entries.toSet() - RefKind.IDEA, RefKind.facts)
+        assertNull(Ref.canonOf("P-41"))
     }
 
     @Test
@@ -49,6 +58,7 @@ class RefTest {
         assertEquals("operator:Clement", Author(Source.OPERATOR, operator = "Clement").actor)
         assertEquals(Author(Source.DREAMER, runId = 4, conversationId = "dreamer-1"), RunContext(4, RunKind.DREAM, null, null, null).author("dreamer-1"))
         assertEquals(Source.CHRONICLER, RunContext(5, RunKind.NAP, null, null, "director-c1").author("chronicler-2").source)
+        assertEquals("storyteller", Author(Source.STORYTELLER, runId = 4).actor)
     }
 
     @Test

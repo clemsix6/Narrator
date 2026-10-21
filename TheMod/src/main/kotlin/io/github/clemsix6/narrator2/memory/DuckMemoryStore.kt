@@ -31,6 +31,9 @@ import java.util.UUID
  * tools only, never deduplicated, never archived while open, and settled by the engine or an operator only;
  * an arc has a theme that rests once its arc closed, two arcs at most are active, each due within 7 days.
  *
+ * Ideas (M6 §6.2): the storyteller's `P-` rows, indexed like the facts but never recalled, never evidence, never
+ * archived: they close (`dropped`, `expired`); [dealt] counts each time one is put before the Director.
+ *
  * What the store computes, never the writer: ids ([IdKind.MEMORY]), times of writing, play clocks
  * ([playClock]; an interaction's from the sessions at its time, [DuckPlayClock.playerSecondsAt]), the
  * initial stability of a memory (M3 §9.1), `counts` and `disrespect`, the time and place of a memory from
@@ -576,7 +579,7 @@ class DuckMemoryStore(
             job.players(listOf(player), "player")
             within(score, MemoryLimits.SKILL_SCORE, "score")
             job.voice(rationale, "rationale", MemoryLimits.SKILL_RATIONALE)
-            val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_SHEET_EVIDENCE)
+            val refs = job.refs(evidence, "evidence", RefKind.facts, MAX_SHEET_EVIDENCE)
             val where = "player_uuid = ? AND skill = ?"
             val before = job.connection.snapshot("player_skills", where, player, skill.id)
             job.connection.update(
@@ -606,7 +609,7 @@ class DuckMemoryStore(
             if (player == other) reject("a relation is between two different players")
             job.voice(note, "note", MemoryLimits.RELATION_NOTE)
             if (evidence.isEmpty()) reject("evidence: cite at least one row")
-            val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_SHEET_EVIDENCE)
+            val refs = job.refs(evidence, "evidence", RefKind.facts, MAX_SHEET_EVIDENCE)
             val where = "player_uuid = ? AND other_uuid = ?"
             val before = job.connection.snapshot("player_relations", where, player, other)
             job.connection.update(
@@ -629,7 +632,7 @@ class DuckMemoryStore(
                 is DocKey.Sheet -> key.section.maxChars.also { job.players(listOf(key.player), "player") }
             }
             job.voice(content, "text", max)
-            val refs = job.refs(evidence, "evidence", RefKind.entries.toSet(), MAX_DOC_EVIDENCE)
+            val refs = job.refs(evidence, "evidence", RefKind.facts, MAX_DOC_EVIDENCE)
             val doc = MemoryDocs.write(job.connection, key.key, content, refs, job.now, author)
             val rowKey = MemoryDocs.rowKey(doc.key, doc.version)
             job.log(Audited.DOCS, rowKey, LogOp.INSERT, null, job.connection.snapshot("memory_docs", "key = ? AND version = ?", doc.key, doc.version))
@@ -696,7 +699,7 @@ class DuckMemoryStore(
             val max = if (draft.kind == NoteKind.DREAM_HINT) MemoryLimits.DREAM_HINT else MemoryLimits.NOTE_TEXT
             job.voice(draft.text, "text", max)
             val players = job.players(draft.players, "players")
-            val refs = job.refs(draft.refs, "refs", RefKind.entries.toSet(), MAX_NOTE_REFS)
+            val refs = job.refs(draft.refs, "refs", RefKind.facts, MAX_NOTE_REFS)
             dedup.note(job.connection, draft.kind, players, refs)?.let { return@write Added.Duplicate(job.row<Note>(it, RefKind.NOTE, "a note")) }
             val ref = job.next(RefKind.NOTE)
             job.connection.update(
@@ -877,6 +880,80 @@ class DuckMemoryStore(
         return result.writes
     }
 
+    /**
+     * An idea (M6 §6.2): its texts pass [VoiceGuard], its notes, players, refs and hours are bounded; it is written
+     * `open`, due [IdeaDraft.playHours] of world play from now, indexed and audited.
+     */
+    override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> {
+        val what = "idea ${draft.kind.id}"
+        val idea = write(what, author) { job ->
+            job.voice(draft.title, "title", MemoryLimits.IDEA_TITLE)
+            job.voice(draft.pitch, "pitch", MemoryLimits.IDEA_PITCH)
+            job.voice(draft.fit, "fit", MemoryLimits.IDEA_FIT)
+            within(draft.novelty, MemoryLimits.IDEA_SCORE, "novelty")
+            within(draft.funScore, MemoryLimits.IDEA_SCORE, "fun")
+            within(draft.fairness, MemoryLimits.IDEA_SCORE, "fairness")
+            within(draft.playHours, MemoryLimits.IDEA_PLAY_HOURS, "hours")
+            if (draft.players.size > MAX_PLAYERS) reject("players: $MAX_PLAYERS at most")
+            if (draft.refs.size > MemoryLimits.IDEA_REFS) reject("refs: ${MemoryLimits.IDEA_REFS} refs at most")
+            draft.brief?.let { brief ->
+                if (brief.codePointCount(0, brief.length) > MemoryLimits.IDEA_BRIEF) reject("brief: ${MemoryLimits.IDEA_BRIEF} characters at most")
+            }
+            val ref = job.next(RefKind.IDEA)
+            val expires = playClock.worldPlaySeconds(job.now.toEpochMilli()) + draft.playHours * SECONDS_PER_HOUR
+            job.connection.update(
+                "INSERT INTO ideas (id, created_at, kind, title, pitch, fit, players, register, novelty, fun, fairness, refs, module, brief, " +
+                    "status, expires_play_s, source, run_id, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ref.id, job.now, draft.kind.id, draft.title, draft.pitch, draft.fit, uuidArray(draft.players.distinct()), draft.register?.id,
+                draft.novelty, draft.funScore, draft.fairness, longArray(draft.refs.map { it.id }.distinct()), draft.module, draft.brief,
+                IdeaStatus.OPEN.id, expires, author.source.id, author.runId, author.conversationId,
+            )
+            val row = job.row<Idea>(ref, RefKind.IDEA, "an idea")
+            job.index(row)
+            job.logRow(ref, LogOp.INSERT, null)
+            row
+        }
+        recordWrite("${idea.ref}", what, author, listOf(draft.title, draft.pitch, draft.fit))
+        return Added.New(idea)
+    }
+
+    override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea {
+        val row = write("drop $ref", author) { job ->
+            val old = job.row<Idea>(ref, RefKind.IDEA, "an idea")
+            if (old.status != IdeaStatus.OPEN) reject("$ref is ${old.status.id} already")
+            if (reason.isBlank()) reject("reason: say why the idea no longer holds")
+            if (reason.codePointCount(0, reason.length) > MemoryLimits.IDEA_DROP_REASON) {
+                reject("reason: ${MemoryLimits.IDEA_DROP_REASON} characters at most")
+            }
+            val before = job.connection.snapshot(ref)
+            job.connection.update(
+                "UPDATE ideas SET status = ?, closed_at = ?, close_reason = ? WHERE id = ?",
+                IdeaStatus.DROPPED.id, job.now, reason, ref.id,
+            )
+            job.logRow(ref, LogOp.UPDATE, before, reason)
+            job.row<Idea>(ref, RefKind.IDEA, "an idea")
+        }
+        recordWrite("$ref", "idea dropped", author)
+        return row
+    }
+
+    override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
+        require(refs.all { it.kind == RefKind.IDEA }) { "only ideas are dealt: ${refs.joinToString()}" }
+        if (refs.isEmpty()) return
+        val dealt = journal.write(WRITE_TIMEOUT_MS) { connection ->
+            val now = clock.instant()
+            val found = connection.refsOf(refs.map { it.id })
+            refs.distinct().filter { found[it.id] == it }.onEach { ref ->
+                connection.update(
+                    "INSERT INTO recalls VALUES (?, ?, ?, ?, ?, ?)",
+                    now, ref.id, channel.id, context.conversationId, context.turnId, context.eventId,
+                )
+                connection.update("UPDATE ideas SET dealt = dealt + 1, last_dealt_at = ? WHERE id = ?", now, ref.id)
+            }
+        }
+        log.debug { "dealt ${dealt.joinToString()} (${channel.id})" }
+    }
+
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 
     override suspend fun row(ref: Ref): MemoryRow? = read { it.readRow(ref) }
@@ -929,6 +1006,13 @@ class DuckMemoryStore(
 
     override suspend fun openNotes(): List<Note> = read { connection ->
         connection.notes("SELECT $NOTE_COLUMNS FROM notes WHERE status <> 'done' ORDER BY created_at, id")
+    }
+
+    override suspend fun ideas(status: IdeaStatus?, limit: Int): List<Idea> = read { connection ->
+        connection.ideas(
+            "SELECT $IDEA_COLUMNS FROM ideas WHERE (CAST(? AS VARCHAR) IS NULL OR status = ?) ORDER BY created_at DESC, id DESC LIMIT ?",
+            status?.id, status?.id, limit,
+        )
     }
 
     override suspend fun log(ref: Ref): List<MemoryLogRow> = read { MemoryLog.of(it, ref) }
@@ -996,6 +1080,8 @@ class DuckMemoryStore(
 
         /** Reasons of operators and the Dreamer (`memory_log.reason`). */
         const val MAX_REASON = 300
+
+        private const val SECONDS_PER_HOUR = 3_600L
 
         private val ARCHIVABLE = setOf(RefKind.MEMORY, RefKind.CANON, RefKind.INTERACTION)
 

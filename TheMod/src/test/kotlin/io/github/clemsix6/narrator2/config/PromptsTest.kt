@@ -22,8 +22,11 @@ class PromptsTest {
         Prompts::class.java.getResourceAsStream(Prompts.resource(name))!!.use { String(it.readAllBytes(), Charsets.UTF_8) }
 
     @Test
-    fun `ships the prompts of the Director, the Analyst, the scout, the forger and its SDK, the chapter summary, the Chronicler, the Dreamer, the ping and the reflexes`() {
-        assertEquals(listOf("director", "analyst", "scout", "forger", "sdk", "chapter_summary", "chronicler", "dreamer", "ping", "reflex"), Prompts.NAMES)
+    fun `ships the prompts of the Director, the Analyst, the scout, the forger and its SDK, the storyteller, the chapter summary, the Chronicler, the Dreamer, the ping, the reflexes and the line review`() {
+        assertEquals(
+            listOf("director", "analyst", "scout", "forger", "sdk", "storyteller", "chapter_summary", "chronicler", "dreamer", "ping", "reflex", "line_review"),
+            Prompts.NAMES,
+        )
         assertEquals("/narrator2/forge/sdk.md", Prompts.resource(Prompts.SDK), "the SDK's reference ships with the Forge (M5 §8.2)")
         assertEquals("/narrator2/prompts/forger.md", Prompts.resource("forger"))
     }
@@ -31,20 +34,34 @@ class PromptsTest {
     /**
      * What enters a prompt has a budget (M3 §2, decision 11). The system prompts are sent with every request
      * of their conversations: the Director's at each turn, the Chronicler's every ten minutes, the Dreamer's at each
-     * step of a dream, the forger's (its prompt, then the SDK's reference, M5 §8.2) at each step of a task. The Forge
-     * gave the Director 2,000 characters and the Chronicler 200 (M5 §9.4).
+     * step of a dream, the forger's (its prompt, then the SDK's reference, M5 §8.2) at each step of a task, the
+     * storyteller's at each step of its programme or task, the line review's with each line. The Forge gave the Director
+     * 2,000 characters and the Chronicler 200 (M5 §9.4).
      */
     @Test
     fun `the bundled prompts stay within their budgets`() {
         val budgets = mapOf(
-            "director" to 36_000, "analyst" to 8_000, "scout" to 6_000, "forger" to 9_000, "sdk" to 30_000, "chapter_summary" to 4_000, "chronicler" to 11_700,
-            "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000,
+            "director" to 36_000, "analyst" to 8_000, "scout" to 6_000, "forger" to 9_000, "sdk" to 30_000, "storyteller" to 9_000,
+            "chapter_summary" to 4_000, "chronicler" to 11_700, "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000, "line_review" to 4_000,
         )
         assertEquals(Prompts.NAMES.toSet(), budgets.keys, "every prompt has a budget")
         budgets.forEach { (name, max) ->
             val length = bundled(name).length
             assertTrue(length <= max, "$name.md has $length characters, over its budget of $max")
         }
+    }
+
+    /**
+     * The line review speaks to the reflexes' model as the reflexes do (M6 §3.3, REFLEX-HAIKU): a data labeling task,
+     * never a role, which would wake LLMGW's own identity. The storyteller's prompt is a role of the Narrator's.
+     */
+    @Test
+    fun `the line review is framed as a data labeling task, like the reflexes`() {
+        val jar = Prompts.bundled()
+        listOf("reflex", "line_review").forEach { name ->
+            assertTrue(jar.get(name).startsWith("Tâche d'étiquetage de données"), "$name: ${jar.get(name).take(80)}")
+        }
+        assertTrue(jar.get("storyteller").startsWith("# Le Scénariste"), jar.get("storyteller").take(80))
     }
 
     @Test

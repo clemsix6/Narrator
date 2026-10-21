@@ -2,10 +2,13 @@ package io.github.clemsix6.narrator2.journal
 
 import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.event.EventTable
+import io.github.clemsix6.narrator2.event.NarratorChannel
+import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.memory.MemorySchema
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
@@ -16,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.SQLException
+import java.time.Instant
 import java.time.ZoneId
 import kotlin.reflect.full.primaryConstructor
 import kotlin.test.assertContains
@@ -33,6 +37,7 @@ class DuckDatabaseTest {
     private val tables = listOf(
         "schema_version", "players", "player_names", "sessions", "events", "positions", "chat", "private_messages",
         "chat_signals", "stat_totals", "conversations", "turns", "tasks", "llm_calls", "tool_calls", "engine_decisions",
+        "line_labels",
     ) + MemorySchema.TABLES + EventTypesTable.NAME
 
     private fun DuckDBConnection.strings(sql: String): List<String?> = createStatement().use { statement ->
@@ -44,16 +49,16 @@ class DuckDatabaseTest {
     @Test
     fun `creates the file and applies the migrations once`() {
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(3, db.schemaVersion)
+            assertEquals(4, db.schemaVersion)
             assertEquals(2, db.readers.size)
             assertEquals(tables.sorted(), db.writer.strings("SELECT table_name FROM duckdb_tables() ORDER BY 1"))
-            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             db.writer.run("INSERT INTO events (id, ts, game_time, type) VALUES (1, now(), 0, 'join')")
         }
         assertTrue(Files.isRegularFile(file))
 
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1", "2", "3"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
+            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
             assertEquals(listOf("1"), db.readers[0].strings("SELECT count(*) FROM events"), "data kept")
         }
     }
@@ -137,6 +142,7 @@ class DuckDatabaseTest {
             "conversations" to ConversationRecord::class,
             "tasks" to TaskRecord::class,
             "chat_signals" to ChatSignalsRecord::class,
+            "line_labels" to LineLabelsRecord::class,
         )
         DuckDatabase.openInMemory(options).use { db ->
             records.forEach { (table, record) ->
@@ -164,6 +170,59 @@ class DuckDatabaseTest {
             assertEquals(listOf("id", "ts", "player_uuid", "player", "recipients", "text"),
                 db.writer.strings("SELECT column_name FROM duckdb_columns() WHERE table_name = 'private_messages' ORDER BY column_index"))
         }
+    }
+
+    /** M6 §12.3: V4 comes on top of a world of M5, keeps its rows, and its views read the Journal as it was. */
+    @Test
+    fun `V4 applies to a world at version 3 and keeps its rows`() {
+        DuckDatabase.open(file, options).use { db ->
+            db.writer.run(
+                """
+                INSERT INTO chat (id, ts, channel, text, turn_id) VALUES (7, now(), 'narrator', 'Onze secondes. ONZE.', 40);
+                DROP VIEW narrator_lines;
+                DROP VIEW mem_ideas;
+                DROP TABLE line_labels;
+                DROP TABLE ideas;
+                DELETE FROM schema_version WHERE version = 4;
+                """.trimIndent(),
+            )
+        }
+        DuckDatabase.open(file, options).use { db ->
+            assertEquals(4, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(listOf("Onze secondes. ONZE. null"), db.writer.strings("SELECT text || ' ' || coalesce(register, 'null') FROM narrator_lines"))
+            assertEquals(listOf("0"), db.writer.strings("SELECT count(*) FROM mem_ideas"))
+        }
+    }
+
+    /** M6 §3.3: a line's labels go through the Journal like the chat verdicts, and the Narrator's lines show the latest. */
+    @Test
+    fun `the line review's labels are appended with every column, and the view of the Narrator's lines reads them`() = JournalFixture().use { fixture ->
+        val t0 = Instant.parse("2026-10-21T20:00:00Z")
+        val reviewed = fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Onze secondes. ONZE. Gaspard remporte la Pioche.", null, 40, null))
+        fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Pas encore relue.", null, 41, null))
+        val labels = LineLabelsRecord(
+            reviewed.id, t0, "reflex:claude-haiku-5-5", "sports_commentary", 0.0, 0.1, 0.2, 0.05, 0.7, listOf("céleste"),
+            "Un commentaire sportif de fin de défi.", 1_400,
+        )
+        fixture.journal.lineLabels(labels)
+        fixture.journal.lineLabels(labels.copy(ts = t0.plusSeconds(1), register = "plain", crutches = emptyList(), reason = null, latencyMs = null))
+
+        assertEquals(
+            listOf(
+                listOf(reviewed.id, t0, "reflex:claude-haiku-5-5", "sports_commentary", 0.0, 0.1, 0.2, 0.05, 0.7, listOf("céleste"), "Un commentaire sportif de fin de défi.", 1_400),
+                listOf(reviewed.id, t0.plusSeconds(1), "reflex:claude-haiku-5-5", "plain", 0.0, 0.1, 0.2, 0.05, 0.7, emptyList<String>(), null, null),
+            ),
+            fixture.values("SELECT * FROM line_labels ORDER BY ts"),
+        )
+        assertEquals(
+            listOf(
+                listOf("Onze secondes. ONZE. Gaspard remporte la Pioche.", "plain", 0.7, emptyList<String>()),
+                listOf("Pas encore relue.", null, null, null),
+            ),
+            fixture.values("SELECT text, register, repeats, crutches FROM narrator_lines ORDER BY id"),
+            "the latest labels of each line; none for a line not reviewed",
+        )
     }
 
     private fun snakeCase(name: String) = name.replace(Regex("[A-Z]")) { "_" + it.value.lowercase() }

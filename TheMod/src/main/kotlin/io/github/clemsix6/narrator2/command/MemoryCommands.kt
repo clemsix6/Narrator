@@ -19,6 +19,7 @@ import io.github.clemsix6.narrator2.memory.CanonEntry
 import io.github.clemsix6.narrator2.memory.CanonFilter
 import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.DocKey
+import io.github.clemsix6.narrator2.memory.Idea
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryDoc
@@ -561,6 +562,17 @@ object MemoryCommands {
                 add(Out("About: ${listOfNotNull(row.players.takeIf { it.isNotEmpty() }?.let(::names), row.refs.takeIf { it.isNotEmpty() }?.joinToString()).joinToString(" · ")}"))
             }
         }
+        is Idea -> "${row.ref} · idea ${row.kind.id} · ${row.status.id}" to buildList {
+            add(Out("Title: ${row.title}"))
+            add(Out("Pitch: ${row.pitch}"))
+            add(Out("Fits: ${row.fit} · for: ${names(row.players)}${row.register?.let { " · ${it.id}" }.orEmpty()}"))
+            add(Out("Notes: novelty ${row.novelty} · fun ${row.funScore} · fairness ${row.fairness}${if (row.refs.isEmpty()) "" else " · builds on ${row.refs.joinToString()}"}"))
+            row.module?.let { add(Out("Module: $it")) }
+            row.brief?.let { add(Out("Brief: $it")) }
+            val dealt = row.lastDealtAt?.let { " (last ${text.time(it)})" }.orEmpty()
+            add(Out("Created ${text.time(row.createdAt)} · dealt ${row.dealt} ${TraceText.plural(row.dealt, "time")}$dealt"))
+            row.closedAt?.let { add(Out("Closed ${text.time(it)}: ${row.closeReason ?: "no reason"}")) }
+        }
     }
 
     /**
@@ -575,6 +587,7 @@ object MemoryCommands {
             is Interaction -> row.source.id
             is ChronicleEntry -> row.source.id
             is Note -> null
+            is Idea -> row.source.id
         }
         val origin = listOfNotNull(
             source,
@@ -770,7 +783,7 @@ object MemoryCommands {
     // ── Shared ──────────────────────────────────────────────────────────────────────────────────────
 
     /** The ref an operator typed (`C-45`, `c45`). */
-    private fun ref(typed: String): Ref = Ref.parse(typed) ?: refuse("$typed is not a memory ref: M-, C-, I-, H- or N- and a number, like C-45.")
+    private fun ref(typed: String): Ref = Ref.parse(typed) ?: refuse("$typed is not a memory ref: M-, C-, I-, H-, N- or P- and a number, like C-45.")
 
     /**
      * The player named [name]: online, else by their current or a former name in the Journal (the latest

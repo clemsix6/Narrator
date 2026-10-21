@@ -45,18 +45,20 @@ data class AgentRun(
 )
 
 /**
- * Runs the conversations of the memory jobs (M3 §7.6): the Chronicler's and the Dreamer's. The pattern of
- * the workers (`agent/Workers`), without anything sent back to the Director: a memory job never wakes it.
+ * Runs the conversations of the memory jobs (M3 §7.6): the Chronicler's, the Dreamer's, and the storyteller's step
+ * of a dream, its programme (M6 §6.3). The pattern of the workers (`agent/Workers`), without anything sent back to
+ * the Director: a memory job never wakes it.
  *
- * - **One conversation per call** of [run]: `chronicler-<8 hex>` or `dreamer-<8 hex>`, with the role's
- *   prompt and tools (`ToolCatalog.toolSetFor`, the memory's tools shown), one turn of [AgentLoop] within
- *   its limits and its timeout, then its ending. Its `conversations` row (role, label, end reason
- *   `done`, `failed`, `timeout` or `cancelled`, the report as `summary`) and its transcript are written.
+ * - **One conversation per call** of [run]: `chronicler-<8 hex>`, `dreamer-<8 hex>` or `storyteller-<8 hex>`, with
+ *   the role's prompt and tools (`ToolCatalog.toolSetFor`, the memory's tools shown, and `inspire` to the
+ *   storyteller), one turn of [AgentLoop] within its limits and its timeout, then its ending. Its `conversations`
+ *   row (role, label, end reason `done`, `failed`, `timeout` or `cancelled`, the report as `summary`) and its
+ *   transcript are written.
  * - **One engine for the whole memory**: one [AgentLoop] and one [ToolRunner]; the calls go to
- *   `llm_calls` with the purpose `chronicle` or `dream`.
+ *   `llm_calls` with the purpose `chronicle`, `dream` or `programme`.
  * - **The run behind the tools**: while a conversation runs, [runContext] gives its [RunContext] (job,
- *   window, chapter). `Memory.runContext` asks this, so that the tools write as the job's author and the
- *   store checks quotes against the job's window.
+ *   window, chapter, and the conversation's role). `Memory.runContext` asks this, so that the tools write as the
+ *   job's author ([RunContext.author]) and the store checks quotes against the job's window.
  * - **No retry.** A refusal, a cut-off or empty reply, a step limit, a timeout or a gateway error fails
  *   the conversation with its reason; the catch-up and the next dream come back later.
  *
@@ -75,19 +77,23 @@ class MemoryAgents(
     fun runContext(conversationId: String): RunContext? = contexts[conversationId]
 
     /**
-     * One conversation of [role] (`chronicler`, `dreamer`) for the job [context]: [opening] as its first
+     * One conversation of [role] (`chronicler`, `dreamer`, `storyteller`) for the job [context]: [opening] as its first
      * message, one turn of at most [limits], within [timeout]. Throws the cancellation of the caller (the
      * server stops) once the conversation is recorded as cancelled.
      */
     suspend fun run(role: Role, context: RunContext, label: String, opening: String, limits: TurnLimits, timeout: Duration): AgentRun {
-        require(role == Role.CHRONICLER || role == Role.DREAMER) { "${role.id} is not a memory role" }
+        val purpose = PURPOSES[role] ?: throw IllegalArgumentException("${role.id} is not a memory role")
         val id = "${role.id}-${UUID.randomUUID().toString().take(8)}"
         val started = clock.instant()
         var opened: Opened? = null
-        contexts[id] = context
+        contexts[id] = context.copy(role = role)
         try {
             val settings = services.settings.get()
-            val tools = toolSet(role, ToolEnv(services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available))
+            val env = ToolEnv(
+                services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available,
+                storytellerAvailable = role == Role.STORYTELLER,
+            )
+            val tools = toolSet(role, env)
             val system = listOf(TextBlockParam.builder().text(settings.prompts.get(role.id)).build())
             val conversation = Conversation(role, label, system, tools, services.transcripts, id)
             val row = ConversationRecord(id, role, label, null, null, started, null, null, null, transcriptOf(conversation))
@@ -96,7 +102,6 @@ class MemoryAgents(
             services.transcripts.note(conversation, "${context.kind.id} run ${context.runId}, with ${tools.tools.size} tools: ${tools.names.joinToString()}")
             log.info("run ${context.runId}: $id started ($label), ${tools.tools.size} tools")
             val caller = Caller(role, id, turnId = null, taskId = null)
-            val purpose = if (role == Role.DREAMER) LlmCallRecord.Purpose.DREAM else LlmCallRecord.Purpose.CHRONICLE
             val outcome = withTimeoutOrNull(timeout.toMillis()) {
                 agent.runTurn(conversation, Pending.text(opening), caller, limits, purpose = purpose)
             }
@@ -163,6 +168,13 @@ class MemoryAgents(
     companion object {
         /** Longest report kept (`memory_runs.report`, `conversations.summary`), in characters. */
         const val REPORT_MAX_CHARS = 500
+
+        /** The roles of the memory's conversations, with the purpose of their calls in `llm_calls`. */
+        private val PURPOSES: Map<Role, LlmCallRecord.Purpose> = mapOf(
+            Role.CHRONICLER to LlmCallRecord.Purpose.CHRONICLE,
+            Role.DREAMER to LlmCallRecord.Purpose.DREAM,
+            Role.STORYTELLER to LlmCallRecord.Purpose.PROGRAMME,
+        )
 
         private val HOURS: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
 

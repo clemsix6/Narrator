@@ -145,13 +145,14 @@ object WakeScheduler {
      * [Urgency.NEXT] event, a memory cue (a place return, an anniversary: M3 §10.5) or a module's news ([byModule]:
      * it woke the Director by itself while it could, and past [MODULE_NEWS_PER_HOUR] it must not make every heartbeat
      * a turn) [NEXT_WORTH], an item that wakes the Director by itself 1. Items demoted after failed requests count for
-     * nothing, and so do the memory's notes (an incoherence, an expired commitment): they go with the next wake-up,
-     * they are no reason for one.
+     * nothing, and so do the memory's notes (an incoherence, an expired commitment) and the notes of tone (M6 §4.3):
+     * they go with the next wake-up, they are no reason for one.
      */
     fun salience(items: List<Item>, bored: (String) -> Boolean = { false }): Double = items.sumOf { worth(it, bored) }.coerceAtMost(1.0)
 
     private fun worth(item: Item, bored: (String) -> Boolean): Double = when {
-        item.failures >= Item.DEMOTED || item.urgency == Urgency.BATCH || item.signal is DirectorSignal.MemoryNote -> 0.0
+        item.failures >= Item.DEMOTED || item.urgency == Urgency.BATCH || item.signal is DirectorSignal.MemoryNote ||
+            item.signal is DirectorSignal.StyleNote -> 0.0
         item.isUnaddressedChat -> if (isBored(item, bored)) BORED_WORTH else CHAT_WORTH
         item.urgency == Urgency.NEXT || byModule(item.signal) -> NEXT_WORTH
         else -> 1.0

@@ -70,9 +70,10 @@ class ShutdownSequenceTest {
         memoryTimeout: Duration = Duration.ofSeconds(5),
         stopMechanics: () -> Unit = {},
         stopForge: () -> Unit = {},
+        stopDashboard: () -> Unit = {},
     ) = ShutdownSequence(
         scope, bus, journal, settings, flushObserver, { steps += "phase $it" }, workTimeout, journalTimeout, journalGrace, stopMemory, memoryTimeout,
-        stopMechanics, stopForge,
+        stopMechanics, stopForge, stopDashboard,
     )
 
     /** Starts a job that runs until it is cancelled, and waits until it runs. */
@@ -158,6 +159,29 @@ class ShutdownSequenceTest {
             stopMemory = { steps += "memory stopped" },
         ).begin()
         assertEquals(listOf("phase STOPPING", "mechanics stopped", "forge stopped", "memory stopped", "director cancelled"), steps.toList())
+    }
+
+    @Test
+    fun `the dashboard stops first, before the mechanics (M6 §8-2)`() {
+        startWork("director")
+        sequence(
+            stopDashboard = { steps += "dashboard stopped" },
+            stopMechanics = { steps += "mechanics stopped" },
+            stopForge = { steps += "forge stopped" },
+            stopMemory = { steps += "memory stopped" },
+        ).begin()
+        assertEquals(
+            listOf("phase STOPPING", "dashboard stopped", "mechanics stopped", "forge stopped", "memory stopped", "director cancelled"),
+            steps.toList(),
+        )
+    }
+
+    @Test
+    fun `a dashboard that fails to stop stops nothing else`() {
+        val logs = LogCapture()
+        logs.use { sequence(stopDashboard = { error("the port is stuck") }, stopMechanics = { steps += "mechanics stopped" }).begin() }
+        assertTrue("mechanics stopped" in steps)
+        assertContains(logs.text, "stopping: could not stop the dashboard")
     }
 
     @Test

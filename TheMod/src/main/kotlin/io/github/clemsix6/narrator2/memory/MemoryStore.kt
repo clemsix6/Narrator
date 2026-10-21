@@ -162,9 +162,27 @@ interface MemoryStore {
      */
     suspend fun revertRun(runId: Long, author: Author): Int
 
+    /**
+     * An idea of the storyteller (M6 §6.2), `open`, due after [IdeaDraft.playHours] of world play, indexed so that a
+     * later idea can be compared with it. Its kind, register, notes and bounds are checked ([MemoryLimits]); the rules
+     * of the storyteller's programme (open ideas at most, no repeat of a recent idea, refs, players, module, brief, voice)
+     * are the store's too.
+     */
+    suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea>
+
+    /** Closes the open idea [ref]: `dropped`, with [reason] (≤ [MemoryLimits.IDEA_DROP_REASON]). Nothing is deleted. */
+    suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea
+
+    /**
+     * The ideas [refs] were dealt to the Director through [channel] (`inspire`, a heartbeat, M6 §5): `dealt + 1`,
+     * `last_dealt_at`, and one `recalls` row each. Refs of another kind are refused (an argument error of the caller);
+     * an idea that does not exist is left out, like [recorded].
+     */
+    suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext)
+
     // ── Reads (the Journal's read pool, never the writer) ───────────────────────────────────────────
 
-    /** Any citable row: memory, canon entry, interaction, chronicle entry or note. */
+    /** Any citable row: memory, canon entry, interaction, chronicle entry, note or idea. */
     suspend fun row(ref: Ref): MemoryRow?
 
     suspend fun memory(ref: Ref): MemoryEntry?
@@ -194,6 +212,9 @@ interface MemoryStore {
 
     /** Notes that are not done, oldest first. */
     suspend fun openNotes(): List<Note>
+
+    /** The ideas of [status] (every status when null), the newest first, [limit] at most. */
+    suspend fun ideas(status: IdeaStatus? = IdeaStatus.OPEN, limit: Int = 50): List<Idea>
 
     /** The changes of [ref]'s row, oldest first. */
     suspend fun log(ref: Ref): List<MemoryLogRow>

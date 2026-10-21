@@ -96,15 +96,16 @@ object Decay {
 
     /**
      * How much a memory shown through [channel] is reinforced: [GAIN_USED], [GAIN_RECALL_TOOL], or
-     * [GAIN_SHOWN] for the briefing, a join, a reminiscence or a profile. 0 for [RecallChannel.DREAM]: the
-     * Dreamer reads the memory, the Narrator does not see it, so it is not reinforced (its `recalls` row is
-     * still written).
+     * [GAIN_SHOWN] for the briefing, a join, a reminiscence, a profile, or what `inspire` and a heartbeat deal (M6
+     * §5). 0 for [RecallChannel.DREAM] and [RecallChannel.PROGRAMME]: the Dreamer or the storyteller reads the memory,
+     * the Narrator does not see it, so it is not reinforced (its `recalls` row is still written).
      */
     fun gain(channel: RecallChannel): Double = when (channel) {
         RecallChannel.USED -> GAIN_USED
         RecallChannel.RECALL_TOOL -> GAIN_RECALL_TOOL
-        RecallChannel.BRIEFING, RecallChannel.JOIN, RecallChannel.REMINISCENCE, RecallChannel.PROFILE -> GAIN_SHOWN
-        RecallChannel.DREAM -> 0.0
+        RecallChannel.BRIEFING, RecallChannel.JOIN, RecallChannel.REMINISCENCE, RecallChannel.PROFILE,
+        RecallChannel.INSPIRE, RecallChannel.HEARTBEAT -> GAIN_SHOWN
+        RecallChannel.DREAM, RecallChannel.PROGRAMME -> 0.0
     }
 
     /**

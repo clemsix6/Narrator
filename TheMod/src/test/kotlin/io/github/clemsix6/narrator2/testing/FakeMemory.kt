@@ -16,6 +16,9 @@ import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.GagState
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaDraft
+import io.github.clemsix6.narrator2.memory.IdeaStatus
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.InteractionDraft
 import io.github.clemsix6.narrator2.memory.Memory
@@ -121,6 +124,10 @@ class FakeMemory(private val clockSource: Clock = TestClock()) : Memory {
     }
 
     override fun situationLines(now: Long): List<String> = situation
+
+    /** The open ideas of [store], the newest first. */
+    override fun openIdeas(): List<Idea> =
+        store.rows.values.filterIsInstance<Idea>().filter { it.status == IdeaStatus.OPEN }.sortedByDescending { it.ref.id }
 
     override fun chapterClosed(record: ConversationRecord) {
         closed += record
@@ -382,6 +389,34 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         return 0
     }
 
+    /** An idea `open`, expiring after its hours of play on the fake world clock (0). */
+    override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> {
+        val row = Idea(
+            next(RefKind.IDEA), now(), draft.kind, draft.title, draft.pitch, draft.fit, draft.players.map(::player), draft.register,
+            draft.novelty, draft.funScore, draft.fairness, draft.refs, draft.module, draft.brief, IdeaStatus.OPEN, dealt = 0,
+            lastDealtAt = null, expiresPlaySeconds = draft.playHours * 3_600L, closedAt = null, closeReason = null, source = author.source,
+        )
+        rows[row.ref] = row
+        wrote("addIdea", row.ref, author)
+        return Added.New(row)
+    }
+
+    override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea {
+        val row = get<Idea>(ref).copy(status = IdeaStatus.DROPPED, closedAt = now(), closeReason = reason)
+        rows[ref] = row
+        wrote("dropIdea", ref, author)
+        return row
+    }
+
+    override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
+        require(refs.all { it.kind == RefKind.IDEA }) { "only ideas are dealt: ${refs.joinToString()}" }
+        refs.distinct().forEach { ref ->
+            val idea = rows[ref] as? Idea ?: return@forEach
+            rows[ref] = idea.copy(dealt = idea.dealt + 1, lastDealtAt = now())
+            recalls += Triple(ref, channel, context)
+        }
+    }
+
     override suspend fun row(ref: Ref): MemoryRow? = rows[ref]
 
     override suspend fun memory(ref: Ref): MemoryEntry? = rows[ref] as? MemoryEntry
@@ -419,6 +454,9 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
 
     override suspend fun openNotes(): List<Note> =
         rows.values.filterIsInstance<Note>().filter { it.status != NoteStatus.DONE }.sortedBy { it.ref.id }
+
+    override suspend fun ideas(status: IdeaStatus?, limit: Int): List<Idea> =
+        rows.values.filterIsInstance<Idea>().filter { status == null || it.status == status }.sortedByDescending { it.ref.id }.take(limit)
 
     override suspend fun log(ref: Ref): List<MemoryLogRow> = emptyList()
 }

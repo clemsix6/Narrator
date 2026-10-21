@@ -38,13 +38,14 @@ class SchemaDocTest {
     fun `it lists every table, view and macro the model may use`() {
         DuckDatabase.openInMemory(JournalFixture.OPTIONS).use { db ->
             val main = "database_name = current_database() AND schema_name = 'main' AND NOT internal"
-            // The memory's tables are read through its own views and tools (M3 §13).
+            // The memory's tables are read through its own views and tools (M3 §13), the line review's labels through narrator_lines (M6 §12.3).
             val tables = names(db, "SELECT table_name FROM duckdb_tables() WHERE $main") - Journal.HIDDEN_FROM_MODEL - "schema_version" -
-                MemorySchema.TABLES.toSet()
+                MemorySchema.TABLES.toSet() - "line_labels"
             val views = names(db, "SELECT view_name FROM duckdb_views() WHERE $main")
             val macros = names(db, "SELECT function_name FROM duckdb_functions() WHERE $main AND function_type IN ('macro', 'table_macro')")
             assertEquals(15, tables.size, "$tables")
-            assertEquals(24, views.size, "$views")
+            assertFalse(Regex("""\nline_labels[(\s]""").containsMatchIn(doc), "line_labels is not described")
+            assertEquals(26, views.size, "$views")
             assertEquals(8, macros.size, "$macros")
             (views + macros).forEach { name -> assertTrue("\n$name(" in doc, "$name is described") }
             // Game tables with their columns; the engine's traces by name, their columns through columns_of().
@@ -72,9 +73,12 @@ class SchemaDocTest {
         }
     }
 
-    /** M3 §13: six views of the memory, in their own section, and none of the memory's tables; M4 §19: what the engine tracks. */
+    /**
+     * M3 §13: the views of the memory, in their own section, and none of the memory's tables; M4 §19: what the engine
+     * tracks; M6 §12.3: the storyteller's ideas.
+     */
     @Test
-    fun `the memory is described through its six views`() {
+    fun `the memory is described through its seven views`() {
         val memory = sections.getValue(SchemaDoc.Section.MEMORY)
         assertEquals(
             listOf(
@@ -84,6 +88,7 @@ class SchemaDocTest {
                 "mem_favor(player, favor, trend, disrespect)",
                 "mem_stats(player, stat, value, detail JSON)",
                 "mem_chronicle(ref, level, period_from, period_to, title, summary)",
+                "mem_ideas(ref, kind, status, title, pitch, fit, players[], register, dealt, created_at)",
             ),
             memory.lines().drop(1).map { it.substringBefore(" — ") },
         )
@@ -98,7 +103,7 @@ class SchemaDocTest {
     fun `it tells how to order facts that share a timestamp`() {
         assertTrue("Rows may share a ts: ORDER BY ts, id." in doc)
         listOf(
-            "timeline", "chat_log", "narrator_actions", "mining", "building", "deaths", "kills", "damage", "trades", "meals", "crafts",
+            "timeline", "chat_log", "narrator_actions", "narrator_lines", "mining", "building", "deaths", "kills", "damage", "trades", "meals", "crafts",
             "advancements", "visits", "travels", "griefs",
         ).forEach { view -> assertTrue("\n$view(id, ts, " in doc, "$view starts with id, ts") }
     }

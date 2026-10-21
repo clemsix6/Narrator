@@ -15,6 +15,7 @@ import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.INTERACTION_COLUMNS
+import io.github.clemsix6.narrator2.memory.Idea
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.InteractionKind
 import io.github.clemsix6.narrator2.memory.MEMORY_COLUMNS
@@ -481,6 +482,8 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
         is ChronicleEntry -> Written(
             row.from, "${row.ref} chronicle ${row.level.id} (by the ${row.source.id}): ${ModelText.escape(row.title)}", false,
         )
+        // Never among the rows the log lists (INSERTED_SQL): an idea is no fact of the chapter.
+        is Idea -> Written(row.createdAt, "${row.ref} idea ${row.kind.id} (by the ${row.source.id}): ${ModelText.escape(row.title)}", false)
     }
 
     /** `C-45 promise → Mimosa, due 21:00 (by the director at 20:10): <statement> — « <quote> »`. */

@@ -29,10 +29,14 @@ class ConfigStoreTest {
         assertEquals(NarratorConfig(), config)
         val written = Json.parseToJsonElement(file.readText()).jsonObject
         assertEquals(
-            setOf("gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex", "logging"),
+            setOf(
+                "gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex",
+                "style", "dashboard", "prices", "logging",
+            ),
             written.keys,
             "only the settings in use",
         )
+        assertEquals(setOf("claude-opus-5-5", "claude-haiku-5-5"), written.getValue("prices").jsonObject.keys, "the prices of the default models")
         assertEquals(setOf("enabled", "model", "effort", "thinking", "timeoutMs"), written.getValue("reflex").jsonObject.keys, "no key of its own")
         assertEquals(Role.entries.map { it.id }.toSet(), written.getValue("roles").jsonObject.keys)
         assertEquals(

@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.EventTable
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TaskRecord
 import io.github.clemsix6.narrator2.trace.ToolCallRecord
@@ -28,8 +29,8 @@ import java.util.concurrent.atomic.AtomicLong
  * `events`, `chat` and `private_messages`; the Journal reserves them as they are published.
  *
  * [MEMORY] is one sequence for every citable row of the memory (`memories`, `canon`, `interactions`,
- * `chronicle`, `notes`, M3 §3.1): an id names one row whatever its table. [MEMORY_RUN] numbers the
- * memory jobs (`memory_runs`).
+ * `chronicle`, `notes`, M3 §3.1, and the storyteller's `ideas`, M6 §6.2): an id names one row whatever its
+ * table. [MEMORY_RUN] numbers the memory jobs (`memory_runs`).
  */
 enum class IdKind { EVENT, SESSION, TURN, TASK, LLM_CALL, TOOL_CALL, DECISION, MEMORY, MEMORY_RUN }
 
@@ -181,6 +182,8 @@ class DisabledJournal(private val reason: String, clock: Clock = Clock.systemUTC
     override fun task(r: TaskRecord) = drop(r)
 
     override fun chatSignals(r: ChatSignalsRecord) = drop(r)
+
+    override fun lineLabels(r: LineLabelsRecord) = drop(r)
 
     private fun counter(kind: IdKind): AtomicLong = ids.computeIfAbsent(kind) { AtomicLong(seed) }
 

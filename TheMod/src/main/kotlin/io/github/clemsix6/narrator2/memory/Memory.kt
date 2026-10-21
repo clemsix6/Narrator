@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.memory
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.director.DirectorSignal
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import kotlinx.coroutines.CancellationException
 import java.time.Instant
@@ -51,10 +52,16 @@ interface Memory {
     /** The memory lines of the situation (M3 §11.3: favor, due soon, attention), from a cache: never waits for the database. */
     fun situationLines(now: Long): List<String>
 
+    /**
+     * The storyteller's open ideas (M6 §6.2), for the briefing's `<programme>` and the heartbeat's `Idea:` line: from
+     * the memory's cache, never the database. Any thread; never waits.
+     */
+    fun openIdeas(): List<Idea>
+
     /** A Director chapter closed for good, with or without a summary: its nap is queued (M3 §7.1). Any thread, never blocks. */
     fun chapterClosed(record: ConversationRecord)
 
-    /** The memory run a chronicler or dreamer conversation belongs to (for the author and the quote checks); null otherwise. */
+    /** The memory run a chronicler, dreamer or storyteller conversation belongs to (for the author and the quote checks); null otherwise. */
     fun runContext(conversationId: String): RunContext?
 
     /**
@@ -68,12 +75,29 @@ interface Memory {
 /**
  * A running memory job, as its tools see it: kept by `MemoryAgents` for the life of its conversation.
  * [windowFrom]..[windowTo]: the Journal window it reads (quotes are checked against it); [chapter]: the
- * Director's conversation of a batch or a nap.
+ * Director's conversation of a batch or a nap; [role]: the role of the conversation, set by `MemoryAgents.run` (a
+ * dream's steps are the Dreamer's, but its programme is the storyteller's, M6 §6.3).
  */
-data class RunContext(val runId: Long, val kind: RunKind, val windowFrom: Instant?, val windowTo: Instant?, val chapter: String?) {
-    /** The author of what the job writes: [Source.CHRONICLER] for batches and naps, [Source.DREAMER] for dreams. */
-    fun author(conversationId: String): Author =
-        Author(if (kind == RunKind.DREAM) Source.DREAMER else Source.CHRONICLER, runId = runId, conversationId = conversationId)
+data class RunContext(
+    val runId: Long,
+    val kind: RunKind,
+    val windowFrom: Instant?,
+    val windowTo: Instant?,
+    val chapter: String?,
+    val role: Role? = null,
+) {
+    /**
+     * The author of what the job writes: [Source.STORYTELLER] for the storyteller's conversation, else
+     * [Source.CHRONICLER] for batches and naps, [Source.DREAMER] for dreams.
+     */
+    fun author(conversationId: String): Author {
+        val source = when {
+            role == Role.STORYTELLER -> Source.STORYTELLER
+            kind == RunKind.DREAM -> Source.DREAMER
+            else -> Source.CHRONICLER
+        }
+        return Author(source, runId = runId, conversationId = conversationId)
+    }
 }
 
 /**
@@ -224,6 +248,8 @@ class DisabledMemory(private val reason: String) : Memory {
 
     override fun situationLines(now: Long): List<String> = emptyList()
 
+    override fun openIdeas(): List<Idea> = emptyList()
+
     override fun chapterClosed(record: ConversationRecord) = Unit
 
     override fun runContext(conversationId: String): RunContext? = null
@@ -280,6 +306,14 @@ class DisabledMemory(private val reason: String) : Memory {
 
         override suspend fun revertRun(runId: Long, author: Author): Int = refuse()
 
+        override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> = refuse()
+
+        override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea = refuse()
+
+        override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
+            refuse()
+        }
+
         override suspend fun row(ref: Ref): MemoryRow? = null
 
         override suspend fun memory(ref: Ref): MemoryEntry? = null
@@ -303,6 +337,8 @@ class DisabledMemory(private val reason: String) : Memory {
         override suspend fun chronicle(level: ChronicleLevel, limit: Int): List<ChronicleEntry> = emptyList()
 
         override suspend fun openNotes(): List<Note> = emptyList()
+
+        override suspend fun ideas(status: IdeaStatus?, limit: Int): List<Idea> = emptyList()
 
         override suspend fun log(ref: Ref): List<MemoryLogRow> = emptyList()
     }

@@ -58,6 +58,15 @@ class Log private constructor(val tag: String) {
         val mechanics = of("Mechanics")
         val forge = of("Forge")
 
+        /** The watch of the Narrator's style: the line review, the tics, the notes of tone, the refused openers (M6 §14). */
+        val style = of("Style")
+
+        /** The web dashboard (M6 §8). */
+        val web = of("Web")
+
+        /** The storyteller and `inspire` (M6 §5, §6). */
+        val story = of("Story")
+
         /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
         fun applyLevels(levels: Map<String, String>) {
             loggers.values.forEach { it.level = Level.INFO }

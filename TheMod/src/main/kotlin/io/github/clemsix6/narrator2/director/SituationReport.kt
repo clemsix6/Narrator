@@ -51,9 +51,10 @@ data class DirectorAction(val at: Long, val tool: String, val targets: List<Stri
  * online, the Narrator's active effects, the deaths it may still cause each player, its tasks and
  * reminders, and its last actions. Every section is written even when empty, so that the model never
  * mistakes a missing source for an empty one. Player names go through the common escape (`core/ModelText`).
- * Then the mechanics' lines ([MechanicsLines], M4 §4.5: challenges, rules, pacing, offerings) and the
- * memory's (M3 §11.3: favor, commitments due soon, players who had nothing from the Narrator for long),
- * each written only when it has something to say.
+ * Then the mechanics' lines ([MechanicsLines], M4 §4.5: challenges, rules, pacing, offerings), the
+ * memory's (M3 §11.3: favor, commitments due soon, players who had nothing from the Narrator for long)
+ * and the style's (M6 §3.6: what the Director served too often lately), each written only when it has
+ * something to say.
  */
 class SituationReport(private val services: NarratorServices, private val digest: ActivityDigest, zone: ZoneId) {
     private val log = Log.director
@@ -81,8 +82,20 @@ class SituationReport(private val services: NarratorServices, private val digest
             append("Your last actions: ").append(actions(actions, now)).append('\n')
             mechanics.render(now).forEach { append(it).append('\n') }
             memoryLines(now).forEach { append(it).append('\n') }
+            styleLine(now)?.let { append(it).append('\n') }
             append("</situation>")
         }
+
+    /**
+     * The watch of the style's line (M6 §3.6: `Style: openers at rest …`), read from its window: never the database.
+     * None with nothing to say; one saying why when it fails. Escaped again, on one line, [STYLE_LINE_MAX] at most.
+     */
+    private fun styleLine(now: Long): String? = try {
+        services.style.situationLine(now)?.takeIf { it.isNotBlank() }?.let { ModelText.escape(ModelText.cut(it, STYLE_LINE_MAX)) }
+    } catch (e: Exception) {
+        log.error("situation: the style's line is unavailable", e)
+        "Style: unavailable (${e.message ?: e.javaClass.simpleName})"
+    }
 
     /**
      * The memory's lines (M3 §11.3: `Favor: …`, `Due soon: …`, `Attention: …`), read from its cache: never
@@ -168,6 +181,9 @@ class SituationReport(private val services: NarratorServices, private val digest
 
         /** Longest line of the memory in the situation. */
         const val MEMORY_LINE_MAX = 400
+
+        /** Longest `Style:` line in the situation (M6 §3.6). */
+        const val STYLE_LINE_MAX = 400
     }
 }
 
