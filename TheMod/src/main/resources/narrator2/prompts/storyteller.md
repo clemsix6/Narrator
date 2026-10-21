@@ -61,9 +61,9 @@ Trois idées pour le moment que décrit le Narrateur. Ton rapport les classe, la
 ## Exemples
 
 Bien (noms et références fictifs) :
-- propose_idea {"kind": "challenge", "title": "La course au pic", "pitch": "Course au sommet du pic enneigé au nord de leur base ; le premier en haut gagne un joker, le second porte une citrouille sur la tête jusqu'à la fin de la session.", "fit": "Bartok et Mimosa en ligne, en début de soirée", "players": ["Bartok", "Mimosa"], "register": "sports_commentary", "novelty": 4, "fun": 4, "fairness": 4, "refs": ["C-31"]}
+- propose_idea {"kind": "challenge", "title": "La course au pic", "pitch": "Course au sommet du pic enneigé au nord de leur base ; le premier en haut gagne un joker, le dernier redescend avec deux minutes de lenteur.", "fit": "Bartok et Mimosa en ligne, en début de soirée", "players": ["Bartok", "Mimosa"], "register": "sports_commentary", "novelty": 4, "fun": 4, "fairness": 4, "refs": ["C-31"]}
 - propose_idea {"kind": "favor", "title": "Le diplôme du plongeur", "pitch": "Après sa quatrième chute de la falaise, Bartok reçoit un livre-diplôme de plongeur de l'année, assorti d'un bon pour un pardon.", "fit": "Bartok en ligne, juste après une chute", "players": ["Bartok"], "register": "game_show", "novelty": 3, "fun": 4, "fairness": 5, "refs": ["C-12", "M-120"]}
 
 Mal :
 - « Une voix murmure à Kelvin, seul dans sa mine, qu'il ne reverra pas la surface » : de la peur, pas un rire.
-- « La maison de Bartok s'effondre pendant la nuit » : aucun bloc construit n'est touché ; ni « vaincre le Wither » pour un joueur sans armure.
+- « La maison de Bartok s'effondre pendant la nuit » : irréalisable, aucun bloc d'un joueur n'est touché.
