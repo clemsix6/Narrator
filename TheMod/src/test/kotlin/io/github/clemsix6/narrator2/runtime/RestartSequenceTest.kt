@@ -307,7 +307,10 @@ class RestartSequenceTest {
     fun `an old Narrator whose Journal is still closing leaves the Narrator off, nothing prepared, and the next restart closes it first`() {
         val sequence = RestartSequence()
         val closing = AtomicBoolean(true)
-        val old = FakeNarrator("old", close = { if (closing.get()) journalStillClosing() })
+        val old = FakeNarrator("old", close = {
+            Thread.sleep(50) // it waited for its Journal
+            if (closing.get()) journalStillClosing()
+        })
         val created = CopyOnWriteArrayList<String>()
 
         val failed = restart(sequence, old, create = { created += "first"; FakeNarrator("new") }).second.get(10, TimeUnit.SECONDS)
@@ -321,6 +324,7 @@ class RestartSequenceTest {
             failed.text(),
         )
         assertTrue(created.isEmpty(), "nothing prepared while the old Journal holds its file")
+        assertTrue(failed.stopMs >= 50, "the stop's time counts the wait that failed: ${failed.times()}")
 
         steps.clear()
         val still = restart(sequence, null, create = { created += "second"; FakeNarrator("new") }).second.get(10, TimeUnit.SECONDS)

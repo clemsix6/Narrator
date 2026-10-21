@@ -238,6 +238,7 @@ class RestartGameTests {
                 check(status.awaitLines(1) == listOf("[Narrator] a restart is running, try again once it is done.")) { "the status meanwhile: ${status.lines}" }
                 val failed = withTimeout(90_000) { report.await() }
                 check(failed.failure == "the old Narrator did not stop: $STILL_CLOSING") { "the restart fails: ${failed.text()}" }
+                check(failed.stopMs >= 10_000) { "the stop counts its wait for the Journal: ${failed.times()}" }
                 check(!made.get() && NarratorRuntime.current == null && fourth.journal.holdsDatabase) {
                     "nothing prepared, the Narrator off, the old Journal open: ${made.get()} ${NarratorRuntime.current} ${fourth.journal.holdsDatabase}"
                 }

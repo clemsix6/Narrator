@@ -260,8 +260,11 @@ class RestartSequence(private val wireWaitMs: Long = WIRE_WAIT_MS, private val n
         /** Step 2, first: the old Narrator closed, after those an earlier restart could not close; throws when one is not. */
         private fun stopOld() {
             val start = nanoTime()
-            close(listOfNotNull(old))
-            stopMs += ms(nanoTime() - start)
+            try {
+                close(listOfNotNull(old))
+            } finally {
+                stopMs += ms(nanoTime() - start)
+            }
             log.info("restart: the old Narrator stopped in $stopMs ms${if (old == null) " (none was running)" else ""}")
         }
 
