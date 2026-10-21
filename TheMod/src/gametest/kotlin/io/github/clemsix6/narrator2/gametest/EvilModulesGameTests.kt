@@ -33,9 +33,10 @@ import java.util.concurrent.atomic.AtomicReference
  * The runtime side of the attack battery (M5 §16.2, §16.3, task M5-18), on the server thread with the real sandbox:
  * the deep hash and equality of a shared structure — the explicit `hashCode`, the implicit key of a map, a record that
  * wraps it, `Arrays.deepHashCode` — are now bounded by the guard (M5-18's fix for M5-05's open finding): a clean
- * ForgeLimit in a few ms, with **no lost thread**, so the server's tick is never held past a call's budget. The
- * documented residual (`Stream.distinct`, a factory the guard does not wrap) is still bounded, but by the host's
- * abandon: the server goes on at the budget and the lost thread ends on its own.
+ * ForgeLimit in a few ms, with **no lost thread**, so the server's tick is never held past a call's budget; so are the
+ * copies, factories, lookups (M5-FIX-2), `Stream.distinct` and the collectors that hash (M5-FIX-2b). What stays the
+ * host's is an O(n·m) scan in one call: bounded by the host's abandon, the server goes on at the budget and the lost
+ * thread ends on its own.
  *
  * The §17 attacks through the real tools and guards (a protected player, acharnement, forbidden effects and creatures,
  * a trap on solid ground, a bystander's death) are in `ModuleActsGameTests` and `ActQueueTest`.
@@ -82,12 +83,12 @@ class EvilModulesGameTests {
     }
 
     @GameTest(environment = FORGE_ENVIRONMENT, maxTicks = ASYNC_MAX_TICKS)
-    fun theResidualStreamDistinctIsStoppedByTheHost(helper: GameTestHelper) {
+    fun theResidualScanIsStoppedByTheHost(helper: GameTestHelper) {
         val built = AtomicReference<Map<String, ByteArray>>()
         val failure = AtomicReference<Throwable>()
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                built.set(build("DistinctShared"))
+                built.set(build("ScanShared"))
             } catch (e: Throwable) {
                 failure.set(e)
             }
@@ -97,7 +98,7 @@ class EvilModulesGameTests {
             .thenAwait { helper.assertTrue(failure.get() == null && built.get() != null, "building: ${failure.get()}") }
             .thenExecute {
                 val context = EvilContext()
-                val host = ModuleHost("DistinctShared", built.get(), threads, "evil DistinctShared")
+                val host = ModuleHost("ScanShared", built.get(), threads, "evil ScanShared")
                 val called = host.start(context.context)
                 val disabled = host.disabled
                 helper.assertTrue(disabled != null && "abandoned" in disabled.cause, "the host abandoned it: $disabled")
@@ -106,7 +107,7 @@ class EvilModulesGameTests {
                 // budget (50 ms: four steps of the CPU clock under Windows, read each millisecond), as a busy machine allows.
                 val abandonBudgetMs = (ModuleHost.STARTUP_CALL_NANOS + ModuleHost.ABANDON_MARGIN_NANOS) / 1_000_000 + 16
                 helper.assertTrue(held < abandonBudgetMs + BusyMachine.SLACK_MILLIS, "the server went on at the budget: $held ms")
-                Log.forge.info("[evil] DistinctShared abandoned by the host after %.1f ms (a lost thread, bounded to two)".format(held))
+                Log.forge.info("[evil] ScanShared abandoned by the host after %.1f ms (a lost thread, bounded to two)".format(held))
                 host.unload()
             }
             .thenAwait { helper.assertTrue(threads.lost.alive() == 0, "the lost thread ended on its own") }
@@ -149,11 +150,13 @@ class EvilModulesGameTests {
         /**
          * The deep-hash attacks the guard now bounds, on the server thread with no lost thread: the explicit hashCode,
          * the implicit key (M5-18), a record, nested arrays, and the forms M5-FIX-2 closed — a copy constructor, the
-         * immutable factories (Set.of, Map.of) and a lookup (Map.remove).
+         * immutable factories (Set.of, Map.of) and a lookup (Map.remove), and those M5-FIX-2b closed — Stream.distinct
+         * and a collector that hashes (groupingBy).
          */
         val GUARDED = listOf(
             "SharedHash", "SharedKey", "RecordHash", "ArraysDeepHash",
             "CopyCtorHash", "SetOfHash", "MapOfHash", "MapRemoveHash",
+            "DistinctShared", "CollectorHash",
         )
 
         /** The source of an evil module, read from the battery's resources. */

@@ -8,6 +8,10 @@ passation font foi.**
 
 Branche `worktree-agent-a2e23407e95657f4c`, fusionnée avec `main` (M5-22 et CLAUDE-FALLBACK compris).
 
+> **Lire aussi la section « M5-FIX-2b » en fin de fichier** : sur décision du superviseur, `Stream.distinct` et les
+> collecteurs qui hachent sont fermés eux aussi, et les tests de l'abandon de l'hôte s'appuient désormais sur un
+> balayage d'égalité O(n·m). Ce qui suit sur le « résidu » `distinct`/collecteurs est l'état de M5-FIX-2, dépassé.
+
 ## Ce qui est fermé
 
 Chaque forme passe par `Guarded.deep` avant l'appel du JDK : une structure partagée lève la `ForgeLimit` de M5-18 (« a
@@ -201,3 +205,104 @@ son GameTest, ainsi que le `hasher` de `ModuleEngineTest` (fichier de M5-FIX-1, 
 
 Voir le rapport : `git merge main`, puis build complet `--continue` (tests unitaires et GameTests). Aucun appel réel à
 Claude ; pas de `runServer`.
+
+## M5-FIX-2b : `Stream.distinct` et les collecteurs, fermés (décision du superviseur)
+
+Après les mesures de M5-FIX-2, le superviseur a tranché. Un seul `distinct(L2)` faisait passer chaque collecte de
+5-8 ms à 133-277 ms pendant des minutes, alors que la fermeture l'arrête proprement en ~7 ms. **Fermer.** Même branche,
+après `git merge main` (M5-FIX-2 fusionné, `0557839`).
+
+### Ce qui est fermé
+
+- **`Stream.distinct()`** → `Guarded.distinct(stream)` = `stream.peek(borne).distinct()`. Chaque élément est borné
+  (`deep`) au moment où la boucle du JDK l'atteint.
+- **Les collecteurs qui hachent** :
+  - `toSet` et `toCollection` → `Collectors.mapping(borne, …)` ;
+  - `toUnmodifiableSet` → l'ensemble ci-dessus, puis `Set.of` de ses éléments, comme le JDK, avec le contrôle de doublon
+    borné des fabriques ;
+  - `toMap` (3 et 4 arguments), `groupingBy`, `groupingByConcurrent` (3 formes chacun) → la même fonction de clé, bornée ;
+  - `toMap` à 2 arguments → l'accumulateur du JDK refait à l'identique (`putIfAbsent`, une valeur nulle refusée), avec un
+    **message de doublon borné** : celui du JDK contient le texte de la clé et des deux valeurs, mesuré à 130 millions de
+    caractères et 687 Mio en un appel ;
+  - `toUnmodifiableMap` → `collectingAndThen(…, Guarded::mapCopyOf)`.
+- La « borne » (`Guarded.Each`) lit aussi le compteur **tous les 1 024 éléments**. Aucun code du module ne tourne dans
+  ces boucles du JDK : c'est leur compteur. Exemple : le `distinct` de 400 plages concaténées s'arrête au budget (22 ms)
+  au lieu de 270 ms en un appel.
+- Résultat sur L1 = 10 000 × L0 partagé : `distinct`, `toSet`, `toUnmodifiableSet`, `toMap`, `groupingBy`,
+  `toCollection` lèvent la `ForgeLimit` de M5-18 en **7 à 10 ms**, sans fil perdu. Avant : 700 ms à plusieurs minutes,
+  abandon et fil perdu.
+
+### Le seul chemin de l'hôte : un O(n·m) en un appel
+
+Il ne reste, pour un calcul long en un seul appel du JDK, que l'**O(n·m)** :
+- un `indexOf` de texte (déjà là) ;
+- le **balayage d'égalité** d'une liste : `Collections.indexOfSubList(list, target)`, où `target` tient une sonde de 300
+  listes de 10 000 nombres. `list` tient n références à une liste égale à la sonde jusqu'à son dernier élément.
+
+Chaque comparaison parcourt ~3 M éléments, sous le plafond de `deep` (4 M) : la garde la laisse passer. Une comparaison
+dure ~20 ms, le scan n de plus. `deep` borne ce qu'une comparaison parcourt, pas le nombre de comparaisons.
+`indexOfSubList` est appelé **directement** par le code du module, sans passer par `Guarded` : la cause de l'abandon
+nomme donc toujours une méthode du JDK (« … abandoned in java.util.Collections.indexOfSubList at Search.java:… »).
+
+**Coût sur le ramasse-miettes de ce résidu** (`SharedStructureAttack`, JVM à part, 10 000 comparaisons, fil perdu à la
+priorité normale) : `System.gc()` passe de 4 ms à **6-11 ms**. Pour l'ancien résidu `distinct(L2)`, c'était 133-277 ms.
+La boucle d'égalité d'`ArrayList` atteint ses points de contrôle bien plus vite que le hachage récursif d'une structure
+partagée.
+
+### Les tests repointés (ouverts par le superviseur) : aucun ne perd ce qu'il prouve
+
+| Test | Avant | Après | Ce qu'il prouve, inchangé |
+|---|---|---|---|
+| `AbandonTest` › *a single long call…* (timer 0) | `indexOf` | `indexOf` (inchangé) | l'appelant repart au budget, abandon, rien n'atteint le SDK après |
+| `AbandonTest` › *hashing L2…* → *an equality scan of minutes…* (timer 1, `SharedStructureAttack`) | `Stream.of(l2).distinct()`, ~10 min | balayage de 10 000 comparaisons, ~3 min | appelant au budget, `LIMIT` qui désactive, fil perdu encore vivant, effet sur les collectes |
+| `AbandonTest` › *at the bench…* | `deep.stream().distinct()`, ~0,75 s | balayage de 35 comparaisons, ~0,75 s | le banc attend la ligne : cause « abandoned in java.util. … at Search.java: », ligne > 0 |
+| `AbandonTest` › *past the lost threads…* (timer 2) | `deep.stream().distinct()` | balayage de 35 comparaisons | au-delà des fils perdus permis, la Forge est bloquée et plus rien ne tourne |
+| `ModuleEngineTest` › *a module whose abandoned call still runs…* (`hasher`) | `Stream.of(l1).distinct()` | balayage de 100 comparaisons, ~2 s | abandon, désactivé tout de suite, fuite signalée une fois |
+| `EvilModulesTest` (`DistinctShared`) | `limit abandoned` | `limit too large to hash` | **plus fort** : la garde l'arrête |
+| `EvilModulesTest` (nouveau `ScanShared`) | — | `limit abandoned` | l'attaque de l'hôte dans la batterie |
+| `EvilModulesGameTests` › `theResidualStreamDistinctIsStoppedByTheHost` → `theResidualScanIsStoppedByTheHost` | `DistinctShared` abandonné | `ScanShared` abandonné, même borne du tick | le serveur repart au budget, le fil perdu finit seul |
+| `EvilModulesGameTests.GUARDED` | — | + `DistinctShared`, `CollectorHash` | arrêtés sur le thread serveur, sans abandon, tick court |
+
+Nouveau dans la batterie : `CollectorHash` (un `groupingBy` dont la clé est une structure partagée).
+
+`GuardedTest` vérifie :
+- chaque forme lève sur une structure partagée ;
+- le même résultat que le JDK en usage normal (`distinct`, `toSet`, `toUnmodifiableSet`, `groupingBy`, `toMap` à 2 et
+  3 arguments) ;
+- `NullPointerException` sur une valeur nulle ;
+- le message de doublon exact (« Duplicate key a (attempted merging values 1 and 2) ») ;
+- la `ForgeLimit` de texte pour un doublon aux valeurs énormes.
+
+`InstrumenterTest` vérifie le routage de `distinct` et des collecteurs vers `Guarded`, et qu'il n'en reste aucun appel
+direct au JDK.
+
+### `AbandonTest` › *a single long call…* : le `LATE`, rendu déterministe
+
+**Cause.** Le test vu rouge sous charge échouait l. 57 : `host.disabled` était nul. Dans `ModuleHost.call`, un appel que
+le fil des modules n'a pas même commencé avant son échéance est `LATE`. Il rend alors `Called(skipped = true)`, sans
+faute (M5-LOAD : « personne »). `Hosts.settled` revient aussitôt (rien ne court), et `disabled` reste nul.
+
+**Correctif.** L'aide `attack` d'`AbandonTest` (utilisée aussi par `SharedStructureAttack`) **redemande** un appel
+sauté, comme le moteur rejoue un appel sauté, jusqu'à 20 fois. Les vérifications portent sur l'appel qui a tourné. Si
+l'appel n'est jamais commencé, le dernier appel sauté est rendu et le test échoue comme avant. Rien n'est relâché :
+l'appelant repart toujours au budget du jeu, et la faute exigée est la même.
+
+C'est la seule méthode de FLAKY-4 applicable ici. Ce test porte sur le temps, donc il garde les budgets du jeu, et
+vérifie ce qui s'est passé plutôt que d'allonger un délai.
+
+### Accepté pour la v1 : `Stream.concat` enchaînés
+
+Le superviseur accepte ce point pour la v1. Il est documenté au §3.8 point 1 ter de `M5.md`, avec ses chiffres :
+- 124 Mio pour `toList()` de 100 plages ;
+- 100 Mio pour `IntStream.toArray()` de 400 plages ;
+- une allocation en un appel, que le compteur ne voit qu'au `disarm`.
+
+### Vérifications de M5-FIX-2b
+
+- Ciblé, vert (85 tests) : `GuardedTest`, `InstrumenterTest`, `RewriteBatteryTest`, `SandboxPolicyTest`,
+  `EvilModulesTest` (34 modules), `AbandonTest` (5, attaques repointées), `ModuleEngineTest`, `ArsenalScenariosTest`
+  (aucun faux positif des sept modules), `SdkDocTest` (les exemples et extraits de `sdk.md` passent `forge_test`).
+- Build complet : voir le rapport.
+- Comme pour M5-FIX-2, les sondes par retrait d'une protection restent refusées par la permission « Security Test
+  Removal ». La preuve est l'avant/après de la même attaque : avant, 700 ms à plusieurs minutes et abandon ; après, la
+  `ForgeLimit` en ~7 ms. Les tests de routage et de résultat ci-dessus sont écrits pour échouer si une règle manque.

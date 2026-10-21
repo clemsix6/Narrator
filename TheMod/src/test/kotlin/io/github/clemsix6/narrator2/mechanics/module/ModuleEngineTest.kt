@@ -509,13 +509,18 @@ class ModuleEngineTest {
             "hasher",
             ModuleFixture.source(
                 "hasher",
-                members = "List<List<Integer>> l1;",
+                members = "List<?> target; List<Object> many;",
                 body = """
-                    List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
-                    l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
-                    // The guard bounds an explicit hashCode now (M5-18); Stream.distinct still hashes it unguarded, so
-                    // the host abandons the call and its thread is lost, holding the module's classes (a leak).
-                    m.timers().after(1, () -> m.log("" + java.util.stream.Stream.of(l1).distinct().count()));
+                    List<Integer> a = new ArrayList<>(); for (int i = 0; i < 10_000; i++) a.add(i);
+                    List<Integer> b = new ArrayList<>(); for (int i = 0; i < 10_000; i++) b.add(i);
+                    List<List<Integer>> near = new ArrayList<>(); for (int i = 0; i < 300; i++) near.add(a);
+                    List<List<Integer>> probe = new ArrayList<>(); for (int i = 0; i < 299; i++) probe.add(b); probe.add(List.of(-1));
+                    target = List.of(probe);
+                    many = new ArrayList<>(); for (int i = 0; i < 100; i++) many.add(near);
+                    // The guard bounds the hashes and comparisons of a shared structure (M5-18, M5-FIX-2, M5-FIX-2b), not
+                    // an O(n·m) scan: 100 comparisons of ~3 million elements each, ~2 s in one JDK call, so the host
+                    // abandons the call and its thread is lost, holding the module's classes (a leak).
+                    m.timers().after(1, () -> m.log("" + Collections.indexOfSubList(many, target)));
                 """,
             ),
         )
