@@ -17,10 +17,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `DreamReplayTest` (M3 §15.1): a whole dream over the reference evening, with the Dreamer's scripted answers
- * (fake Anthropic server): the order of the steps and what each one writes, an invalid Grimoire refused then
- * corrected, the voice audit after step 4; and a dream cut short by the gateway's budget that resumes at its
- * step.
+ * `DreamReplayTest` (M3 §15.1, M6 §6.3): a whole dream over the reference evening, with the Dreamer's and the
+ * storyteller's scripted answers (fake Anthropic server): the order of the six steps and what each one writes, an
+ * invalid Grimoire refused then corrected, the voice audit after step 4, the programme's ideas and planned arc; and a
+ * dream cut short by the gateway's budget that resumes at its step.
  */
 class DreamReplayTest {
     private val f = DreamerFixture()
@@ -29,7 +29,7 @@ class DreamReplayTest {
     fun close() = f.close()
 
     @Test
-    fun `a dream goes through its five steps in order, and an invalid Grimoire is refused then corrected`() = runBlocking<Unit> {
+    fun `a dream goes through its six steps in order, an invalid Grimoire is refused then corrected, and the storyteller writes the programme`() = runBlocking<Unit> {
         val e = f.evening()
         f.fake.enqueue(
             // Step 1, Bartok first: the most active.
@@ -66,22 +66,35 @@ class DreamReplayTest {
             val session = Regex("wrote (H-\\d+)").find(lastToolResult(request.json))!!.groupValues[1]
             reply { toolUse("write_chronicle", """{"level": "season", "title": "Les débuts", "text": "La première saison commence par une soirée d'insultes.", "covers": ["$session"]}""") }
         }
+        // A Grimoire of M3, with its plans: refused (M6: the plans are the programme's).
         val invalid = "## Players\n- Bartok : insolent.\n## Arcs\n- aucun\n## Running gags\n- « le Plongeur ».\n## What works\n\n## What falls flat\n- aucun\n## Plans\n- aucun"
         val grimoire = listOf(
             "## Players", "- Bartok : insolent quand il perd, il rit des sanctions ; surnommé « le Plongeur ».", "- Mimosa : respectueuse, prie quand elle perd ses affaires.",
-            "## Running gags", "- « le Plongeur » : frais.", "## Arcs", "- La revanche de Bartok contre la lave, prévue.", "## What works", "- Le guichet des insultes a fait rire Bartok.",
-            "## What falls flat", "- aucun", "## Plans", "- Proposer à Bartok un défi dans le Nether.", "## Watch out", "- Mimosa perd souvent ses affaires : pas de châtiment gratuit.",
+            "## Running gags", "- « le Plongeur » : frais.", "## Arcs", "- aucun", "## What works", "- Le guichet des insultes a fait rire Bartok.",
+            "## What falls flat", "- aucun", "## Watch out", "- Mimosa perd souvent ses affaires : pas de châtiment gratuit.",
         ).joinToString("\n")
         f.fake.enqueue(
             reply { text("Session et saison écrites.") },
-            // Step 4: an invalid Grimoire, an arc, then the Grimoire corrected.
-            reply {
-                toolUse("write_grimoire", """{"text": ${json(invalid)}}""")
-                toolUse("remember", """{"kind": "arc", "what": "Le Narrateur prépare la revanche de Bartok contre la lave du Nether.", "players": ["Bartok"], "theme": "revanche_sur_la_lave", "importance": 6}""")
-            },
+            // Step 4: an invalid Grimoire, then the Grimoire corrected.
+            reply { toolUse("write_grimoire", """{"text": ${json(invalid)}}""") },
             reply { toolUse("write_grimoire", """{"text": ${json(grimoire)}}""") },
-            reply { text("Grimoire réécrit, un récit prévu.") },
-            // Step 5: the two memories of the same death.
+            reply { text("Grimoire réécrit.") },
+            // Step 5, the storyteller: an arc planned, a season and a challenge.
+            reply {
+                toolUse("remember", """{"kind": "arc", "what": "Le Narrateur prépare la revanche de Bartok contre la lave du Nether.", "players": ["Bartok"], "theme": "revanche_sur_la_lave", "importance": 6}""")
+                toolUse(
+                    "propose_idea",
+                    """{"kind": "season", "title": "Les débuts", "pitch": "Une saison de premiers pas : le Nether pour Bartok, le retour des affaires perdues pour Mimosa.",
+                       "fit": "toute la saison", "novelty": 3, "fun": 3, "fairness": 4, "hours": 168}""",
+                )
+                toolUse(
+                    "propose_idea",
+                    """{"kind": "challenge", "title": "La course au pic", "pitch": "Course au sommet du pic enneigé au nord du spawn ; le premier arrivé gagne un joker.",
+                       "fit": "Bartok et Mimosa en ligne", "players": ["Bartok", "Mimosa"], "register": "sports_commentary", "novelty": 4, "fun": 4, "fairness": 4}""",
+                )
+            },
+            reply { text("Une saison, une course et un récit prévu.") },
+            // Step 6: the two memories of the same death.
             reply { toolUse("merge_memories", """{"keep": "${e.lava}", "merged": ["${e.lavaAgain}"]}""") },
             reply { text("Une fusion.") },
         )
@@ -92,30 +105,34 @@ class DreamReplayTest {
         assertEquals(0, f.fake.pending)
         assertEquals(emptyList(), f.fake.rejections)
         assertNull(outcome.budget)
-        assertEquals(5, outcome.lastStep)
+        assertEquals(6, outcome.lastStep)
         assertEquals(1, outcome.rejected, "the invalid Grimoire")
         assertEquals(
-            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read",
+            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 2 ideas written, 0 closed · " +
+                "step 6 done: 1 pair read",
             outcome.report,
         )
-        assertEquals("5", f.state.state(MemoryJobs.stepKey(12)))
+        assertEquals("6", f.state.state(MemoryJobs.stepKey(12)))
 
-        // The conversations, in the order of the steps; all of them dreamer's, with the prompt and the tools of the role.
-        val labels = f.rows("SELECT label, role, end_reason FROM conversations WHERE role = 'dreamer' ORDER BY started_at, conversation_id") {
+        // The conversations, in the order of the steps; the Dreamer's with the prompt and the tools of the role, the programme the storyteller's.
+        val labels = f.rows("SELECT label, role, end_reason FROM conversations WHERE role IN ('dreamer', 'storyteller') ORDER BY started_at, conversation_id") {
             Triple(getString(1), getString(2), getString(3))
         }
         assertEquals(outcome.conversations.size, labels.size)
-        assertEquals(6, outcome.conversations.size)
-        val order = f.rows("SELECT c.label FROM conversations c JOIN (SELECT conversation_id, min(id) AS first FROM llm_calls GROUP BY 1) l USING (conversation_id) WHERE c.role = 'dreamer' ORDER BY l.first") { getString(1) }
+        assertEquals(7, outcome.conversations.size)
+        val order = f.rows("SELECT c.label, c.role FROM conversations c JOIN (SELECT conversation_id, min(id) AS first FROM llm_calls GROUP BY 1) l USING (conversation_id) ORDER BY l.first") {
+            "${getString(1)} (${getString(2)})"
+        }
         assertEquals(
             listOf(
-                "Dream run 12, step 1: Bartok", "Dream run 12, step 1: Mimosa", "Dream run 12, step 2: review",
-                "Dream run 12, step 3: chronicle", "Dream run 12, step 4: grimoire", "Dream run 12, step 5: merges",
+                "Dream run 12, step 1: Bartok (dreamer)", "Dream run 12, step 1: Mimosa (dreamer)", "Dream run 12, step 2: review (dreamer)",
+                "Dream run 12, step 3: chronicle (dreamer)", "Dream run 12, step 4: grimoire (dreamer)", "Dream run 12, step 5: programme (storyteller)",
+                "Dream run 12, step 6: merges (dreamer)",
             ),
             order,
         )
         assertEquals(listOf("done"), labels.map { it.third }.distinct())
-        assertEquals(listOf("dream"), f.rows("SELECT DISTINCT purpose FROM llm_calls") { getString(1) })
+        assertEquals(listOf("dream", "programme"), f.rows("SELECT DISTINCT purpose FROM llm_calls ORDER BY 1") { getString(1) })
         val first = f.fake.requests.first().json
         assertEquals(Prompts.bundled().get("dreamer"), first.path("system").first().path("text").asText())
         assertEquals(
@@ -125,8 +142,9 @@ class DreamReplayTest {
             ),
             first.path("tools").map { it.path("name").asText() },
         )
-        // The six conversations open on the same tools and system prompt, byte for byte (M3-POST, the gateway's cache).
-        val prefixes = f.fake.requests.groupBy { it.conversation }.values.map { it.first() }.map { listOf(it.raw("tools"), it.raw("system")) }
+        // The six conversations of the Dreamer open on the same tools and system prompt, byte for byte (M3-POST, the gateway's cache).
+        val dreamer = f.fake.requests.filter { it.conversation.orEmpty().startsWith("dreamer-") }
+        val prefixes = dreamer.groupBy { it.conversation }.values.map { it.first() }.map { listOf(it.raw("tools"), it.raw("system")) }
         assertEquals(6, prefixes.size)
         assertEquals(1, prefixes.toSet().size)
 
@@ -134,7 +152,7 @@ class DreamReplayTest {
         val opening = text(first.path("messages").first())
         println("=== The opening of step 1 for Bartok, as the model read it ===\n$opening\n=== end ===")
         println("The Dreamer's prefix: system prompt ${first.path("system").toString().length} characters, tools ${first.path("tools").toString().length}")
-        assertTrue(opening.startsWith("<job kind=\"dream\" run=\"12\" step=\"1\" of=\"5\" task=\"players\" player=\"Bartok\" last_reflection=\"never\"/>\n<sheet>\nBartok · "), opening)
+        assertTrue(opening.startsWith("<job kind=\"dream\" run=\"12\" step=\"1\" of=\"6\" task=\"players\" player=\"Bartok\" last_reflection=\"never\"/>\n<sheet>\nBartok · "), opening)
         assertTrue("<new_interactions since=\"ever\" count=\"2\">\n" in opening, opening)
         assertTrue("- ${e.insulted} 10-01 20:01 insult -2 · said « narrateur t'es nul »: a traité le Narrateur de « nul » dans le chat" in opening, opening)
         assertTrue("<stats_change>(first reflection on this player: no earlier values; the sheet has the current ones)</stats_change>" in opening, opening)
@@ -157,7 +175,8 @@ class DreamReplayTest {
 
         // Step 2: the review and the worn gag; the reactions the model read.
         val review = text(f.fake.requests[4].json.path("messages").first())
-        assertTrue(review.startsWith("<job kind=\"dream\" run=\"12\" step=\"2\" of=\"5\" task=\"review\"/>\n<tics>"), review)
+        assertTrue(review.startsWith("<job kind=\"dream\" run=\"12\" step=\"2\" of=\"6\" task=\"review\"/>\n<tics>"), review)
+        assertTrue("<registers from=\"10-01 20:01\" to=\"10-01 22:10\" lines=\"2\" reviewed=\"0\">(no line reviewed: the line review was off, or failed)</registers>" in review, review)
         assertTrue("<lines count=\"2\" order=\"latest first\" reactions=\"laughed 1 · ignored 1\">" in review, review)
         assertTrue("- [10-01 20:01] e${e.sanction} → Bartok laughed: \"Bartok, guichet des insultes" in review, review)
         assertTrue("worn" == f.rows("SELECT freshness FROM canon WHERE id = ${e.gag.id}") { getString(1) }.single())
@@ -169,22 +188,48 @@ class DreamReplayTest {
         assertEquals("[${e.chapterEntry.id}]", chronicle[0].second)
         assertEquals(true, chronicle[1].third)
 
-        // Step 4: the invalid Grimoire refused with all its problems, then the valid one written; an arc planned.
+        // Step 4: the invalid Grimoire refused with all its problems, then the valid one written.
         val calls = f.rows("SELECT tool, status, result FROM tool_calls WHERE tool = 'write_grimoire' ORDER BY id") { Triple(getString(1), getString(2), getString(3)) }
         assertEquals(listOf("invalid", "ok"), calls.map { it.second })
+        val headings = "## Players, ## Running gags, ## Arcs, ## What works, ## What falls flat, ## Watch out"
         assertEquals(
-            "Invalid arguments: the Grimoire is not written: sections: ## Watch out missing; write all seven: ## Players, ## Running gags, ## Arcs, " +
-                "## What works, ## What falls flat, ## Plans, ## Watch out; sections: \"## What works\" has no line; write at least one (« - aucun » when there is nothing)",
+            "Invalid arguments: the Grimoire is not written: headings: \"## Plans\" is not a section; the only headings are $headings; " +
+                "sections: ## Watch out missing; write all six: $headings; sections: \"## What works\" has no line; write at least one (« - aucun » when there is nothing)",
             calls[0].third,
         )
         assertEquals("ok: wrote the Grimoire (version 1, ${grimoire.length} of 10000 characters)", calls[1].third)
         assertEquals(grimoire, f.write { doc("grimoire") }!!.content)
-        assertEquals(listOf("planned"), f.rows("SELECT status FROM canon WHERE kind = 'arc'") { getString(1) })
         val audit = f.rows("SELECT subject, reason FROM engine_decisions WHERE kind = 'memory' AND decision = 'voice_audit'") { getString(1) to getString(2) }.single()
         assertEquals("run 12", audit.first)
         assertTrue(audit.second.endsWith("1 with grandiose or dark words: abîme (memory_docs review:1)"), audit.second)
 
-        // Step 5: the duplicate merged into the memory kept.
+        // Step 5: the storyteller read the new Grimoire and the players, then wrote two ideas and an arc, as itself, in the run.
+        val programme = f.fake.requests.first { it.conversation.orEmpty().startsWith("storyteller-") }.json
+        assertEquals(Prompts.bundled().get("storyteller"), programme.path("system").first().path("text").asText())
+        assertEquals(
+            listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"),
+            programme.path("tools").map { it.path("name").asText() },
+        )
+        val brief = text(programme.path("messages").first())
+        println("=== The opening of the programme, as the storyteller read it ===\n$brief\n=== end ===")
+        println(
+            "The storyteller's prefix: system prompt ${programme.path("system").toString().length} characters, tools ${programme.path("tools").toString().length}, " +
+                "opening ${brief.length}",
+        )
+        assertTrue(brief.startsWith("<job kind=\"dream\" run=\"12\" step=\"5\" of=\"6\" task=\"programme\"/>\n<grimoire version=\"1\""), brief.take(300))
+        assertTrue(grimoire.lines()[1] in brief, "the Grimoire just rewritten")
+        assertTrue("<players count=\"2\" days=\"7\" order=\"the most active first\">\n- Bartok « le Plongeur » · 1h50m played in 7 days" in brief, brief)
+        assertTrue("<ideas open=\"0\">(none open, none closed lately)</ideas>" in brief, brief)
+        assertTrue(brief.length <= ProgrammeInputs.STEP_MAX, "${brief.length}")
+        assertEquals(
+            listOf(listOf("season", "storyteller", "12"), listOf("challenge", "storyteller", "12")),
+            f.rows("SELECT kind, source, run_id FROM ideas ORDER BY id") { listOf(getString(1), getString(2), getLong(3).toString()) },
+        )
+        assertEquals(listOf("planned" to "storyteller"), f.rows("SELECT status, source FROM canon WHERE kind = 'arc'") { getString(1) to getString(2) })
+        val decision = f.rows("SELECT reason FROM engine_decisions WHERE kind = 'memory' AND decision = 'programme'") { getString(1) }.single()
+        assertEquals("done: 2 ideas written, 0 closed", decision)
+
+        // Step 6: the duplicate merged into the memory kept.
         assertEquals(listOf(true to e.lava.id), f.rows("SELECT archived, merged_into FROM memories WHERE id = ${e.lavaAgain.id}") { getBoolean(1) to getLong(2) })
         assertEquals(outcome.writes.toLong(), f.count("memory_log", "run_id = 12"))
     }
@@ -214,27 +259,31 @@ class DreamReplayTest {
             reply { text("Rien à écrire dans la chronique.") },
             reply { toolUse("write_grimoire", """{"text": ${json(grimoire)}}""") },
             reply { text("Grimoire écrit.") },
+            reply { text("Rien à proposer ce soir.") },
             reply { text("Aucun doublon.") },
         )
 
         val resumed = f.dreamer.dream(21, 3)
 
         assertEquals(RunStatus.DONE, resumed.status, resumed.report)
-        assertEquals(5, resumed.lastStep)
-        assertEquals("resumed at step 3 · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 1 pair read", resumed.report)
-        assertEquals("5", f.state.state(MemoryJobs.stepKey(21)))
+        assertEquals(6, resumed.lastStep)
+        assertEquals(
+            "resumed at step 3 · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 0 ideas written, 0 closed · step 6 done: 1 pair read",
+            resumed.report,
+        )
+        assertEquals("6", f.state.state(MemoryJobs.stepKey(21)))
         val steps = f.fake.requests.drop(4).filter { it.json.path("messages").size() == 1 }.map { text(it.json.path("messages").first()).substringBefore("/>") }
         assertEquals(
-            listOf("<job kind=\"dream\" run=\"21\" step=\"3\" of=\"5\" task=\"chronicle\"", "<job kind=\"dream\" run=\"21\" step=\"4\" of=\"5\" task=\"grimoire\"", "<job kind=\"dream\" run=\"21\" step=\"5\" of=\"5\" task=\"merges\""),
+            listOf(3 to "chronicle", 4 to "grimoire", 5 to "programme", 6 to "merges").map { (step, task) -> "<job kind=\"dream\" run=\"21\" step=\"$step\" of=\"6\" task=\"$task\"" },
             steps,
         )
         assertEquals(2L, f.count("conversations", "label LIKE '%step 1:%'"), "the players were not reflected on twice")
 
         // An attempt cut after its last step finishes at once, done since the Grimoire was rewritten.
-        val after = f.dreamer.dream(22, 6)
+        val after = f.dreamer.dream(22, 7)
         assertEquals(RunStatus.DONE, after.status)
         assertEquals(emptyList(), after.conversations)
-        assertEquals("resumed at step 6", after.report)
+        assertEquals("resumed at step 7", after.report)
     }
 
     private companion object {

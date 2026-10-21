@@ -72,6 +72,13 @@ internal class MemoryToolFixture : AutoCloseable {
         return Caller(Role.DREAMER, conversation, turnId = null, taskId = null)
     }
 
+    /** The storyteller's conversation of the dream [runId]: its programme (M6 §6.3). */
+    fun storyteller(runId: Long): Caller {
+        val conversation = "storyteller-$runId"
+        fake.runs[conversation] = RunContext(runId, RunKind.DREAM, null, null, null, role = Role.STORYTELLER)
+        return Caller(Role.STORYTELLER, conversation, turnId = null, taskId = null)
+    }
+
     /** [player] online at [pos]. */
     fun online(player: PlayerRef, pos: Pos = Pos("minecraft:overworld", 120, 90, -400)) = players.put(
         LivePlayer(

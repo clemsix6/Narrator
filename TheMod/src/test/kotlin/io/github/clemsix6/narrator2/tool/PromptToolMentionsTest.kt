@@ -12,9 +12,9 @@ import kotlin.test.fail
 /**
  * The prompts only name what the model really has (M1_M2 §18.2, T22, M3 §16). The lesson of the v1: tools
  * that did nothing were presented to the model as working. Every identifier quoted between backticks in
- * `director.md`, `analyst.md`, `scout.md`, `forger.md`, `chronicler.md` and `dreamer.md` must be a tool of that role's
- * set, with everything wired (the memory, the mechanics engine and the Forge included, M4 §12.1, M5 §9.4); and since
- * each prompt says it lists "all the tools", each role's set must be named in full by its prompt.
+ * `director.md`, `analyst.md`, `scout.md`, `forger.md`, `chronicler.md`, `dreamer.md` and `storyteller.md` must be a tool
+ * of that role's set, with everything wired (the memory, the mechanics engine and the Forge included, M4 §12.1, M5 §9.4);
+ * and since each prompt says it lists "all the tools", each role's set must be named in full by its prompt.
  */
 class PromptToolMentionsTest {
     private val prompts = Prompts.bundled()
@@ -70,6 +70,18 @@ class PromptToolMentionsTest {
     fun `the Dreamer's prompt names its tools, all of them and nothing else`() {
         assertEquals(15, toolsOf(Role.DREAMER).size, "the Dreamer's tools: ${toolsOf(Role.DREAMER)}")
         assertNamesExactly("dreamer", Role.DREAMER)
+    }
+
+    /** The storyteller always sees `inspire` (`MemoryAgents` and `Workers` set `storytellerAvailable` for it, M6 §12.2). */
+    @Test
+    fun `the storyteller's prompt names its tools, all of them and nothing else`() {
+        val storyteller = everythingWired.copy(storytellerAvailable = true)
+        assertEquals(
+            setOf("propose_idea", "drop_idea", "inspire", "remember", "resolve", "recall", "player_profile", "sql"),
+            toolsOf(Role.STORYTELLER, storyteller),
+            "the storyteller's tools (M6 §6.5)",
+        )
+        assertNamesExactly("storyteller", Role.STORYTELLER, storyteller)
     }
 
     @Test
