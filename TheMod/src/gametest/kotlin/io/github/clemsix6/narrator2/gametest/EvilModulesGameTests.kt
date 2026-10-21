@@ -146,8 +146,15 @@ class EvilModulesGameTests {
     }
 
     private companion object {
-        /** The deep-hash attacks the guard now bounds (explicit, implicit key, a record, nested arrays). */
-        val GUARDED = listOf("SharedHash", "SharedKey", "RecordHash", "ArraysDeepHash")
+        /**
+         * The deep-hash attacks the guard now bounds, on the server thread with no lost thread: the explicit hashCode,
+         * the implicit key (M5-18), a record, nested arrays, and the forms M5-FIX-2 closed — a copy constructor, the
+         * immutable factories (Set.of, Map.of) and a lookup (Map.remove).
+         */
+        val GUARDED = listOf(
+            "SharedHash", "SharedKey", "RecordHash", "ArraysDeepHash",
+            "CopyCtorHash", "SetOfHash", "MapOfHash", "MapRemoveHash",
+        )
 
         /** The source of an evil module, read from the battery's resources. */
         fun source(name: String): String =
