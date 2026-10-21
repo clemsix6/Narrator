@@ -36,7 +36,7 @@ class ConfigStoreTest {
             written.keys,
             "only the settings in use",
         )
-        assertEquals(setOf("claude-opus-5-5", "claude-haiku-5-5"), written.getValue("prices").jsonObject.keys, "the prices of the default models")
+        assertEquals(setOf("claude-opus-5-5", "claude-haiku-5-5", "claude-opus-4-8"), written.getValue("prices").jsonObject.keys, "the prices of the default models and the fallback's")
         assertEquals(setOf("enabled", "model", "effort", "thinking", "timeoutMs"), written.getValue("reflex").jsonObject.keys, "no key of its own")
         assertEquals(Role.entries.map { it.id }.toSet(), written.getValue("roles").jsonObject.keys)
         assertEquals(

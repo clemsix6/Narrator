@@ -36,8 +36,8 @@ import kotlin.test.assertTrue
  *   the engine had told it), every page is rendered, their text is nowhere, and no statement any page ran names
  *   `private_messages`, while the public chat shows;
  * - every read goes through the dashboard's read connection, each statement with a time limit, and lists are paged;
- * - a request a fallback model answered shows in yellow, a refusal in red, as `/narrator trace` shows them, a model
- *   without a price as `$ ?`.
+ * - a request a fallback model answered shows in yellow, a refusal in red, as `/narrator trace` shows them, at the price
+ *   of the model that answered.
  */
 class TracePagesTest {
     private val data = TraceDataset()
@@ -124,7 +124,7 @@ class TracePagesTest {
     }
 
     @Test
-    fun `a request a fallback model answered is yellow, a refusal red, as trace shows them, and an unpriced model costs $ ?`() {
+    fun `a request a fallback model answered is yellow, a refusal red, as trace shows them, at the price of the model that answered`() {
         // Turn 46 acted on the answer of a fallback model; turn 47 ended refused on a fallback that said nothing.
         turn(46, TurnRecord.Outcome.ACTED, call(46, "claude-opus-4-8", "tool_use", "cyber"))
         turn(47, TurnRecord.Outcome.REFUSED, call(47, "claude-opus-5-5", "end_turn", null), call(47, "claude-opus-4-8", "end_turn", "cyber"))
@@ -132,13 +132,13 @@ class TracePagesTest {
         data.fixture.sync()
 
         val answered = page("/turns/46")
-        assertContains(answered, "<p class=\"warning\">19:36:10 · 1.0 s · claude-opus-4-8 · 1k in (0 cached, 0 written) · 50 out · tool_use · fallback (cyber) → claude-opus-4-8 · \$ ?</p>")
-        assertContains(answered, "<dt>Cost</dt><dd>\$ ? for 1 request</dd>")
+        assertContains(answered, "<p class=\"warning\">19:36:10 · 1.0 s · claude-opus-4-8 · 1k in (0 cached, 0 written) · 50 out · tool_use · fallback (cyber) → claude-opus-4-8 · \$0.0063</p>")
+        assertContains(answered, "<dt>Cost</dt><dd>\$0.0063 for 1 request</dd>", message = "1 000 in and 50 out of the fallback model (5 / 25 \$)")
 
         val silent = page("/turns/47")
         assertContains(silent, "<h3>Request 1</h3><p>", message = "the first request is plain")
-        assertContains(silent, "<p class=\"failure\">19:36:10 · 1.0 s · claude-opus-4-8 · 1k in (0 cached, 0 written) · 50 out · end_turn · refused: cyber · \$ ?</p>")
-        assertContains(silent, "<dd>\$0.0050 + 1 call at \$ ? for 2 requests</dd>", message = "1 000 in and 50 out of Opus, and the fallback model unpriced")
+        assertContains(silent, "<p class=\"failure\">19:36:10 · 1.0 s · claude-opus-4-8 · 1k in (0 cached, 0 written) · 50 out · end_turn · refused: cyber · \$0.0063</p>")
+        assertContains(silent, "<dd>\$0.011 for 2 requests</dd>", message = "1 000 in and 50 out of Opus 5.5 (4 / 20 \$) and of the fallback model (5 / 25 \$)")
         assertContains(silent, "<span class=\"failure\">refused</span>")
         assertContains(page("/turns/48"), "· refusal · refused: cyber · \$0.0050</p>")
 
@@ -149,7 +149,7 @@ class TracePagesTest {
         data.fixture.sync()
         val task = page("/tasks/8")
         assertContains(task, "<p class=\"failure\">19:36:10 · 1.0 s · claude-opus-4-8 · 1k in")
-        assertContains(task, "end_turn · refused: cyber · \$ ?</p>")
+        assertContains(task, "end_turn · refused: cyber · \$0.0063</p>")
         assertContains(task, "<p class=\"failure\">refused by the safety filter (category cyber)</p>")
         assertContains(page("/tasks"), "<tr class=\"failure\"><td class=\"num\"><a href=\"/tasks/8\">T-8</a>")
         assertContains(page("/conversations"), "<tr class=\"failure\"><td><a href=\"/conversations/analyst-cccc\">Task T-8</a>")

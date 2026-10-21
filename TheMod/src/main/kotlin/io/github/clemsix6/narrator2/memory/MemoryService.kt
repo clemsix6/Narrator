@@ -23,15 +23,17 @@ import kotlinx.coroutines.sync.withLock
  *   chapter;
  * - [runContext]: the run of a Chronicler's, Dreamer's or storyteller's conversation, from [MemoryAgents], the same
  *   instance the Chronicler and the Dreamer run their conversations with;
- * - [openIdeas]: the storyteller's open ideas, from the cache of [OpenIdeas]: [store] reads them again after each
- *   write of an idea, and the coroutine `narrator2-ideas` (in [scope]) every [OpenIdeas.REFRESH_MS], which also
- *   catches what the hygiene expired.
+ * - [openIdeas]: the storyteller's open ideas, from the cache [ideas]. [store] is the store [ideas] watches, the one
+ *   every piece of the memory writes through (the hygiene and the jobs included): the cache is read again after each
+ *   write of an idea, each expiry and each revert. The coroutine `narrator2-ideas` (in [scope]) reads it again every
+ *   [OpenIdeas.REFRESH_MS] as well, a safety net for a read that failed.
  *
  * Available from the start of the server to its stop, even through an outage of the Journal: each read or
  * write then fails with the Journal's reason, and works again once it is back.
  */
-class MemoryService(
-    store: MemoryStore,
+class MemoryService internal constructor(
+    override val store: MemoryStore,
+    private val ideas: OpenIdeas,
     override val recall: Recall,
     override val sheets: PlayerSheets,
     override val clock: PlayClock,
@@ -41,10 +43,6 @@ class MemoryService(
     private val wake: WakeAttachments,
     scope: CoroutineScope,
 ) : Memory {
-    private val ideas = OpenIdeas(store)
-
-    override val store: MemoryStore = ideas.watching(store)
-
     private val refresher = scope.launch(CoroutineName(OpenIdeas.COROUTINE)) { ideas.refreshEvery(OpenIdeas.REFRESH_MS) }
 
     override val available: Boolean get() = true
@@ -73,7 +71,8 @@ class MemoryService(
  * The cache of the storyteller's open ideas (M6 §6.2, §12.4): what [current] gives the briefing's `<programme>`, the
  * heartbeat and `inspire` without waiting for the database. [refresh] reads them again ([MemoryStore.ideas], newest
  * first); a store [watching] does after each write that changes them, and [refreshEvery] on a timer. A read that
- * fails keeps the last list (one `WARN` until a read works again).
+ * fails keeps the last list (one `WARN` until a read works again). The cache only follows the writes made through
+ * its [watching] store: `createMemory` gives that one store to every piece of the memory.
  */
 internal class OpenIdeas(private val store: MemoryStore) {
     private val log = Log.memory
@@ -131,7 +130,7 @@ internal class OpenIdeas(private val store: MemoryStore) {
         /** The coroutine of [refreshEvery]. */
         const val COROUTINE = "narrator2-ideas"
 
-        /** How often the cache is read again whatever was written: what the hygiene expired shows within it (M6 §6.2). */
+        /** How often the cache is read again whatever was written: a safety net, when the read after a write failed. */
         const val REFRESH_MS = 10 * 60_000L
 
         /** Open ideas read at most: the store keeps [MemoryLimits.OPEN_IDEAS] open, this leaves room for a revert. */

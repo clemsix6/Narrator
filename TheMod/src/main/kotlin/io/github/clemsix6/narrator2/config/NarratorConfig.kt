@@ -76,10 +76,16 @@ data class NarratorConfig(
             Role.DREAMER to RoleConfig(effort = "high", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
         )
 
-        /** The API's prices of the models the Narrator uses by default (dollars per million tokens; cache writes at 1 h). */
+        /**
+         * The API's prices of the models the Narrator uses by default (dollars per million tokens; cache writes at 1 h),
+         * and of `claude-opus-4-8`, the model that answers when the API falls back (CLAUDE-FALLBACK): $5 / $25 (Claude
+         * Opus 5 is "at Opus 4.8's pricing"), cache reads at 0.1x the input ("every other model at 0.1x") and 1 h writes
+         * at 2x, from the Claude API reference (`claude-api` skill, `shared/model-migration.md` and `prompt-caching.md`).
+         */
         val DEFAULT_PRICES: Map<String, ModelPrice> = mapOf(
             "claude-opus-5-5" to ModelPrice(input = 4.0, output = 20.0, cacheRead = 0.20, cacheWrite = 8.0),
             "claude-haiku-5-5" to ModelPrice(input = 0.10, output = 0.50, cacheRead = 0.01, cacheWrite = 0.20),
+            "claude-opus-4-8" to ModelPrice(input = 5.0, output = 25.0, cacheRead = 0.50, cacheWrite = 10.0),
         )
     }
 }

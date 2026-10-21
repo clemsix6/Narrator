@@ -31,13 +31,14 @@ class Prices(private val table: Map<String, ModelPrice>) {
         /**
          * Dollars as the dashboard and `/narrator usage` show them: with cents from one dollar up (`$12.40`, `$1.92`), two
          * significant digits below (`$0.042`, `$0.00011`: a reflex costs a fraction of a cent); `$0`; `$ ?` for an
-         * unknown cost.
+         * unknown cost. Rounded to two significant digits first, so that a cost that rounds up to a dollar has its cents
+         * (`0.996` is `$1.00`).
          */
-        fun dollars(amount: Double?): String = when {
-            amount == null -> "$ ?"
-            amount == 0.0 -> "$0"
-            amount >= 1 -> "$" + String.format(Locale.ROOT, "%.2f", amount)
-            else -> "$" + BigDecimal(amount).round(MathContext(2)).toPlainString()
+        fun dollars(amount: Double?): String {
+            if (amount == null) return "$ ?"
+            if (amount == 0.0) return "$0"
+            val rounded = BigDecimal(amount).round(MathContext(2))
+            return "$" + if (rounded >= BigDecimal.ONE) String.format(Locale.ROOT, "%.2f", amount) else rounded.toPlainString()
         }
     }
 }
