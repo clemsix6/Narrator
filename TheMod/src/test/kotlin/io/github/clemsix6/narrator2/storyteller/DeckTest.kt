@@ -276,6 +276,9 @@ class DeckTest {
         val free = Deck.draw(unmeasured, Random(3))
         assertTrue(free.seeds.all { it.register in ComicRegister.VOICE }, "without measures, any register of the voice")
         assertFalse(free.render().lines().first().contains("least used"))
+        val unlabeled = samples.table(ideas = emptyList(), leastUsed = ComicRegister.VOICE.take(3), lastRegisters = emptyList())
+        assertFalse(Deck.draw(unlabeled, Random(3)).render().lines().first().contains("least used"), "no label yet: every register at 0")
+        assertTrue((1..20).flatMap { Deck.draw(unlabeled, Random(it)).seeds }.any { it.register !in ComicRegister.VOICE.take(3) })
     }
 
     @Test

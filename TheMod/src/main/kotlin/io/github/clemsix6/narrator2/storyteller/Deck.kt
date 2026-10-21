@@ -215,7 +215,10 @@ class Table(
     val crutches: List<String> = emptyList(),
     val missing: List<Missing> = emptyList(),
     val twists: List<Twist> = Deck.twists,
-)
+) {
+    /** [leastUsed] when some line was labeled: without a label, every register is at 0 and the ranking says nothing. */
+    val measuredLeastUsed: List<ComicRegister> get() = if (lastRegisters.isEmpty()) emptyList() else leastUsed
+}
 
 /** One draw (M6 §5.2): the [ideas] of the programme first, then the [seeds]; [atRest], what was left out and why. */
 class Draw(val table: Table, val ideas: List<Idea>, val seeds: List<Seed>, val atRest: List<String>) {
@@ -241,7 +244,7 @@ class Draw(val table: Table, val ideas: List<Idea>, val seeds: List<Seed>, val a
         val count = ideas.size + seeds.size
         val kind = if (table.kind == InspireKind.ANY) "" else "${table.kind.id} "
         val who = if (table.players.isEmpty()) "everyone" else ToolText.names(table.players)
-        val least = table.leastUsed.takeIf { it.isNotEmpty() }?.let { " (least used lately: ${it.joinToString { register -> register.id }})" }.orEmpty()
+        val least = table.measuredLeastUsed.takeIf { it.isNotEmpty() }?.let { " (least used lately: ${it.joinToString { register -> register.id }})" }.orEmpty()
         return if (count == 0) "ok: no ${kind}idea for $who now$least" else "ok: $count ${kind}idea${if (count > 1) "s" else ""} for $who$least"
     }
 
@@ -359,7 +362,7 @@ object Deck {
     fun draw(table: Table, random: Random): Draw {
         val ideas = ideas(table)
         val resting = restingRegisters(table)
-        val registers = table.leastUsed.filter { it !in resting }.take(LEAST_USED)
+        val registers = table.measuredLeastUsed.filter { it !in resting }.take(LEAST_USED)
             .ifEmpty { (ComicRegister.VOICE - resting - table.lastRegisters.toSet()).shuffled(random).take(LEAST_USED) }
         val levers = table.levers.filter { table.kind in it.kinds && (table.history.usedAgo(it.key) ?: Long.MAX_VALUE) >= LEVER_REST_S }
         val seeds = mutableListOf<Seed>()
