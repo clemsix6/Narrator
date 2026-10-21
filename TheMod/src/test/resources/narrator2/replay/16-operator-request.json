@@ -1,0 +1,25 @@
+{
+  "id": "operator_request",
+  "title": "An operator asks for orbiting chickens to welcome a player",
+  "source": "exact opening of m5-live pass 5 chapter 1 (director-74c5ed27), with the operator's message",
+  "context": "Operator Opaline asks for chickens orbiting Gaspard's head for a minute to welcome him; four new players arrive; target Gaspard",
+  "transcript": "transcripts/m5-live-pass5-director-74c5ed27.jsonl",
+  "acts": {
+    "deploy_module": "ok: module orbiting_chickens v0 deployed as C-1 (plan) until 01:48 (in 5m): player Gaspard, chickens 6, seconds 60; it stays secret"
+  },
+  "checks": [
+    {
+      "name": "deploys the module",
+      "kind": "calls",
+      "tool": "deploy_module",
+      "pattern": "orbiting_chickens"
+    },
+    {
+      "name": "deploys before announcing",
+      "kind": "act_before_announce",
+      "tools": [
+        "deploy_module"
+      ]
+    }
+  ]
+}

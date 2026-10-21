@@ -1,0 +1,83 @@
+# The twists of inspire's deck (storyteller/Deck.kt, design M6 §5.3): a seed is a lever x a hook of the memory
+# x one of these twists x a comic register. They are suggestions for the Director, who writes the lines in French:
+# English, short, funny, never dark (no death, no despair, no threat that is meant), never cruel to a real person,
+# and free of the tics the style watch fights (no celestial office, no ministry, no investigation, no forms).
+#
+# One twist per line, under a [section] header: [challenge] for challenges, duels and games, [punishment] for the
+# punishments and the laws, [favor] for favors, items and books, [any] for any lever. Every section must hold at
+# least one twist; a twist holds 90 characters at most and appears once. Blank lines and lines starting with #
+# are ignored.
+
+[any]
+the Narrator pretends to lose
+an animal turns out to be the real winner
+the trap turns out to be a gift
+the Narrator calls it an accident and sticks to that story
+it happens again tomorrow, at the very same time
+the ending is announced first, then the rest
+a chicken is named the official witness
+the player is told it was their own idea all along
+the whole server votes on how it ends
+a villager takes all the credit
+the first player to complain gets double
+it is proudly sponsored by a cow
+it ends at the next sunset, not a second later
+the Narrator changes one rule halfway, and says so loudly
+it was only the rehearsal: the real one comes later
+the Narrator keeps getting the hero's name wrong
+a book had foretold it, word for word, the day before
+the quietest player is put in charge of it
+the Narrator turns out to be a secret fan of the target
+it comes with a jingle the Narrator hums every time
+the Narrator narrates it in slow motion
+everything is mirrored: the bystander becomes the star
+it is dedicated to a sheep that saw everything
+the Narrator asks the players to rate it out of ten afterwards
+
+[challenge]
+the loser judges the next one
+second place gets the real reward
+a sheep enters the race too, and the Narrator roots for it
+the finish line moves once, announced with fanfare
+whoever finishes last picks the next challenge
+the reward goes to whoever cheered the loudest
+the favorite gets a handicap they choose themselves
+a rival is quietly given the very same goal
+a spectator bets on the winner and shares the prize if right
+it restarts once halfway, and the scores are kept
+the winner must wear the prize as a hat for a while
+the winner has to thank the loser in chat
+the team is picked by the player who arrives first
+the challenge is a duel in disguise, revealed at the start
+the prize is something the loser owns already
+
+[punishment]
+the punishment is wrapped like a present, with a ribbon
+the culprit picks between two silly fates
+the accuser is caught in it too, by pure accident
+it ends the moment they apologize to a cow
+it comes with a tiny consolation prize
+the sentence is suspended: ten minutes of good behavior and it is gone
+it is postponed, and everyone is told exactly when it falls
+it is deliberately tiny, and the Narrator is very proud of it
+the culprit chooses the next culprit's punishment
+they may pass it on to a friend, once
+it comes with a review score out of ten
+the punishment follows them around like a loyal pet
+the punishment gets a name and a theme song
+the punishment is announced as a great honor
+
+[favor]
+the gift comes with an absurd condition
+the prize is delivered in pieces
+the gift is for someone else, and they must deliver it
+the gift is wrapped in a riddle
+the reward is useless and named very grandly
+the gift arrives only once they say thank you
+the favor is announced as if it were a punishment
+the gift is shared with whoever they teased last
+it is a loan, and the Narrator wants it back
+the reward is a curse in disguise, a harmless one
+two players get one half each of the same gift
+the gift arrives late, with long excuses
+the gift comes with instructions that make no sense
