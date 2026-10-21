@@ -359,7 +359,7 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `the Dreamer keeps lore and observations, plans no arc, and records nothing that was said`() = runBlocking<Unit> {
+    fun `the Dreamer keeps lore and observations, plans no arc, settles only an active one, and records nothing that was said`() = runBlocking<Unit> {
         f.chat(1_290, evening.minusSeconds(120), "public", "le narrateur m'a promis un diamant", f.bartok.uuid)
         val invented = CanonDraft(CanonKind.PROMISE, "Le Narrateur a promis un diamant à Bartok.", "je te donne un diamant", listOf(f.bartok.uuid), evidenceEvents = listOf(1_290))
         rejected("the Dreamer keeps lore only; a promise is recorded from the Narrator's own words, not by the Dreamer") {
@@ -393,7 +393,15 @@ class DuckMemoryStoreTest {
         rejected("the Dreamer settles arcs only; ${promise.ref} is a promise") {
             store.resolveCanon(promise.ref, CanonStatus.BROKEN, "Le Narrateur n'a pas rendu les bottes.", emptyList(), f.dreamer)
         }
-        assertEquals(CanonStatus.ABANDONED, store.resolveCanon(arc.ref, CanonStatus.ABANDONED, "Personne n'a parié.", emptyList(), f.dreamer).status)
+        // M6 review 2, D6: a planned arc is the storyteller's, and the Narrator starts it; the Dreamer settles an active one.
+        listOf(CanonStatus.ACTIVE, CanonStatus.ABANDONED).forEach { status ->
+            rejected("the Dreamer settles an active arc only; ${arc.ref} is planned: a planned arc is the storyteller's, and the Narrator starts it") {
+                store.resolveCanon(arc.ref, status, "Personne n'a parié.", emptyList(), f.dreamer)
+            }
+        }
+        assertEquals(CanonStatus.PLANNED, store.canon(arc.ref)!!.status)
+        val active = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance la vengeance des moutons.", theme = "vengeance_des_moutons"), f.director).row
+        assertEquals(CanonStatus.RESOLVED, store.resolveCanon(active.ref, CanonStatus.RESOLVED, "Les moutons ont eu leur revanche.", emptyList(), f.dreamer).status)
         val gag = store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, "Le Narrateur commente chaque chute de Bartok.", players = listOf(f.bartok.uuid)), f.director).row
         assertEquals(GagState.WORN, store.setGag(gag.ref, GagState.WORN, "Plus personne ne rit.", f.dreamer).freshness, "its gag operations stay")
         assertEquals(listOf("lore"), f.rows("SELECT kind FROM canon WHERE source = 'dreamer' ORDER BY kind") { getString(1) })

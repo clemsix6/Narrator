@@ -85,14 +85,24 @@ class ProgrammeInputsTest {
         )
     }
 
-    /** An idea written as the store writes one (its rules are `IdeasStoreTest`'s), [dealt] times. */
-    private suspend fun idea(id: Long, kind: IdeaKind, created: Instant, players: List<PlayerRef>, status: String = "open", closed: Instant? = null, dealt: Int = 0) =
+    /** An idea written as the store writes one (its rules are `IdeasStoreTest`'s), [dealt] times, its title and pitch [title] and [pitch] long. */
+    private suspend fun idea(
+        id: Long,
+        kind: IdeaKind,
+        created: Instant,
+        players: List<PlayerRef>,
+        status: String = "open",
+        closed: Instant? = null,
+        dealt: Int = 0,
+        title: Int = 60,
+        pitch: Int = 500,
+    ) =
         f.journal.journal.write(5_000) { connection ->
             connection.update(
                 "INSERT INTO ideas (id, created_at, kind, title, pitch, fit, players, register, novelty, fun, fairness, refs, status, dealt, last_dealt_at, " +
                     "expires_play_s, closed_at, close_reason, source, run_id, conversation_id) " +
                     "VALUES (?, ?, ?, ?, ?, ?, ?, 'game_show', 3, 4, 5, ?, ?, ?, ?, 999999, ?, ?, 'storyteller', 1, 'storyteller-1')",
-                id, created, kind.id, text(60, id.toInt()), text(500, id.toInt()), text(200, id.toInt()), uuidArray(players.map { it.uuid }), longArray(emptyList()),
+                id, created, kind.id, text(title, id.toInt()), text(pitch, id.toInt()), text(200, id.toInt()), uuidArray(players.map { it.uuid }), longArray(emptyList()),
                 status, dealt, if (dealt > 0) created else null, closed, closed?.let { "replaced by the season P-${id + 1}" },
             )
             repeat(dealt) { i ->
@@ -187,7 +197,12 @@ class ProgrammeInputsTest {
         val resting = canon.lines().single { it.startsWith("Themes at rest") }
         assertTrue(resting.startsWith("Themes at rest (20h of world play once their arc closed): theme_au_repos_"), resting)
         assertEquals(ProgrammeInputs.RESTING_COUNT, resting.split(" · ").size, resting)
-        assertTrue("<ideas open=\"13\" closed_since=\"10-01 21:30\">" in opening, "twelve challenges and the season: ${blocks.getValue("ideas").take(200)}")
+        // M6 review 2, finding 1: every open idea is shown, and four closed ones at least, each part in its room.
+        val ideas = blocks.getValue("ideas").lines()
+        assertEquals("<ideas open=\"13\" closed=\"10\" closed_since=\"10-01 21:30\">", ideas.first(), "twelve challenges and the season, ten closed")
+        val closedAt = ideas.indexOfFirst { it.startsWith("Closed since ") }
+        assertEquals(13, ideas.subList(1, closedAt).count { it.startsWith("- P-") }, "every open idea: $ideas")
+        assertTrue(ideas.drop(closedAt).count { it.startsWith("- P-") } >= 4, "four closed ideas at least: $ideas")
         // What a player or a model wrote is escaped: no tag of theirs reaches the model.
         listOf("<x>", "<a filé>", "<o>").forEach { assertTrue(it !in opening, "$it escaped") }
     }
@@ -243,14 +258,85 @@ class ProgrammeInputsTest {
         val now = at("23:59")
         f.clock.now = now
         val ideas = blocks(inputs().opening(12, now, since = at("22:15"))!!).getValue("ideas").lines()
-        assertEquals("<ideas open=\"2\" closed_since=\"10-01 22:15\">", ideas.first())
-        val lines = ideas.drop(1).dropLast(1)
-        assertEquals(listOf(diploma, race, rain).map { "- $it" }, lines.map { it.substringBefore(" ") + " " + it.split(" ")[1] }.map { it.trim() })
-        assertTrue(" · dealt 2: 10-01 23:00 inspire → challenge reach 4m later; 10-01 23:30 heartbeat → nothing: " in lines[1], lines[1])
-        assertTrue(lines[1].startsWith("- $race challenge · open, ") && " · Bartok, Mimosa · « La course au pic » · n4 f4 e4 sports_commentary · " in lines[1], lines[1])
-        assertTrue(" · dealt 1: 10-01 23:38 inspire → favor joker 5m later: " in lines[0], lines[0])
-        assertTrue(lines[2].startsWith("- $rain punishment · dropped 10-01 22:20 (Bartok ne provoque plus le Narrateur.) · Bartok · ") && "never dealt" in lines[2], lines[2])
+        assertEquals(listOf("<ideas open=\"2\" closed=\"1\" closed_since=\"10-01 22:15\">", "Open, the latest first:"), ideas.take(2))
+        val open = ideas.subList(2, 4)
+        assertEquals(listOf("- $diploma favor ", "- $race challenge "), open.map { it.substringBefore("·") }, "$ideas")
+        assertTrue(" · dealt 2: 10-01 23:00 inspire → challenge reach 4m later; 10-01 23:30 heartbeat → nothing: " in open[1], open[1])
+        assertTrue(" of play left · Bartok, Mimosa · « La course au pic » · n4 f4 e4 sports_commentary · " in open[1], open[1])
+        assertTrue(open[1].endsWith(": Course au sommet du pic enneigé au nord du spawn ; le premier arrivé gagne un joker."), "the pitch, short: ${open[1]}")
+        assertTrue(" · dealt 1: 10-01 23:38 inspire → favor joker 5m later: " in open[0], open[0])
+        // The closed ones without their pitch: what became of them, and what followed.
+        assertEquals(
+            listOf(
+                "Closed since 10-01 22:15, those dealt first:",
+                "- $rain punishment « La pluie de grenouilles » · dropped 10-01 22:20 (Bartok ne provoque plus le Narrateur.) · never dealt",
+                "</ideas>",
+            ),
+            ideas.drop(4),
+        )
         assertTrue(ideas.none { "$old " in it }, "closed before the last dream: $ideas")
+    }
+
+    /**
+     * M6 review 2, finding 1 (D5): the open ideas and those closed since the last dream each have their part of the block.
+     * Twelve open ideas dealt twice each and four closed since the last dream are all shown (it showed eight of the
+     * sixteen); an idea written ten days ago and closed since is among them, though sixty ideas were written after it.
+     */
+    @Test
+    fun `every open idea is shown, and the ideas closed since the last dream however old they are`() = runBlocking<Unit> {
+        f.evening()
+        val two = listOf(f.bartok, f.mimosa)
+        (0 until 12).forEach { i -> idea(5_000L + i, IdeaKind.CHALLENGE, at("21:20"), two, dealt = 2, title = 40, pitch = 350) }
+        (0 until 3).forEach { i -> idea(5_100L + i, IdeaKind.FAVOR, at("21:00"), two, status = "dropped", closed = at("22:00"), dealt = 1, title = 40, pitch = 350) }
+        val old = at("21:00").minus(Duration.ofDays(10))
+        idea(4_000, IdeaKind.TWIST, old, two, status = "expired", closed = at("22:05"), title = 40, pitch = 350)
+        (0 until 60).forEach { i -> idea(4_100L + i, IdeaKind.LAW, old.plus(Duration.ofHours(1L + i)), two, status = "dropped", closed = at("20:00"), title = 40, pitch = 350) }
+
+        val now = at("22:10")
+        f.clock.now = now
+        val block = blocks(inputs().opening(12, now, since = at("21:30"))!!).getValue("ideas")
+        val lines = block.lines()
+        println("<ideas> of twelve open ideas and four closed: ${block.length} characters; open lines ${lines.filter { it.startsWith("- P-50") }.map { it.length }}")
+        assertTrue(block.length <= ProgrammeInputs.IDEAS_MAX, "${block.length}")
+        assertEquals("<ideas open=\"12\" closed=\"4\" closed_since=\"10-01 21:30\">", lines.first())
+        val closedAt = lines.indexOf("Closed since 10-01 21:30, those dealt first:")
+        assertEquals((5_000L until 5_012L).map { "P-$it" }.toSet(), lines.subList(1, closedAt).filter { it.startsWith("- P-") }.map { it.split(" ")[1] }.toSet())
+        assertEquals(listOf("P-5102", "P-5101", "P-5100", "P-4000"), lines.drop(closedAt).filter { it.startsWith("- P-") }.map { it.split(" ")[1] }, "those dealt first, then the latest")
+        assertTrue(lines.none { "(+" in it && "more closed" in it }, block)
+        val expired = lines.single { it.startsWith("- P-4000 ") }
+        assertTrue(expired.startsWith("- P-4000 twist « Bartok4000 a creusé une galerie sous la. » · expired 10-01 22:05 (") && expired.endsWith(" · never dealt"), expired)
+        val opened = lines.first { it.startsWith("- P-5011 ") }
+        assertTrue(" · dealt 2: 10-01 21:21 inspire → nothing; 10-01 21:22 inspire → nothing: Bartok5011 a creusé" in opened, "the pitch after what was dealt: $opened")
+    }
+
+    /**
+     * M6 review 2, finding 2: for a twist, a season, an arc step or a forge, any lever pulled within the quarter hour follows
+     * it; a line said does not (the Narrator speaks within the minute of almost anything).
+     */
+    @Test
+    fun `a line said follows no idea, not even a twist`() = runBlocking<Unit> {
+        f.evening()
+        f.clock.now = at("22:10")
+        val twist = f.store.addIdea(
+            IdeaDraft(IdeaKind.TWIST, "Le coffre inversé", "Le coffre de Bartok rend ce que les autres y ont déposé, pendant une heure.", "Bartok en ligne", listOf(f.bartok.uuid), null, 3, 3, 3),
+            storyteller,
+        ).row.ref
+        f.clock.now = at("23:00")
+        f.store.dealt(listOf(twist), RecallChannel.HEARTBEAT, RecallContext("director-c14", 50, null))
+        val said = f.narrator("23:01:00", "La cour du ciel déclare Bartok coupable de plongeon artistique.", listOf(f.bartok))
+        f.journal.sync()
+        f.journal.journal.lineLabels(LineLabelsRecord(said, at("23:01:30"), "reflex:claude-haiku-5-5", ComicRegister.COURTROOM.id, 0.0, 0.0, 0.1, 0.0, 0.0, emptyList(), null, 900))
+        f.clock.now = at("23:30")
+        f.store.dealt(listOf(twist), RecallChannel.INSPIRE, RecallContext("director-c14", 51, null))
+        call(9_001, at("23:35"), "punish", """{"punishment": "tiny"}""", "Bartok")
+
+        val now = at("23:59")
+        f.clock.now = now
+        f.journal.sync()
+        val opening = inputs().opening(12, now, since = at("22:15"))!!
+        assertTrue("Lines: 3 said, 1 reviewed;" in opening, "the line said is reviewed: ${blocks(opening).getValue("history")}")
+        val line = blocks(opening).getValue("ideas").lines().single { it.startsWith("- $twist ") }
+        assertTrue(" · dealt 2: 10-01 23:00 heartbeat → nothing; 10-01 23:30 inspire → punish tiny 5m later: " in line, line)
     }
 
     @Test
@@ -271,6 +357,9 @@ class ProgrammeInputsTest {
         call(9_003, at("20:05"), "punish", """{"punishment": "tiny"}""", "Bartok")
         call(9_004, at("20:40"), "punish", """{"punishment": "tiny"}""", "Mimosa")
         f.journal.journal.lineLabels(LineLabelsRecord(e.sanction, at("20:02"), "reflex:claude-haiku-5-5", "divine_bureaucracy", 0.0, 0.0, 0.1, 0.0, 0.0, emptyList(), null, 900))
+        // M6 review 2, finding 8: a title and a short aside are no lines the review reads; they are not counted.
+        f.narrator("20:50:00", "[title] DÉFI : LA COURSE AU PIC / Premier au sommet")
+        f.narrator("20:51:00", "Bien joué, Bartok.")
 
         // The canon: an arc planned, a theme at rest, the evening's gag, a law.
         f.clock.now = at("22:10")
