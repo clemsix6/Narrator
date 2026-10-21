@@ -14,6 +14,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.llm.SendResult
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
+import io.github.clemsix6.narrator2.runtime.RestartSequence
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
 import io.github.clemsix6.narrator2.trace.TraceQueries
@@ -27,7 +28,7 @@ import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** `/narrator ping`, `status` and `reload` (M1_M2 §14.5). */
+/** `/narrator ping`, `status`, `reload` (M1_M2 §14.5) and `restart` (M6 §9). */
 object AdminCommands {
     private val log = Log.command
 
@@ -56,6 +57,7 @@ object AdminCommands {
         )
         root.then(Commands.literal("status").executes { status(it.source) })
         root.then(Commands.literal("reload").executes { reload(it.source) })
+        root.then(Commands.literal("restart").executes { restart(it.source) })
     }
 
     /**
@@ -258,6 +260,29 @@ object AdminCommands {
             listOf(narratorLine("configuration and prompts reloaded ($key)."))
         }
         job.invokeOnCompletion { reloadInFlight.set(false) }
+        return 1
+    }
+
+    /**
+     * `/narrator restart` (M6 §9): rebuilds the Narrator without stopping Minecraft, on an empty server only. Refused
+     * while a player is online or joining (an operator in game is one: from the console, then), while the server stops,
+     * or while a restart runs. The logins wait until it is done; the answer comes then, to the other operators too.
+     */
+    private fun restart(source: CommandSourceStack): Int {
+        val server = source.server
+        val running = NarratorRuntime.current
+        RestartSequence.refusal(server, stopping = running?.phase == Phase.STOPPING)?.let {
+            source.sendFailure(errorLine("cannot restart: $it."))
+            return 0
+        }
+        val started = NarratorRuntime.restart(server, source.textName, { report ->
+            source.sendSuccess({ if (report.ok) narratorLine(report.text()) else errorLine("${report.text()}.") }, true)
+        })
+        if (!started) {
+            source.sendFailure(errorLine("cannot restart: a restart is already running."))
+            return 0
+        }
+        source.sendSuccess({ narratorLine("restarting the Narrator; the logins wait until it is done…", ChatFormatting.GRAY) }, true)
         return 1
     }
 }
