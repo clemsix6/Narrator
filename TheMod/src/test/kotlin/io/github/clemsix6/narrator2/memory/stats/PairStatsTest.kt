@@ -12,11 +12,13 @@ import io.github.clemsix6.narrator2.memory.MemoryDataset.kelvin
 import io.github.clemsix6.narrator2.memory.MemoryDataset.mimosa
 import io.github.clemsix6.narrator2.memory.MemoryDataset.ow
 import io.github.clemsix6.narrator2.memory.stats.PairStats.PlayerPair
+import io.github.clemsix6.narrator2.testing.BusyMachine
 import io.github.clemsix6.narrator2.testing.TestClock
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import java.lang.management.ManagementFactory
 import java.sql.Connection
 import java.time.Instant
 import java.util.UUID
@@ -56,23 +58,35 @@ class PairStatsTest {
     /**
      * M3-05's promise, broken past a few hundred pairs (FLAKY-2: 1 506 pairs on the GameTests' server held the writer
      * 2 s in one job, a row at a time): the pairs are written in jobs of [PairStats.CHUNK], each well within 100 ms.
+     *
+     * A job's work is measured in CPU time of the writer's thread, DuckDB's native code included (FLAKY-5, as FLAKY-1
+     * did for the Journal's throughput): its wall clock is also the time the writer waits for a core, and jobs of a few
+     * milliseconds of work took 157 and 175 ms under load. Written a row at a time, a job of [PairStats.CHUNK] pairs works
+     * well over 100 ms. The wall clock still bounds a job that would wait instead of working, with a busy machine's slack.
      */
     @Test
     fun `1 500 pairs are written in short jobs, none holding the writer 100 ms`() = runBlocking<Unit> {
         JournalFixture().use { fixture ->
             val now = Instant.parse("2026-10-03T20:00:00Z")
             val pairs = (0 until 1_500).map { i -> PlayerPair(UUID(0, 2L * i), UUID(0, 2L * i + 1), i.toDouble(), 1.0, 1, 0, 2, 0, now) }
-            val jobs = mutableListOf<Long>()
+            val threads = ManagementFactory.getThreadMXBean()
+            val workMs = mutableListOf<Long>()
+            val wallMs = mutableListOf<Long>()
             val timed = object : Journal by fixture.journal {
                 override suspend fun <T> write(timeoutMs: Long, block: (Connection) -> T): T {
                     val started = System.nanoTime()
-                    return fixture.journal.write(timeoutMs, block).also { jobs += (System.nanoTime() - started) / 1_000_000 }
+                    return fixture.journal.write(timeoutMs) { connection ->
+                        val cpu = threads.currentThreadCpuTime
+                        block(connection).also { workMs += (threads.currentThreadCpuTime - cpu) / 1_000_000 }
+                    }.also { wallMs += (System.nanoTime() - started) / 1_000_000 }
                 }
             }
             PairStats.store(timed, pairs, 10_000)
+            println("[FLAKY-5] pair_stats jobs of ${PairStats.CHUNK} pairs: $workMs ms of the writer's CPU, $wallMs ms of the wall clock")
 
-            assertEquals(1_500 / PairStats.CHUNK, jobs.size, "one job per ${PairStats.CHUNK} pairs")
-            assertTrue(jobs.all { it < 100 }, "each job within 100 ms: $jobs ms")
+            assertEquals(1_500 / PairStats.CHUNK, workMs.size, "one job per ${PairStats.CHUNK} pairs")
+            assertTrue(workMs.all { it < 100 }, "each job within 100 ms of the writer's CPU: $workMs ms")
+            assertTrue(wallMs.all { it < 100 + BusyMachine.SLACK_MILLIS }, "each job within 100 ms and a busy machine's slack of the wall clock: $wallMs ms")
             assertEquals(pairs.sortedByDescending { it.minutesTogether }, MemoryDataset.read(fixture) { PairStats.read(it) })
         }
     }

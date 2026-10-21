@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.observer.ref
 import io.netty.channel.ChannelFutureListener
 import io.netty.channel.embedded.EmbeddedChannel
+import kotlinx.coroutines.delay
 import net.minecraft.commands.CommandSource
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTestAssertException
@@ -72,6 +73,25 @@ private fun slowRetries(assertions: () -> Unit) = Runnable {
     } catch (e: GameTestAssertException) {
         Thread.sleep(1)
         throw e
+    }
+}
+
+/**
+ * Waits until [condition] holds, checking every 50 ms, for what ticks bring about: [played] counts the ticks so far (of an
+ * engine of the test's own, say). It fails only once [ticks] of them have passed since the wait began **and** [timeoutMs]
+ * of the wall clock (FLAKY-5). A batch of thirty tests slows the server down to a dozen ticks a second, and a wait counted
+ * in seconds alone ran out before the ticks it waited for; a server alone runs hundreds of ticks a second, and the tools'
+ * coroutines still have their seconds. Never off by more than a check: the ticks are counted before the condition is.
+ */
+suspend fun awaitTicks(what: String, ticks: Int, played: suspend () -> Int, timeoutMs: Long = 15_000, condition: suspend () -> Boolean) {
+    val from = played()
+    val began = System.currentTimeMillis()
+    while (true) {
+        val passed = played() - from
+        if (condition()) return
+        val elapsed = System.currentTimeMillis() - began
+        check(passed < ticks || elapsed < timeoutMs) { "timed out waiting for: $what ($passed ticks and $elapsed ms; $ticks ticks and $timeoutMs ms allowed)" }
+        delay(50)
     }
 }
 

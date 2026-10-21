@@ -225,10 +225,16 @@ class ArsenalWorldGameTests {
         /** Stops the engine as the server stops. Server thread. */
         fun stop() = engine.stop()
 
+        /** The engine's ticks so far. Server thread; read from any. */
+        @Volatile
+        var ticks = 0
+            private set
+
         /** A tick of the engine, timed. Server thread. */
         fun tick() {
             val began = System.nanoTime()
             engine.tick(helper.level.server)
+            ticks++
             longestTickNanos = maxOf(longestTickNanos, System.nanoTime() - began)
         }
 
@@ -251,10 +257,15 @@ class ArsenalWorldGameTests {
             }
         }
 
-        /** Plays second after second until [condition] holds, [maxSeconds] of play at most; then only ticks (the acts' coroutines run their tools meanwhile). */
+        /**
+         * Plays second after second until [condition] holds, [maxSeconds] of play at most; then only ticks (the acts'
+         * coroutines run their tools meanwhile). It fails once the [maxSeconds] were played and [AFTER_PLAY_TICKS] ticked
+         * after them, and 15 s of the wall clock passed ([awaitTicks]): a busy batch makes each second of play slower, never
+         * shorter, and `gravity_storm`'s waves 40 s of play apart took a quarter of a budget of 15 s under load (FLAKY-5).
+         */
         suspend fun playUntil(what: String, maxSeconds: Int = 20, condition: suspend () -> Boolean) {
             var played = 0
-            awaitCondition(what) {
+            awaitTicks(what, maxSeconds * Limits.TICKS_PER_SECOND + AFTER_PLAY_TICKS, { ticks }) {
                 if (played++ < maxSeconds) play(1) else onServer { tick() }
                 condition()
             }
@@ -323,6 +334,9 @@ class ArsenalWorldGameTests {
         const val MAX_TICKS = 4 * ASYNC_MAX_TICKS
 
         const val TICK_MS = 1_000L / Limits.TICKS_PER_SECOND
+
+        /** Ticks of the engine, one a check, left to the acts' tools once a wait's seconds of play are over ([Rig.playUntil]). */
+        const val AFTER_PLAY_TICKS = 100
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4243, taskId = null)
 
