@@ -310,6 +310,8 @@ class DisabledMemory(private val reason: String) : Memory {
 
         override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea = refuse()
 
+        override suspend fun expireIdeas(author: Author): List<Idea> = refuse()
+
         override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
             refuse()
         }
