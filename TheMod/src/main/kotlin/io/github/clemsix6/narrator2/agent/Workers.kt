@@ -33,8 +33,8 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * The workers the Director delegates long work to (M1_M2 §13): the Analyst (M2), the scout (M4 §14) and the forger
- * (M5 §8.1), whom the Director commissions through `forge_module`.
+ * The workers the Director delegates long work to (M1_M2 §13): the Analyst (M2), the scout (M4 §14), the storyteller
+ * (M6 §6.4) and the forger (M5 §8.1), whom the Director commissions through `forge_module`.
  *
  * - **Never waits.** [submit] queues the task and returns its id at once; the Director's turn goes on.
  * - **Its own conversation.** Each task is one conversation with Claude, `Task T-12 (analyst)`, with the
@@ -48,6 +48,9 @@ import java.util.UUID
  *   Forge off; its system prompt is two blocks, `forger.md` then the SDK's reference (`Prompts.SDK`); its task runs
  *   within `forge.taskSteps` requests and `forge.taskMinutes`; one forger task runs at a time, the next ones wait in
  *   the common line while the other roles' tasks go past them.
+ * - **The storyteller** (M6 §6.4) works only while the memory runs, where its ideas go; its conversation sees `inspire`
+ *   (`ToolEnv.storytellerAvailable`), and it runs within [STORYTELLER_STEPS] requests at most (fewer when
+ *   `workers.maxSteps` says so): three ideas and a report take three to five.
  * - **In parallel, then in line.** At most `workers.maxConcurrent` tasks run at once, each in its own
  *   coroutine of `services.scope`; the others wait, first come first served, [MAX_QUEUED] at most (one
  *   more is refused). Settings are read when used.
@@ -80,14 +83,15 @@ class Workers(
 
     /**
      * The Analyst and the scout are offered only when the Journal opened (the Analyst works on it first, the scout
-     * reads the places players haunt in it); the forger only while it can work ([forgeAbsence]); none while the
-     * server stops.
+     * reads the places players haunt in it); the storyteller only while the memory runs (its ideas are rows of the
+     * memory); the forger only while it can work ([forgeAbsence]); none while the server stops.
      */
     override val roles: Set<Role>
         get() {
             if (services.phase != Phase.RUNNING) return emptySet()
             return buildSet {
                 if (services.journal.available) addAll(JOURNAL_ROLES)
+                if (services.memory.available) add(Role.STORYTELLER)
                 if (forgeAbsence() == null) add(Role.FORGER)
             }
         }
@@ -97,6 +101,7 @@ class Workers(
         if (role !in roles) {
             val why = when (role) {
                 in JOURNAL_ROLES -> "the Journal is unavailable"
+                Role.STORYTELLER -> "the memory is unavailable"
                 Role.FORGER -> forgeAbsence() ?: "the Forge is unavailable"
                 else -> "there is no ${role.id} yet"
             }
@@ -208,14 +213,20 @@ class Workers(
         val record = task.record
         val settings = services.settings.get()
         val forger = record.role == Role.FORGER
+        val storyteller = record.role == Role.STORYTELLER
         if (forger) forgeAbsence()?.let { return Ending(Status.FAILED, null, "no forger can work: $it") }
-        val steps = if (forger) settings.config.forge.taskSteps else settings.config.workers.maxSteps
+        val steps = when {
+            forger -> settings.config.forge.taskSteps
+            storyteller -> minOf(settings.config.workers.maxSteps, STORYTELLER_STEPS)
+            else -> settings.config.workers.maxSteps
+        }
         val timeoutMs = if (forger) settings.config.forge.taskMinutes * 60_000L else settings.config.workers.timeoutSeconds * 1_000L
         val started = record.startedAt ?: clock.instant()
         return try {
             val env = ToolEnv(
                 services.journal.available, workerRoles = emptySet(), memoryAvailable = services.memory.available,
                 mechanicsAvailable = services.mechanics.available, forgeAvailable = forgeAbsence() == null,
+                storytellerAvailable = storyteller,
             )
             val tools = toolSet(record.role, env)
             val prompts = if (forger) listOf(record.role.id, Prompts.SDK) else listOf(record.role.id)
@@ -426,6 +437,12 @@ class Workers(
 
         /** The forger's tasks running at once (M5 §8.1): the others wait in line. */
         private const val MAX_FORGING = 1
+
+        /**
+         * Requests of a storyteller's task at most (M6 §6.4: three to six), whatever `workers.maxSteps` allows beyond: its
+         * prefix (prompt, eight tools, the Journal's schema) is long, and each request reads it again.
+         */
+        const val STORYTELLER_STEPS = 6
 
         private const val LOG_BRIEF_CHARS = 120
         private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
