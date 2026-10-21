@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.memory.CanonFilter
 import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaStatus
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryDoc
@@ -111,6 +112,16 @@ object MemoryCommands {
                 .then(canonScope("all", all = true)),
         )
         .then(
+            literal("ideas")
+                .executes { context -> ideasOf(context, all = false, 1) }
+                .then(page().executes { context -> ideasOf(context, all = false, page(context)) })
+                .then(
+                    literal("all")
+                        .executes { context -> ideasOf(context, all = true, 1) }
+                        .then(page().executes { context -> ideasOf(context, all = true, page(context)) }),
+                ),
+        )
+        .then(
             literal("recall").then(
                 argument("query", StringArgumentType.greedyString()).executes { context ->
                     val query = string(context, "query")
@@ -179,6 +190,9 @@ object MemoryCommands {
 
     private fun canonOf(context: CommandContext<CommandSourceStack>, scope: String, all: Boolean, player: String?, page: Int = page(context)): Int =
         read(context.source, "memory canon $scope${player?.let { " $it" }.orEmpty()}") { canon(it, all, player, page) }
+
+    private fun ideasOf(context: CommandContext<CommandSourceStack>, all: Boolean, page: Int): Int =
+        read(context.source, "memory ideas${if (all) " all" else ""}") { ideas(it, all, page) }
 
     private fun showRef(context: CommandContext<CommandSourceStack>, page: Int): Int {
         val ref = string(context, "ref")
@@ -471,6 +485,46 @@ object MemoryCommands {
         val quote = entry.quote?.let { " · said « ${TraceText.abbreviate(it, QUOTE_CHARS)} »" }.orEmpty()
         val resolution = entry.resolution?.let { " · ${TraceText.quote(it, QUOTE_CHARS)}" }.orEmpty()
         return Out(parts.joinToString(" · ") + quote + resolution)
+    }
+
+    // ── ideas ───────────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * `/narrator memory ideas [all] [page]` (M6 §13): the storyteller's open ideas, or all of them, the newest first, each
+     * with what became of it: dealt how many times, how long it stays open, or how and why it closed.
+     */
+    internal suspend fun ideas(services: NarratorServices, all: Boolean, page: Int): List<Component> = answer {
+        val ideas = services.memory.store.ideas(if (all) null else IdeaStatus.OPEN, IDEAS_LIMIT)
+        val text = text(services)
+        val world = services.memory.clock.worldPlaySeconds(text.now)
+        val scope = if (all) "all" else "open"
+        val count = when {
+            ideas.size >= IDEAS_LIMIT -> "the latest $IDEAS_LIMIT"
+            ideas.size == 1 -> "1 idea"
+            else -> "${ideas.size} ideas"
+        }
+        val none = if (all) "No idea yet: the storyteller writes them in the dream's programme, or when the Director asks." else "No open idea."
+        val lines = ideas.map { ideaLine(it, world, text) }.ifEmpty { listOf(Out(none)) }
+        text.page(Report("ideas · $scope · $count", lines + Out("Details: /narrator memory show <ref>")), page, "narrator memory ideas${if (all) " all" else ""}")
+    }
+
+    /**
+     * `P-41 challenge → Bartok, Mimosa · open · 30h00m of play left · dealt 2 (last 21:40) · n4 f4 e5: « La course au
+     * pic »`; a closed idea says when it closed and why.
+     */
+    private fun ideaLine(idea: Idea, world: Long, text: TraceText): Out {
+        val parts = buildList {
+            add("${idea.ref} ${idea.kind.id} → ${names(idea.players)}")
+            add(idea.status.id + (idea.closedAt?.let { " ${text.time(it)}" }.orEmpty()))
+            if (idea.status == IdeaStatus.OPEN) {
+                val left = idea.expiresPlaySeconds - world
+                add(if (left > 0) "${played(left)} of play left" else "due, the hygiene closes it")
+            }
+            add(if (idea.dealt == 0) "never dealt" else "dealt ${idea.dealt}${idea.lastDealtAt?.let { " (last ${text.time(it)})" }.orEmpty()}")
+            add("n${idea.novelty} f${idea.funScore} e${idea.fairness}: « ${TraceText.abbreviate(idea.title, TITLE_CHARS)} »")
+        }
+        val reason = idea.closeReason?.let { " · ${TraceText.quote(it, REASON_CHARS)}" }.orEmpty()
+        return Out(parts.joinToString(" · ") + reason)
     }
 
     // ── recall ──────────────────────────────────────────────────────────────────────────────────────
@@ -848,6 +902,10 @@ object MemoryCommands {
 
     /** Canon entries listed at most. */
     private const val CANON_LIMIT = 300
+
+    /** Ideas listed at most, and the characters of a title in their list. */
+    private const val IDEAS_LIMIT = 200
+    private const val TITLE_CHARS = 60
 
     /** Hits of `recall`: two chat lines each at most, so the answer fits in the chat. */
     private const val RECALL_LIMIT = 8

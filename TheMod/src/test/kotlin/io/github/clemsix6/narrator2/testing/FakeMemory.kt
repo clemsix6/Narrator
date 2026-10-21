@@ -408,6 +408,18 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         return row
     }
 
+    /** The world play clock the ideas expire against ([expireIdeas]): 0 unless the test moves it. */
+    @Volatile
+    var worldPlaySeconds: Long = 0
+
+    override suspend fun expireIdeas(author: Author): List<Idea> =
+        rows.values.filterIsInstance<Idea>().filter { it.status == IdeaStatus.OPEN && it.expiresPlaySeconds <= worldPlaySeconds }.sortedBy { it.ref.id }.map { idea ->
+            idea.copy(status = IdeaStatus.EXPIRED, closedAt = now(), closeReason = "its hours of world play are over").also {
+                rows[idea.ref] = it
+                wrote("expireIdea", idea.ref, author)
+            }
+        }
+
     override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
         require(refs.all { it.kind == RefKind.IDEA }) { "only ideas are dealt: ${refs.joinToString()}" }
         refs.distinct().forEach { ref ->

@@ -105,6 +105,7 @@ private fun assemble(services: NarratorServices, reads: StartupReads): MemorySer
         store, recall, sheets, playClock, jobs, agents,
         MemoryBriefing(store, recall, sheets, journal, { services.players.online.map { it.ref } }, zone),
         WakeAttachments(JoinBrief(store, sheets, journal, zone), reminiscence),
+        services.scope,
     )
 
     playClock.subscribe(services.bus) // after the load: from now on, the joins and the leaves move it
