@@ -9,9 +9,11 @@ import io.github.clemsix6.narrator2.guard.BlockRestorer
 import io.github.clemsix6.narrator2.journal.JournalHealth
 import io.github.clemsix6.narrator2.journal.JournalTimeoutException
 import io.github.clemsix6.narrator2.journal.JournalUnavailableException
+import io.github.clemsix6.narrator2.trace.Cost
 import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.trace.TraceQueries
 import io.github.clemsix6.narrator2.trace.TurnSummary
+import io.github.clemsix6.narrator2.trace.Usage
 import io.github.clemsix6.narrator2.web.Bar
 import io.github.clemsix6.narrator2.web.Html
 import io.github.clemsix6.narrator2.web.Page
@@ -20,15 +22,16 @@ import io.github.clemsix6.narrator2.web.WebPage
 import io.github.clemsix6.narrator2.web.WebRequest
 import io.github.clemsix6.narrator2.web.bars
 import io.github.clemsix6.narrator2.web.link
-import io.github.clemsix6.narrator2.web.rows
 import java.time.Instant
 import java.util.Locale
 
 /**
  * `/`, the overview (M6 §8.4): what runs now, from the live snapshots (phase, Director, players online, tasks, Journal,
  * memory, mechanics, Forge), then, from the Journal in one read, the cost of the last 24 hours by role (SVG bars) and the
- * latest [TURNS] turns of the Director. `?refresh=15` reloads it every 15 seconds. Without the Journal, the live part
- * still shows, and the rest says why it does not.
+ * latest [TURNS] turns of the Director. The calls by role are those of `/narrator usage` ([TraceQueries.usage]), priced
+ * and written as everywhere ([Prices.costOf], [Cost.text]); the turns are in the table of `/turns` ([turnTable]).
+ * `?refresh=15` reloads it every 15 seconds. Without the Journal, the live part still shows, and the rest says why it
+ * does not.
  */
 object OverviewPage : WebPage {
     override val root = ""
@@ -46,30 +49,13 @@ object OverviewPage : WebPage {
     private const val MIN_REFRESH = 5
     private const val MAX_REFRESH = 3_600
 
-    /**
-     * The model calls since a time (epoch milliseconds, the parameter), by role and by the model that answered: calls,
-     * failed, input, output, cache read and cache write tokens.
-     */
-    internal const val COST_BY_ROLE = """
-        SELECT role, model, count(*), count(error), coalesce(sum(input_tokens), 0), coalesce(sum(output_tokens), 0),
-               coalesce(sum(cache_read_tokens), 0), coalesce(sum(cache_write_tokens), 0)
-        FROM llm_calls WHERE started_at >= to_timestamp(CAST(? AS DOUBLE) / 1000)
-        GROUP BY role, model
-    """
-
-    /** What one role cost: its [dollars] (null when no model it used has a price), its [calls], and its calls of a model without a price. */
-    internal data class RoleCost(val role: String, val dollars: Double?, val calls: Long, val failed: Long, val unpriced: Long)
-
     override fun render(request: WebRequest, context: PageContext): Page? {
         if (request.path.isNotEmpty()) return null
         val refresh = request.param("refresh")?.toIntOrNull()?.coerceIn(MIN_REFRESH, MAX_REFRESH)
         val journal = try {
             context.read { connection ->
-                val since = context.now - COST_HOURS * HOUR_MS
-                val costs = connection.rows(COST_BY_ROLE, since) {
-                    CostRow(getString(1), getString(2), getLong(3), getLong(4), getLong(5), getLong(6), getLong(7), getLong(8))
-                }
-                Readings(costByRole(costs, context.prices), TraceQueries(connection).lastTurns(TURNS))
+                val queries = TraceQueries(connection)
+                Readings(queries.usage(context.now - COST_HOURS * HOUR_MS), queries.lastTurns(TURNS))
             }
         } catch (e: JournalUnavailableException) {
             Unread(e.message.orEmpty())
@@ -84,7 +70,7 @@ object OverviewPage : WebPage {
             live(context)
             when (journal) {
                 is Readings -> {
-                    costs(journal.costs)
+                    costs(journal.usage, context.prices)
                     turns(journal.turns, context)
                 }
                 is Unread -> {
@@ -195,71 +181,35 @@ object OverviewPage : WebPage {
 
     // ── From the Journal ────────────────────────────────────────────────────────────────────────────
 
-    /** The bars of the last 24 hours' cost, by role, the dearest first, and their total. */
-    private fun Html.costs(costs: List<RoleCost>) {
+    /** The bars of the last 24 hours' cost, by role ([usage]), the dearest first, then the busiest, and their total. */
+    private fun Html.costs(usage: List<Usage>, prices: Prices) {
         h2("Cost, last $COST_HOURS hours")
-        if (costs.isEmpty()) {
+        if (usage.isEmpty()) {
             p("No model call.", "muted")
             return
         }
-        val total = costs.sumOf { it.dollars ?: 0.0 }
-        val unpriced = costs.sumOf { it.unpriced }
+        val roles = usage.map { it to prices.costOf(it.models) }
+            .sortedWith(compareByDescending<Pair<Usage, Cost>> { it.second.dollars }.thenByDescending { it.first.calls })
         bars(
             "Cost of the last $COST_HOURS hours by role",
-            costs.map { cost ->
-                val failed = if (cost.failed > 0) ", ${cost.failed} failed" else ""
-                Bar(cost.role, cost.dollars ?: 0.0, "${Prices.dollars(cost.dollars)} · ${cost.calls} ${TraceText.plural(cost.calls.toInt(), "call")}$failed")
+            roles.map { (role, cost) ->
+                val failed = if (role.failed > 0) ", ${role.failed} failed" else ""
+                Bar(role.role, cost.dollars, "${cost.text} · ${role.calls} ${TraceText.plural(role.calls, "call")}$failed")
             },
         )
-        p("muted") {
-            text("Total ${Prices.dollars(total)}")
-            if (unpriced > 0) text(" + $unpriced ${TraceText.plural(unpriced.toInt(), "call")} of a model without a price in the configuration (prices)")
-            text(". At the API's prices: behind a subscription, an order of magnitude.")
-        }
+        val total = roles.fold(Cost.NONE) { sum, (_, cost) -> sum + cost }
+        p("Total ${total.text}. At the API's prices: behind a subscription, an order of magnitude.", "muted")
     }
 
     private fun Html.turns(turns: List<TurnSummary>, context: PageContext) {
         h2("Latest turns")
-        if (turns.isEmpty()) {
-            p("The Director has not woken up yet.", "muted")
-            return
-        }
-        table(listOf("#Turn", "Started", "Chapter", "Trigger", "Woken by", "Tools", "Outcome", "#Context", "#Requests")) {
-            turns.forEach { turn ->
-                val outcome = turn.outcome
-                row(if (outcome != null && outcome !in QUIET_OUTCOMES) "failure" else null) {
-                    cell("num") { a(link("turns", turn.turnId), "#${turn.turnId}") }
-                    cell(context.time(turn.startedAt))
-                    cell(turn.chapter?.let { "#$it" })
-                    cell(turn.trigger)
-                    cell(turn.woke?.let { TraceText.abbreviate(it, WOKE_CHARS) })
-                    cell(TraceText.toolList(turn.tools))
-                    cell(outcome ?: "running")
-                    number(turn.contextTokens?.let { TraceText.tokens(it) })
-                    number(turn.llmCalls)
-                }
-            }
-        }
+        if (turns.isEmpty()) p("The Director has not woken up yet.", "muted") else turnTable(turns, context)
     }
-
-    /** The calls of [rows] summed by role, each priced by its model; the dearest roles first, then the busiest. */
-    internal fun costByRole(rows: List<CostRow>, prices: Prices): List<RoleCost> =
-        rows.groupBy { it.role }.map { (role, calls) ->
-            val priced = calls.mapNotNull { prices.cost(it.model, it.input, it.output, it.cacheRead, it.cacheWrite) }
-            val unpriced = calls.filter { prices.of(it.model) == null }.sumOf { it.calls }
-            RoleCost(role, priced.takeIf { it.isNotEmpty() }?.sum(), calls.sumOf { it.calls }, calls.sumOf { it.failed }, unpriced)
-        }.sortedWith(compareByDescending<RoleCost> { it.dollars ?: 0.0 }.thenByDescending { it.calls })
-
-    /** One row of [COST_BY_ROLE]. */
-    internal data class CostRow(
-        val role: String, val model: String, val calls: Long, val failed: Long,
-        val input: Long, val output: Long, val cacheRead: Long, val cacheWrite: Long,
-    )
 
     /** What the page read from the Journal, or why it could not. */
     private sealed interface JournalPart
 
-    private class Readings(val costs: List<RoleCost>, val turns: List<TurnSummary>) : JournalPart
+    private class Readings(val usage: List<Usage>, val turns: List<TurnSummary>) : JournalPart
 
     private class Unread(val why: String) : JournalPart
 
@@ -267,8 +217,4 @@ object OverviewPage : WebPage {
 
     private const val HOUR_MS = 3_600_000L
     private const val BRIEF_CHARS = 160
-    private const val WOKE_CHARS = 80
-
-    /** Outcomes of a turn that are no failure. */
-    private val QUIET_OUTCOMES = setOf("acted", "idle")
 }

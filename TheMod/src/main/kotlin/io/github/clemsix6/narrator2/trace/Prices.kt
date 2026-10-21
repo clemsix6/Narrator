@@ -22,6 +22,15 @@ class Prices(private val table: Map<String, ModelPrice>) {
         return (input * price.input + output * price.output + cacheRead * price.cacheRead + cacheWrite * price.cacheWrite) / MILLION
     }
 
+    /**
+     * What [tokens] cost, each at the price of its model: the one computation of a cost that the dashboard and
+     * `/narrator usage` share, shown by [Cost.text].
+     */
+    fun costOf(tokens: Iterable<ModelTokens>): Cost = tokens.fold(Cost.NONE) { sum, used ->
+        val dollars = cost(used.model, used.input, used.output, used.cacheRead, used.cacheWrite)
+        sum + if (dollars == null) Cost(0.0, 0, used.calls) else Cost(dollars, used.calls, 0)
+    }
+
     companion object {
         private const val MILLION = 1_000_000.0
 
@@ -40,5 +49,56 @@ class Prices(private val table: Map<String, ModelPrice>) {
             val rounded = BigDecimal(amount).round(MathContext(2))
             return "$" + if (rounded >= BigDecimal.ONE) String.format(Locale.ROOT, "%.2f", amount) else rounded.toPlainString()
         }
+    }
+}
+
+/**
+ * Calls to one [model] (the one that answered, `llm_calls.model`) and the tokens they used; a call that failed before any
+ * reply used none.
+ */
+data class ModelTokens(
+    val model: String,
+    val calls: Long,
+    val failed: Long,
+    val input: Long,
+    val cacheRead: Long,
+    val cacheWrite: Long,
+    val output: Long,
+) {
+    /** The tokens the model read: input, cache read and cache write. */
+    val read: Long get() = input + cacheRead + cacheWrite
+
+    operator fun plus(other: ModelTokens) = ModelTokens(
+        model, calls + other.calls, failed + other.failed, input + other.input, cacheRead + other.cacheRead,
+        cacheWrite + other.cacheWrite, output + other.output,
+    )
+
+    companion object {
+        /** The sum of [tokens], whatever their models, named [model]. */
+        fun sum(model: String, tokens: Iterable<ModelTokens>) = tokens.fold(ModelTokens(model, 0, 0, 0, 0, 0, 0), ModelTokens::plus)
+    }
+}
+
+/**
+ * What calls cost (M6 §8.7): the [dollars] of the [priced] calls, at the configuration's prices, and the calls of a model
+ * without a price ([unpriced]), whose cost is unknown (`$ ?`): nothing is guessed from a model's name.
+ */
+data class Cost(val dollars: Double, val priced: Long, val unpriced: Long) {
+    /**
+     * The one way a cost is written, on the dashboard and in `/narrator usage`: `$1.92`; `$ ?` when every call is of a
+     * model without a price; `$1.92 + 3 calls at $ ?` when some are.
+     */
+    val text: String
+        get() = when {
+            unpriced == 0L -> Prices.dollars(dollars)
+            priced == 0L -> Prices.dollars(null)
+            else -> "${Prices.dollars(dollars)} + $unpriced ${if (unpriced == 1L) "call" else "calls"} at ${Prices.dollars(null)}"
+        }
+
+    operator fun plus(other: Cost) = Cost(dollars + other.dollars, priced + other.priced, unpriced + other.unpriced)
+
+    companion object {
+        /** No call. */
+        val NONE = Cost(0.0, 0, 0)
     }
 }

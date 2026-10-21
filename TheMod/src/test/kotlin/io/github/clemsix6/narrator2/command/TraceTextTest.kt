@@ -7,10 +7,6 @@ import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.trace.TraceDataset
-import io.github.clemsix6.narrator2.web.Cost
-import io.github.clemsix6.narrator2.web.DashboardQueries
-import io.github.clemsix6.narrator2.web.costOf
-import kotlinx.coroutines.runBlocking
 import net.minecraft.ChatFormatting
 import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
@@ -182,8 +178,7 @@ class TraceTextTest {
         val usage = data.read { it.usage(0) }
         // Dollars at the default prices (M6 §8.7): the Director's 4 Opus calls 1 850 in, 244 800 cache read, 412 out;
         // the Analyst's 3 000 in, 200 out; the reflexes' Haiku 90 in, 30 out.
-        val costs = runBlocking { data.fixture.journal.read(10_000) { DashboardQueries(it).tokensByRole(0) } }
-            .mapValues { (_, tokens) -> Prices.of(NarratorConfig()).costOf(tokens) }
+        val prices = Prices.of(NarratorConfig())
         assertEquals(
             listOf(
                 "[Narrator] usage over the last 24 h",
@@ -192,12 +187,13 @@ class TraceTextTest {
                 "analyst: 1 call · 3k in (0% cached) · 200 out · 3.0 s avg · \$0.016",
                 "Total \$0.081 · at the API's prices: behind a subscription, an order of magnitude.",
             ),
-            strings(text.page(text.usage(usage, 24, costs), 1, null)),
+            strings(text.page(text.usage(usage, 24, prices), 1, null)),
         )
-        val unpriced = text.usage(usage, 24, costs + ("director" to Cost(0.0, 0, 4)))
+        // Opus without a price: the Director's and the Analyst's calls cost `$ ?`, the reflexes' Haiku still has its price.
+        val unpriced = text.usage(usage, 24, Prices(NarratorConfig().prices - "claude-opus-5-5"))
         assertEquals("director: 4 calls · 247k in (99% cached) · 412 out · 2.4 s avg · \$ ?", unpriced.lines.first().text)
-        assertEquals("Total \$0.016 + 4 calls at \$ ? · at the API's prices: behind a subscription, an order of magnitude.", unpriced.lines.last().text)
-        assertEquals(listOf("no model call"), text.usage(emptyList(), 1, emptyMap()).lines.map { it.text })
+        assertEquals("Total \$0.000024 + 5 calls at \$ ? · at the API's prices: behind a subscription, an order of magnitude.", unpriced.lines.last().text)
+        assertEquals(listOf("no model call"), text.usage(emptyList(), 1, prices).lines.map { it.text })
         assertEquals("Usage (24 h): Claude 5 calls · 250k in (98% cached) · 612 out · reflexes 2 calls (1 failed)", text.usageSummary(usage, 24))
         assertEquals("Usage (1 h): no model call", text.usageSummary(emptyList(), 1))
     }

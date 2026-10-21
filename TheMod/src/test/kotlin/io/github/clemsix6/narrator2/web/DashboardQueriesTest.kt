@@ -1,13 +1,9 @@
 package io.github.clemsix6.narrator2.web
 
-import io.github.clemsix6.narrator2.config.ModelPrice
-import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.core.Log
-import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
-import io.github.clemsix6.narrator2.trace.LlmCallRecord
-import io.github.clemsix6.narrator2.trace.Prices
+import io.github.clemsix6.narrator2.trace.ModelTokens
 import io.github.clemsix6.narrator2.trace.TraceDataset
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import kotlinx.coroutines.runBlocking
@@ -20,8 +16,8 @@ import kotlin.test.assertTrue
 
 /**
  * The reads of the dashboard's trace pages (M6 §8.5), on the Journal of [TraceDataset] written through the real Journal:
- * each list filtered and paged (one row more than a page, the newest first, no row lost or repeated between pages), the
- * sums behind the costs, and the dollars they make at the configuration's prices, `$ ?` for a model without a price.
+ * each list filtered and paged (one row more than a page, the newest first, no row lost or repeated between pages), and
+ * the sums behind the costs. What they cost in dollars: `PricesTest` and `TraceQueriesTest`.
  */
 class DashboardQueriesTest {
     private val data = TraceDataset()
@@ -145,45 +141,6 @@ class DashboardQueriesTest {
 
         assertEquals(emptyList(), read { it.callsByKind(TraceDataset.NOW.toEpochMilli()) }, "none since now")
         assertEquals(emptyList(), read { it.callsByHour(TraceDataset.NOW.toEpochMilli()) })
-    }
-
-    @Test
-    fun `usage costs each role's tokens at the price of the model that answered, the fallback model's included`() {
-        val fallback = journal.nextId(IdKind.LLM_CALL)
-        journal.llmCall(
-            LlmCallRecord(
-                fallback, LlmCallRecord.Provider.ANTHROPIC, LlmCallRecord.Purpose.TURN, TraceDataset.CHAPTER, 43, "director", "claude-opus-4-8", "medium",
-                TraceDataset.NOW, TraceDataset.NOW, 1_000, 900, 1, null, null, 500, 0, 0, 50, "end_turn", "cyber", null, null, null,
-            ),
-        )
-        data.fixture.sync()
-        val prices = Prices.of(NarratorConfig())
-
-        val costs = read { it.tokensByRole(0) }.mapValues { (_, tokens) -> prices.costOf(tokens) }
-        assertEquals(setOf("director", "analyst", "reflex"), costs.keys)
-        // Opus 5.5 at 4 / 20 / 0.20 / 8 $ per million: (1 850 × 4 + 244 800 × 0.20 + 412 × 20) / 1 M;
-        // the fallback model, Opus 4.8, at 5 / 25 $: (500 × 5 + 50 × 25) / 1 M.
-        assertEquals(0.0646 + 0.00375, costs.getValue("director").dollars, 1e-9)
-        assertEquals(Cost(costs.getValue("director").dollars, priced = 5, unpriced = 0), costs.getValue("director"))
-        assertEquals("\$0.068", costs.getValue("director").text, "the fallback model at its own price")
-        assertEquals("\$0.016", costs.getValue("analyst").text)
-        assertEquals("\$0.000024", costs.getValue("reflex").text, "Haiku: (90 × 0.10 + 30 × 0.50) / 1 M")
-        assertTrue(read { it.tokensByRole(TraceDataset.NOW.plusSeconds(1).toEpochMilli()) }.isEmpty())
-    }
-
-    @Test
-    fun `a cost is in dollars, $ ? when no call has a price, and nothing is guessed from a name`() {
-        val prices = Prices(mapOf("claude-x" to ModelPrice(input = 1.0, output = 2.0, cacheRead = 0.1, cacheWrite = 1.25)))
-        val x = ModelTokens("claude-x", 3, 0, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
-        val unknown = ModelTokens("claude-x-2", 2, 1, 1_000, 0, 0, 10)
-        assertEquals(Cost(4.35, 3, 0), prices.costOf(listOf(x)))
-        assertEquals("\$4.35", prices.costOf(listOf(x)).text)
-        assertEquals("\$ ?", prices.costOf(listOf(unknown)).text)
-        assertEquals("\$4.35 + 2 calls at \$ ?", prices.costOf(listOf(x, unknown)).text)
-        assertEquals("\$0", prices.costOf(emptyList()).text)
-        assertEquals("\$0", (Cost.NONE + Cost.NONE).text)
-        assertEquals(ModelTokens("all", 5, 1, 1_001_000, 1_000_000, 1_000_000, 1_000_010), ModelTokens.sum("all", listOf(x, unknown)))
-        assertEquals(3_000_000, x.read)
     }
 
     @Test
