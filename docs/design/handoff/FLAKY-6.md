@@ -200,3 +200,11 @@ calcul : 30 attaques sur 30 abandonnées, le test vert.
 - Charge : quatre séances de 32 fils de calcul (`Flaky6Burn.java`, qui s'arrête de lui-même : 9, 2,5, 4 et 7 min ; les
   deux dernières arrêtées à la main ; processus vérifiés absents ensuite), plus les builds des autres agents.
 - Sous charge, code final : `AbandonTest` et `DelegationScenarioTest` verts, `EvilModulesGameTests` vert (2 tests).
+- `runGameTest` complet avant la fusion finale (sonde de la chaîne du Directeur en place) : « All 398 required tests
+  passed ».
+- **Build complet** (`.\gradlew.bat build --continue`) sur `2ce5ffc` : 2 217 tests unitaires, 0 échec, 0 ignoré ;
+  « All 398 required tests passed ». Puis `git merge main` (`c8b716c` : M6-16, M6-FIX-4 à 8), sans conflit, et **build
+  complet** : **2 245 tests unitaires, 0 échec, 0 ignoré** ; **« All 398 required tests passed »** ; puis **`runGameTest`
+  seul** : « All 398 required tests passed » (`RecordHash` arrêté par la garde en 17,5 ms).
+- Aucun appel réel à Claude ; pas de `runServer`. Journaux des sessions sous des noms `flaky6-*` (dossier de travail de
+  la session).
