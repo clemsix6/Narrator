@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.host.Fault
 import io.github.clemsix6.narrator2.forge.host.Hosts
+import io.github.clemsix6.narrator2.forge.host.ModuleHost
 import io.github.clemsix6.narrator2.forge.host.ModuleThreads
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -393,6 +395,57 @@ class ModuleEngineTest {
         }
     }
 
+    @Test
+    fun `the stops of the server's stop share one deadline, however late each new module thread starts`() {
+        assertOneDeadline("SERVER_STOPPING") { it.engine.stopping() }
+    }
+
+    @Test
+    fun `the stops of forge off share one deadline too`() {
+        assertOneDeadline("FORGE_OFF") { it.engine.halt(ForgeHalt("trop de poules", "Clement", it.clock.millis())) }
+    }
+
+    /**
+     * M6-POLISH: six modules stopped in one burst by [stop], each new module thread started [SLOW_START_MS] late, as a
+     * busy machine does (FLAKY-6). Each stop had 2 s of patience of its own: 3.5 s for this burst, and up to 16 s for
+     * eight modules on a slower machine. They share one deadline now: the burst takes 2 s at most past their budgets.
+     * The stops that come past it keep their budget; one that cannot run then is said lost, and truly is: it never runs,
+     * not even once its thread starts.
+     */
+    private fun assertOneDeadline(why: String, stop: (ModuleFixture) -> Unit) {
+        val slow = ModuleFixture(maxActive = 6, threads = ModuleThreads("slow-module", onStart = { Thread.sleep(SLOW_START_MS) }))
+        try {
+            slow.module("stopper", ModuleFixture.source("stopper", members = """public void stop(ModuleContext m, StopReason why) { m.log("stop " + why); }"""))
+            slow.start()
+            LogCapture().use { logs ->
+                val deployed = (1..6).map { slow.deploy(slow.spec("stopper")) }
+                val start = System.nanoTime()
+                stop(slow)
+                val ms = (System.nanoTime() - start) / 1_000_000
+                Thread.sleep(SLOW_START_MS + 200) // the threads of the stops given up start meanwhile
+
+                val patienceMs = ModuleHost.STARTUP_PATIENCE_NANOS / 1_000_000
+                assertTrue(ms < patienceMs + 6 * 2 * CALL_MS + 400, "the burst took $ms ms: one deadline of $patienceMs ms, not one for each")
+                val ran = deployed.filter { view -> logs.messages.any { "${view.ref} stopper: stop $why" in it } }
+                val lost = deployed - ran.toSet()
+                assertTrue(ran.isNotEmpty() && lost.isNotEmpty(), "the first stops ran, the last ones came past the deadline: ran ${ran.map { it.ref }}")
+                assertEquals(deployed.take(ran.size), ran, "the stops ran in order, until the deadline")
+                val warnings = logs.at(Level.WARN).filter { "stopper: its stop" in it }
+                for (view in deployed) {
+                    val said = warnings.filter { "${view.ref} stopper: its stop" in it }
+                    if (view in lost) {
+                        assertEquals(1, said.size, "${view.ref}: its lost stop is said once: $warnings")
+                        assertContains(said.single(), "its stop does not run")
+                    } else {
+                        assertTrue(said.all { "was given up" in it }, "${view.ref}: its stop ran, it is never said not to: $said")
+                    }
+                }
+            }
+        } finally {
+            slow.close()
+        }
+    }
+
     /** A tick of the server, 5 ms after the last one returned: the module thread asks again meanwhile (a real server's ticks are 50 ms apart). */
     private fun heldTick() {
         Thread.sleep(5)
@@ -721,5 +774,11 @@ class ModuleEngineTest {
 
         /** How late each new module thread starts, past a call's 25 ms (FLAKY-6's probe G). */
         const val LATE_START_MS = 40L
+
+        /** How late each new module thread starts in the bursts of [assertOneDeadline]: three stops fit in the 2 s, not six. */
+        const val SLOW_START_MS = 700L
+
+        /** A call's budget and its meter's margin, in milliseconds: what a stop past the burst's deadline still has. */
+        val CALL_MS = (ForgeLimits.CALL_NANOS + ModuleHost.ABANDON_MARGIN_NANOS) / 1_000_000
     }
 }

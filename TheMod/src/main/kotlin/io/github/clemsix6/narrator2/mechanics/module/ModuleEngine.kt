@@ -179,7 +179,8 @@ enum class ModuleEnding(val stop: StopReason?, val law: CanonStatus, val plan: C
  *   back to it as they load (from the start: its creatures are its own before it is built). One past its end, or the
  *   Forge switched off, ends at the first second, without `stop`; one that cannot be built ends `restart_failed`.
  * - **The server stops** ([stopping]): each module's `stop(SERVER_STOPPING)`, its storage kept in the state, its queued
- *   acts dropped and counted, its loader let go; its creatures stay in the world, marked, for the restart.
+ *   acts dropped and counted, its loader let go; its creatures stay in the world, marked, for the restart. Its stops, as
+ *   those of `forge off` ([halt]), share one deadline ([stopDeadline]).
  *
  * Hooks on the server thread; [onEvent] from any thread; [views] and [situation] read a snapshot (any thread).
  *
@@ -800,22 +801,25 @@ class ModuleEngine(
 
     /**
      * The switch (M5 §3.7): set in the state first (nothing starts again), then every deployment ends `forge_off`, its
-     * module's `stop(FORGE_OFF)` called; no `MODULE` line each (the book tells one for all). Server thread.
+     * module's `stop(FORGE_OFF)` called, all under one deadline as at the server's stop ([stopDeadline]); no `MODULE` line
+     * each (the book tells one for all). Server thread.
      */
     internal fun halt(halt: ForgeHalt): List<Ended> {
         store.update { it.copy(forgeHalt = halt) }
         val by = Author(Source.OPERATOR, operator = halt.by)
-        return live.toList().mapNotNull { finish(it, ModuleEnding.FORGE_OFF, FORGE_OFF_NOTE, by, line = null) }
+        val until = stopDeadline()
+        return live.toList().mapNotNull { finish(it, ModuleEnding.FORGE_OFF, FORGE_OFF_NOTE, by, line = null, until) }
     }
 
     /**
      * Ends [d] now (M5 §6.6, §3.7), on the server thread: its module's `stop` (but when disabled or never started), its
      * pieces closed, out of the state, its creatures given back, its loader watched. Null when it was ended already.
-     * [line]: its `MODULE` line from its final counts (`12 acts, 0 faults`); null when none is told.
+     * [line]: its `MODULE` line from its final counts (`12 acts, 0 faults`); null when none is told. [until]: the end of
+     * its stop's patience, shared by a burst ([halt]).
      */
-    private fun finish(d: Deployment, ending: ModuleEnding, note: String, by: Author?, line: ((String) -> String)?): Ended? {
+    private fun finish(d: Deployment, ending: ModuleEnding, note: String, by: Author?, line: ((String) -> String)?, until: Long = stopDeadline()): Ended? {
         if (d.phase == Phase.ENDED) return null
-        val retired = retire(d, ending.stop)
+        val retired = retire(d, ending.stop, until)
         store.update { state -> state.copy(modules = state.modules.filterNot { it.id == d.id }) }
         val run = d.run.copy(acts = retired.acts, faults = retired.faults, storage = retired.storage)
         val status = if (run.kind == RuleKind.LAW) ending.law else ending.plan
@@ -831,22 +835,30 @@ class ModuleEngine(
         return Ended(run, ending, cut, by, line?.invoke(counts), reason, view(d, run, reason))
     }
 
+    /**
+     * The end of the patience of a module's `stop` asked now ([ModuleHost.stop]), [ModuleHost.STARTUP_PATIENCE_NANOS]
+     * away. A burst of stops ([stopping], [halt]) takes one for them all: one after another, as the modules' calls never
+     * overlap, the server thread waits 2 s at most past their budgets, not 2 s for each.
+     */
+    private fun stopDeadline(): Long = System.nanoTime() + ModuleHost.STARTUP_PATIENCE_NANOS
+
     /** What the retrait of a deployment counted. */
     private class Retired(val acts: Int, val faults: Int, val storage: Map<String, String>, val given: Int, val dropped: Int)
 
     /**
-     * The retrait of [d] (M5 §3.7): its module's `stop` with [why] when it runs and is not disabled; its pieces closed (its
-     * queued acts dropped, timers and subscriptions cancelled, its SDK objects refused); its creatures given back and its
-     * loader watched, but at the server's stop (they stay for the restart). Server thread.
+     * The retrait of [d] (M5 §3.7): its module's `stop` with [why] when it runs and is not disabled, waited for until
+     * [until] at most past its budget ([ModuleHost.stop]); its pieces closed (its queued acts dropped, timers and
+     * subscriptions cancelled, its SDK objects refused); its creatures given back and its loader watched, but at the
+     * server's stop (they stay for the restart). Server thread.
      */
-    private fun retire(d: Deployment, why: StopReason?): Retired {
+    private fun retire(d: Deployment, why: StopReason?, until: Long = stopDeadline()): Retired {
         d.phase = Phase.ENDED
         live = live.filterNot { it === d }
         val host = d.host
         val context = d.context
         if (why != null && host != null && context != null && host.disabled == null) {
             context.stopping()
-            d.hosted(ModuleHost.STOP) { it.stop(why) }
+            d.hosted(ModuleHost.STOP) { it.stop(why, until) }
         }
         if (context != null) context.close() else d.queue.close()
         val storage = context?.storage?.snapshot() ?: d.run.storage
@@ -918,21 +930,27 @@ class ModuleEngine(
 
     /**
      * `SERVER_STOPPING`: each module's `stop(SERVER_STOPPING)`, its storage and counters kept in the state, its queued acts
-     * dropped (counted in one decision `skipped`), its loader let go; its creatures stay in the world for the restart.
+     * dropped (counted in one decision `skipped`), its loader let go; its creatures stay in the world for the restart. The
+     * stops share one deadline ([stopDeadline]): the server thread waits for them all 2 s at most past their budgets,
+     * however many there are.
      */
     override fun stopping() {
         if (stopped) return
         stopped = true
         val deployments = live
+        val start = System.nanoTime()
+        val until = stopDeadline()
         var dropped = 0
         for (d in deployments) {
-            val retired = retire(d, StopReason.SERVER_STOPPING)
+            val retired = retire(d, StopReason.SERVER_STOPPING, until)
             dropped += retired.dropped
             val kept = d.run.copy(storage = retired.storage, acts = retired.acts, faults = retired.faults)
             store.update { state -> state.copy(modules = state.modules.map { if (it.id == kept.id) kept else it }) }
         }
         job.cancel()
         if (deployments.isNotEmpty()) {
+            val stops = if (deployments.size == 1) "the stop of 1 module" else "the stops of ${deployments.size} modules"
+            log.info("the server's stop waited ${(System.nanoTime() - start) / 1_000_000} ms for $stops, under one deadline")
             decisions.record(
                 log, DecisionRecord.Kind.MECHANIC, SKIPPED, null,
                 "the Narrator stops: ${deployments.size} modules stopped until it starts again (${deployments.joinToString { it.ref.toString() }}), $dropped acts in their queues dropped",

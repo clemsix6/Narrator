@@ -11,7 +11,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.SQLException
+import java.time.Duration
 import java.util.Properties
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -102,6 +104,61 @@ class JournalOpenRetryTest {
                 assertContains(logs.at(Level.WARN).single { "the Journal is unavailable" in it }, "opening failed after 3 attempts")
                 assertContains(journal.health().lastError.orEmpty(), "opening failed after 3 attempts")
             }
+        }
+    }
+
+    /**
+     * The server starts in this process while the Journal of an earlier Narrator still closes, its writer past the close's
+     * time (an integrated server that opens its world again, a Narrator a restart could not close): never two Journals on
+     * one file. The file is refused before DuckDB opens it — DuckDB would share its database, and refuse only by luck, for
+     * good (`the configuration has been locked`) — and tried again: refused while that writer runs, opened once it ended.
+     */
+    @Test
+    fun `a file an earlier Journal of this process still holds is tried again, and opened once that Journal let go`() {
+        val earlier = JournalFixture(file)
+        val running = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        val job = Thread {
+            runCatching { runBlocking { earlier.journal.write(60_000) { running.countDown(); held.await(60, TimeUnit.SECONDS) } } }
+        }.apply { start() }
+        try {
+            assertTrue(running.await(10, TimeUnit.SECONDS), "the earlier writer runs a job")
+            earlier.bus.close()
+            earlier.journal.close(Duration.ofMillis(200))
+            assertTrue(earlier.journal.holdsDatabase, "the earlier Journal outlived its close")
+            val stillOpen = "${file.toAbsolutePath().normalize()} is still open in this process: an earlier Journal has not closed it yet"
+
+            LogCapture().use { logs ->
+                val journal = openJournalOrDisable(dir, config, clock, FakeWait().retry(), noHook)
+                assertIs<DisabledJournal>(journal)
+                assertEquals("opening failed after 3 attempts in 6 s: $stillOpen", journal.health().lastError)
+                assertEquals(3, logs.openingWarnings().count { stillOpen in it }, "each attempt refused, none by DuckDB: ${logs.openingWarnings()}")
+                assertFalse("configuration has been locked" in logs.text)
+            }
+
+            LogCapture().use { logs ->
+                // The earlier writer ends during the first wait, and closes its database itself.
+                val time = FakeWait { held.countDown(); awaitClosed(earlier.journal) }
+                openJournal(dir, config, clock, time.retry(), noHook).use { journal ->
+                    assertIs<DuckJournal>(journal)
+                    assertTrue(journal.available)
+                    assertEquals(listOf(2_000L), time.waits, "one wait, so the second attempt opened it")
+                    assertContains(logs.openingWarnings().single(), "(attempt 1 of 3), trying again in 2 s: $stillOpen")
+                }
+            }
+        } finally {
+            held.countDown()
+            job.join(10_000)
+            earlier.close()
+        }
+    }
+
+    /** Waits until [journal]'s writer, past its close, has closed its database itself. */
+    private fun awaitClosed(journal: Journal) {
+        val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (journal.holdsDatabase) {
+            check(System.nanoTime() < end) { "the earlier writer never closed its database" }
+            Thread.sleep(5)
         }
     }
 

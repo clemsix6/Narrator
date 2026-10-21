@@ -4,11 +4,14 @@ import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.core.Log
 import org.duckdb.DuckDBConnection
 import org.duckdb.DuckDBDriver
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.SQLException
 import java.time.ZoneId
 import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The Journal's DuckDB database, opened and locked down: one write connection (for the writer thread,
@@ -29,6 +32,12 @@ import java.util.Properties
  * 7. the read connections, duplicated from the write connection (they inherit the time zone).
  *
  * A connection must only be used by one thread at a time.
+ *
+ * One database per file in this process, from [open] to [close]: a second [open] of a file still open is refused
+ * ([FileStillOpenException]) before DuckDB sees it. DuckDB itself would hand it the database already open (its instance
+ * cache), shared, and refuse it only by luck, as a permanent error (`the configuration has been locked`, step 6). The
+ * file still open is an earlier Journal's whose writer outlived its close (the server's stop, `/narrator restart`):
+ * never two Journals on one file.
  */
 class DuckDatabase private constructor(
     /** The database file; null in memory. */
@@ -61,7 +70,7 @@ class DuckDatabase private constructor(
             fun of(config: JournalConfig, dashboard: Boolean = false) = Options(
                 memoryLimitMb = config.memoryLimitMb,
                 threads = config.threads,
-                timeZone = config.timeZone.ifBlank { null }?.let(ZoneId::of) ?: ZoneId.systemDefault(),
+                timeZone = config.zone(ZoneId.systemDefault()),
                 readers = if (dashboard) 3 else 2,
             )
         }
@@ -73,14 +82,21 @@ class DuckDatabase private constructor(
     /** Size of the write-ahead log in bytes. */
     fun walBytes(): Long = sizeOf(file?.let { it.resolveSibling("${it.fileName}.wal") })
 
-    /** Closes the read connections, then the write connection (which closes the database). */
+    private val closed = AtomicBoolean()
+
+    /** Closes the read connections, then the write connection (which closes the database); its file may then open again. Once. */
     override fun close() {
-        (readers + writer).forEach { connection ->
-            try {
-                connection.close()
-            } catch (e: SQLException) {
-                log.warn("closing a connection to ${file ?: "the in-memory database"} failed: ${e.message}")
+        if (!closed.compareAndSet(false, true)) return
+        try {
+            (readers + writer).forEach { connection ->
+                try {
+                    connection.close()
+                } catch (e: SQLException) {
+                    log.warn("closing a connection to ${file ?: "the in-memory database"} failed: ${e.message}")
+                }
             }
+        } finally {
+            file?.let(OPEN::remove)
         }
     }
 
@@ -110,11 +126,23 @@ class DuckDatabase private constructor(
 
         private val log = Log.journal
 
-        /** Opens (creating it if needed) the database at [file]. Fails if the file is unusable or a migration fails. */
+        /** The files of the databases open in this process, from [open] to [close]. */
+        private val OPEN: MutableSet<Path> = ConcurrentHashMap.newKeySet()
+
+        /**
+         * Opens (creating it if needed) the database at [file]. Fails if the file is unusable or a migration fails, and
+         * with [FileStillOpenException] while a database of this process still holds it.
+         */
         fun open(file: Path, options: Options): DuckDatabase {
             val absolute = file.toAbsolutePath().normalize()
-            Files.createDirectories(absolute.parent)
-            return open("jdbc:duckdb:$absolute", absolute, options)
+            if (!OPEN.add(absolute)) throw FileStillOpenException(absolute)
+            try {
+                Files.createDirectories(absolute.parent)
+                return open("jdbc:duckdb:$absolute", absolute, options)
+            } catch (e: Throwable) {
+                OPEN.remove(absolute)
+                throw e
+            }
         }
 
         /** An in-memory database with the same schema and settings, for tests. */
@@ -212,3 +240,9 @@ class DuckDatabase private constructor(
         }
     }
 }
+
+/**
+ * [DuckDatabase.open] of a file a database of this process still holds: an earlier Journal whose writer outlived its
+ * close. An [IOException], so that the Journal's opening tries it again ([isTransientOpenFailure]): that writer ends.
+ */
+class FileStillOpenException(file: Path) : IOException("$file is still open in this process: an earlier Journal has not closed it yet")

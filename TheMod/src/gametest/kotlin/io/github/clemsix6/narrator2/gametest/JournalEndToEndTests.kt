@@ -51,7 +51,6 @@ import org.slf4j.LoggerFactory
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -393,6 +392,9 @@ class JournalEndToEndTests {
      * `SELECT`, and records each query as an `operator` decision that keeps only a fingerprint, the
      * length and the status, never the query or its error (M2 review, finding 20): an operator reads
      * private messages, and the model reads `engine_decisions`.
+     *
+     * Its decisions are told from those before it by their ids (M6-POLISH, as FLAKY-7 did for `RestartGameTests`): the
+     * Journal is every batch's, in an order that changes at each run.
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun operatorsReadTheJournalWithNarratorSql(helper: GameTestHelper) {
@@ -403,16 +405,17 @@ class JournalEndToEndTests {
             val text = "Hear ye, ${herald.name} speaks"
             val player = herald.player
             server.playerList.broadcastChatMessage(PlayerChatMessage.unsigned(player.uuid, text), player, ChatType.bind(ChatType.CHAT, player))
-            val written = AtomicBoolean()
-            CoroutineScope(Dispatchers.IO).launch {
-                runtime.journal.barrier()
-                written.set(true)
-            }
+            // The chat line written, and the last operator `sql` decision before this test's commands: its own come after.
+            val before = Questions(
+                runtime,
+                mapOf("last" to Question("SELECT coalesce(max(id), 0) AS id FROM engine_decisions WHERE kind = 'operator' AND decision = 'sql'", SqlAccess.OPERATOR)),
+            )
             val output = CommandOutput()
             val source = server.createCommandSourceStack().withSource(output)
             val decisions = AtomicReference<Questions>()
+            val mine = AtomicReference<String>()
             helper.startSequence()
-                .thenAwait { helper.assertTrue(written.get(), "the chat line is written") }
+                .thenAwait { mine.set("kind = 'operator' AND decision = 'sql' AND id > ${helper.table(before.answers(helper), "last").single().single()}") }
                 .thenExecute {
                     server.commands.performPrefixedCommand(source, "narrator sql SELECT channel, text FROM chat_log WHERE player = '${herald.name}'")
                     server.commands.performPrefixedCommand(source, "narrator sql DELETE FROM chat WHERE player = '${herald.name}'")
@@ -429,21 +432,19 @@ class JournalEndToEndTests {
                             mapOf(
                                 // Each query is one operator `sql` decision; the SELECT is ok, the DELETE refused.
                                 "decisions" to Question(
-                                    "SELECT decision, subject, detail ->> 'status' AS status FROM engine_decisions " +
-                                        "WHERE kind = 'operator' AND decision = 'sql' ORDER BY status",
+                                    "SELECT decision, subject, detail ->> 'status' AS status FROM engine_decisions WHERE ${mine.get()} ORDER BY status",
                                     SqlAccess.OPERATOR,
                                 ),
                                 // Finding 20: neither the query, its keywords, nor the player it named leak into the decision.
                                 "leak" to Question(
-                                    "SELECT count(*) AS n FROM engine_decisions WHERE kind = 'operator' AND decision = 'sql' AND " +
+                                    "SELECT count(*) AS n FROM engine_decisions WHERE ${mine.get()} AND " +
                                         "(reason ILIKE '%${herald.name}%' OR reason ILIKE '%select%' OR reason ILIKE '%delete%' OR " +
                                         "reason ILIKE '%chat%' OR CAST(detail AS VARCHAR) ILIKE '%${herald.name}%' OR CAST(detail AS VARCHAR) ILIKE '%select%')",
                                     SqlAccess.OPERATOR,
                                 ),
                                 // The decision keeps a hash, the length and the status, nothing else.
                                 "detail" to Question(
-                                    "SELECT list_sort(json_keys(detail)) AS keys FROM engine_decisions " +
-                                        "WHERE kind = 'operator' AND decision = 'sql' LIMIT 1",
+                                    "SELECT DISTINCT list_sort(json_keys(detail)) AS keys FROM engine_decisions WHERE ${mine.get()}",
                                     SqlAccess.OPERATOR,
                                 ),
                                 "kept" to Question("SELECT count(*) AS n FROM chat_log WHERE player = '${herald.name}'"),
