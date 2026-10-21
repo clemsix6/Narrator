@@ -458,3 +458,15 @@ ouvertes par `propose_idea`). Si le temps manque, l'abandonner.
   rester prise jusqu'à environ 35 s. Avec le correctif prévu (permis rendu à la vraie fin), le tableau de bord répond
   503 pendant ce temps. C'est correct, mais à savoir. L'option « ne pas lancer une requête abandonnée » de
   `DuckJournal.read` en réduit l'effet.
+
+## Décisions du superviseur (21/10/2026)
+
+- **D5 — oui.** Le bloc `<ideas>` du programme passe à environ 4 000 caractères, en deux parts : les idées ouvertes,
+  puis les idées closes sans leur pitch, avec ce qui a suivi. Lot M6-FIX-4.
+- **D6 — oui.** Le Rêveur ne touche jamais un récit prévu par le Scénariste (magasin et outil), avec un message clair.
+  Lot M6-FIX-5.
+- **D7 — oui.** Un seul calcul du coût par rôle et un seul libellé de `$ ?`. Lot M6-FIX-7.
+- **Regroupement des lots** pour limiter la charge de la machine : M6-FIX-4 et M6-FIX-5 sont confiés au même agent
+  (le rêve et une seule plume), M6-FIX-7 et M6-FIX-8 aussi (les traces, les docs et les KDoc), M6-FIX-6 (le
+  redémarrage) à un agent seul. L'option `propose_idea` de M6-FIX-5 se fait si elle reste simple, sinon elle est
+  abandonnée. M6-FIX-6 coordonne `journal/DuckJournal.kt` avec M6-FIX-2, qui peut y toucher `read`.
