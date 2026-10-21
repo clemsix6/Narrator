@@ -126,7 +126,7 @@ internal class ExchangeLog(private val services: NarratorServices, private val s
 
     /** The zone of the Journal's times: `journal.timeZone`, else the engine's clock. */
     val zone: ZoneId
-        get() = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: services.clock.zone
+        get() = services.settings.get().config.journal.zone(services.clock.zone)
 
     /** `21:06`, in the Journal's zone. */
     fun time(at: Instant): String = time(at, zone)

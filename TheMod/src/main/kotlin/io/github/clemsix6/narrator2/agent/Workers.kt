@@ -27,7 +27,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
@@ -257,7 +256,7 @@ class Workers(
 
     /** The first message of a task: the brief, then when it is and who is online. */
     private fun opening(task: Task): String {
-        val zone = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: clock.zone
+        val zone = services.settings.get().config.journal.zone(clock.zone)
         val now = STAMP.withZone(zone).format(clock.instant())
         val online = services.players.online.joinToString(", ") { ModelText.attribute(it.ref.name) }.ifEmpty { "none" }
         return "<task id=\"T-${task.id}\" from=\"director\">\n${task.record.brief}\n</task>\n<context now=\"$now\" players_online=\"$online\"/>"

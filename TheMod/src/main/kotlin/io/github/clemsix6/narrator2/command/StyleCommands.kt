@@ -72,18 +72,31 @@ object StyleCommands {
     }
 
     /** `Watch: on · line review on · tone notes on · resting openers refused`, each with why it is off. */
-    private fun settingsLine(services: NarratorServices): String {
+    private fun settingsLine(services: NarratorServices): String =
+        state(services).run { "Watch: $watch · line review $review · tone notes $notes · resting openers $openers" }
+
+    /** The `Style:` line of `/narrator status`: `Style: watch on · line review on · tone notes on · resting openers refused`. */
+    internal fun statusLine(services: NarratorServices): String =
+        state(services).run { "Style: watch $watch · line review $review · tone notes $notes · resting openers $openers" }
+
+    /** The style in the `ready` line of a start or a restart: `style watch on · line review on`. */
+    fun readyState(services: NarratorServices): String = state(services).run { "style watch $watch · line review $review" }
+
+    /** What runs of the style: the watch and the review (`on`, or `off (why)`), the notes of tone, the refusal of resting openers. */
+    private class State(val watch: String, val review: String, val notes: String, val openers: String)
+
+    private fun state(services: NarratorServices): State {
         val settings = services.settings.get()
         val style = settings.config.style
         val watch = if (services.style === DisabledStyle) "off (no Journal, or not wired: see the server log)" else "on"
         val review = when {
             !style.lineReview -> "off (style.lineReview is false)"
-            settings.reflex == null -> "off (no reflex model: see /narrator status)"
+            services.style === DisabledStyle -> "off (no Journal, or not wired)"
+            settings.reflex == null && !settings.config.reflex.enabled -> "off (no reflex model: reflex.enabled is false)"
+            settings.reflex == null -> "off (no reflex model: no LLMGW key)"
             else -> "on"
         }
-        val notes = if (style.toneNotes) "on" else "off"
-        val openers = if (style.refuseRestingOpeners) "refused" else "only named"
-        return "Watch: $watch · line review $review · tone notes $notes · resting openers $openers"
+        return State(watch, review, if (style.toneNotes) "on" else "off", if (style.refuseRestingOpeners) "refused" else "only named")
     }
 
     /**
@@ -94,16 +107,24 @@ object StyleCommands {
      */
     internal fun diversityLine(diversity: Diversity): String {
         if (diversity.lines == 0) return "Latest lines: none measured yet"
+        val crutch = diversity.crutches.firstOrNull()?.let { (word, lines) -> "crutch « $word » in $lines ${TraceText.plural(lines, "line")}" } ?: "no crutch word"
+        return "Latest ${diversity.lines} ${TraceText.plural(diversity.lines, "line")}: openers distinct ${decimal(diversity.openersDistinct)} · " +
+            "${registers(diversity)} · $crutch · ${diversity.tics} ${TraceText.plural(diversity.tics, "tic")}"
+    }
+
+    /**
+     * The registers of [diversity]: `top register divine_bureaucracy 38% · plain lines 20% · register entropy 0.71`, `no
+     * register of the voice · plain lines 100%` when every labeled line is `plain` or `other`, `no line labeled` when none
+     * is. `/narrator style` and the dashboard's Style page say it alike.
+     */
+    internal fun registers(diversity: Diversity): String {
         val top = diversity.topRegister
         val plain = diversity.plainShare?.let { "plain lines ${percent(it)}" }
-        val register = when {
+        return when {
             top != null -> listOfNotNull("top register ${top.id} ${percent(diversity.topRegisterShare)}", plain, "register entropy ${decimal(diversity.registerEntropy)}").joinToString(" · ")
             plain != null -> "no register of the voice · $plain"
             else -> "no line labeled"
         }
-        val crutch = diversity.crutches.firstOrNull()?.let { (word, lines) -> "crutch « $word » in $lines ${TraceText.plural(lines, "line")}" } ?: "no crutch word"
-        return "Latest ${diversity.lines} ${TraceText.plural(diversity.lines, "line")}: openers distinct ${decimal(diversity.openersDistinct)} · " +
-            "$register · $crutch · ${diversity.tics} ${TraceText.plural(diversity.tics, "tic")}"
     }
 
     /** The review of the latest lines and the latest tone flags, from the Journal; why not, when it cannot be read. */

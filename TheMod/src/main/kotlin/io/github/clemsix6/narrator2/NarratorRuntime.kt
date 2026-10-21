@@ -2,6 +2,8 @@ package io.github.clemsix6.narrator2
 
 import io.github.clemsix6.narrator2.agent.WorkersControl
 import io.github.clemsix6.narrator2.agent.createWorkers
+import io.github.clemsix6.narrator2.command.AdminCommands
+import io.github.clemsix6.narrator2.command.StyleCommands
 import io.github.clemsix6.narrator2.command.narratorLine
 import io.github.clemsix6.narrator2.config.ConfigException
 import io.github.clemsix6.narrator2.config.ConfigStore
@@ -409,7 +411,8 @@ class NarratorRuntime private constructor(
             val config = settings.config
             log.info(
                 "ready · gateway ${config.gateway.baseUrl} · LLMGW key ${if (settings.claude != null) "present" else "missing"} · " +
-                    "${runtime.summary()} · dashboard ${dashboardState(runtime.dashboard)} · data in ${runtime.dataDir}",
+                    "${runtime.summary()} · ${StyleCommands.readyState(runtime)} · storyteller ${AdminCommands.storytellerState(runtime)} · " +
+                    "dashboard ${dashboardState(runtime.dashboard)} · data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }

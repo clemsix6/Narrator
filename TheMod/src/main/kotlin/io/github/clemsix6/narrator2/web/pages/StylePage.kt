@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.web.pages
 
+import io.github.clemsix6.narrator2.command.StyleCommands
 import io.github.clemsix6.narrator2.command.TraceText
 import io.github.clemsix6.narrator2.journal.JournalTimeoutException
 import io.github.clemsix6.narrator2.journal.JournalUnavailableException
@@ -131,8 +132,8 @@ object StylePage : WebPage {
             item("Crutch words at rest", atRest.crutches.joinToString { "« $it »" }.ifEmpty { "none" })
             item(
                 "Latest ${diversity.lines} lines",
-                "openers distinct ${decimal(diversity.openersDistinct)} · top register ${diversity.topRegister?.id ?: "none"} ${percent(diversity.topRegisterShare)} · " +
-                    "register entropy ${decimal(diversity.registerEntropy)} · ${diversity.tics} ${TraceText.plural(diversity.tics, "tic")}" +
+                "openers distinct ${decimal(diversity.openersDistinct)} · ${StyleCommands.registers(diversity)} · " +
+                    "${diversity.tics} ${TraceText.plural(diversity.tics, "tic")}" +
                     (diversity.crutches.takeIf { it.isNotEmpty() }?.joinToString(", ", " · crutches ") { (word, count) -> "« $word » in $count" }.orEmpty()),
             )
             item("Last registers", style.lastRegisters(8).joinToString { it.id }.ifEmpty { "none labeled yet" })
@@ -207,7 +208,8 @@ object StylePage : WebPage {
         number(measures.lines)
         number(measures.reviewed)
         number(if (measures.openersDistinct > 0) decimal(measures.openersDistinct) else null)
-        cell(measures.topRegister?.let { "${it.id} ${percent(measures.topRegisterShare)}" })
+        // Lines all plain or other have no register of the voice (M6 §3.7): said so, as /narrator style does.
+        cell(measures.topRegister?.let { "${it.id} ${percent(measures.topRegisterShare)}" } ?: if (measures.reviewed > 0) "none of the voice · plain ${percent(measures.plainShare)}" else null)
         number(if (measures.reviewed > 0) decimal(measures.registerEntropy) else null)
         cell(measures.crutches.firstOrNull()?.let { (word, _) -> "« $word » ${percent(measures.crutchShare(word))}" })
         number(measures.tics)

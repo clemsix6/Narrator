@@ -1,8 +1,10 @@
 package io.github.clemsix6.narrator2.web.pages
 
+import io.github.clemsix6.narrator2.command.AdminCommands
 import io.github.clemsix6.narrator2.command.ForgeCommands
 import io.github.clemsix6.narrator2.command.MechanicsCommands
 import io.github.clemsix6.narrator2.command.MemoryCommands
+import io.github.clemsix6.narrator2.command.StyleCommands
 import io.github.clemsix6.narrator2.command.TraceText
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.guard.BlockRestorer
@@ -27,7 +29,7 @@ import java.util.Locale
 
 /**
  * `/`, the overview (M6 §8.4): what runs now, from the live snapshots (phase, Director, players online, tasks, Journal,
- * memory, mechanics, Forge), then, from the Journal in one read, the cost of the last 24 hours by role (SVG bars) and the
+ * memory, mechanics, Forge, style, storyteller), then, from the Journal in one read, the cost of the last 24 hours by role (SVG bars) and the
  * latest [TURNS] turns of the Director. The calls by role are those of `/narrator usage` ([TraceQueries.usage]), priced
  * and written as everywhere ([Prices.costOf], [Cost.text]); the turns are in the table of `/turns` ([turnTable]).
  * `?refresh=15` reloads it every 15 seconds. Without the Journal, the live part still shows, and the rest says why it
@@ -141,6 +143,11 @@ object OverviewPage : WebPage {
                 p(ForgeCommands.statusLine(services))
                 p("Compiler: ${services.forge.status().compiler}", "muted")
             }
+            card("Style") {
+                p(StyleCommands.statusLine(services))
+                lines(listOfNotNull(services.style.situationLine(context.now)))
+            }
+            card("Storyteller") { p(AdminCommands.storytellerLine(services, text)) }
         }
     }
 

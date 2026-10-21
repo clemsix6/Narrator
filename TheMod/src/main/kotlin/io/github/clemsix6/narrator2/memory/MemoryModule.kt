@@ -100,7 +100,7 @@ private fun off(reason: String) = PreparedMemory.Off(disabled(reason))
 /** The play clocks, read within what is left of [reads]. Times are shown in the Journal's zone. */
 private fun load(services: NarratorServices, reads: StartupReads): PreparedMemory.Loaded {
     val journal = services.journal
-    val zone = services.settings.get().config.journal.timeZone.ifBlank { null }?.let(ZoneId::of) ?: services.clock.zone
+    val zone = services.settings.get().config.journal.zone(services.clock.zone)
     val clock = if (zone == services.clock.zone) services.clock else services.clock.withZone(zone)
     val state = DuckMemoryState(journal, clock)
     val playClock = DuckPlayClock(state, journal, services.players)

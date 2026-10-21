@@ -142,7 +142,10 @@ data class JournalConfig(
     val sqlTimeoutSeconds: Int = 5,
     /** A warning is logged at startup when the database is larger. Nothing is ever deleted. */
     val warnSizeMb: Long = 4_096,
-)
+) {
+    /** The zone the Journal's times are shown in: [timeZone], else [fallback] (the server's clock). */
+    fun zone(fallback: ZoneId): ZoneId = timeZone.ifBlank { null }?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: fallback
+}
 
 /** The Observer, which turns what players do into events. */
 @Serializable
