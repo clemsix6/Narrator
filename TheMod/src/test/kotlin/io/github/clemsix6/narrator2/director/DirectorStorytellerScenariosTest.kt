@@ -281,6 +281,39 @@ class DirectorStorytellerScenariosTest {
             h.assertInvariants()
         }
 
+    /** M6 review 3, finding 8: only an accepted request deals the idea and starts the two hours' rest of the heartbeat. */
+    @Test
+    fun `S-S2 a heartbeat whose request is refused deals no idea, and the next heartbeat carries it again`() =
+        DirectorHarness(dir).use { h ->
+            h.online("Bartok")
+            h.online("Mimosa")
+            h.memory.clock.world = 1_000
+            val race = idea(41, IdeaKind.CHALLENGE, "La course au pic", "Course au sommet de la Dent du Juge.", "les deux en ligne", listOf(bartok, mimosa), 445)
+            h.memory.store.rows[race.ref] = race
+
+            h.busy()
+            h.fake.enqueue(reply { refusal("cyber") })
+            h.advance(180_000)
+            h.awaitTurns(1)
+            assertEquals(TurnRecord.Outcome.REFUSED, h.endedTurns().single().outcome)
+            assertContains(h.wakeText(0), "\nIdea: P-41 challenge (Bartok, Mimosa) « La course au pic »")
+            h.runCurrent()
+            assertEquals(0, h.idea(41).dealt, "a refused request deals nothing")
+            assertTrue(h.memory.store.recalls.isEmpty())
+
+            // No rest started: the next heartbeat, minutes later, carries the same idea, and its accepted request deals it.
+            h.busy()
+            h.fake.enqueue(reply { text("Fin.") })
+            h.advance(180_000)
+            h.awaitTurns(2)
+            val second = h.endedTurns()[1]
+            assertEquals(TurnRecord.Trigger.HEARTBEAT, second.trigger)
+            assertContains(h.wakeText(1), "\nIdea: P-41 challenge (Bartok, Mimosa) « La course au pic »")
+            h.awaitUntil("P-41 dealt") { h.idea(41).dealt == 1 }
+            assertEquals(listOf(Triple(Ref(RefKind.IDEA, 41), RecallChannel.HEARTBEAT, RecallContext(h.sessionOf(1), second.turnId, null))), h.memory.store.recalls)
+            h.assertInvariants()
+        }
+
     // ── S-S3 ────────────────────────────────────────────────────────────────────────────────────────
 
     /**

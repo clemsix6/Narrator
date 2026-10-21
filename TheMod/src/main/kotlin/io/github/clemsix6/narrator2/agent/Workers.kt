@@ -47,7 +47,7 @@ import java.util.UUID
  *   Forge off; its system prompt is two blocks, `forger.md` then the SDK's reference (`Prompts.SDK`); its task runs
  *   within `forge.taskSteps` requests and `forge.taskMinutes`; one forger task runs at a time, the next ones wait in
  *   the common line while the other roles' tasks go past them.
- * - **The storyteller** (M6 §6.4) works only while the memory runs, where its ideas go; its conversation sees `inspire`
+ * - **The storyteller** (M6 §6.4) works only while the memory and the Journal run, where its ideas go; its conversation sees `inspire`
  *   (`ToolEnv.storytellerAvailable`), and it runs within [STORYTELLER_STEPS] requests at most (fewer when
  *   `workers.maxSteps` says so): three ideas and a report take three to five.
  * - **In parallel, then in line.** At most `workers.maxConcurrent` tasks run at once, each in its own
@@ -82,15 +82,16 @@ class Workers(
 
     /**
      * The Analyst and the scout are offered only when the Journal opened (the Analyst works on it first, the scout
-     * reads the places players haunt in it); the storyteller only while the memory runs (its ideas are rows of the
-     * memory); the forger only while it can work ([forgeAbsence]); none while the server stops.
+     * reads the places players haunt in it); the storyteller only while the memory and the Journal run (its ideas are
+     * rows of the memory, written through the Journal, which may fall while the memory still says it runs); the forger
+     * only while it can work ([forgeAbsence]); none while the server stops.
      */
     override val roles: Set<Role>
         get() {
             if (services.phase != Phase.RUNNING) return emptySet()
             return buildSet {
                 if (services.journal.available) addAll(JOURNAL_ROLES)
-                if (services.memory.available) add(Role.STORYTELLER)
+                if (services.journal.available && services.memory.available) add(Role.STORYTELLER)
                 if (forgeAbsence() == null) add(Role.FORGER)
             }
         }
@@ -100,7 +101,7 @@ class Workers(
         if (role !in roles) {
             val why = when (role) {
                 in JOURNAL_ROLES -> "the Journal is unavailable"
-                Role.STORYTELLER -> "the memory is unavailable"
+                Role.STORYTELLER -> if (services.journal.available) "the memory is unavailable" else "the Journal is unavailable"
                 Role.FORGER -> forgeAbsence() ?: "the Forge is unavailable"
                 else -> "there is no ${role.id} yet"
             }

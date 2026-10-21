@@ -121,6 +121,11 @@ class PageContext internal constructor(val services: NarratorServices, private v
      * player sheets, `SqlRunner`): still one read of the dashboard at a time. Waits [READ_TIMEOUT_MS] at most for the
      * turn, then fails with [JournalTimeoutException].
      *
+     * [work] may read several times, one read after the other: each read's connection is back, and its end heard, before
+     * [work] resumes. Two reads at once are not: the second one never runs and fails with an [IllegalStateException]
+     * ("a read of the dashboard is already running in this turn"), a fault of the page rather than a busy Journal; so is
+     * a read started while one that timed out still runs.
+     *
      * The turn ends when [work] has returned **and** the query it started has really ended: a read that timed out runs
      * on until its statement stops, and the next page waits for it rather than take a second connection ([Turn]).
      */
@@ -135,19 +140,22 @@ class PageContext internal constructor(val services: NarratorServices, private v
     }
 
     /**
-     * One turn of the dashboard's reads, holding a permit of [reads]: the Journal tells it when the query of its work
+     * One turn of the dashboard's reads, holding a permit of [reads]: the Journal tells it when each query of its work
      * starts and ends ([ReadWatch]). It gives the permit back once the work is over ([close]) and no query of its own
-     * runs. One query at a time; none once the work is over, since nobody would wait for it.
+     * runs. Queries one after the other, never two at once; none once the work is over, since nobody would wait for it.
      */
     private class Turn(private val reads: Semaphore) : ReadWatch {
         private var over = false
         private var running = false
 
         @Synchronized
-        override fun start(): Boolean {
-            if (over || running) return false
-            running = true
-            return true
+        override fun start(): String? = when {
+            over -> "the dashboard's turn is over: nobody waits for this read"
+            running -> "a read of the dashboard is already running in this turn"
+            else -> {
+                running = true
+                null
+            }
         }
 
         @Synchronized

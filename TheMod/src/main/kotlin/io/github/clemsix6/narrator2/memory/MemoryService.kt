@@ -68,8 +68,9 @@ class MemoryService internal constructor(
 }
 
 /**
- * The cache of the storyteller's open ideas (M6 §6.2, §12.4): what [current] gives the briefing's `<programme>`, the
- * heartbeat and `inspire` without waiting for the database. [refresh] reads them again ([MemoryStore.ideas], newest
+ * The cache of the storyteller's open ideas (M6 §6.2, §12.4): what [current] gives the heartbeat's `Idea:` line and
+ * `inspire` without waiting for the database (the briefing's `<programme>` reads the store, like its other sections:
+ * M6-08). [refresh] reads them again ([MemoryStore.ideas], newest
  * first); a store [watching] does after each write that changes them, and [refreshEvery] on a timer. A read that
  * fails keeps the last list (one `WARN` until a read works again). The cache only follows the writes made through
  * its [watching] store: `createMemory` gives that one store to every piece of the memory.

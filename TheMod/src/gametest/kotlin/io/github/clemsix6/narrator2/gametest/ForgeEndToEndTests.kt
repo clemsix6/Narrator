@@ -328,7 +328,7 @@ class ForgeEndToEndTests {
             val STARTED = Regex("""^ok: challenge (C-\d+) started""")
             const val ANNOUNCEMENT = "Le mot de passe est écrit à l'envers sous vos yeux. Le premier qui le dit à l'endroit gagne."
             const val CONGRATULATIONS = "Lanterne, à l'endroit. Trois biscuits pour l'érudit, rien pour la lampe."
-            const val SUMMARY = "Résumé de chapitre de la Forge."
+            const val SUMMARY = "Résumé de chapitre de la Forge. Faits marquants : aucun. Interventions du Narrateur : aucune. Engagements en cours : aucun."
             const val REPORT = "Module : $MODULE v1 (ready).\n" +
                 "Paramètres : players (2-8 joueurs), word (le mot de passe, un mot), seconds (30-600, 120 par défaut).\n" +
                 "Ce que voient les joueurs : la barre d'action montre le mot de passe à l'envers et le temps qui reste ; le premier qui l'écrit " +

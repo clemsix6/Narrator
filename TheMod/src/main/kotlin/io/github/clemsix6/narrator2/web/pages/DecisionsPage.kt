@@ -5,7 +5,9 @@ import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.web.BadRequest
 import io.github.clemsix6.narrator2.web.DashboardQueries
 import io.github.clemsix6.narrator2.web.DecisionFilter
+import io.github.clemsix6.narrator2.web.DecisionRow
 import io.github.clemsix6.narrator2.web.Filter
+import io.github.clemsix6.narrator2.web.Html
 import io.github.clemsix6.narrator2.web.Page
 import io.github.clemsix6.narrator2.web.PageContext
 import io.github.clemsix6.narrator2.web.Paging
@@ -18,7 +20,7 @@ import io.github.clemsix6.narrator2.web.pager
 /**
  * `/decisions` (M6 §8.4): the engine's decisions, the latest first, a page at a time, filtered by kind, decision,
  * subject (words of it, ignoring case), period and turn (`?turn=42`, from a turn's page): each with its reason, its
- * turn and conversation, and its detail folded.
+ * turn and conversation, and its detail folded. The mechanics and the Forge link here for theirs.
  */
 object DecisionsPage : WebPage {
     override val root = "decisions"
@@ -51,25 +53,37 @@ object DecisionsPage : WebPage {
         val (decisions, more) = paging.rows(context.read { DashboardQueries(it).decisions(filter, paging) })
         return Page("Decisions") {
             filters(link(root), request, FILTERS)
-            if (decisions.isEmpty()) p("No decision here.", "muted")
-            else table(listOf("Time", "Kind", "Decision", "Subject", "Reason", "Where", "Detail")) {
-                decisions.forEach { decision ->
-                    row(if (decision.decision in TraceText.REFUSALS) "failure" else null) {
-                        cell(context.time(decision.ts))
-                        cell(decision.kind)
-                        cell(decision.decision)
-                        cell(decision.subject)
-                        cell(decision.reason)
-                        cell {
-                            decision.turnId?.let { a(link("turns", it), "turn #$it") }
-                            if (decision.turnId == null) decision.conversationId?.let { a(link("conversations", it), it) }
-                            decision.eventId?.let { small(" event $it") }
-                        }
-                        cell { decision.detail?.let { details("detail") { pre(json(it)) } } }
-                    }
-                }
-            }
+            if (decisions.isEmpty()) p("No decision here.", "muted") else decisionTable(decisions, context)
             pager(request, paging, more)
         }
     }
 }
+
+/**
+ * [decisions] as a table, here and on the Forge's pages: time, kind, decision, subject, reason, where it was taken (the
+ * Director's turn, else the conversation, and the event), and the detail folded. A decision in [FAILED_DECISIONS] is red.
+ */
+internal fun Html.decisionTable(decisions: List<DecisionRow>, context: PageContext) =
+    table(listOf("Time", "Kind", "Decision", "Subject", "Reason", "Where", "Detail")) {
+        decisions.forEach { decision ->
+            row(if (decision.decision in FAILED_DECISIONS) "failure" else null) {
+                cell(context.time(decision.ts))
+                cell(decision.kind)
+                cell(decision.decision)
+                cell(decision.subject)
+                cell(decision.reason)
+                cell {
+                    decision.turnId?.let { a(link("turns", it), "turn #$it") }
+                    if (decision.turnId == null) decision.conversationId?.let { a(link("conversations", it), it) }
+                    decision.eventId?.let { small(" event $it") }
+                }
+                cell { decision.detail?.let { details("detail") { pre(json(it)) } } }
+            }
+        }
+    }
+
+/**
+ * Decisions shown in red: the engine refused or stopped something, as in `/narrator trace` ([TraceText.REFUSALS]), or
+ * something failed (a rule, a module, a test of the Forge, a row that could not be read).
+ */
+private val FAILED_DECISIONS = TraceText.REFUSALS + setOf("failed", "fault", "broken", "stuck", "leak", "unreadable")

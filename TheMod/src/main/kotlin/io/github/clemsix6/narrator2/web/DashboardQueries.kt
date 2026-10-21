@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.trace.TraceQueries
 import io.github.clemsix6.narrator2.trace.TurnSummary
 import io.github.clemsix6.narrator2.trace.modelTokens
 import io.github.clemsix6.narrator2.trace.turnSummary
+import io.github.clemsix6.narrator2.web.pages.Where
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -34,7 +35,7 @@ class DashboardQueries(private val connection: Connection) {
             else -> where.add(TURN_OUTCOME, filter.outcome)
         }
         filter.chapter?.let { where.add(TURN_CHAPTER, it) }
-        return connection.rows("${TraceQueries.TURN_SUMMARY}${where.sql} ORDER BY t.turn_id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
+        return connection.rows("${TraceQueries.TURN_SUMMARY} WHERE $where ORDER BY t.turn_id DESC LIMIT ? OFFSET ?", *where.values, paging.limit, paging.offset) {
             turnSummary()
         }
     }
@@ -43,7 +44,7 @@ class DashboardQueries(private val connection: Connection) {
     fun conversations(role: String?, paging: Paging): List<ConversationRow> {
         val where = Where()
         role?.let { where.add(CONVERSATION_ROLE, it) }
-        return connection.rows("$CONVERSATIONS${where.sql} ORDER BY c.started_at DESC, c.conversation_id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
+        return connection.rows("$CONVERSATIONS WHERE $where ORDER BY c.started_at DESC, c.conversation_id DESC LIMIT ? OFFSET ?", *where.values, paging.limit, paging.offset) {
             conversationRow()
         }
     }
@@ -61,7 +62,7 @@ class DashboardQueries(private val connection: Connection) {
         val where = Where()
         role?.let { where.add(TASK_ROLE, it) }
         status?.let { where.add(TASK_STATUS, it) }
-        return connection.rows("$TASKS${where.sql} ORDER BY t.task_id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
+        return connection.rows("$TASKS WHERE $where ORDER BY t.task_id DESC LIMIT ? OFFSET ?", *where.values, paging.limit, paging.offset) {
             TaskRow(
                 taskId = getLong(1), role = getString(2), brief = getString(3), status = getString(4), createdAt = instant(5)!!,
                 startedAt = instant(6), finishedAt = instant(7), requestedByTurn = long(8), conversationId = getString(9),
@@ -78,7 +79,8 @@ class DashboardQueries(private val connection: Connection) {
         filter.subject?.let { where.add(DECISION_SUBJECT, it) }
         filter.since?.let { where.add(DECISION_SINCE, it) }
         filter.turn?.let { where.add(DECISION_TURN, it) }
-        return connection.rows("$DECISIONS${where.sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
+        filter.module?.let { where.add(DECISION_MODULE, it, "$it v") }
+        return connection.rows("$DECISIONS WHERE $where ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?", *where.values, paging.limit, paging.offset) {
             DecisionRow(
                 id = getLong(1), ts = instant(2)!!, kind = getString(3), decision = getString(4), subject = getString(5),
                 reason = getString(6), eventId = long(7), conversationId = getString(8), turnId = long(9), detail = getString(10),
@@ -113,22 +115,6 @@ class DashboardQueries(private val connection: Connection) {
     private fun ResultSet.long(column: Int): Long? = getLong(column).takeUnless { wasNull() }
 
     private fun ResultSet.int(column: Int): Int? = getInt(column).takeUnless { wasNull() }
-
-    /** The conditions of a filtered list, joined by `AND`, and their parameters in order. */
-    private class Where {
-        private val conditions = mutableListOf<String>()
-        private val values = mutableListOf<Any>()
-
-        fun add(condition: String, vararg params: Any) {
-            conditions += condition
-            values.addAll(params)
-        }
-
-        val sql: String get() = if (conditions.isEmpty()) "" else " WHERE " + conditions.joinToString(" AND ")
-
-        /** The conditions' parameters, then [more] (the limit and the offset). */
-        fun params(vararg more: Any): Array<Any> = (values + more).toTypedArray()
-    }
 
     internal companion object {
         /** The model's columns, after a model column ([modelTokens]): calls, failed, input, cache read, cache write, output. */
@@ -168,6 +154,7 @@ class DashboardQueries(private val connection: Connection) {
         private const val DECISION_SUBJECT = "contains(lower(subject), lower(?))"
         private const val DECISION_SINCE = "ts >= $SINCE"
         private const val DECISION_TURN = "turn_id = ?"
+        private const val DECISION_MODULE = "(subject = ? OR starts_with(subject, ?))"
 
         private const val CALLS_BY_KIND = """
             SELECT role, purpose, model, $TOKENS,
@@ -187,7 +174,7 @@ class DashboardQueries(private val connection: Connection) {
             TraceQueries.TURN_SUMMARY, TURN_TRIGGER, TURN_RUNNING, TURN_OUTCOME, TURN_CHAPTER,
             CONVERSATIONS, CONVERSATION_ROLE, CONVERSATION_TOKENS,
             TASKS, TASK_ROLE, TASK_STATUS,
-            DECISIONS, DECISION_KIND, DECISION_DECISION, DECISION_SUBJECT, DECISION_SINCE, DECISION_TURN,
+            DECISIONS, DECISION_KIND, DECISION_DECISION, DECISION_SUBJECT, DECISION_SINCE, DECISION_TURN, DECISION_MODULE,
             CALLS_BY_KIND, CALLS_BY_HOUR,
         )
     }
@@ -201,13 +188,18 @@ data class TurnFilter(val trigger: String? = null, val outcome: String? = null, 
     }
 }
 
-/** The filters of `/decisions`: [kind], [decision], words of the [subject] (ignoring case), [since] (epoch milliseconds), [turn]; null for any. */
+/**
+ * The filters of `/decisions`: [kind], [decision], words of the [subject] (ignoring case), [since] (epoch milliseconds),
+ * [turn]; and, for a module's page of the Forge, [module]: the decisions about it, whose subject is `name` or `name vN`.
+ * Null for any.
+ */
 data class DecisionFilter(
     val kind: String? = null,
     val decision: String? = null,
     val subject: String? = null,
     val since: Long? = null,
     val turn: Long? = null,
+    val module: String? = null,
 )
 
 /**
@@ -245,7 +237,7 @@ data class TaskRow(
     val calls: Long,
 )
 
-/** A decision of the engine (row of `engine_decisions`); [detail] is its JSON text. */
+/** A decision of the engine (row of `engine_decisions`), as every page shows it; [detail] is its JSON text. */
 data class DecisionRow(
     val id: Long,
     val ts: Instant,

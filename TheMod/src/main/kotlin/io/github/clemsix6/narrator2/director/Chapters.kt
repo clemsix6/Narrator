@@ -90,9 +90,11 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  *   the request goes again, twice at most. The summary carries the promises and challenges into the next
  *   chapters (M3), so a gateway failure worth waiting out (429, 529, 5xx, network, 402, a refused key)
  *   does not lose it: the chapter stays open and closing ([isClosing]), and the Director asks again
- *   later ([resumeSummary]) from where it stopped. Only a refusal, an empty or cut-off answer after its
- *   repeats, or a request the gateway rejects close it without one. A chapter where nothing was
- *   exchanged has nothing to summarize: it closes without a request.
+ *   later ([resumeSummary]) from where it stopped. An answer shorter than [MIN_SUMMARY_CHARS] (the « Fin. » that
+ *   ends the Director's turns, a mere line) is no summary: the request goes once more with [NOT_A_SUMMARY_NOTE].
+ *   Only a refusal, an empty, cut-off or still too short answer after its repeats, or a request the gateway
+ *   rejects close it without one (a warning). A chapter where nothing was exchanged has nothing to summarize: it
+ *   closes without a request.
  * - **Closing without a summary** ([close]): after the errors that leave the conversation unusable
  *   (refusals, a malformed request, a full context, an engine failure) and when the server stops.
  * - **Mechanics** (M4 §12.1): the tools of the mechanics engine are there when it is available at the
@@ -106,7 +108,7 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  *   ([Chapter.memory]); every chapter that closes, with or without a summary, is told to the memory once
  *   (`Memory.chapterClosed`).
  * - **Storyteller** (M6 §6.4, §12.2): `inspire` is there when the storyteller can take a task at the chapter's opening
- *   (`Role.STORYTELLER` among the workers' roles: the memory runs), with the Journal (`ToolEnv.storytellerAvailable`).
+ *   (`Role.STORYTELLER` among the workers' roles: the memory and the Journal run; `ToolEnv.storytellerAvailable`).
  *
  * Used by the Director's coroutine only.
  *
@@ -313,9 +315,22 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             services.transcripts.note(chapter.conversation, "summary of chapter ${chapter.number} not received (${outcome.error.description}); asked again later")
             return outcome.error
         }
-        closing = null
         val summary = attempt.summary()
-        val outcomeText = if (summary != null) "summary of ${summary.length} characters" else "no summary: no usable answer (${describe(outcome)})"
+        if (summary == null && outcome is TurnOutcome.Ended && attempt.tooShort == null) {
+            // The Director ends its turns with « Fin. » (director.md): an answer that short is no summary.
+            attempt.tooShort = attempt.longest
+            attempt.pending = Pending(emptyList(), listOf(OperatorNote.engine(NOT_A_SUMMARY_NOTE)))
+            log.warn("chapter ${chapter.number}: an answer of ${attempt.longest} characters is no summary (fewer than $MIN_SUMMARY_CHARS); asked once more")
+            services.transcripts.note(chapter.conversation, "an answer of ${attempt.longest} characters is no summary of chapter ${chapter.number}; asked once more")
+            return ask(attempt)
+        }
+        closing = null
+        val again = attempt.tooShort?.let { ", asked again after an answer of $it characters" }.orEmpty()
+        val outcomeText = when {
+            summary != null -> "summary of ${summary.length} characters$again"
+            outcome is TurnOutcome.Ended -> "no summary: the longest answer has ${attempt.longest} characters, fewer than $MIN_SUMMARY_CHARS, even asked again"
+            else -> "no summary: no usable answer (${describe(outcome)})$again"
+        }
         finish(chapter, attempt.reason, attempt.why, summary, outcomeText, problem = summary == null, calls = attempt.calls)
         return null
     }
@@ -323,7 +338,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
     /**
      * Closes the open chapter now, without asking for a summary, for [reason]: the next wake-up opens a
      * new one. Its conversation is dropped whatever its state (it may end with unanswered tool calls). A
-     * closing that was waiting for its summary keeps what it already got, if anything.
+     * closing that was waiting for its summary keeps what it already got, if that is a summary ([MIN_SUMMARY_CHARS]).
      */
     fun close(reason: EndReason, why: String) {
         val chapter = current ?: return
@@ -401,8 +416,17 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
         val texts = mutableListOf<String>()
         var calls = 0
 
-        /** The longest answer: a reply that also called a tool may be followed by a mere acknowledgement. */
-        fun summary(): String? = texts.maxByOrNull { it.length }?.let { Briefing.text(it, Briefing.SUMMARY_MAX) }
+        /** The length of the answer too short to be a summary that got the request sent once more; null until then. */
+        var tooShort: Int? = null
+
+        /** The length of the longest answer so far, summary or not. */
+        val longest: Int get() = texts.maxOfOrNull { it.length } ?: 0
+
+        /**
+         * The longest answer of [MIN_SUMMARY_CHARS] at least: a reply that also called a tool may be followed by a mere
+         * acknowledgement, and a « Fin. » is no summary.
+         */
+        fun summary(): String? = texts.filter { it.length >= MIN_SUMMARY_CHARS }.maxByOrNull { it.length }?.let { Briefing.text(it, Briefing.SUMMARY_MAX) }
     }
 
     /** Answers every tool call of the closing requests with an error: the chapter is closing. */
@@ -420,6 +444,16 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
 
         /** The engine note that asks again after such a call. */
         const val REPEAT_NOTE = "The chapter is closing and tools are disabled: reply with the chapter summary only, as plain text."
+
+        /**
+         * An answer shorter than this is no summary: the format asks for seven sections, even empty ones (over 150
+         * characters), and the Director's turns end with « Fin. » (director.md).
+         */
+        const val MIN_SUMMARY_CHARS = 100
+
+        /** The engine note that asks once more after an answer shorter than [MIN_SUMMARY_CHARS]. */
+        const val NOT_A_SUMMARY_NOTE =
+            "\"Fin.\" ends a turn, not a chapter: reply with the chapter summary itself, in the format asked, every section included, as plain text."
 
         /** The closing request and two repeats at most: a third reply that still calls tools ends it. */
         val SUMMARY_LIMITS = TurnLimits(maxSteps = 3, hardSteps = 3)

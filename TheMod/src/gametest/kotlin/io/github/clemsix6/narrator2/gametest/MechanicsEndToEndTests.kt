@@ -221,7 +221,7 @@ class MechanicsEndToEndTests {
             val OFFERING = Regex("""OFFERING (O-\d+) """)
             const val CONGRATULATIONS = "L'œuf est à toi, le diamant aussi. Bravo, mortel."
             const val LAW = "Le Narrateur a décrété que les minerais de diamant explosent quand on les mine."
-            const val SUMMARY = "Résumé de chapitre des mécaniques."
+            const val SUMMARY = "Résumé de chapitre des mécaniques. Faits marquants : aucun. Interventions du Narrateur : aucune. Engagements en cours : aucun."
         }
     }
 

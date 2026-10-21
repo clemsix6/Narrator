@@ -4,12 +4,16 @@ import io.github.clemsix6.narrator2.agent.AgentLoop
 import io.github.clemsix6.narrator2.config.Prompts
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.testing.Hold
+import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.reply
 import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.trace.ConversationRecord.EndReason
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
 import io.github.clemsix6.narrator2.trace.TurnRecord
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonPrimitive
+import org.apache.logging.log4j.Level
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -292,6 +296,64 @@ class ChapterScenariosTest {
             "no summary: no usable answer (refused (cyber))",
         )
         h.assertInvariants()
+    }
+
+    /** M6 review 3, finding 1 (D8): the Director ends its turns with « Fin. », which is no summary. */
+    @Test
+    fun `a summary request answered « Fin » is asked once more, and the second answer is the summary`() = harness().use { h ->
+        h.online("Bartok")
+        h.fake.enqueue(reply { text("Fin.") })
+        h.fake.enqueue(reply { text("Fin.") }, reply { text(SUMMARY) })
+
+        h.chat("Bartok", "narrateur ?")
+        h.advance(1_500)
+        h.awaitTurns(1)
+        h.director.post(DirectorSignal.CloseChapter(EndReason.OPERATOR))
+        h.advance(20_000)
+        h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+
+        assertEquals(3, h.fake.requests.size, "the summary request, then once more")
+        assertEquals(h.sessionOf(0), h.sessionOf(2), "asked again in the chapter's own session")
+        assertEquals("<engine>${Chapters.NOT_A_SUMMARY_NOTE}</engine>", h.userText(2))
+        val chapter = assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!))
+        assertEquals(SUMMARY, chapter.summary)
+        assertEquals(2, h.traces.llmCalls.count { it.purpose == LlmCallRecord.Purpose.CHAPTER_SUMMARY })
+        assertEquals(
+            "chapter 1, operator: closed at a quiet moment; summary of ${SUMMARY.length} characters, asked again after an answer of 4 characters",
+            h.decisions(DecisionRecord.Kind.CHAPTER, "closed").single().reason,
+        )
+        h.assertInvariants()
+    }
+
+    /** The review's probe: « Fin. » ends the turn, the server empties, and both summary requests get « Fin. ». */
+    @Test
+    fun `a summary request answered « Fin » twice closes the chapter without a summary, with a warning`() {
+        LogCapture().use { logs ->
+            harness().use { h ->
+                val bartok = h.online("Bartok")
+                h.fake.enqueue(reply { text("Fin.") })
+                h.fake.enqueue(reply { text("Fin.") }, reply { text("Fin.") })
+
+                h.chat("Bartok", "bonne nuit narrateur")
+                h.advance(1_500)
+                h.awaitTurns(1)
+                h.players.remove(bartok.uuid)
+                h.advance(11 * 60_000L)
+                h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+
+                assertEquals(3, h.fake.requests.size, "asked once more, never a third time")
+                val chapter = assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!))
+                assertEquals(EndReason.SERVER_EMPTY, chapter.endReason)
+                assertNull(chapter.summary, "« Fin. » is no summary")
+                val reason = "chapter 1, server_empty: no player online for 10 minutes; " +
+                    "no summary: the longest answer has 4 characters, fewer than ${Chapters.MIN_SUMMARY_CHARS}, even asked again"
+                val closed = h.decisions(DecisionRecord.Kind.CHAPTER, "closed").single()
+                assertEquals(reason, closed.reason)
+                assertEquals(0, closed.detail?.get("summary_chars")?.jsonPrimitive?.int)
+                assertTrue(logs.at(Level.WARN).any { it.endsWith(reason) }, "the decision is a warning: ${logs.at(Level.WARN)}")
+                h.assertInvariants()
+            }
+        }
     }
 
     @Test

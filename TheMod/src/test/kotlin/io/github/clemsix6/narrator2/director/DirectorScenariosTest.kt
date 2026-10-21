@@ -620,7 +620,7 @@ class DirectorScenariosTest {
     fun `a chapter close asked by an operator happens at a quiet moment, with a summary`() = harness().use { h ->
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
-        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
+        h.fake.enqueue(reply { text(EMPTY_SUMMARY) })
         h.fake.enqueue(reply { text("…") })
 
         h.chat("Bartok", "narrateur ?")
@@ -635,7 +635,7 @@ class DirectorScenariosTest {
         assertEquals(h.sessionOf(0), h.sessionOf(1), "the summary is asked in the chapter's own conversation")
         val chapter = assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!))
         assertEquals(ConversationRecord.EndReason.OPERATOR, chapter.endReason)
-        assertEquals("Joueurs vus : Bartok.", chapter.summary)
+        assertEquals(EMPTY_SUMMARY, chapter.summary)
 
         h.chat("Bartok", "re")
         h.advance(1_500)
@@ -651,7 +651,7 @@ class DirectorScenariosTest {
         h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
         h.fake.enqueue(reply { text("…") })
-        h.fake.enqueue(reply { text("Joueurs vus : Bartok.") })
+        h.fake.enqueue(reply { text(EMPTY_SUMMARY) })
 
         h.chat("Bartok", "narrateur ?")
         h.advance(1_500)
@@ -679,3 +679,8 @@ class DirectorScenariosTest {
         return userText(fake.requests.size - 1).lines().first { it.startsWith("Your last actions:") }
     }
 }
+
+/** The shortest summary the format allows (`chapter_summary.md`): its seven sections, nothing in them. */
+private const val EMPTY_SUMMARY =
+    "Joueurs vus : Bartok.\nFaits marquants : aucun.\nInterventions du Narrateur : aucun.\nEngagements en cours : aucun.\n" +
+        "Fils ouverts : aucun.\nRépertoire utilisé : aucun.\nÉtat des joueurs : aucun."
