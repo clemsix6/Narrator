@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.memory.BriefingFixture.Companion.bartok
 import io.github.clemsix6.narrator2.memory.BriefingFixture.Companion.kelvin
 import io.github.clemsix6.narrator2.memory.BriefingFixture.Companion.mimosa
 import io.github.clemsix6.narrator2.memory.SheetSamples.filler
+import io.github.clemsix6.narrator2.style.ComicRegister
 import io.github.clemsix6.narrator2.testing.MemorySamples
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -21,19 +22,23 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
-/** M3 §11.1, §15.1: the memory's six sections of a chapter's briefing (M3-13). */
+/** M3 §11.1, §15.1: the memory's seven sections of a chapter's briefing (M3-13; the storyteller's `<programme>`, M6 §7). */
 class BriefingMemoryTest {
     // ── Order and forms ─────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the six sections come in the briefing's order, each with its reduced form`() = runBlocking<Unit> {
+    fun `the seven sections come in the briefing's order, each with its reduced form`() = runBlocking<Unit> {
         BriefingFixture().use { f ->
             BriefingSamples.evening(f)
             val sections = f.briefing.sections(f.chapter(), f.now)
+            assertEquals(listOf("grimoire", "programme", "chronicle", "canon", "sheets", "memories", "notes"), sections.map { it.tag })
             assertEquals(BriefingSection.TAGS, sections.map { it.tag })
             val byTag = sections.associateBy { it.tag }
             for (tag in BriefingSection.NEVER_REDUCED) assertEquals(byTag.getValue(tag).lines, byTag.getValue(tag).reduced, tag)
             assertNull(byTag.getValue("memories").reduced, "memories leave a reduced briefing")
+
+            val programme = byTag.getValue("programme")
+            assertEquals(listOf("P-40", "P-41", "P-44", "P-47"), programme.reduced!!.map { it.substringBefore(' ') }, "the season and three ideas")
 
             val chronicle = byTag.getValue("chronicle")
             assertTrue(chronicle.lines.any { it.startsWith("Session ") })
@@ -74,6 +79,41 @@ class BriefingMemoryTest {
             }
             val style = f.sections().getValue("notes").lines.last()
             assertEquals("Style: overused lately: « Dix-sept secondes » ×4 (last 37m ago)", style)
+        }
+    }
+
+    /**
+     * M6 §7: the season first, then the ideas that fit the players online (theirs, or everyone's) before the others, the
+     * best noted first; one line each with its pitch, its fit, its notes, its register and how often it was dealt. Only
+     * the open ideas; showing them deals none and shows no row.
+     */
+    @Test
+    fun `the programme gives the season, then the ideas that fit the players online, the best noted first`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            BriefingSamples.evening(f)
+            val chapter = f.chapter()
+            val programme = f.briefing.sections(chapter, f.now).first { it.tag == "programme" }
+            assertEquals("open=\"5\"", programme.attributes)
+            assertEquals(
+                listOf(
+                    "P-40 season · everyone · « La guerre des coffres, saison 2 » — Les coffres des chambres d'épreuve changent de main chaque soir ; " +
+                        "deux récits possibles : le procès des parieurs, la grande trêve. (fits: toujours) · novelty 4 fun 4 fair 4",
+                    "P-41 challenge · Bartok, Mimosa · « La course au pic » — Course au sommet de la Dent du Juge ; le premier en haut gagne un joker, " +
+                        "le dernier redescend avec deux minutes de lenteur. (fits: les deux en ligne, en début de soirée) · novelty 4 fun 4 fair 5 · sports_commentary (dealt 2×)",
+                    "P-44 favor · Mimosa · « Le diplôme de l'architecte » — Mimosa reçoit un livre-diplôme d'architecte du ciel et un bon pour un pardon. " +
+                        "(fits: Mimosa en ligne, après une construction) · novelty 3 fun 4 fair 5 · game_show",
+                    "P-47 speech · everyone · « La prophétie des coffres » — Une prophétie écrite dans un livre annonce que le prochain coffre ouvert " +
+                        "sera vide. (fits: n'importe quand) · novelty 3 fun 3 fair 4",
+                    "P-43 punishment · Kelvin · « Le bain forcé » — Kelvin reçoit une bouée de laine bleue qu'il ne peut pas retirer pendant deux minutes. " +
+                        "(fits: Kelvin en ligne) · novelty 5 fun 5 fair 5 · weather_report",
+                ),
+                programme.lines,
+            )
+            assertEquals(programme.lines.take(4), programme.reduced, "the season and three ideas")
+            assertTrue(chapter.shownRefs.none { it.kind == RefKind.IDEA }, "an idea shown in the briefing is not dealt")
+            f.accept(chapter)
+            assertTrue(f.store.recalls.none { it.first.kind == RefKind.IDEA }, "no recalls row for the ideas of the briefing")
+            assertEquals(2, (f.store.rows.getValue(Ref(RefKind.IDEA, 41)) as Idea).dealt)
         }
     }
 
@@ -208,6 +248,15 @@ class BriefingMemoryTest {
             val notes = sections.getValue("notes").lines
             assertTrue(notes.any { Regex("""\(\+\d+ more open notes\)""").matches(it) }, notes.joinToString("\n"))
             assertTrue(notes.last().startsWith("Style: overused lately: "), notes.last())
+
+            // The programme: the season first, as many ideas as fit with a pitch of 40 characters at least, a count of the others.
+            val programme = sections.getValue("programme")
+            assertTrue(programme.lines[0].startsWith("P-1100 season · "), programme.lines[0])
+            val counted = Regex("""\(\+(\d+) more open ideas: inspire deals them\)""").matchEntire(programme.lines.last())
+            assertNotNull(counted, programme.lines.last())
+            assertEquals(MemoryLimits.OPEN_IDEAS, programme.lines.size - 1 + counted!!.groupValues[1].toInt(), "every open idea is shown or counted")
+            assertTrue(programme.lines.dropLast(1).all { it.endsWith(" · novelty 5 fun 5 fair 5 · sports_commentary (dealt 12×)") && "… (fits: " in it }, programme.lines.joinToString("\n"))
+            assertEquals(MemoryBriefing.REDUCED_IDEAS + 1, programme.reduced!!.size, "the reduced form: the season and three ideas")
         }
     }
 
@@ -279,6 +328,11 @@ class BriefingMemoryTest {
         BriefingFixture().use { f ->
             val sections = f.sections()
             assertEquals(listOf("(no grimoire yet: the Narrator has not dreamed yet)"), sections.getValue("grimoire").lines)
+            assertEquals(
+                listOf("(no idea open: the storyteller writes them at the end of a dream, or for a task you delegate)"),
+                sections.getValue("programme").lines,
+            )
+            assertEquals(sections.getValue("programme").lines, sections.getValue("programme").reduced)
             assertEquals(listOf("(no chronicle yet: the Dreamer writes it in a deep dream, the chapters at each nap)"), sections.getValue("chronicle").lines)
             assertEquals(listOf("(no canon yet: nothing promised, decided nor named)"), sections.getValue("canon").lines)
             assertEquals(listOf("(nobody online)"), sections.getValue("sheets").lines)
@@ -408,6 +462,15 @@ internal object BriefingSamples {
 
     private fun c(id: Long) = Ref(RefKind.CANON, id)
 
+    /** An open idea of the storyteller, P-[id], written the day before, far from its deadline. */
+    fun idea(
+        id: Long, kind: IdeaKind, title: String, pitch: String, fit: String, players: List<PlayerRef>, novelty: Int, funScore: Int, fairness: Int,
+        register: ComicRegister? = null,
+    ) = Idea(
+        Ref(RefKind.IDEA, id), NOW.minus(Duration.ofDays(1)), kind, title, pitch, fit, players, register, novelty, funScore, fairness, emptyList(),
+        null, null, IdeaStatus.OPEN, 0, null, 500_000, null, null, Source.STORYTELLER,
+    )
+
     val GRIMOIRE = """
         ## Players
         - Bartok : provocateur qui revient quémander ; ses châtiments font rire tout le monde, lui compris ; les téléportations l'agacent vraiment. Faveur basse depuis trois sessions (M-130).
@@ -420,8 +483,6 @@ internal object BriefingSamples {
         - Les formulaires administratifs font rire Mimosa ; les prophéties écrites dans un livre aussi.
         ## What falls flat
         - Les commentaires sportifs sur les morts : plus de réaction depuis une semaine.
-        ## Plans
-        - Prochaine session de Mimosa : un défi à l'arc (elle vient d'enchanter le sien).
         ## Watch out
         - Kelvin : 4 noyades cette semaine et il parle peu ; taquiner léger, pas de châtiment gratuit.
     """.trimIndent()
@@ -495,6 +556,45 @@ internal object BriefingSamples {
                 "le Narrateur l'a nommée Architecte du Ciel. »",
         )
 
+        // The storyteller's programme: a season, three ideas that fit Bartok and Mimosa, one for Kelvin (offline), one dropped.
+        f.put(
+            idea(
+                40, IdeaKind.SEASON, "La guerre des coffres, saison 2",
+                "Les coffres des chambres d'épreuve changent de main chaque soir ; deux récits possibles : le procès des parieurs, la grande trêve.",
+                "toujours", emptyList(), 4, 4, 4,
+            ),
+        )
+        f.put(
+            idea(
+                41, IdeaKind.CHALLENGE, "La course au pic",
+                "Course au sommet de la Dent du Juge ; le premier en haut gagne un joker, le dernier redescend avec deux minutes de lenteur.",
+                "les deux en ligne, en début de soirée", listOf(bartok, mimosa), 4, 4, 5, ComicRegister.SPORTS_COMMENTARY,
+            ).copy(dealt = 2, lastDealtAt = at("2026-10-03T19:10:00Z")),
+        )
+        f.put(
+            idea(
+                42, IdeaKind.FAVOR, "Le gâteau", "Un gâteau pour Mimosa.", "Mimosa en ligne", listOf(mimosa), 5, 5, 5,
+            ).copy(status = IdeaStatus.DROPPED, closeReason = "Le gâteau a déjà servi."),
+        )
+        f.put(
+            idea(
+                43, IdeaKind.PUNISHMENT, "Le bain forcé", "Kelvin reçoit une bouée de laine bleue qu'il ne peut pas retirer pendant deux minutes.",
+                "Kelvin en ligne", listOf(kelvin), 5, 5, 5, ComicRegister.WEATHER_REPORT,
+            ),
+        )
+        f.put(
+            idea(
+                44, IdeaKind.FAVOR, "Le diplôme de l'architecte", "Mimosa reçoit un livre-diplôme d'architecte du ciel et un bon pour un pardon.",
+                "Mimosa en ligne, après une construction", listOf(mimosa), 3, 4, 5, ComicRegister.GAME_SHOW,
+            ),
+        )
+        f.put(
+            idea(
+                47, IdeaKind.SPEECH, "La prophétie des coffres", "Une prophétie écrite dans un livre annonce que le prochain coffre ouvert sera vide.",
+                "n'importe quand", emptyList(), 3, 3, 4,
+            ),
+        )
+
         f.put(MemorySamples.note)
         f.note(
             12, NoteKind.EXPIRED, "C-44 promise (Bartok) came due 10-02 22:10 with no resolution recorded: « Le Narrateur a promis à Bartok une épée enchantée. »",
@@ -563,6 +663,16 @@ internal object BriefingSamples {
             f.recall.hits += f.hit(
                 200L + it, "M-${200 + it} · 09-2${it % 9} 20:00 (1w ago) · $names · ★10 · ${filler(80, "T$it").replace('<', '‹').replace('>', '›')}: " +
                     "« ${filler(MemoryLimits.MEMORY_CONTENT, "C$it").replace('<', '‹').replace('>', '›')} »",
+            )
+        }
+
+        // The programme at its cap: a season and eleven ideas for the eight players, every text at its limit.
+        repeat(MemoryLimits.OPEN_IDEAS) { i ->
+            f.put(
+                idea(
+                    1_100L + i, if (i == 0) IdeaKind.SEASON else IdeaKind.CHALLENGE, filler(MemoryLimits.IDEA_TITLE, "T$i"),
+                    filler(MemoryLimits.IDEA_PITCH, "P$i"), filler(MemoryLimits.IDEA_FIT, "F$i"), everyone, 5, 5, 5, ComicRegister.SPORTS_COMMENTARY,
+                ).copy(dealt = 12),
             )
         }
 

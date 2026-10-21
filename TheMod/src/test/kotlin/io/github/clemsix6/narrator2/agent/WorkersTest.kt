@@ -23,6 +23,7 @@ import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeDirector
 import io.github.clemsix6.narrator2.testing.FakeForge
 import io.github.clemsix6.narrator2.testing.FakeMechanics
+import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.FakeResponse
 import io.github.clemsix6.narrator2.testing.Hold
 import io.github.clemsix6.narrator2.testing.MemoryTraceSink
@@ -81,7 +82,8 @@ import kotlin.test.fail
  * The workers (M1_M2 §13) and the delegation tools (§9.6) against the strict fake Anthropic server: a
  * task per conversation and session, the limit of tasks at once and the line, the timeout, the
  * cancellation, the failures (402 budget, refusal, empty report), and the report posted to the Director;
- * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits, one task at a time, the switch.
+ * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits, one task at a time, the switch;
+ * the storyteller (M6 §6.4): wired with the memory only, `inspire` in its conversation, six requests at most.
  * Virtual time, except where the test needs real threads.
  */
 class WorkersTest {
@@ -112,6 +114,7 @@ class WorkersTest {
         journalAvailable: Boolean = true,
         virtualTime: Boolean = true,
         forgeConfig: ForgeConfig = ForgeConfig(),
+        memoryAvailable: Boolean = true,
     ) : AutoCloseable {
         val scheduler = TestCoroutineScheduler()
         val scope = CoroutineScope(SupervisorJob() + if (virtualTime) StandardTestDispatcher(scheduler) else Dispatchers.Default)
@@ -126,6 +129,9 @@ class WorkersTest {
         /** The Forge and the mechanics engine, both running unless a test says otherwise: the forger works with them only. */
         val forge = FakeForge(clock)
         val mechanics = FakeMechanics(clock)
+
+        /** The memory, running unless the rig is made without it: the storyteller works with it only. */
+        val memory = FakeMemory(clock).apply { available = memoryAvailable }
 
         /** Queries the fake `sql` got, in order. */
         val queries = CopyOnWriteArrayList<String>()
@@ -148,6 +154,7 @@ class WorkersTest {
                 trace = traces,
                 transcripts = Transcripts(dir.resolve("logs"), enabled = true),
                 director = director,
+                memory = memory,
                 forge = forge,
                 mechanics = mechanics,
             )
@@ -550,7 +557,7 @@ class WorkersTest {
 
         rig.forge.available = false
         rig.forge.reason = "the compiler is stuck since 21:04:10"
-        assertEquals(setOf(Role.ANALYST, Role.SCOUT), rig.workers.roles)
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT, Role.STORYTELLER), rig.workers.roles)
         assertEquals(
             "no forger can take a task: the Forge is unavailable: the compiler is stuck since 21:04:10",
             rig.workers.submit(Role.FORGER, brief, DIRECTOR_CALLER).exceptionOrNull()!!.message,
@@ -719,18 +726,71 @@ class WorkersTest {
         assertTrue(fake.requests.none { it.conversation == rig.task(second).conversationId }, "the second never called Claude")
     }
 
+    // ── The storyteller (M6 §6.4) ──────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `the storyteller takes tasks only while the memory runs, and delegate says why it cannot`() {
+        val rig = Rig()
+        assertTrue(Role.STORYTELLER in rig.workers.roles)
+
+        val off = Rig(memoryAvailable = false)
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT, Role.FORGER), off.workers.roles)
+        val refused = off.call(DelegateTool(), """{"role": "storyteller", "brief": "Bartok revient après une semaine : trois idées pour son retour."}""")
+        assertTrue(refused.path("is_error").asBoolean(), "$refused")
+        assertEquals("FAILED: no storyteller can take a task: the memory is unavailable", refused.path("content").asText())
+        assertTrue(off.workers.list().isEmpty())
+        assertTrue(fake.requests.isEmpty())
+    }
+
+    /** M6 §6.4: its own prompt and effort, `inspire` among its tools, and six requests at most whatever `workers.maxSteps` allows. */
+    @Test
+    fun `a storyteller task has the storyteller's prompt, sees inspire, and runs within six requests`() {
+        val rig = Rig(maxSteps = 15)
+        rig.base.players.put(online("Bartok"))
+        val brief = "Bartok revient après une semaine : trois idées pour son retour, ce soir."
+        val id = rig.submit(brief, Role.STORYTELLER)
+        val session = rig.session(id)
+        enqueueFor(session, *Array(8) { sqlCall("SELECT $it") })
+
+        rig.await("the storyteller's end") { rig.done().size == 1 }
+
+        assertTrue(session.startsWith("storyteller-"), session)
+        assertEquals(listOf(Role.STORYTELLER), rig.toolSets.map { it.first })
+        assertEquals(
+            ToolEnv(journalAvailable = true, workerRoles = emptySet(), memoryAvailable = true, mechanicsAvailable = true, forgeAvailable = true, storytellerAvailable = true),
+            rig.toolSets.single().second,
+            "the storyteller's own conversation sees inspire",
+        )
+        val request = rig.requestsOf(id).first().json
+        assertContains(request.path("system")[0].path("text").asText(), "Tu es la salle d'écriture du Narrateur")
+        assertEquals("medium", request.path("output_config").path("effort").asText())
+        assertEquals(
+            "<task id=\"T-$id\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>",
+            request.path("messages")[0].path("content")[0].path("text").asText(),
+        )
+        assertEquals(Workers.STORYTELLER_STEPS + 2, rig.requestsOf(id).size, "six steps, then two replies whose calls are refused")
+        assertEquals((0 until Workers.STORYTELLER_STEPS - 1).map { "SELECT $it" }, rig.queries, "only the calls of the first five replies run")
+        assertEquals("step limit: still calling tools after 8 requests, no report", rig.task(id).error)
+        val conversation = assertNotNull(rig.traces.latestConversation(session))
+        assertEquals("Task T-$id (storyteller)", conversation.label)
+        assertEquals(Role.STORYTELLER, conversation.role)
+        assertEquals(Role.STORYTELLER to Status.FAILED, rig.done().single().let { it.role to it.status })
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
     // ── What is offered, and the server that stops ─────────────────────────────────────────────────
 
     @Test
     fun `the Analyst and the scout take tasks only with the Journal and while the server runs`() {
-        val closed = Rig(journalAvailable = false)
+        val closed = Rig(journalAvailable = false, memoryAvailable = false)
         assertEquals(setOf(Role.FORGER), closed.workers.roles, "the forger does not need the Journal")
         assertEquals("no analyst can take a task: the Journal is unavailable", closed.workers.submit(Role.ANALYST, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
         assertEquals("no scout can take a task: the Journal is unavailable", closed.workers.submit(Role.SCOUT, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
-        assertEquals("no storyteller can take a task: there is no storyteller yet", closed.workers.submit(Role.STORYTELLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no storyteller can take a task: the memory is unavailable", closed.workers.submit(Role.STORYTELLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
+        assertEquals("no chronicler can take a task: there is no chronicler yet", closed.workers.submit(Role.CHRONICLER, "x".repeat(30), DIRECTOR_CALLER).exceptionOrNull()!!.message)
 
         val rig = Rig()
-        assertEquals(setOf(Role.ANALYST, Role.SCOUT, Role.FORGER), rig.workers.roles)
+        assertEquals(setOf(Role.ANALYST, Role.SCOUT, Role.STORYTELLER, Role.FORGER), rig.workers.roles)
         rig.base.phase = Phase.STOPPING
         assertEquals(emptySet(), rig.workers.roles)
         val refused = rig.call(DelegateTool(), """{"role": "analyst", "brief": "Where does Bartok mine these days?"}""")

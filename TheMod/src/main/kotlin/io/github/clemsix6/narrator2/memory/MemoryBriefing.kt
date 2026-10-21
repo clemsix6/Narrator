@@ -19,12 +19,14 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * The memory's six sections of a chapter's briefing (M3 §11.1), in [BriefingSection.TAGS] order:
+ * The memory's seven sections of a chapter's briefing (M3 §11.1, M6 §7), in [BriefingSection.TAGS] order:
  * what gives the Narrator its continuity from one chapter to the next. Factual, dense, citable by refs,
  * without any voice: code labels in English, the memory's French texts escaped, the words someone said
  * between « ».
  *
  * - `<grimoire>`: the current version, as it is (never reduced).
+ * - `<programme>`: the storyteller's open ideas (M6 §6.2), its season first, one line each ([programme]). Reduced:
+ *   the season and [REDUCED_IDEAS] ideas. Showing them deals none: the heartbeat and `inspire` deal ideas.
  * - `<chronicle>`: the saga, the season in progress, the last [SESSIONS] sessions, then the chapters not
  *   in a session yet (titles only). Reduced: the saga and the season.
  * - `<canon>`: the open commitments by due time with their quote, the plans of the mechanics engine among
@@ -75,7 +77,7 @@ class MemoryBriefing(
     private class Built(val section: BriefingSection, val shown: Showing = Showing(), val reducedShown: Showing = shown)
 
     /**
-     * The six sections at [now] (epoch milliseconds), for [chapter], which records what the form the briefing
+     * The seven sections at [now] (epoch milliseconds), for [chapter], which records what the form the briefing
      * renders ([reduced] or not) shows.
      */
     suspend fun sections(chapter: ChapterMemory, now: Long, reduced: Boolean = false): List<BriefingSection> {
@@ -85,6 +87,7 @@ class MemoryBriefing(
         val built = coroutineScope {
             listOf(
                 async { build("grimoire") { grimoire(at) } },
+                async { build(PROGRAMME_TAG) { programme(players) } },
                 async { build("chronicle") { chronicle(at) } },
                 async { build("canon") { canon(at) } },
                 async { build("sheets") { sheets(players, now) } },
@@ -129,6 +132,75 @@ class MemoryBriefing(
         val lines = BriefText.within(ModelText.lines(doc.content).lines().filter { it.isNotBlank() }, budget("grimoire"))
         val attributes = "version=\"${doc.version}\" written=\"${dates.dayTime(doc.writtenAt, now)}\""
         return Built(BriefingSection("grimoire", attributes, lines, lines))
+    }
+
+    // ── <programme> ─────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The storyteller's open ideas (M6 §7): its season, then the others, those that fit the players online first (theirs
+     * all online, or everyone's), the best noted first, then the least dealt, the newest. One line each
+     * ([ProgrammeLine]), within the budget: the pitches are cut evenly (water-filling); when even the shortest lines do
+     * not all fit, the last ideas are left out and counted. Shows no row: showing an idea is not dealing it.
+     */
+    private suspend fun programme(players: List<PlayerRef>): Built {
+        val open = store.ideas(IdeaStatus.OPEN, IDEAS_READ)
+        if (open.isEmpty()) return whole(PROGRAMME_TAG, listOf(NO_PROGRAMME))
+        val online = players.map { it.uuid }.toSet()
+        val (seasons, others) = open.partition { it.kind == IdeaKind.SEASON }
+        val ideas = others.sortedWith(
+            compareByDescending<Idea> { idea -> idea.players.all { it.uuid in online } }
+                .thenByDescending { it.novelty + it.funScore + it.fairness }
+                .thenBy { it.dealt }
+                .thenByDescending { it.ref.id },
+        )
+        val season = seasons.sortedByDescending { it.ref.id }
+        val budget = budget(PROGRAMME_TAG)
+        val attributes = "open=\"${open.size}\""
+        return Built(BriefingSection(PROGRAMME_TAG, attributes, programmeLines(season + ideas, budget), programmeLines(season + ideas.take(REDUCED_IDEAS), budget)))
+    }
+
+    /**
+     * [ideas] as lines within [budget] (joined by `\n`): the most that fit with each pitch cut to [ProgrammeLine.PITCH_MIN]
+     * characters at worst, then `(+N more open ideas: inspire deals them)`. One line always fits.
+     */
+    private fun programmeLines(ideas: List<Idea>, budget: Int): List<String> {
+        val lines = ideas.map(::ProgrammeLine)
+        return (lines.size downTo 1).firstNotNullOf { count ->
+            val shown = lines.take(count)
+            val more = (lines.size - count).takeIf { it > 0 }?.let { "(+$it more open ideas: inspire deals them)" }
+            val room = budget - (count - 1) - (more?.let { it.length + 1 } ?: 0)
+            val caps = BriefText.share(shown.map { it.length }, room)
+            if (shown.indices.all { caps[it] >= shown[it].shortest }) shown.mapIndexed { i, line -> line.render(caps[i]) } + listOfNotNull(more) else null
+        }
+    }
+
+    /**
+     * An idea's line in `<programme>`: `P-41 challenge · Bartok, Mimosa · « La course au pic » — <pitch> (fits: <fit>) ·
+     * novelty 4 fun 4 fair 5 · game_show (dealt 1×)`, its notes written as `inspire` writes them; `everyone` for an idea
+     * without players; no count for an idea never dealt. Only the pitch is cut ([render]).
+     */
+    private class ProgrammeLine(idea: Idea) {
+        private val head = "${idea.ref} ${idea.kind.id} · ${idea.players.joinToString { it.shownName }.ifEmpty { "everyone" }} · " +
+            "${BriefText.quote(idea.title, MemoryLimits.IDEA_TITLE)} — "
+        private val pitch = ModelText.escape(idea.pitch)
+        private val tail = " (fits: ${BriefText.cut(idea.fit, FIT_MAX)}) · novelty ${idea.novelty} fun ${idea.funScore} fair ${idea.fairness}" +
+            (idea.register?.let { " · ${it.id}" } ?: "") + (if (idea.dealt > 0) " (dealt ${idea.dealt}×)" else "")
+
+        val length: Int get() = head.length + pitch.length + tail.length
+
+        /** The line with its pitch cut to [PITCH_MIN] (whole when shorter). */
+        val shortest: Int get() = head.length + minOf(pitch.length, PITCH_MIN) + tail.length
+
+        /** The line within [max] characters, its pitch cut at a word. */
+        fun render(max: Int): String = head + SheetRenderer.cutText(pitch, max - head.length - tail.length) + tail
+
+        companion object {
+            /** The shortest pitch a line keeps: below, the idea is left out of the section. */
+            const val PITCH_MIN = 40
+
+            /** The longest fit a line keeps (an idea's holds 200). */
+            const val FIT_MAX = 60
+        }
     }
 
     // ── <chronicle> ─────────────────────────────────────────────────────────────────────────────────
@@ -428,6 +500,14 @@ class MemoryBriefing(
 
         internal const val MEMORIES_TAG = "memories"
 
+        internal const val PROGRAMME_TAG = "programme"
+
+        /** Ideas of a reduced `<programme>`, after the season (M6 §7). */
+        const val REDUCED_IDEAS = 3
+
+        /** Open ideas read, at most: the store keeps [MemoryLimits.OPEN_IDEAS] open. */
+        private const val IDEAS_READ = 50
+
         private const val MAX_ROWS = 500
         private const val READ_TIMEOUT_MS = 5_000L
 
@@ -439,6 +519,7 @@ class MemoryBriefing(
         private const val STAKES = 120
 
         private const val NO_GRIMOIRE = "(no grimoire yet: the Narrator has not dreamed yet)"
+        private const val NO_PROGRAMME = "(no idea open: the storyteller writes them at the end of a dream, or for a task you delegate)"
         private const val NO_CHRONICLE = "(no chronicle yet: the Dreamer writes it in a deep dream, the chapters at each nap)"
         private const val NO_CANON = "(no canon yet: nothing promised, decided nor named)"
         private const val NO_COMMITMENT = "(no open commitment)"

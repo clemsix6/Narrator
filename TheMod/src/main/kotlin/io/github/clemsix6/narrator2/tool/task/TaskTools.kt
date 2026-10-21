@@ -19,16 +19,18 @@ import kotlinx.serialization.Serializable
 
 /**
  * Delegation to the workers (M1_M2 §9.6): `delegate`, `tasks`. `ToolCatalog` builds the family once per conversation
- * ([ToolEnv.workerRoles]): `delegate` is shown when a role it offers is wired (the Analyst, the scout), `tasks` when any
- * worker role is, the forger included (M5 review, D3): with the Journal down and the Forge up, the Director still lists
- * and cancels the forger's tasks.
+ * ([ToolEnv.workerRoles]): `delegate` is shown when a role it offers is wired (the Analyst, the scout, the storyteller),
+ * `tasks` when any worker role is, the forger included (M5 review, D3): with the Journal down and the Forge up, the
+ * Director still lists and cancels the forger's tasks.
  */
 @Suppress("UNUSED_PARAMETER")
 fun taskTools(services: NarratorServices): List<NarratorTool<*>> = listOf(DelegateTool(), TasksTool())
 
 /**
- * The worker roles `delegate` offers: those wired, the Analyst (M2) and the scout (M4 §14). Both need the Journal
- * (`Workers.roles`): without it, `delegate` is not shown at all.
+ * The worker roles `delegate` offers: those wired in the code, the Analyst (M2), the scout (M4 §14) and the storyteller
+ * (M6 §6.4). The first two need the Journal, the storyteller the memory (`Workers.roles`). A tool never changes its
+ * definition: a role that cannot work now stays in the enum and `Workers.submit` refuses it with its reason; without any
+ * of them (no Journal, hence no memory), `delegate` is not shown at all.
  */
 @Serializable
 enum class WorkerRole(val role: Role) {
@@ -37,6 +39,9 @@ enum class WorkerRole(val role: Role) {
 
     @SerialName("scout")
     SCOUT(Role.SCOUT),
+
+    @SerialName("storyteller")
+    STORYTELLER(Role.STORYTELLER),
 }
 
 /** Whether a worker role that `delegate` offers is wired. */
@@ -46,7 +51,9 @@ private fun anyWorker(env: ToolEnv): Boolean = WorkerRole.entries.any { it.role 
 data class DelegateArgs(
     @Doc(
         "analyst: questions on what the players did and are doing, answered from the Journal and the Oracle. " +
-            "scout: places in the world, for a duel arena, a challenge or a plan. Both read only.",
+            "scout: places in the world, for a duel arena, a challenge or a plan. " +
+            "storyteller: three scored ideas for a big moment (a return, a first Nether, the end of an arc, a quiet " +
+            "evening); give it the players, the moment and what you want to achieve.",
     )
     val role: WorkerRole,
     @Doc(
@@ -65,7 +72,8 @@ data class DelegateArgs(
 
 /**
  * `delegate`: queues a task for a worker and returns at once, with the task's id; the Director's turn
- * goes on. The worker's report comes back later as a `TASK` event.
+ * goes on. The worker's report comes back later as a `TASK` event. A role that cannot work now (the storyteller without
+ * the memory) is refused with the reason `Workers.submit` gives.
  */
 class DelegateTool : NarratorTool<DelegateArgs>(
     name = "delegate",
@@ -73,8 +81,9 @@ class DelegateTool : NarratorTool<DelegateArgs>(
         "Returns at once with a task id: keep playing, or end your turn. The worker's report arrives later as a TASK " +
         "event, or why it failed. The analyst answers questions on the players' history and present state with dated " +
         "figures and the queries behind them. The scout finds exact places: flat open ground for an arena or a scene " +
-        "(which only it can survey), the structures, biomes and named places near the players, where they go. Neither " +
-        "speaks to players nor acts. What a single call of your own tools answers, ask it yourself.",
+        "(which only it can survey), the structures, biomes and named places near the players, where they go. The " +
+        "storyteller writes three ideas of your programme (P-…) for that moment and ranks them in its report. None of " +
+        "them speaks to players nor acts. What a single call of your own tools answers, ask it yourself.",
     args = DelegateArgs.serializer(),
     effect = ToolEffect.TASK,
 ) {

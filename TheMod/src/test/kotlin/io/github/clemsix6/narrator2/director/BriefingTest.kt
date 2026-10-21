@@ -366,7 +366,8 @@ class BriefingTest {
             listOf("Arsenal", "Challenges", "Rules", "Modules", "Pacing", "Offerings"),
             state.lines().takeLast(6).map { it.substringBefore(' ').substringBefore(':') },
         )
-        assertEquals(72_400, Briefing.MAX_CHARS, "70 000, the 1 200 of the mechanics' lines and the 1 200 of the arsenal")
+        assertEquals(75_400, Briefing.MAX_CHARS, "70 000, the 1 200 of the mechanics' lines, the 1 200 of the arsenal and the 3 000 of the programme")
+        assertEquals(3_000, Briefing.MEMORY_BUDGETS.getValue("programme"), "the storyteller's programme (M6 §7)")
         assertEquals(3_900, MechanicsLimits.ENGINE_STATE, "2 700 and the 1 200 of the arsenal (M5 §9.3)")
         assertFalse("(cut:" in text, "no memory section went over its budget")
         BriefingSection.TAGS.forEach { tag -> assertEquals(1, Regex("^<$tag[ >]", RegexOption.MULTILINE).findAll(text).count(), "one $tag section") }
@@ -590,7 +591,8 @@ class BriefingTest {
         println(text)
 
         val order = listOf(
-            "<briefing ", "<grimoire version=\"12\" written=\"10-03 04:10\">\ngrimoire line\n</grimoire>\n", "<chronicle>\nchronicle line\n</chronicle>\n",
+            "<briefing ", "<grimoire version=\"12\" written=\"10-03 04:10\">\ngrimoire line\n</grimoire>\n", "<programme>\nprogramme line\n</programme>\n",
+            "<chronicle>\nchronicle line\n</chronicle>\n",
             "<previous_chapters>", "<canon>\ncanon line\n</canon>\n", "<world ", "<players_online>", "<sheets>\nsheets line\n</sheets>\n",
             "<players_recent ", "<memories>\nmemories line\n</memories>\n", "<notes>\nnotes line\n</notes>\n", "<recent_chat>",
             "<your_recent_actions>", "<engine_state>", "</briefing>",
@@ -612,6 +614,7 @@ class BriefingTest {
 
         assertContains(text, "<grimoire>\ngrimoire line\n</grimoire>\n")
         assertContains(text, "<canon>\ncanon line\n</canon>\n")
+        assertContains(text, "<programme>\nprogramme reduced\n</programme>\n")
         assertContains(text, "<chronicle>\nchronicle reduced\n</chronicle>\n")
         assertContains(text, "<sheets>\nsheets reduced\n</sheets>\n")
         assertContains(text, "<notes>\nnotes reduced\n</notes>\n")

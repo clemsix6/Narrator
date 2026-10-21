@@ -33,8 +33,8 @@ import java.util.UUID
 /**
  * The briefing that opens a chapter (M1_M2 §12.11, M3 §11.1): the first block of the chapter's first
  * message, everything the Narrator knows when its conversation starts afresh. English, written by the
- * engine, with the memory's six sections between its own, from the steadiest to the most changing:
- * `<grimoire>`, `<chronicle>`, `<previous_chapters>`, `<canon>`, `<world/>`, `<players_online>`,
+ * engine, with the memory's seven sections between its own, from the steadiest to the most changing:
+ * `<grimoire>`, `<programme>`, `<chronicle>`, `<previous_chapters>`, `<canon>`, `<world/>`, `<players_online>`,
  * `<sheets>`, `<players_recent>`, `<memories>`, `<notes>`, `<recent_chat>`, `<your_recent_actions>`,
  * `<engine_state>`. The memory writes its sections (`Memory.briefing`, already escaped); the briefing
  * places them, keeps each within its budget ([MEMORY_BUDGETS]) and, when they cannot be read, says so
@@ -131,6 +131,7 @@ class Briefing(
         buildString {
             append("<briefing chapter=\"$number\" now=\"${stamp.format(Instant.ofEpochMilli(now))}\"${if (reduced) " reduced=\"true\"" else ""}>\n")
             memory("grimoire")
+            memory("programme")
             memory("chronicle")
             section("previous_chapters", previousChapters(chapters.await(), closed, now, places))
             memory("canon")
@@ -151,7 +152,7 @@ class Briefing(
 
     /**
      * The memory's sections, by tag (M3 §11.1): those it gave, in its own order; a section it left out
-     * is not written (`DisabledMemory` gives the six, each saying why it has nothing). The memory is told
+     * is not written (`DisabledMemory` gives the seven, each saying why it has nothing). The memory is told
      * which form the briefing renders ([reduced]): it records what that form shows. A memory that fails or
      * does not answer within [MEMORY_TIMEOUT_MS] showed nothing: [chapter] is put back as it was.
      */
@@ -487,10 +488,10 @@ class Briefing(
     companion object {
         /**
          * The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token
-         * (M3 §11.1), the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5) and the 1,200 of the arsenal
-         * (M5 §9.3).
+         * (M3 §11.1), the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5), the 1,200 of the arsenal
+         * (M5 §9.3) and the 3,000 of the storyteller's `<programme>` (M6 §7).
          */
-        const val MAX_CHARS = 72_400
+        const val MAX_CHARS = 75_400
 
         /** How far back the players and the chat go. */
         const val WINDOW_MS = 24 * 3_600_000L
@@ -502,11 +503,12 @@ class Briefing(
         const val PREVIOUS_CHAPTERS_WITHOUT_MEMORY = 3
 
         /**
-         * The budget of each memory section, in characters of its lines (M3 §11.1): 40,300 in all. A
+         * The budget of each memory section, in characters of its lines (M3 §11.1, M6 §7): 43,300 in all. A
          * section that goes over is cut ([within]).
          */
         val MEMORY_BUDGETS: Map<String, Int> = mapOf(
             "grimoire" to 10_000,
+            "programme" to 3_000,
             "chronicle" to 8_000,
             "canon" to 4_000,
             "sheets" to 10_800,

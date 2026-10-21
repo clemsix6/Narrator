@@ -105,6 +105,8 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  *   opening (`ToolEnv.memoryAvailable`); each chapter keeps what the memory showed in it
  *   ([Chapter.memory]); every chapter that closes, with or without a summary, is told to the memory once
  *   (`Memory.chapterClosed`).
+ * - **Storyteller** (M6 §6.4, §12.2): `inspire` is there when the storyteller can take a task at the chapter's opening
+ *   (`Role.STORYTELLER` among the workers' roles: the memory runs), with the Journal (`ToolEnv.storytellerAvailable`).
  *
  * Used by the Director's coroutine only.
  *
@@ -151,12 +153,14 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             }
         }
         val number = ++lastNumber
+        val roles = services.workers.roles
         val env = ToolEnv(
             journalAvailable = services.journal.available,
-            workerRoles = services.workers.roles,
+            workerRoles = roles,
             memoryAvailable = services.memory.available,
             mechanicsAvailable = services.mechanics.available,
             forgeAvailable = forgeAvailable(services),
+            storytellerAvailable = Role.STORYTELLER in roles,
         )
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)

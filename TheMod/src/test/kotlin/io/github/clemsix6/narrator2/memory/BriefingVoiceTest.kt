@@ -33,7 +33,7 @@ class BriefingVoiceTest {
         BriefingFixture().use { f ->
             BriefingSamples.evening(f)
             val sections = f.briefing.sections(f.chapter(), f.now)
-            assertEquals(6, sections.size)
+            assertEquals(BriefingSection.TAGS.size, sections.size)
             for (section in sections) {
                 assertTrue(section.lines.size > 1 || section.tag == "grimoire", "${section.tag} is filled")
                 assertNull(VoiceGuard.check(section.lines.joinToString("\n"), section.tag, Int.MAX_VALUE), section.lines.joinToString("\n"))
