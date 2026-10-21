@@ -40,6 +40,14 @@ class AbandonTest {
 
     private val shared = SHARED
 
+    /**
+     * The attack is one JDK call longer than the caller's budget and the slack a busy machine is given ([LONG_SCAN]: an
+     * equality scan of ~2 s, then an SDK call with what it found): whatever holds the caller back, it can only go on
+     * while that call still runs, so the call is given up, never seen to its end (FLAKY-6). With the `indexOf` of
+     * ~75 ms it used before, a caller held back ~50 ms past its deadline found the call ended, judged by its meter (one
+     * limit fault, which does not disable), and the test failed with `disabled` null; the bound below would let such
+     * a caller through.
+     */
     @Test
     fun `a single long call of the JDK never holds the caller past the budget, and nothing reaches the SDK after`() {
         val fake = FakeContext()
@@ -49,25 +57,25 @@ class AbandonTest {
         assertTrue(host.started(timed(fake.context, calls)), "${host.disabled}")
         val before = calls.size
 
-        val called = assertNotNull(host.attack { fake.timers[0].run() })
+        val called = assertNotNull(host.attack { fake.timers[LONG_SCAN].run() })
         val abandonedAt = System.nanoTime()
         val waited = called.nanos / 1e6
         assertTrue(waited >= ForgeLimits.CALL_MILLIS && waited < BUDGET_MS + BusyMachine.SLACK_MILLIS, "the caller went on at the budget: $waited ms")
         assertTrue(Hosts.settled(host), "settled once its thread computed past its budget, or ended")
-        val fault = assertNotNull(host.disabled)
+        val fault = assertNotNull(host.disabled, "faults: $faults")
         assertEquals(Fault.Kind.LIMIT, fault.kind)
         assertTrue(fault.disables)
         assertEquals("time budget: one call ran past $BUDGET_MS ms and was abandoned", fault.cause, "the server thread never waits for the line")
         assertTrue(threads.lost.alive() <= 1, "its thread, lost while it runs")
 
-        // The indexOf takes ~75 ms on the lost thread; then it returns and the thread ends (it is already abandoned).
+        // The scan goes on on the lost thread; then it returns, its log is refused, and the thread ends.
         assertTrue(awaitNoLostThread(), "the lost thread ended")
         val lived = (System.nanoTime() - abandonedAt) / 1e6
         assertEquals(before, calls.size, "no SDK call reached the context after the abandon")
         assertEquals(emptyList(), fake.logs.toList())
         assertNull(host.call("timer") { fake.timers[1].run() }, "a disabled module never runs again")
         assertTrue(stuck.isEmpty())
-        println("[host] an O(n·m) indexOf in one JDK call: the caller went on after %.1f ms; the lost thread ended %.0f ms later".format(waited, lived))
+        println("[host] an equality scan of ~2 s in one JDK call: the caller went on after %.1f ms; the lost thread ended %.0f ms later".format(waited, lived))
     }
 
     @Test
@@ -239,26 +247,29 @@ class AbandonTest {
 
         /**
          * Attacks the meter and the guard cannot see: one long call of the JDK that is neither a backward jump of the
-         * module nor a hash or a comparison the guard bounds (M5-18, M5-FIX-2, M5-FIX-2b). timer 0 is an O(n·m)
-         * `indexOf` of 32,768 characters in 65,536 (≈ 75 ms in one call); timer 1 is the equality scan of [SCAN_SETUP]
-         * over 10,000 references, a single call that runs for minutes; timer 2 the same over 35, ~0.75 s. (They hashed a
-         * shared structure through `Stream.distinct()` before M5-FIX-2b, which the guard now bounds.) All are given up by
-         * the host at the budget, their thread lost once it computed past its budget.
+         * module nor a hash or a comparison the guard bounds (M5-18, M5-FIX-2, M5-FIX-2b): the equality scan of
+         * [SCAN_SETUP], timer [LONG_SCAN] over 100 references (~2 s in one call: longer than a call's budget and
+         * [BusyMachine.SLACK_MILLIS] together), timer 1 over 10,000 (a single call that runs for minutes), timer 2 over
+         * 35 (~0.75 s). (They hashed a shared structure through `Stream.distinct()` before M5-FIX-2b, which the guard now
+         * bounds; timer 0 was an `indexOf` of ~75 ms before FLAKY-6, which a caller held back by a busy machine could see
+         * to its end.) All are given up by the host at the budget, their thread lost once it computed past its budget.
          */
         val SHARED = Hosts.source(
             "Shared",
-            "List<?> target; List<List<Integer>> near; List<Object> many; List<Object> few; String text; String pattern;",
+            "List<?> target; List<List<Integer>> near; List<Object> longer; List<Object> many; List<Object> few;",
             """
                 $SCAN_SETUP
+                longer = new ArrayList<>(); for (int i = 0; i < 100; i++) longer.add(near);
                 many = new ArrayList<>(); for (int i = 0; i < 10_000; i++) many.add(near);
                 few = new ArrayList<>(); for (int i = 0; i < 35; i++) few.add(near);
-                text = "a".repeat(65_535) + "b";
-                pattern = "a".repeat(32_767) + "b";
-                m.timers().every(1, () -> { if (text.indexOf(pattern) < 0) m.log("never"); });
+                m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(longer, target)));
                 m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(many, target)));
                 m.timers().every(1, () -> m.log("" + Collections.indexOfSubList(few, target)));
             """.trimIndent(),
         )
+
+        /** The timer of [SHARED] whose one JDK call outlasts a call's budget and a busy machine's slack. */
+        const val LONG_SCAN = 0
 
         /**
          * A host whose attack has the game's margin, and whose other calls (its `start`, which builds the attack's
