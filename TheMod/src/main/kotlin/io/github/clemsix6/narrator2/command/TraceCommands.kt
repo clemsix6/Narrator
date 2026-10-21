@@ -14,6 +14,7 @@ import io.github.clemsix6.narrator2.trace.DeathLine
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.MessageFate
 import io.github.clemsix6.narrator2.trace.ModelCall
+import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.trace.SaidLine
 import io.github.clemsix6.narrator2.trace.TaskDetail
 import io.github.clemsix6.narrator2.trace.ToldEvent
@@ -23,6 +24,9 @@ import io.github.clemsix6.narrator2.trace.TurnDetail
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import io.github.clemsix6.narrator2.trace.TurnSummary
 import io.github.clemsix6.narrator2.trace.Usage
+import io.github.clemsix6.narrator2.web.Cost
+import io.github.clemsix6.narrator2.web.DashboardQueries
+import io.github.clemsix6.narrator2.web.costOf
 import kotlinx.coroutines.withTimeoutOrNull
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
@@ -31,6 +35,7 @@ import net.minecraft.commands.SharedSuggestionProvider
 import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
 import net.minecraft.network.chat.HoverEvent
+import java.sql.Connection
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -38,7 +43,7 @@ import java.util.Locale
 
 /**
  * `/narrator trace [n]`, `trace turn <id> [page]`, `trace task <id> [page]`, `why`, `why turn <id>`,
- * `why <player>` and `usage [hours]` (M1_M2 §14.4): what the Director was told, what it thought, what
+ * `why <player>` and `usage [hours]` (M1_M2 §14.4, dollars M6 §8.7): what the Director was told, what it thought, what
  * it did and said, and why it said nothing. Each waits for the Journal to write what came before (one
  * second at most), then reads the trace tables through [TraceQueries], off the server thread
  * ([replyLater]). Long answers come in pages of [PAGE_LINES] lines, with a clickable link to the next.
@@ -115,15 +120,22 @@ object TraceCommands {
         }
     }
 
-    private fun usage(source: CommandSourceStack, hours: Int): Int = read(source, "usage $hours") { queries, text ->
-        text.page(text.usage(queries.usage(text.now - hours * HOUR_MS), hours), 1, null)
+    /** The calls of each role over [hours], and their cost in dollars at the configuration's prices (M6 §8.7). */
+    private fun usage(source: CommandSourceStack, hours: Int): Int = readJournal(source, "usage $hours") { connection, text, prices ->
+        val since = text.now - hours * HOUR_MS
+        val costs = DashboardQueries(connection).tokensByRole(since).mapValues { (_, tokens) -> prices.costOf(tokens) }
+        text.page(text.usage(TraceQueries(connection).usage(since), hours, costs), 1, null)
     }
+
+    /** [readJournal] through [TraceQueries]. */
+    private fun read(source: CommandSourceStack, what: String, query: (TraceQueries, TraceText) -> List<Component>): Int =
+        readJournal(source, what) { connection, text, _ -> query(TraceQueries(connection), text) }
 
     /**
      * Runs [query] on the Journal off the server thread, once what came before is written, and sends its
-     * lines back to [source]. [what] names the command in the log.
+     * lines back to [source]. [what] names the command in the log; [query] gets the prices in force.
      */
-    private fun read(source: CommandSourceStack, what: String, query: (TraceQueries, TraceText) -> List<Component>): Int {
+    private fun readJournal(source: CommandSourceStack, what: String, query: (Connection, TraceText, Prices) -> List<Component>): Int {
         val runtime = runningNarrator(source) ?: return 0
         if (!runtime.journal.available) {
             source.sendFailure(errorLine("the Journal is unavailable (${runtime.journal.health().lastError ?: "see the server log"}): no trace can be read."))
@@ -133,7 +145,8 @@ object TraceCommands {
         replyLater(source, runtime, what) {
             withTimeoutOrNull(BARRIER_MS) { runtime.journal.barrier() }
             val text = TraceText(runtime.clock.zone, runtime.clock.millis())
-            runtime.journal.read(READ_TIMEOUT_MS) { connection -> query(TraceQueries(connection), text) }
+            val prices = Prices.of(runtime.settings.get().config)
+            runtime.journal.read(READ_TIMEOUT_MS) { connection -> query(connection, text, prices) }
         }
         return 1
     }
@@ -157,6 +170,9 @@ internal enum class Look { DETAIL, THOUGHT, SAID, WARNING, FAILURE }
 
 /** A line of a reply before it becomes chat. */
 internal data class Out(val text: String, val look: Look = Look.DETAIL)
+
+/** How a request a safety classifier touched shows ([TraceText.safety]): its [look], and its [note] (`refused: cyber`, `fallback (cyber) → …`). */
+internal data class Safety(val look: Look, val note: String?)
 
 /** A reply: its title (after the `[Narrator]` prefix) and its lines. */
 internal data class Report(val title: String, val lines: List<Out>)
@@ -204,7 +220,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
                 add(Out("Told between tool calls:"))
                 detail.injected.forEach { add(Out("  ${event(it)}")) }
             }
-            val refused = turn.outcome == TurnRecord.Outcome.REFUSED.id
+            val refused = refusedTurn(turn.outcome)
             detail.calls.forEachIndexed { i, call ->
                 add(request(i, call, refused && i == detail.calls.lastIndex))
                 add(thought(call, THOUGHT_CHARS_IN_TRACE, "  "))
@@ -223,7 +239,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         val lines = buildList {
             add(Out(listOfNotNull("Queued ${time(task.createdAt)}", task.startedAt?.let { "started ${time(it)}" }, task.finishedAt?.let { "ended ${time(it)}" }, task.requestedByTurn?.let { "asked by turn #$it" }).joinToString(" · ")))
             add(Out("Brief: ${quote(task.brief, BRIEF_CHARS)}"))
-            val refused = task.error?.startsWith(REFUSED_TASK) == true
+            val refused = refusedTask(task.error)
             task.calls.forEachIndexed { i, call ->
                 add(request(i, call, refused && i == task.calls.lastIndex))
                 add(thought(call, THOUGHT_CHARS_IN_TRACE, "  "))
@@ -307,13 +323,19 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         return Report("why: ${report.player}'s last death · ${time(died)}, ${ago(died)}", lines)
     }
 
-    /** `/narrator usage [hours]`: model calls per role, the reflexes (`reflex`) included. */
-    fun usage(rows: List<Usage>, hours: Int): Report {
+    /**
+     * `/narrator usage [hours]`: model calls per role, the reflexes (`reflex`) included, with what each role cost at the
+     * configuration's prices ([costs], by role: `$ ?` for a model without a price, M6 §8.7), then the total.
+     */
+    fun usage(rows: List<Usage>, hours: Int, costs: Map<String, Cost>): Report {
+        if (rows.isEmpty()) return Report("usage over the last $hours h", listOf(Out("no model call")))
         val lines = rows.map { row ->
             val failed = if (row.failed > 0) " · ${row.failed} failed" else ""
-            Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
+            val cost = costs[row.role]?.let { " · ${it.text}" }.orEmpty()
+            Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg$cost$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
         }
-        return Report("usage over the last $hours h", lines.ifEmpty { listOf(Out("no model call")) })
+        val total = costs.values.fold(Cost.NONE, Cost::plus)
+        return Report("usage over the last $hours h", lines + Out("Total ${total.text} · at the API's prices: behind a subscription, an order of magnitude."))
     }
 
     /**
@@ -437,23 +459,13 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         return "${time(event.ts)} $body${event.salience?.let { " · $it" }.orEmpty()}"
     }
 
-    /**
-     * The line of request [i]. A safety classifier may stop a request: refused without an answer (the API's `refusal`, or
-     * a fallback model that said nothing: [ended] tells that this request ended its turn or task refused), in red; or
-     * handed to a fallback model that answered (`trace/CallStats`: a usable stop reason with a refusal category), in
-     * yellow, `fallback (cyber) → claude-opus-4-8`.
-     */
+    /** The line of request [i]; [ended] tells that it ended its turn or task refused (see [safety]). */
     private fun request(i: Int, call: ModelCall, ended: Boolean): Out {
-        val refused = call.stopReason == REFUSAL || ended
-        val look = when {
-            call.error != null || refused -> Look.FAILURE
-            call.refusalCategory != null -> Look.WARNING
-            else -> Look.DETAIL
-        }
-        return Out("Request ${i + 1} · ${request(call, refused)}", look)
+        val safety = safety(call.stopReason, call.refusalCategory, call.error, call.model, ended)
+        return Out("Request ${i + 1} · ${request(call, safety)}", safety.look)
     }
 
-    private fun request(call: ModelCall, refused: Boolean): String {
+    private fun request(call: ModelCall, safety: Safety): String {
         val parts = buildList {
             add(time(call.startedAt))
             add(seconds(call.latencyMs.toLong()))
@@ -464,7 +476,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
             }
             call.outputTokens?.let { add("${tokens(it.toLong())} out") }
             call.stopReason?.let { add(it) }
-            call.refusalCategory?.let { add(if (refused) "refused: $it" else "fallback ($it) → ${call.model}") }
+            safety.note?.let { add(it) }
             call.error?.let { add("error: $it") }
         }
         return parts.joinToString(" · ")
@@ -589,8 +601,8 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         private const val WHY_EVENTS = 3
         private const val WHY_CALLS = 3
 
-        /** Outcomes of a turn that went as planned. */
-        private val QUIET_OUTCOMES = setOf("acted", "idle")
+        /** Outcomes of a turn that went as planned; the others are shown in red, here and on the dashboard. */
+        internal val QUIET_OUTCOMES = setOf("acted", "idle")
 
         /** The API's `stop_reason` of a refusal. */
         private const val REFUSAL = "refusal"
@@ -598,8 +610,32 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         /** How a worker's task refused by a safety filter ends (`agent/Workers`, `memory/MemoryAgents`): its last request was refused. */
         private const val REFUSED_TASK = "refused by the safety filter"
 
-        /** Decisions that stopped something, shown in red. */
-        private val REFUSALS = setOf("denied", "refused", "rescued", "dropped", "closed", "backed off", "blocked", "resent")
+        /** Decisions that stopped something, shown in red, here and on the dashboard. */
+        internal val REFUSALS = setOf("denied", "refused", "rescued", "dropped", "closed", "backed off", "blocked", "resent")
+
+        /** Whether a turn of [outcome] ended refused: its last request was (M5-FIX-3). */
+        internal fun refusedTurn(outcome: String?): Boolean = outcome == TurnRecord.Outcome.REFUSED.id
+
+        /** Whether a task that ended with [error] was refused by a safety filter: its last request was (M5-FIX-3). */
+        internal fun refusedTask(error: String?): Boolean = error?.startsWith(REFUSED_TASK) == true
+
+        /**
+         * How a request shows, in `/narrator trace` and on the dashboard, when a safety classifier stopped it or handed
+         * it over (M5-FIX-3, CLAUDE-FALLBACK): refused without an answer (the API's `refusal`, or a fallback model that
+         * said nothing: [ended] tells that this request ended its turn or task refused) in red, `refused: cyber`; handed
+         * to a fallback model that answered (`trace/CallStats`: a usable stop reason with a refusal category) in yellow,
+         * `fallback (cyber) → claude-opus-4-8`, [model] being the model that answered. A failed request is red too; any
+         * other has no note.
+         */
+        internal fun safety(stopReason: String?, refusalCategory: String?, error: String?, model: String, ended: Boolean): Safety {
+            val refused = stopReason == REFUSAL || ended
+            val look = when {
+                error != null || refused -> Look.FAILURE
+                refusalCategory != null -> Look.WARNING
+                else -> Look.DETAIL
+            }
+            return Safety(look, refusalCategory?.let { if (refused) "refused: $it" else "fallback ($it) → $model" })
+        }
 
         /** `sql ×2, say`: tools in order of first use, with their count. */
         fun toolList(tools: List<String>): String =
