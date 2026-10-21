@@ -85,8 +85,8 @@ object StyleReport {
 
     /**
      * How players took the Director's lines of one register: [lines] of it, then each reaction of a player addressed by
-     * one of them ([Reactions]: a player can react to a line, several players to one). [laughing] and [annoyed] name who,
-     * the most often first.
+     * one of them ([Reactions]: a player can react to a line, several players to one). [laughing] and [annoying] name who
+     * laughed and who was annoyed, the most often first.
      */
     data class RegisterUse(
         val register: ComicRegister,
@@ -200,8 +200,7 @@ object StyleReport {
             .map { (register, said) ->
                 val taken = said.flatMap { byLine[it.id].orEmpty() }
                 fun count(kind: Reactions.Kind) = taken.count { it.kind == kind }
-                fun who(kind: Reactions.Kind) = taken.filter { it.kind == kind }.groupingBy { it.player.name }.eachCount()
-                    .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key }).map { it.key to it.value }
+                fun who(kind: Reactions.Kind) = ranked(taken.filter { it.kind == kind }.groupingBy { it.player.name }.eachCount())
                 RegisterUse(
                     register, said.size, count(Reactions.Kind.LAUGHED), count(Reactions.Kind.ANNOYED), count(Reactions.Kind.REPLIED),
                     count(Reactions.Kind.IGNORED), who(Reactions.Kind.LAUGHED), who(Reactions.Kind.ANNOYED),
@@ -213,13 +212,11 @@ object StyleReport {
     /** The measures of [lines] (M6 §3.7). */
     fun measures(lines: List<Line>): Measures {
         val reviewed = lines.filter { it.reviewed }
-        val crutches = reviewed.flatMap { line -> line.crutches.map { it.lowercase() }.distinct() }.groupingBy { it }.eachCount()
-            .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key }).map { it.key to it.value }
         return Measures(
             lines = lines.size,
             reviewed = reviewed.size,
             registers = reviewed.groupingBy { it.register!! }.eachCount(),
-            crutches = crutches,
+            crutches = ranked(reviewed.flatMap { line -> line.crutches.map { it.lowercase() }.distinct() }.groupingBy { it }.eachCount()),
             flagged = reviewed.count { it.flags.isNotEmpty() },
         )
     }
@@ -259,7 +256,7 @@ object StyleReport {
         }
     }
 
-    /** `divine_bureaucracy: 14 lines · laughed 3 (Bartok 2, Mimosa 1) · annoyed 0 · replied 6 · ignored 5`, the names escaped. */
+    /** `- divine_bureaucracy: 14 lines · laughed 3 (Bartok 2, Mimosa 1) · annoyed 0 · replied 6 · ignored 5`, the names escaped. */
     fun registerLine(use: RegisterUse): String {
         fun who(names: List<Pair<String, Int>>) =
             if (names.isEmpty()) "" else names.joinToString(", ", " (", ")") { (name, count) -> "${ModelText.name(name)} $count" }
@@ -323,7 +320,7 @@ object StyleReport {
         return Line(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), register, flaws, if (register == null) emptyList() else strings(10))
     }
 
-    /** The reactions to the lines of [period]; none read when the Director said nothing. */
+    /** The reactions to the lines of [period]; none read when no line of it was reviewed, since only those are matched. */
     private fun reactions(connection: Connection, period: Period, lines: List<Line>, words: HeuristicWords): List<Reactions.Reaction> =
         if (lines.none { it.reviewed }) emptyList() else Reactions.read(connection, period.from, period.to, words)
 
@@ -351,6 +348,10 @@ object StyleReport {
         val then = previous?.let { " (${percent(it.crutchShare(top))} before)" }.orEmpty()
         return "crutch « ${ModelText.escape(top)} » ${percent(now.crutchShare(top))}$then"
     }
+
+    /** [counts] the largest first, then in alphabetical order. */
+    private fun ranked(counts: Map<String, Int>): List<Pair<String, Int>> =
+        counts.entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key }).map { it.key to it.value }
 
     private fun dayTime(at: Instant, zone: ZoneId): String = DAY_TIME.withZone(zone).format(at)
 
