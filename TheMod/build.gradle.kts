@@ -136,9 +136,17 @@ loom.runs.named("gameTest") {
     environmentVars.put("NARRATOR_LLMGW_KEY", "")
 }
 
+// The configuration an in-game run starts with: no dashboard (M6 §8.2), or the test servers of several worktrees would
+// fight over its port. A test that needs one starts its own, on port 0.
+fun seedGameTestConfig(runDir: String) = layout.buildDirectory.file("$runDir/config/narrator2/narrator2.json").get().asFile.run {
+    parentFile.mkdirs()
+    writeText("{ \"dashboard\": { \"enabled\": false } }\n")
+}
+
 // Each in-game run starts from an empty world and config (Loom 1.18 only clears client test runs).
 val cleanGameTestRun = tasks.register<Delete>("cleanGameTestRun") {
     delete(layout.buildDirectory.dir("run/gameTest"))
+    doLast { seedGameTestConfig("run/gameTest") }
 }
 tasks.matching { it.name == "runGameTest" }.configureEach { dependsOn(cleanGameTestRun) }
 
@@ -166,6 +174,7 @@ loom.runs.register("liveGameTest") {
 }
 val cleanLiveGameTestRun = tasks.register<Delete>("cleanLiveGameTestRun") {
     delete(layout.buildDirectory.dir("run/liveGameTest"))
+    doLast { seedGameTestConfig("run/liveGameTest") }
 }
 tasks.matching { it.name == "runLiveGameTest" }.configureEach { dependsOn(cleanLiveGameTestRun) }
 tasks.register("liveGameTest") {
