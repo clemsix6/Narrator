@@ -103,8 +103,9 @@ class AbandonTest {
 
     @Test
     fun `at the bench the caller may wait for the line of the abandoned call`() {
-        // A mid-size shared structure (10 × L1) hashed by an unguarded HashSet(Collection) constructor: ~0.75 s in one
-        // JDK call — long enough that the lost thread's stack is still in it when read, short enough to end before the test does.
+        // A mid-size shared structure (10 × L1) fed to Stream.distinct(), which the guard does not wrap (M5-FIX-2's
+        // residual): ~0.75 s in one JDK call — long enough that the lost thread's stack is still in it when read,
+        // short enough to end before the test does. (HashSet(Collection) is now bounded by the guard, M5-FIX-2.)
         val module = Hosts.source(
             "Search",
             "List<Object> deep;",
@@ -112,7 +113,7 @@ class AbandonTest {
                 List<Integer> l0 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l0.add(i);
                 List<List<Integer>> l1 = new ArrayList<>(); for (int i = 0; i < 10_000; i++) l1.add(l0);
                 deep = new ArrayList<>(); for (int i = 0; i < 10; i++) deep.add(l1);
-                m.timers().every(1, () -> m.log("" + new HashSet<>(deep).size()));
+                m.timers().every(1, () -> m.log("" + deep.stream().distinct().count()));
             """.trimIndent(),
         )
         val fake = FakeContext()
@@ -171,7 +172,7 @@ class AbandonTest {
             val fake = FakeContext()
             val host = attacked("Shared", shared, strict)
             assertTrue(host.started(fake.context))
-            // timer 2: a HashSet of 10 × L1, ~0.75 s of one JDK call: lost while it runs, once it computed past its budget.
+            // timer 2: Stream.distinct of 10 × L1, ~0.75 s of one JDK call: lost while it runs, once it computed past its budget.
             host.attack { fake.timers[2].run() }
             assertTrue(Hosts.settled(host))
             assertEquals(Fault.Kind.LIMIT, host.disabled?.kind)
@@ -225,7 +226,8 @@ class AbandonTest {
          * module nor a collection hash/equality the guard now bounds (M5-18). timer 0 is an O(n·m) `indexOf` of 32,768
          * characters in 65,536 (≈ 75 ms in one call); timer 1 feeds the shared structure of M5-04's finding 1
          * (L2 = 10,000 × L1 = 10,000 × L0) to `Stream.distinct()`, a factory the guard does not wrap, which hashes it
-         * in one call that runs for minutes; timer 2 hashes 10 × L1 in an unguarded `HashSet(Collection)`, ~0.75 s.
+         * in one call that runs for minutes; timer 2 feeds 10 × L1 to the same `Stream.distinct()`, ~0.75 s (the
+         * copy constructor it used before is now bounded by the guard, M5-FIX-2).
          * All are given up by the host at the budget, their thread lost once it computed past its budget.
          */
         val SHARED = Hosts.source(
@@ -240,7 +242,7 @@ class AbandonTest {
                 pattern = "a".repeat(32_767) + "b";
                 m.timers().every(1, () -> { if (text.indexOf(pattern) < 0) m.log("never"); });
                 m.timers().every(1, () -> m.log("" + Stream.of(l2).distinct().count()));
-                m.timers().every(1, () -> m.log("" + new HashSet<>(deep).size()));
+                m.timers().every(1, () -> m.log("" + deep.stream().distinct().count()));
             """.trimIndent(),
         )
 
