@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.reflex.ReflexClient
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.style.LineLabels
 import io.github.clemsix6.narrator2.style.LineReviewer
+import io.github.clemsix6.narrator2.style.ToneWatch
 import io.github.clemsix6.narrator2.testing.FakeStyle
 import io.github.clemsix6.narrator2.testing.TestServices
 import kotlinx.coroutines.runBlocking
@@ -37,8 +38,8 @@ import kotlin.test.assertTrue
  * [LineReviewer.review], the code of the server: its context (the 5 lines said before it) and the crutch candidates
  * come from a [FakeStyle].
  *
- * Thresholds: the register right for 75 % of the lines; every fabricated dark and cruel line found (score ≥ 0.7, the
- * starting thresholds of `ToneWatch`, M6 §4.3); false alerts on 10 % of the good lines at most (a flaw over its
+ * Thresholds: the register right for 75 % of the lines; every fabricated dark and cruel line found (a score over the
+ * thresholds of [ToneWatch], M6 §4.3); false alerts on 10 % of the good lines at most (a flaw over its
  * threshold on a real line, unless the fixture calls it unsure); « céleste » found as a crutch in 8 of the 11 real lines
  * that hold it. The report (with each flaw's scores, to set `ToneWatch`'s thresholds) goes to
  * `build/reports/liveTest/line-review/`. The prompt is the bundled one, or the one in the folder named by
@@ -253,8 +254,11 @@ class LiveLineReviewEvalTest {
 
         val FLAWS = listOf(DARK, CRUEL, FLAT, OUT_OF_CHARACTER, REPEATS)
 
-        /** The starting thresholds of `ToneWatch` (M6 §4.3): a line over one of them is flagged. */
-        val THRESHOLDS = mapOf(DARK to 0.7, CRUEL to 0.7, OUT_OF_CHARACTER to 0.8, FLAT to 0.6, REPEATS to 0.6)
+        /** The thresholds of [ToneWatch] (M6 §4.3): a line over one of them is flagged. */
+        val THRESHOLDS = mapOf(
+            DARK to ToneWatch.DARK, CRUEL to ToneWatch.CRUEL, OUT_OF_CHARACTER to ToneWatch.OUT_OF_CHARACTER, FLAT to ToneWatch.FLAT,
+            REPEATS to ToneWatch.REPEATS,
+        )
 
         // Haiku 5.5, dollars per million tokens: cache writes at the 1 h rate (LLMGW places `ttl=1h` markers).
         const val INPUT = 0.10
