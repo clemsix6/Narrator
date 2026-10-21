@@ -9,6 +9,7 @@ import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.Clock
 import java.util.HexFormat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -17,22 +18,23 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
- * The web dashboard (M6 §8): a read-only HTTP server bound to `127.0.0.1`, without JavaScript, behind a token drawn at
- * each start. The runtime builds it at the end of its wiring (`createDashboard`) and stops it first at `SERVER_STOPPING`;
- * `/narrator dashboard` gives the operators its link. Nothing in the Narrator depends on it.
+ * The web dashboard (M6 §8), off unless `dashboard.enabled`: a read-only HTTP server bound to `127.0.0.1`, without
+ * JavaScript, behind a token drawn at each start. The runtime builds it at the end of its wiring (`createDashboard`) and
+ * stops it first at `SERVER_STOPPING`; `/narrator dashboard` gives the operators a login link. Nothing in the Narrator
+ * depends on it.
  */
 interface Dashboard {
     /** Where it serves, e.g. `http://127.0.0.1:8770/`; null when there is no dashboard. */
     val url: String?
 
-    /** Why there is no dashboard (`dashboard.enabled is false`, the port is taken…); null when it serves. */
+    /** Why there is no dashboard ([DisabledDashboard.SWITCHED_OFF], the port is taken…); null when it serves. */
     val unavailableReason: String?
 
     /**
-     * The login link, `<url>login?key=<token>`: it signs a browser in, so it is given to operators only and never
-     * logged. Null when there is no dashboard.
+     * A new login link, `<url>login?key=<code>`, with a code good for one sign-in within 10 minutes
+     * ([DashboardToken.newCode]): given to an operator only, never logged. Null when there is no dashboard.
      */
-    fun loginUrl(): String?
+    fun newLoginUrl(): String?
 
     /** Draws a new token: the browsers signed in are signed out, the links given before stop working. Any thread. */
     fun resetToken()
@@ -47,41 +49,88 @@ class DisabledDashboard(private val reason: String) : Dashboard {
 
     override val unavailableReason: String get() = reason
 
-    override fun loginUrl(): String? = null
+    override fun newLoginUrl(): String? = null
 
     override fun resetToken() = Unit
 
     override fun stop() = Unit
+
+    companion object {
+        /** The reason when the configuration leaves it off, the default. */
+        const val SWITCHED_OFF = "dashboard.enabled is false"
+    }
 }
 
 /**
- * The dashboard's secret (M6 §8.3): 32 random bytes from [SecureRandom], in hexadecimal, drawn when the dashboard starts
- * and again by [reset]; kept in memory only, never written to disk nor logged.
+ * The dashboard's secrets (M6 §8.3), from [SecureRandom], kept in memory only, never written to disk nor logged:
+ * - the session token ([value]), 32 bytes in hexadecimal, drawn when the dashboard starts and again by [reset]: the
+ *   cookie of a browser signed in holds it, and no address ever shows it;
+ * - the login codes ([newCode]), 16 bytes (128 bits), each good for one sign-in within [CODE_TTL_MS] (10 minutes): the
+ *   links of `/narrator dashboard` carry them. A link copied to `logs/latest.log`, a browser's history or a debug log is
+ *   dead once it served. [reset] voids them too.
+ *
+ * Any thread. Comparisons run in constant time: both sides are hashed (SHA-256) and the two digests, always 32 bytes,
+ * compared by [MessageDigest.isEqual], so the time depends neither on where they differ nor on the candidate's length.
  */
-class DashboardToken(private val random: SecureRandom = SecureRandom()) {
+class DashboardToken(private val clock: Clock = Clock.systemUTC(), private val random: SecureRandom = SecureRandom()) {
     @Volatile
-    private var current: String = draw()
+    private var current: String = draw(TOKEN_BYTES)
 
-    /** The token itself, for the login link and the cookie only. */
+    /** The codes not used yet, oldest first: their digest, and when they expire (epoch milliseconds). */
+    private val codes = ArrayList<Code>()
+
+    private class Code(val digest: ByteArray, val expiresAt: Long)
+
+    /** The session token itself, for the cookie only. */
     val value: String get() = current
 
-    /** Draws a new token: the old one no longer [matches]. */
-    fun reset() {
-        current = draw()
-    }
-
-    /**
-     * Whether [candidate] is the token, in constant time: both are hashed (SHA-256) and the two digests, always 32 bytes,
-     * compared by [MessageDigest.isEqual], so the time depends neither on where they differ nor on the candidate's length.
-     */
+    /** Whether [candidate] is the session token. */
     fun matches(candidate: String?): Boolean = candidate != null && MessageDigest.isEqual(digest(current), digest(candidate))
 
-    private fun draw(): String = HexFormat.of().formatHex(ByteArray(BYTES).also(random::nextBytes))
+    /** A new login code, good for one [redeem] within [CODE_TTL_MS]; past [MAX_CODES] unused, the oldest is voided. */
+    @Synchronized
+    fun newCode(): String {
+        dropExpired()
+        if (codes.size >= MAX_CODES) codes.removeAt(0)
+        val code = draw(CODE_BYTES)
+        codes += Code(digest(code), clock.millis() + CODE_TTL_MS)
+        return code
+    }
+
+    /** Whether [candidate] is a login code not used nor expired; if so, it is used up. */
+    @Synchronized
+    fun redeem(candidate: String?): Boolean {
+        if (candidate == null) return false
+        dropExpired()
+        val digest = digest(candidate)
+        return codes.removeIf { MessageDigest.isEqual(it.digest, digest) }
+    }
+
+    /** Draws a new session token and voids the login codes: the old token no longer [matches], no code redeems. */
+    @Synchronized
+    fun reset() {
+        current = draw(TOKEN_BYTES)
+        codes.clear()
+    }
+
+    private fun dropExpired() {
+        val now = clock.millis()
+        codes.removeIf { it.expiresAt <= now }
+    }
+
+    private fun draw(bytes: Int): String = HexFormat.of().formatHex(ByteArray(bytes).also(random::nextBytes))
 
     private fun digest(text: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(StandardCharsets.UTF_8))
 
-    private companion object {
-        const val BYTES = 32
+    companion object {
+        /** How long a login code stays good: 10 minutes. */
+        const val CODE_TTL_MS = 10 * 60_000L
+
+        /** Unused login codes kept at most (an operator who asks again and again voids the oldest). */
+        const val MAX_CODES = 16
+
+        private const val TOKEN_BYTES = 32
+        private const val CODE_BYTES = 16
     }
 }
 
@@ -94,7 +143,8 @@ class DashboardToken(private val random: SecureRandom = SecureRandom()) {
 internal class DashboardServer private constructor(
     private val server: HttpServer,
     private val threads: ExecutorService,
-    private val token: DashboardToken,
+    /** Its secrets; tests read the session token. */
+    internal val token: DashboardToken,
 ) : Dashboard {
     private val stopped = AtomicBoolean()
 
@@ -107,7 +157,7 @@ internal class DashboardServer private constructor(
 
     override val unavailableReason: String? get() = null
 
-    override fun loginUrl(): String = "${url}login?${Routes.KEY}=${token.value}"
+    override fun newLoginUrl(): String = "${url}login?${Routes.KEY}=${token.newCode()}"
 
     override fun resetToken() = token.reset()
 
@@ -132,7 +182,7 @@ internal class DashboardServer private constructor(
             val server = HttpServer.create(InetSocketAddress(InetAddress.getByAddress(LOOPBACK), port), BACKLOG)
             val threads = Executors.newFixedThreadPool(2) { task -> Thread(task, "narrator2-web-${THREADS.incrementAndGet()}").apply { isDaemon = true } }
             try {
-                val token = DashboardToken()
+                val token = DashboardToken(services.clock)
                 val routes = Routes(services, token, server.address.port)
                 server.executor = threads
                 server.createContext("/") { exchange -> serve(exchange, routes) }

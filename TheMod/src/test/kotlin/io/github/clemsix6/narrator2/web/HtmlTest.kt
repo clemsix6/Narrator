@@ -48,6 +48,23 @@ class HtmlTest {
     }
 
     @Test
+    fun `no URL leaves the dashboard by a backslash, a blank, another case or a form button, and no page writes a meta`() {
+        // Browsers read `\` as `/` and drop tabs and line breaks: each of these is `//evil.example/`.
+        listOf("/\\evil.example/", "\\/evil.example/", "/\t/evil.example/", "/\n/evil.example/", "/\r/evil.example/", "/ /evil.example/").forEach { url ->
+            assertFailsWith<IllegalArgumentException>(url) { html { element("a", "href" to url) } }
+        }
+        assertFailsWith<IllegalArgumentException> { html { element("a", "HREF" to "https://evil.example/") } }
+        assertFailsWith<IllegalArgumentException> { html { element("button", "formaction" to "https://evil.example/") } }
+        assertFailsWith<IllegalArgumentException> { html { element("button", "formAction" to "//evil.example/") } }
+        assertEquals("<button formaction=\"/sql\">Run</button>", html { element("button", "formaction" to "/sql") { text("Run") } })
+        // A refresh to a URL would leave the dashboard: only `document` writes a <meta>, with a number of seconds.
+        assertFailsWith<IllegalArgumentException> { html { element("meta", "http-equiv" to "refresh", "content" to "0; url=https://evil.example/") } }
+        assertFailsWith<IllegalArgumentException> { html { element("meta", "charset" to "utf-8") } }
+        // The SQL page's query: a textarea, whose text is escaped.
+        assertEquals("<textarea name=\"q\">&lt;/textarea&gt;&lt;b&gt;</textarea>", html { element("textarea", "name" to "q") { text("</textarea><b>") } })
+    }
+
+    @Test
     fun `a link encodes its segments and its query, and the request reads them back`() {
         val tricky = "Bé a/b?c#d%"
         val built = link("players", tricky, query = mapOf("page" to 2, "q" to "a&b=c d", "none" to null))
