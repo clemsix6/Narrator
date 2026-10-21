@@ -1,0 +1,13 @@
+{
+  "id": "welcome",
+  "title": "Four new players arrive and greet the Narrator",
+  "source": "exact opening of m4-live pass 2 chapter 1 (director-0a67ad6c)",
+  "context": "JOIN of four new players; Lisette mined a diamond in her first seconds and greets the Narrator (« on est prêts pour une soirée mémorable »); target everyone",
+  "transcript": "transcripts/m4-live-pass2-director-0a67ad6c.jsonl",
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    }
+  ]
+}
