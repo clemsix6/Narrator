@@ -13,6 +13,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
+import java.time.LocalDate
+import java.time.LocalTime
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -34,14 +36,16 @@ class ReplayHarnessTest {
     @Test
     fun `every situation loads, with known checks on known tools and frozen reads on read tools`() {
         val situations = ReplaySituations.load()
-        assertEquals(16, situations.size, situations.map { it.id }.toString())
+        assertEquals(20, situations.size, situations.map { it.id }.toString())
         assertEquals(situations.size, situations.map { it.id }.toSet().size, "unique ids")
         val reads = tools.tools.filter { it.effect == ToolEffect.READ }.map { it.name }.toSet()
         for (situation in situations) {
             val spec = situation.spec
             assertTrue(spec.title.isNotBlank() && spec.context.isNotBlank() && spec.source.isNotBlank(), situation.id)
-            assertTrue(situation.blocks.size == 2 && situation.blocks[0].startsWith("<briefing ") && situation.blocks[0].endsWith("</briefing>"), "${situation.id}: a briefing first")
-            assertTrue("<situation " in situation.blocks[1], "${situation.id}: a wake-up with its situation")
+            val chapter = situation.chapter
+            assertTrue(chapter.size == 2 && chapter[0].startsWith("<briefing ") && chapter[0].endsWith("</briefing>"), "${situation.id}: a chapter opens with its briefing")
+            assertTrue("<situation " in situation.blocks.last(), "${situation.id}: a wake-up with its situation")
+            assertEquals(spec.turn != null, situation.history.isNotEmpty(), "${situation.id}: a later turn comes after its chapter")
             assertTrue(spec.checks.isNotEmpty(), "${situation.id}: at least one check")
             spec.checks.forEach { check ->
                 assertTrue(check.name.isNotBlank(), "${situation.id}: a check without a name")
@@ -62,6 +66,51 @@ class ReplayHarnessTest {
         assertNull(welcome.operator)
         val operator = situations.getValue("operator_request")
         assertTrue(operator.operator!!.startsWith("Operator Opaline: Gaspard vient d'arriver"), operator.operator)
+    }
+
+    /** M6-FIX-13: a later turn of a real chapter comes after the chapter as it was sent and answered, thinking left out. */
+    @Test
+    fun `a later turn is replayed after its chapter, and the evening's turn is read with the game's answers`() {
+        val situations = ReplaySituations.load().associateBy { it.id }
+        val lisette = situations.getValue("lisette_return")
+        assertTrue(lisette.chapter[0].startsWith("<briefing chapter=\"3\" now=\"2026-10-21 22:28:26\">"), lisette.chapter[0].take(80))
+        assertTrue(lisette.blocks.single().startsWith("<events now=\"22:32:38\" since=\"22:32:35\">"), lisette.blocks.toString())
+        assertEquals(listOf("user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"), lisette.history.map { it.role().asString() })
+        assertEquals(2, lisette.historyLines.size)
+        assertTrue(lisette.historyLines[0].startsWith("Le désert des vantards rouvre ses portes") && lisette.historyLines[1].startsWith("Petite annonce"), lisette.historyLines.toString())
+        assertEquals(lisette.historyLines, lisette.previous, "the judge reads the chapter's lines before the turn")
+        val real = lisette.real!!
+        assertEquals(listOf("say", "give_book", "remember"), real.calls.map { it.name })
+        assertEquals(listOf(1, 1, 2), real.calls.map { it.request })
+        assertEquals(3, real.requests)
+        assertEquals("ok: said to everyone (4 online)", real.calls[0].result)
+        val world = ReplayActs.Situation.of(lisette.world)
+        assertEquals(LocalTime.of(22, 32, 38), world.now)
+        assertEquals(LocalDate.of(2026, 10, 21), world.day)
+        assertEquals(setOf("Gaspard", "Firmin", "Opaline", "Lisette"), world.online.toSet())
+
+        val welcome = situations.getValue("busy_welcome")
+        assertTrue(welcome.history.isEmpty() && welcome.blocks == welcome.chapter && welcome.blocks.size == 2)
+        assertEquals(listOf("say", "give_book"), welcome.real!!.calls.map { it.name })
+        assertEquals(listOf("apply_effect", "show_title", "say"), situations.getValue("firmin_nether").real!!.calls.map { it.name })
+        assertEquals(listOf("start_challenge", "deploy_module", "say"), situations.getValue("quiet_boredom").real!!.calls.map { it.name })
+        assertNull(situations.getValue("welcome").real, "an excerpt without replies has no real turn")
+
+        FakeAnthropic().use { fake ->
+            fake.enqueue(reply { toolUse("say", """{"text":"Bon retour, Lisette."}""") })
+            fake.enqueue(reply { text("Fin.") })
+            val sample = ClaudeClient(testConfig(fake.baseUrl), TEST_API_KEY).use { client ->
+                ReplayRunner(client, tools, null, LiveBudget(5.0)).run(lisette, PromptVersion("B", "Tu es le Narrateur.", "test"), 1)
+            }
+            assertEquals(TurnEnd.ENDED, sample.end)
+            val messages = fake.requests[0].json.path("messages")
+            assertEquals(lisette.history.size + 1, messages.size(), "the chapter, then the turn's message")
+            assertTrue(messages.none { message -> message.path("content").any { it.path("type").asText() == "thinking" } }, "no thinking in the history")
+            assertEquals(listOf("say", "give_book"), messages[1].path("content").map { it.path("name").asText() })
+            assertTrue(messages.last().path("content")[0].path("text").asText().startsWith("<events now=\"22:32:38\""))
+            assertEquals(listOf("ok: said to everyone (4 online)"), fake.requests[1].json.path("messages").last().path("content").map { it.path("content").asText() })
+            assertEquals(0, fake.rejections.size, fake.rejections.toString())
+        }
     }
 
     /** The B = A pass of M6-09 counted a slow-falling gift as hostile: the fixtures now tell a gift from a punishment. */

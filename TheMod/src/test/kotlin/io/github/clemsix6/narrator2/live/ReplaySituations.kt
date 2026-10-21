@@ -1,11 +1,18 @@
 package io.github.clemsix6.narrator2.live
 
+import com.anthropic.core.JsonValue
+import com.anthropic.core.jsonMapper
+import com.anthropic.models.messages.ContentBlockParam
+import com.anthropic.models.messages.MessageParam
+import com.anthropic.models.messages.TextBlockParam
+import com.anthropic.models.messages.ToolUseBlockParam
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -18,7 +25,8 @@ import kotlin.io.path.name
 /*
  * The frozen situations of the Director's replay (M6 §4.5) and the reading of the conversation transcripts (`.jsonl`,
  * `trace/Transcripts`): a situation's opening can be the exact first message of a real chapter, read from an excerpt of
- * its transcript, and the tone judge grades the lines of a real evening read from its transcripts.
+ * its transcript, or a later turn of that chapter with the chapter before it (M6-FIX-13); and the tone judge grades the
+ * lines of a real evening read from its transcripts.
  */
 
 /**
@@ -96,7 +104,13 @@ internal data class CheckSpec(
  * @property operator an operator's message sent with the opening (`Operator <name>: …`), as a system message.
  * @property transcript an excerpt of a real transcript (`.jsonl`, next to the fixtures) whose first request gives the
  *   opening and the operator's message, exactly as sent.
- * @property previous the Narrator's lines just before, oldest first (those of the briefing's recent chat), for the judge.
+ * @property turn a later turn of [transcript] to replay (the N of its `turn N` note): the turns before it are the chapter's
+ *   history, sent as the evening sent and answered them (thinking left out, the same for A and B), and that turn's message
+ *   is the one the replayed turn answers (M6-FIX-13). Null: the chapter's first turn.
+ * @property promptSha the `PromptVersion.sha` of the `director.md` the evening of [transcript] played with: when A is that
+ *   prompt, the turn as the evening played it can count as A's sample 0 (`NARRATOR2_REPLAY_REAL`).
+ * @property previous the Narrator's lines just before, oldest first (those of the briefing's recent chat), for the judge;
+ *   the lines of the chapter's history follow them.
  * @property reads the frozen result of a read tool (its lines), served at its first call in a turn.
  * @property acts what an act answers instead of `ok`, by tool.
  * @property silenceOk a turn without a line is a good answer here.
@@ -110,6 +124,8 @@ internal data class SituationSpec(
     val opening: List<List<String>> = emptyList(),
     val operator: String? = null,
     val transcript: String? = null,
+    val turn: String? = null,
+    @SerialName("prompt_sha") val promptSha: String? = null,
     val previous: List<String> = emptyList(),
     val reads: Map<String, List<String>> = emptyMap(),
     val acts: Map<String, String> = emptyMap(),
@@ -117,13 +133,39 @@ internal data class SituationSpec(
     @SerialName("silence_ok") val silenceOk: Boolean = false,
 )
 
-/** A situation ready to replay: [blocks] and [operator] resolved from its fixture or its transcript excerpt. */
-internal class ReplaySituation(val spec: SituationSpec, val blocks: List<String>, val operator: String?) {
+/**
+ * A situation ready to replay, resolved from its fixture or its transcript excerpt: [blocks] and [operator] are the message
+ * the replayed turn answers; for a later turn ([SituationSpec.turn]), [history] is the chapter before it.
+ *
+ * @property chapter the text blocks of the chapter's first message (its briefing first): [blocks] for the chapter's first turn.
+ * @property history the chapter's messages before the replayed turn, user and assistant, as sent and answered, without
+ *   thinking; empty for the chapter's first turn.
+ * @property historyLines the Narrator's lines in [history], oldest first.
+ * @property real the replayed turn as the evening played it, when a transcript gives it.
+ */
+internal class ReplaySituation(
+    val spec: SituationSpec,
+    val blocks: List<String>,
+    val operator: String?,
+    val chapter: List<String> = blocks,
+    val history: List<MessageParam> = emptyList(),
+    val historyLines: List<String> = emptyList(),
+    val real: RealTurn? = null,
+) {
     val id: String get() = spec.id
+
+    /** The lines said before the replayed turn, oldest first, for the judge: the fixture's, then the chapter's. */
+    val previous: List<String> get() = spec.previous + historyLines
+
+    /** What tells the replayed acts the day, the time and the players: the chapter's first message, then the replayed turn's. */
+    val world: List<String> get() = if (history.isEmpty()) blocks else chapter + blocks
 
     /** The frozen result of [tool], or null. */
     fun read(tool: String): String? = spec.reads[tool]?.joinToString("\n")
 }
+
+/** A turn as a real evening played it: its calls with the game's answers, and how many requests it made. */
+internal class RealTurn(val calls: List<ReplayCall>, val requests: Int)
 
 /**
  * One tool call of a replayed turn: in which request (from 1), its tool, its JSON arguments, and what the replay answered
@@ -162,8 +204,14 @@ object ReplaySituations {
     private fun resolve(spec: SituationSpec, dir: Path): ReplaySituation {
         val transcript = spec.transcript ?: return ReplaySituation(spec, spec.opening.map { it.joinToString("\n") }, spec.operator)
         require(spec.opening.isEmpty() && spec.operator == null) { "${spec.id}: an opening comes from the fixture or from its transcript, not both" }
-        val opening = opening(Files.readAllLines(dir.resolve(transcript)))
-        return ReplaySituation(spec, opening.blocks, opening.operator)
+        val lines = Files.readAllLines(dir.resolve(transcript))
+        if (spec.turn == null) {
+            val records = records(lines)
+            val opening = openingOf(records)
+            return ReplaySituation(spec, opening.blocks, opening.operator, real = realTurn(records))
+        }
+        val excerpt = excerpt(lines, spec.turn)
+        return ReplaySituation(spec, excerpt.opening.blocks, excerpt.opening.operator, excerpt.chapter, excerpt.history, excerpt.historyLines, excerpt.real)
     }
 
     /** The first message of a conversation and the system message sent with it, if any. */
@@ -173,10 +221,13 @@ object ReplaySituations {
      * The opening of the conversation transcribed in [lines] (a `.jsonl` transcript): the text blocks of its first user
      * message, and the system message sent with it, both exactly as sent; everything up to its first request.
      */
-    fun opening(lines: List<String>): Opening {
+    fun opening(lines: List<String>): Opening = openingOf(records(lines))
+
+    /** The message of the turn that [records] start with: its sent messages up to its first request. */
+    private fun openingOf(records: List<Record>): Opening {
         val blocks = mutableListOf<String>()
         var operator: String? = null
-        for (record in records(lines)) {
+        for (record in records) {
             if (record.kind == "request") break
             if (record.kind != "sent") continue
             val content = record.data["content"]
@@ -188,6 +239,97 @@ object ReplaySituations {
         require(blocks.isNotEmpty()) { "no first user message in the transcript" }
         return Opening(blocks, operator)
     }
+
+    /** A later turn of a chapter and what came before it ([SituationSpec.turn]). */
+    internal class Excerpt(val chapter: List<String>, val history: List<MessageParam>, val historyLines: List<String>, val opening: Opening, val real: RealTurn?)
+
+    /**
+     * Turn [turn] of the chapter transcribed in [lines], and the chapter before it: every committed exchange before the
+     * turn's `turn N` note, as it was sent and answered, without its thinking (the replay sends the same history to A and
+     * B, and the thinking of A is not B's); the turn's message, as [opening] reads a first one; and the turn as the evening
+     * played it.
+     */
+    internal fun excerpt(lines: List<String>, turn: String): Excerpt {
+        val records = records(lines)
+        val start = records.indexOfFirst { it.isTurnNote() && it.data.text("text")!!.startsWith("turn $turn ") }
+        require(start >= 0) { "no turn $turn in the transcript" }
+        val history = mutableListOf<MessageParam>()
+        val spoken = mutableListOf<String>()
+        var pending = mutableListOf<MessageParam>()
+        for (record in records.subList(0, start)) {
+            when (record.kind) {
+                "sent" -> pending += sdkMapper.readValue(record.data.toString(), MessageParam::class.java)
+                "response" -> {
+                    val committed = (record.data["narrator2_appended"] as? JsonPrimitive)?.booleanOrNull != false
+                    val answer = assistantOf(record.data)
+                    if (committed && answer != null) {
+                        history += pending
+                        history += answer
+                        spoken += toolUses(record.data).mapNotNull { (name, input) -> lineOf(name, input) }
+                    }
+                    pending = mutableListOf()
+                }
+            }
+        }
+        require(history.isNotEmpty()) { "turn $turn is the chapter's first: replay it without a turn" }
+        val rest = records.subList(start, records.size)
+        return Excerpt(openingOf(records).blocks, history, spoken, openingOf(rest), realTurn(rest))
+    }
+
+    /**
+     * The turn that [records] start with, as the evening played it: the tool calls of its replies, each with the game's
+     * answer, until the next turn or the chapter's end; null when no reply is transcribed.
+     */
+    private fun realTurn(records: List<Record>): RealTurn? {
+        val first = records.indexOfFirst { it.isTurnNote() }
+        if (first < 0) return null
+        val uses = mutableListOf<Triple<Int, String, JsonObject>>() // request, tool_use id, block
+        val results = mutableMapOf<String, String>()
+        var requests = 0
+        for (record in records.subList(first + 1, records.size)) {
+            if (record.isTurnNote() || (record.kind == "note" && record.data.text("text")?.startsWith("chapter ") == true)) break
+            when (record.kind) {
+                "response" -> {
+                    requests++
+                    (record.data["content"] as? JsonArray).orEmpty().forEach { block ->
+                        val use = (block as? JsonObject)?.takeIf { it.text("type") == "tool_use" } ?: return@forEach
+                        uses += Triple(requests, use.text("id").orEmpty(), use)
+                    }
+                }
+                "sent" -> results += answers(record.data)
+            }
+        }
+        if (requests == 0) return null
+        val calls = uses.map { (request, id, use) -> ReplayCall(request, use.text("name")!!, (use["input"] ?: JsonObject(emptyMap())).toString(), results[id]) }
+        return RealTurn(calls, requests)
+    }
+
+    /** A transcribed reply as it joins the history: its text and tool calls, without thinking; null when nothing is left. */
+    private fun assistantOf(data: JsonObject): MessageParam? {
+        val blocks = (data["content"] as? JsonArray).orEmpty().mapNotNull { block ->
+            val obj = block as? JsonObject ?: return@mapNotNull null
+            when (obj.text("type")) {
+                "text" -> obj.text("text")?.takeIf { it.isNotBlank() }?.let { ContentBlockParam.ofText(TextBlockParam.builder().text(it).build()) }
+                "tool_use" -> ContentBlockParam.ofToolUse(
+                    ToolUseBlockParam.builder().id(obj.text("id")!!).name(obj.text("name")!!)
+                        .input(JsonValue.from(sdkMapper.readValue((obj["input"] ?: JsonObject(emptyMap())).toString(), Map::class.java))).build(),
+                )
+                else -> null
+            }
+        }
+        if (blocks.isEmpty()) return null
+        return MessageParam.builder().role(MessageParam.Role.ASSISTANT).contentOfBlockParams(blocks).build()
+    }
+
+    /** The tool calls of a transcribed reply: their tool and arguments. */
+    private fun toolUses(data: JsonObject): List<Pair<String, JsonObject>> = (data["content"] as? JsonArray).orEmpty().mapNotNull { block ->
+        val use = (block as? JsonObject)?.takeIf { it.text("type") == "tool_use" } ?: return@mapNotNull null
+        use.text("name")!! to (use["input"] as? JsonObject ?: JsonObject(emptyMap()))
+    }
+
+    private val sdkMapper = jsonMapper()
+
+    private fun Record.isTurnNote(): Boolean = kind == "note" && data.text("text")?.startsWith("turn ") == true
 
     /**
      * The lines the Narrator said in the Director's transcripts under [dir] (`director-*.jsonl`, searched at any depth),
