@@ -453,3 +453,18 @@ est à reprendre après M6-07, qui modifie `DuckMemoryStore.kt`.
 
 **Pour la relecture de la partie 2** : M6-08 doit filtrer `expiresPlaySeconds` des idées lues par `openIdeas()` si
 M6-FIX-3 prend l'option minimale ; M6-17 vérifie l'usage de `Svg.curve`, `Filter.Field` et `pager` (constat 10).
+
+## Décisions du superviseur (21/10/2026)
+
+- **D1 — oui.** Code de connexion à usage unique (128 bits, 10 min, consommé à la première connexion), distinct du
+  jeton de session posé en cookie. Lot M6-FIX-2.
+- **D2 — oui.** Prix par défaut du modèle de repli `claude-opus-4-8` : 5 $ par million de jetons en entrée et 25 $ en
+  sortie (même prix qu'Opus 5, d'après la référence de l'API Claude), lectures du cache à 0,1× et écritures à 1,25× (5 min)
+  ou 2× (1 h), comme les autres modèles. L'agent vérifie ces multiples dans la référence avant de les écrire. Lot M6-FIX-3.
+- **D3 — oui.** Le registre dominant se calcule parmi les registres de la voix ; la part de `plain` est montrée à part.
+  Lot M6-FIX-1.
+- **D4 — oui.** `narrateur` sort des mots béquilles candidats (`crutchCandidates` seulement ; ce n'est pas un `<nom>`).
+  Lot M6-FIX-1.
+- **Ordre des lots.** M6-FIX-1 et M6-FIX-3 (option recommandée : M6-13 est déjà fusionné) partent tout de suite.
+  M6-FIX-2 part après la fusion de M6-12, qui modifie `web/Html.kt` et `web/Routes.kt`, et passe avant M6-17.
+  La simplification de `propose_idea` (constat 10) attend la fusion de M6-07.
