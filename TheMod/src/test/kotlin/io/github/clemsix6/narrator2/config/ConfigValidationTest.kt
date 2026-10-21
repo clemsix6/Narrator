@@ -50,7 +50,7 @@ class ConfigValidationTest {
         assertEquals(ForgeApproval.AUTO, defaults.forge.approvalMode)
         assertEquals(ReflexConfig(true, "claude-haiku-5-5", "low", false, 3_000), defaults.reflex)
         assertEquals(StyleConfig(lineReview = true, toneNotes = true, refuseRestingOpeners = true), defaults.style, "M6 §12.5")
-        assertEquals(DashboardConfig(enabled = true, port = 8770), defaults.dashboard, "M6 §12.5")
+        assertEquals(DashboardConfig(enabled = false, port = 8770), defaults.dashboard, "M6 §12.5: optional, off by default (M6-FIX-2)")
         assertEquals(
             mapOf(
                 "claude-opus-5-5" to ModelPrice(4.0, 20.0, 0.20, 8.0),
@@ -278,7 +278,7 @@ class ConfigValidationTest {
             """
             {
               "style": { "toneNotes": false },
-              "dashboard": { "port": 0 },
+              "dashboard": { "enabled": true },
               "memory": { "programme": false },
               "prices": {
                 "claude-opus-5-5": { "output": 25.0 },
@@ -289,7 +289,7 @@ class ConfigValidationTest {
         )
         val config = ConfigStore.load(dir)
         assertEquals(StyleConfig(toneNotes = false), config.style)
-        assertEquals(DashboardConfig(enabled = true, port = 0), config.dashboard)
+        assertEquals(DashboardConfig(enabled = true, port = 8770), config.dashboard, "turned on, its port by default")
         assertEquals(false, config.memory.programme)
         assertEquals(
             mapOf(

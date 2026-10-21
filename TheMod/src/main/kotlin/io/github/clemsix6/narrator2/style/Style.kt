@@ -109,15 +109,19 @@ data class AtRest(val openers: List<RestingOpener>, val phrases: List<String>, v
 }
 
 /**
- * The diversity of the Director's latest lines (M6 §3.7), measured on demand.
+ * The diversity of the Director's latest lines (M6 §3.7), measured on demand (`StyleReport.measures`).
  *
  * @property lines the lines measured: the latest 50.
  * @property openersDistinct distinct normalized openers over [lines]; 0 without lines.
- * @property topRegister the register of the most labeled lines; null without labels.
- * @property topRegisterShare its share of the labeled lines, 0 to 1.
+ * @property topRegister the register of the voice ([ComicRegister.VOICE]) of the most labeled lines; null when no labeled
+ *   line has one: none labeled, or all `plain` or `other`, which are no frames ([plainShare] tells).
+ * @property topRegisterShare its share of the labeled lines whose register is of the voice (neither `plain` nor `other`),
+ *   0 to 1: how much one frame holds the rotation.
  * @property registerEntropy the registers' entropy over log(min(K, n)), 0 to 1, K the registers of the voice.
  * @property crutches each crutch word and the lines that hold it, the most frequent first.
  * @property tics the tics found (openers, phrases, ellipses).
+ * @property plainShare the share of the labeled lines labeled `plain` (a direct taunt or answer, without a frame), 0 to
+ *   1; null when none of [lines] is labeled.
  */
 data class Diversity(
     val lines: Int,
@@ -127,6 +131,7 @@ data class Diversity(
     val registerEntropy: Double,
     val crutches: List<Pair<String, Int>>,
     val tics: Int,
+    val plainShare: Double? = null,
 ) {
     companion object {
         /** Nothing measured: no line yet. */
@@ -145,8 +150,8 @@ interface StyleWatch {
     fun labeled(labels: LineLabels)
 
     /**
-     * The 8 most frequent content words of the latest 50 lines (5 letters at least, neither a player's name, a number
-     * nor a stop word), the most frequent first: the review's `frequent_words`.
+     * The 8 most frequent content words of the latest 50 lines (5 letters at least, neither a player's name, the
+     * Narrator's, a number nor a stop word), the most frequent first: the review's `frequent_words`.
      */
     fun crutchCandidates(): List<String>
 

@@ -5,14 +5,13 @@ import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.command.TraceText
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.trace.ModelTokens
 import io.github.clemsix6.narrator2.web.ConversationRow
 import io.github.clemsix6.narrator2.web.DashboardQueries
 import io.github.clemsix6.narrator2.web.Html
-import io.github.clemsix6.narrator2.web.ModelTokens
 import io.github.clemsix6.narrator2.web.Page
 import io.github.clemsix6.narrator2.web.PageContext
 import io.github.clemsix6.narrator2.web.WebRequest
-import io.github.clemsix6.narrator2.web.costOf
 import io.github.clemsix6.narrator2.web.link
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -26,6 +25,7 @@ import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -38,8 +38,9 @@ import java.util.Locale
  *
  * The transcript is the file `conversations.transcript` names (the `.md`; the `.jsonl` is next to it), resolved under
  * the transcripts' folder (`world/narrator2/logs/conversations/`) and read only if it lies there, links followed
- * (M6 §8.3). It is read as a stream, [PART_BYTES] at most per page, the rest a link away (`?from=<byte>`). A transcript
- * holds what was sent to and received from Claude: never a private message, which no model ever reads.
+ * (M6 §8.3). It is read as a stream, [PART_BYTES] at most per page, the rest a link away (`?from=<byte>`). Its times,
+ * written in the server's zone, are shown in the dashboard's ([PageContext.zone]), as the header's. A transcript holds
+ * what was sent to and received from Claude: never a private message, which no model ever reads.
  */
 object TranscriptPage {
     private val log = Log.web
@@ -102,7 +103,7 @@ object TranscriptPage {
             }
             is Located.Found -> {
                 val part = try {
-                    read(file.path, from)
+                    read(file.path, from, context.zone)
                 } catch (e: Exception) {
                     log.warn("the transcript of ${conversation.conversationId} cannot be read: ${e.message}")
                     return p("The transcript cannot be read: ${e.javaClass.simpleName}: ${e.message}.", "failure")
@@ -169,9 +170,9 @@ object TranscriptPage {
     /**
      * The part of [file] that starts at byte [from] (the start of the line it falls in, or the next one), [budget]
      * bytes at most: whole lines only, one at least; a line longer than [budget] is skipped and said. A last line without
-     * its end is being written: left for later.
+     * its end is being written: left for later. The entries' times are in [zone].
      */
-    internal fun read(file: Path, from: Long, budget: Int = PART_BYTES): Part = FileChannel.open(file, StandardOpenOption.READ).use { channel ->
+    internal fun read(file: Path, from: Long, zone: ZoneId, budget: Int = PART_BYTES): Part = FileChannel.open(file, StandardOpenOption.READ).use { channel ->
         val size = channel.size()
         if (from >= size) return Part(emptyList(), size, null)
         var offset = from
@@ -208,7 +209,7 @@ object TranscriptPage {
             when {
                 b == -1 -> break
                 length > budget -> entries += Entry.Unreadable(start, "a line of ${megabytes(length)}, more than a page holds")
-                length > 0 -> entries += parse(line.toString(StandardCharsets.UTF_8), start)
+                length > 0 -> entries += parse(line.toString(StandardCharsets.UTF_8), start, zone)
             }
         }
         Part(entries.withCommits(), size, null)
@@ -252,10 +253,10 @@ object TranscriptPage {
         return marked
     }
 
-    /** One line of the `.jsonl` (`{"ts", "kind", "data"}`) as an entry; a line that cannot be read, said as such. */
-    private fun parse(line: String, offset: Long): Entry = try {
+    /** One line of the `.jsonl` (`{"ts", "kind", "data"}`) as an entry, its time in [zone]; a line that cannot be read, said as such. */
+    private fun parse(line: String, offset: Long, zone: ZoneId): Entry = try {
         val node = MAPPER.readTree(line)
-        val ts = time(node.path("ts").asText(""))
+        val ts = time(node.path("ts").asText(""), zone)
         val data = node.path("data")
         when (val kind = node.path("kind").asText()) {
             "conversation" -> Entry.Header(
@@ -341,8 +342,12 @@ object TranscriptPage {
 
     private fun JsonNode.textOrNull(): String? = takeIf { it.isTextual }?.asText()
 
-    /** `21:30:12` from the entry's zoned stamp, as the `.md` writes it; the stamp itself when it cannot be read. */
-    private fun time(stamp: String): String = runCatching { OffsetDateTime.parse(stamp).format(TIME) }.getOrDefault(stamp)
+    /**
+     * `21:30:12` in [zone] from the entry's stamp, whatever its offset (`Transcripts` writes the server's); the stamp
+     * itself when it cannot be read.
+     */
+    private fun time(stamp: String, zone: ZoneId): String =
+        runCatching { OffsetDateTime.parse(stamp).atZoneSameInstant(zone).format(TIME) }.getOrDefault(stamp)
 
     // ── Rendering ───────────────────────────────────────────────────────────────────────────────────
 
@@ -435,7 +440,7 @@ object TranscriptPage {
 
     // ── The model ───────────────────────────────────────────────────────────────────────────────────
 
-    /** One entry of a transcript, as `trace/Transcripts` writes them. [ts] is its time, `21:30:12`. */
+    /** One entry of a transcript, as `trace/Transcripts` writes them. [ts] is its time in the dashboard's zone, `21:30:12`. */
     internal sealed interface Entry {
         /** The conversation's first line: its system prompt and its tools. */
         data class Header(val system: List<String>, val tools: List<Tool>) : Entry

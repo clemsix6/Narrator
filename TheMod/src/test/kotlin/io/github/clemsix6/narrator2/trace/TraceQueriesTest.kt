@@ -1,5 +1,7 @@
 package io.github.clemsix6.narrator2.trace
 
+import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.journal.IdKind
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -9,7 +11,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The reads of `/narrator trace`, `why` and `usage`, on a Journal written by the real writer ([TraceDataset]). */
+/**
+ * The reads of `/narrator trace`, `why` and `usage`, on a Journal written by the real writer ([TraceDataset]); `usage`
+ * priced as `/narrator usage` and the dashboard's overview price it.
+ */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TraceQueriesTest {
     private val data = TraceDataset()
@@ -112,16 +117,48 @@ class TraceQueriesTest {
     }
 
     @Test
-    fun `usage per provider and role since a moment`() {
+    fun `usage per provider and role since a moment, with the calls of each model`() {
         val usage = data.read { it.usage(TraceDataset.T0.minusSeconds(3_600).toEpochMilli()) }
         assertEquals(
             listOf(
-                Usage("anthropic", "director", 4, 0, 1_850, 244_800, 0, 412, 2_425),
-                Usage("anthropic", "reflex", 2, 1, 90, 0, 0, 30, 800),
-                Usage("anthropic", "analyst", 1, 0, 3_000, 0, 0, 200, 3_000),
+                Usage("anthropic", "director", 4, 0, 1_850, 244_800, 0, 412, 2_425, listOf(ModelTokens("claude-opus-5-5", 4, 0, 1_850, 244_800, 0, 412))),
+                Usage("anthropic", "reflex", 2, 1, 90, 0, 0, 30, 800, listOf(ModelTokens("claude-haiku-5-5", 2, 1, 90, 0, 0, 30))),
+                Usage("anthropic", "analyst", 1, 0, 3_000, 0, 0, 200, 3_000, listOf(ModelTokens("claude-opus-5-5", 1, 0, 3_000, 0, 0, 200))),
             ),
             usage,
         )
         assertEquals(emptyList(), data.read { it.usage(TraceDataset.NOW.toEpochMilli()) })
+    }
+
+    @Test
+    fun `usage prices each role's calls at the price of the model that answered, the fallback model's included`() {
+        TraceDataset().use { data ->
+            val journal = data.fixture.journal
+            journal.llmCall(
+                LlmCallRecord(
+                    journal.nextId(IdKind.LLM_CALL), LlmCallRecord.Provider.ANTHROPIC, LlmCallRecord.Purpose.TURN, TraceDataset.CHAPTER, 43, "director",
+                    "claude-opus-4-8", "medium", TraceDataset.NOW, TraceDataset.NOW, 1_200, 900, 1, null, null, 500, 0, 0, 50, "end_turn", "cyber", null, null, null,
+                ),
+            )
+            data.fixture.sync()
+            val prices = Prices.of(NarratorConfig())
+
+            val usage = data.read { it.usage(0) }.associateBy { it.role }
+            val director = usage.getValue("director")
+            assertEquals(
+                listOf(ModelTokens("claude-opus-4-8", 1, 0, 500, 0, 0, 50), ModelTokens("claude-opus-5-5", 4, 0, 1_850, 244_800, 0, 412)),
+                director.models,
+            )
+            assertEquals(listOf(5, 2_350, 462), listOf(director.calls, director.inputTokens.toInt(), director.outputTokens.toInt()), "the role sums its models")
+            assertEquals(2_180L, director.averageLatencyMs, "(900 + 1 500 + 2 100 + 5 200 + 1 200) / 5")
+            // Opus 5.5 at 4 / 20 / 0.20 / 8 $ per million: (1 850 × 4 + 244 800 × 0.20 + 412 × 20) / 1 M;
+            // the fallback model, Opus 4.8, at 5 / 25 $: (500 × 5 + 50 × 25) / 1 M.
+            val cost = prices.costOf(director.models)
+            assertEquals(0.0646 + 0.00375, cost.dollars, 1e-9)
+            assertEquals(Cost(cost.dollars, priced = 5, unpriced = 0), cost)
+            assertEquals("\$0.068", cost.text, "the fallback model at its own price")
+            assertEquals("\$0.016", prices.costOf(usage.getValue("analyst").models).text)
+            assertEquals("\$0.000024", prices.costOf(usage.getValue("reflex").models).text, "Haiku: (90 × 0.10 + 30 × 0.50) / 1 M")
+        }
     }
 }

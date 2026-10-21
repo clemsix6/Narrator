@@ -3,15 +3,14 @@ package io.github.clemsix6.narrator2.web.pages
 import com.anthropic.core.jsonMapper
 import io.github.clemsix6.narrator2.command.Look
 import io.github.clemsix6.narrator2.command.TraceText
+import io.github.clemsix6.narrator2.trace.Cost
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.ModelCall
+import io.github.clemsix6.narrator2.trace.ModelTokens
 import io.github.clemsix6.narrator2.trace.ToolUse
 import io.github.clemsix6.narrator2.trace.TurnSummary
-import io.github.clemsix6.narrator2.web.Cost
 import io.github.clemsix6.narrator2.web.Html
-import io.github.clemsix6.narrator2.web.ModelTokens
 import io.github.clemsix6.narrator2.web.PageContext
-import io.github.clemsix6.narrator2.web.costOf
 import io.github.clemsix6.narrator2.web.link
 
 /*
@@ -29,7 +28,10 @@ internal val Look.cls: String?
         Look.DETAIL, Look.SAID -> null
     }
 
-/** One line per turn, newest first: its link, start, chapter, trigger, what woke it, tools, outcome, context, requests. */
+/**
+ * One line per turn, newest first: its link, start, chapter, trigger, what woke it, tools, outcome, time taken,
+ * context, requests. The one table of turns, on `/turns` and on the overview.
+ */
 internal fun Html.turnTable(turns: List<TurnSummary>, context: PageContext) =
     table(listOf("#Turn", "Started", "Chapter", "Trigger", "Woken by", "Tools", "Outcome", "#Took", "#Context", "#Requests")) {
         turns.forEach { turn ->

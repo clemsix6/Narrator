@@ -25,8 +25,8 @@ Inspirations : le *memory stream* et la *réflexion* des Generative Agents (Park
 
 ```
             ┌────────────────────────────────────────────────┐
- toujours   │ 4. MÉMOIRE CENTRALE — « le Grimoire » (~3k)    │ relations, gags vivants, arcs,
- en contexte│    réécrite en entier à chaque rêve            │ ce qui marche, plans, vigilances
+ toujours   │ 4. MÉMOIRE CENTRALE — « le Grimoire » (~3k)    │ relations, gags vivants, arcs, ce qui
+ en contexte│    réécrite en entier à chaque rêve            │ marche, ce qui tombe à plat, vigilances
             └────────────────────────────────────────────────┘
             ┌────────────────────────────────────────────────┐
  à la       │ 3. CONNAISSANCES                               │ FICHES JOUEURS, canon (promesses,
@@ -159,7 +159,7 @@ Avant tout, le code recalcule les stats, les tics et fait le ménage mécanique 
 5. **Programme**, la salle d'écriture du Scénariste (M6) : à partir du Grimoire tout juste réécrit, de la revue, des joueurs actifs de la semaine (progression réelle, faveur, attention reçue), du canon (récits, thèmes au repos, gags), de l'historique des interventions des trois dernières sessions et des idées précédentes (ce qui a suivi chacune), il écrit 5 à 8 idées notées, une saison quand il n'y en a pas, et les récits prévus. Jamais décisif : un échec ne change pas l'issue du rêve.
 6. **Fusions** : réunir les souvenirs en double que le code a repérés.
 
-Un rêve coûte de l'ordre de 200 000 tokens d'entrée (en partie en cache) ; un ou deux par jour. Un rêve interrompu reprend à l'étape où il s'était arrêté.
+Un rêve coûte de l'ordre de 200 000 tokens d'entrée (en partie en cache), plus 45 000 à 115 000 pour le programme du Scénariste (étape 5, 60 à 70 % relus du cache : environ 0,22 à 0,40 $ aux prix de l'API) ; un ou deux par jour. Un rêve interrompu reprend à l'étape où il s'était arrêté.
 
 ### Le réveil — à la connexion d'un joueur
 Le Directeur reçoit, avec l'événement de connexion, la fiche condensée du joueur, son « Depuis la dernière fois », ce qui s'est passé pendant son absence (sessions de la chronique, engagements qui le concernent) et, s'il y en a une, une **piste de rêve** préparée par le Rêveur (« 3 morts de chute cette semaine, toutes dans la même chambre d'épreuve »). Il accueille avec continuité, et peut raconter un rêve : *« Cette nuit, j'ai rêvé de Bartok. Il tombait. Encore. »* La piste est factuelle et montrée une seule fois ; le rêve raconté est du contenu de jeu, dit dans le chat : il n'est jamais réinjecté comme mémoire.
