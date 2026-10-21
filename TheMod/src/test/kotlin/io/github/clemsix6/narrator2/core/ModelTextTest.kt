@@ -28,6 +28,13 @@ class ModelTextTest {
     }
 
     @Test
+    fun `the Narrator's words between guillemets are cut, escaped, and cannot end the quote early`() {
+        assertEquals("« Vingt secondes »", ModelText.guillemets("Vingt secondes"))
+        assertEquals("« ‹ Nul › ‹b›, dit le juge au perdant. »", ModelText.guillemets("« Nul » <b>, dit le juge\nau perdant."))
+        assertEquals("« abcd… »", ModelText.guillemets("abcdefgh", 5))
+    }
+
+    @Test
     fun `an attribute value cannot be closed by a name`() {
         assertEquals("‹x› a&quot;b &amp; c", ModelText.attribute("<x> a\"b & c"))
     }

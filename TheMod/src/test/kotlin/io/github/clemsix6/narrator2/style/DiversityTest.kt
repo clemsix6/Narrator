@@ -57,7 +57,7 @@ class DiversityTest {
         assertEquals(50, diversity.lines)
         assertEquals(1.0, diversity.openersDistinct, 1e-9, "the ten « Vingt secondes » left the latest fifty")
         assertEquals(ComicRegister.DIVINE_BUREAUCRACY, diversity.topRegister, "the line 5 left too, with its courtroom")
-        assertEquals(0.6, diversity.topRegisterShare, 1e-9, "of the ten lines reviewed")
+        assertEquals(0.75, diversity.topRegisterShare, 1e-9, "of the eight lines of the voice: plain is no frame")
         assertEquals(StyleReport.entropy(listOf(6, 2)), diversity.registerEntropy, "plain is not a register of the voice")
         assertEquals(listOf("céleste" to 2), diversity.crutches)
         assertEquals(StyleReport.measures(lines(texts.takeLast(50)), names).tics, diversity.tics)

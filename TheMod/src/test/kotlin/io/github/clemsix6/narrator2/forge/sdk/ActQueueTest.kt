@@ -291,6 +291,32 @@ class ActQueueTest {
     }
 
     @Test
+    fun `the rest of a call given up and resumed by its host acts all the same, together, before the next call's acts`() = runTest {
+        val (queue, acts) = setup().let { it.queue to it.acts }
+        val then = Callback()
+        // The call is given up after its first act; its host resumes it between two invocations (FORGE-ABANDON).
+        queue.invocation("fact") { acts.say("Trouvé.") }
+        acts.sayTo("Bartok", "Bravo.").then(then)
+        acts.sound("Bartok", "entity.player.levelup")
+        runCurrent()
+        assertEquals(listOf("say"), runner.ran.map { it.second }, "the rest waits for the call's end")
+
+        queue.invocation("timer") { acts.hud(null, "1 s") }
+        runCurrent()
+        assertEquals(listOf(1L to "say", 2L to "say", 2L to "play_sound", 3L to "hud"), runner.ran.map { it.first to it.second }, "in order, the rest one act of the engine")
+        assertEquals("C-70: 2 acts of its module (say, play_sound)", runner.opened[1].second)
+        queue.deliver()
+        assertEquals(listOf("ok"), then.got.map { it.first.status() }, "its callback, in a call of its own")
+        assertEquals(listOf("fact", "timer", "callback"), host.calls.toList())
+
+        acts.say("Encore.")
+        queue.close()
+        runCurrent()
+        assertEquals(4, runner.ran.size, "what the rest asked when its deployment ended is dropped")
+        assertEquals(1, queue.dropped)
+    }
+
+    @Test
     fun `what is still queued when the deployment ends is dropped, and no callback is called again`() = runTest {
         val (queue, acts) = setup().let { it.queue to it.acts }
         val gate = CompletableDeferred<Unit>()
