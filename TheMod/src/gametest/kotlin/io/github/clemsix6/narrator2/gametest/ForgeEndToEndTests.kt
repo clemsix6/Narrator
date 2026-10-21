@@ -38,6 +38,7 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.world.item.Items
 import java.nio.file.Files
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The Forge end to end through the Director and the forger (M5 §16.4, §17.2 M5-22), with no real Claude: the real
@@ -72,7 +73,12 @@ class ForgeEndToEndTests {
 
     @GameTest(environment = FORGE_E2E_ENVIRONMENT, maxTicks = E2E_MAX_TICKS)
     fun aGameIsForgedDeployedPlayedAndEndedThroughTheDirectorAndTheForger(helper: GameTestHelper) {
-        helper.onEachTick { Thread.sleep(TICK_SLEEP_MS) }
+        // The server's ticks so far: what the module's timers bring about is waited for in ticks (FLAKY-5).
+        val ticks = AtomicInteger()
+        helper.onEachTick {
+            ticks.incrementAndGet()
+            Thread.sleep(TICK_SLEEP_MS)
+        }
         helper.runScript(E2E_MAX_TICKS) {
             val runtime = helper.narrator()
             val server = helper.level.server
@@ -161,7 +167,8 @@ class ForgeEndToEndTests {
                 check("\nModules: ${view.ref} $MODULE law " in lastUser(asked).wakeText() && "referees $challenge" in lastUser(asked).wakeText()) {
                     "the situation shows the module: ${lastUser(asked).wakeText()}"
                 }
-                awaitCondition("the password backwards in the action bar", 10_000) {
+                // The module shows it every 20 ticks: five times over, and 10 s of the wall clock for its act.
+                awaitTicks("the password backwards in the action bar", 5 * 20, { ticks.get() }, 10_000) {
                     finder.packets.filterIsInstance<ClientboundSystemChatPacket>().any { it.overlay() && "ENRETNAL" in it.content().string }
                 }
                 awaitQuiet(runtime, 30_000)

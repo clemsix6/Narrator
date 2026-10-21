@@ -1251,11 +1251,16 @@ class DuelGameTests {
             ServerTickEvents.END_SERVER_TICK.register { _ -> runs.forEach { it.tick() } }
         }
 
+        /**
+         * Lets [ticks] of the server run [rig], however long they take: counted, not timed ([awaitTicks]). The 400 ticks of
+         * a duel's fire took 27 s of a budget of 60 s in a batch of fifty tests under load (FLAKY-5); the test's own budget
+         * of ticks still bounds a server that would stop ticking.
+         */
         suspend fun run(rig: Rig, players: List<TestPlayer>, ticks: Int, eachTick: () -> Unit) {
             val run = Run(rig, players, eachTick)
             runs += run
             try {
-                awaitCondition("$ticks ticks of the server", timeoutMs = 60_000) { run.failure != null || run.ticks.get() >= ticks }
+                awaitTicks("$ticks ticks of the server", ticks, { run.ticks.get() }) { run.failure != null || run.ticks.get() >= ticks }
             } finally {
                 runs -= run
             }
