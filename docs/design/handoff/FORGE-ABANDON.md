@@ -148,6 +148,8 @@ requête `end` y est refusée, `ending()` jamais rempli).
 - **Le moteur** (`ModuleEngine`, non modifié) : son `d.spent` (avertissement du tick lent) ne compte pas le temps d'une
   reprise, que l'hôte compte dans `msPerSecond`. *(Dépassé : depuis FORGE-ABANDON-FIX, `Deployment.busy()` ajoute à
   `d.spent` le temps de la reprise, `ModuleHost.resumedNanos`.)* `stop` reste sauté tant qu'un appel est tenu (comme avant), puis
+  *(dépassé : depuis FORGE-ABANDON-FIX, `ModuleHost.stop` attend d'abord la fin de l'appel tenu, puis le `stop` lui-même,
+  avec la patience d'un démarrage ; un `stop` perdu malgré tout l'est avec un `WARN`, voir la passation FORGE-ABANDON-FIX §5)*
   `unload` le coupe. Les actes du reste d'un appel repris partent au tick qui suit sa fin (`deliver` ou l'invocation
   suivante) ; comme tout acte encore en file, ils sont `dropped` si l'appel a demandé `ctx.end` (règle de `sdk.md` :
   finir dans le rappel du dernier acte, ce que fait `password_race`).
