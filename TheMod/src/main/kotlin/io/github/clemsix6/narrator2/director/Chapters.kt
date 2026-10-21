@@ -73,7 +73,8 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  * each chapter ends with a factual summary and the next one starts from a [Briefing] rebuilt from the
  * Journal, never from the old conversation.
  *
- * - **Opening**, at the first wake-up without a chapter: the `director` prompt and the tools wired at
+ * - **Opening**, at the first wake-up without a chapter, never on an empty server nor for a departure (the Director
+ *   waits for an arrival: M6-18, finding 4): the `director` prompt and the tools wired at
  *   that moment, frozen until the chapter closes (the model and the effort too: `llm/Conversation`).
  *   Its first message starts with the briefing ([briefing]), built again as long as nothing of the
  *   conversation was committed. Chapter numbers go on from the Journal's last one; when it cannot be

@@ -101,12 +101,13 @@ class MemoryScenariosTest {
 
     @Test
     fun `a memory note and a cue wake nobody, and go with the next wake-up`() = DirectorHarness(dir).use { h ->
+        // Someone online: on an empty server, with no chapter open, a cue goes as in a silence (M6-FIX-11).
+        h.online("Bartok")
         h.director.post(DirectorSignal.MemoryNote(Ref(RefKind.NOTE, 9), NoteKind.COHERENCE, "le Narrateur a dit que les lois ne valent pas la nuit ; C-25 ne prévoit pas d'exception.", h.clock.millis()))
         h.director.post(DirectorSignal.MemoryCue(CueKind.ANNIVERSARY, Ref(RefKind.MEMORY, 12), null, "M-12, one month ago today: « clemsix6 a vaincu l'Ender Dragon seul… »", h.clock.millis()))
         h.advance(600_000)
         assertEquals(0, h.fake.requests.size, "a note and a cue never wake the Director")
 
-        h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
         h.chat("Bartok", "narrateur ?")
         h.advance(1_500)
