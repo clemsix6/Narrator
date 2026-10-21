@@ -154,7 +154,7 @@ object MemoryPage : WebPage {
                 rows.forEach { entry ->
                     row(if (entry.archived || !entry.status.open) "muted" else null) {
                         cell { refLink(entry.ref) }
-                        cell(entry.kind.id + (entry.mechanic?.let { " (${it.id})" }.orEmpty()))
+                        cell(entry.kind.id + (entry.mechanic?.takeIf { it.id != entry.kind.id }?.let { " (${it.id})" }.orEmpty()))
                         cell(entry.status.id + (entry.resolvedAt?.let { " ${context.time(it)}" }.orEmpty()) + if (entry.archived) " · archived" else "")
                         cell { playerLinks(entry.players) }
                         number(entry.importance)

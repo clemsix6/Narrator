@@ -146,7 +146,7 @@ object PlayersPage : WebPage {
             filters(link(root, identity.ref.name), request, listOf(Filter.Choice("show", "Show", SHOW)))
             p(SHOWN[show].orEmpty(), "muted")
             if (entries.isEmpty()) p("Nothing yet.", "muted")
-            else table(listOf("When", "What", "", "Where")) {
+            else table(listOf("When", "Kind", "What", "Where")) {
                 entries.forEach { entry ->
                     row(if (entry.kind.startsWith(CHAT)) null else "muted") {
                         cell(context.time(entry.ts))

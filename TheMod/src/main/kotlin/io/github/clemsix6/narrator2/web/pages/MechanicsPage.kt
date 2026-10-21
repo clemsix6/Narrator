@@ -223,7 +223,7 @@ object MechanicsPage : WebPage {
 
     private fun Html.Table.historyRow(entry: CanonEntry, context: PageContext) = row(if (entry.status.open) null else "muted") {
         cell { refLink(entry.ref) }
-        cell("${entry.mechanic?.id} ${entry.kind.id}")
+        cell(entry.mechanic?.id + if (entry.mechanic?.id == entry.kind.id) "" else " (${entry.kind.id})")
         cell(entry.status.id + (entry.resolvedAt?.let { " ${context.time(it)}" }.orEmpty()))
         cell(context.time(entry.createdAt))
         cell { playerLinks(entry.players) }
