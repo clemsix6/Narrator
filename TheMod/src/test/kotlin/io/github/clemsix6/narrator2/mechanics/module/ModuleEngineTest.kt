@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.host.Fault
 import io.github.clemsix6.narrator2.forge.host.Hosts
+import io.github.clemsix6.narrator2.forge.host.ModuleThreads
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.RuleKind
@@ -366,6 +367,32 @@ class ModuleEngineTest {
         }
     }
 
+    @Test
+    fun `each module the server stops gets its stop, though each new module thread starts late`() {
+        // FLAKY-6: unloading a module starts the next module thread at once, and the next module's stop is handed to it
+        // microseconds later; a busy machine may not run that thread within the call's 25 ms. The stop was then skipped
+        // and never asked again (910 retraits in 2,000 under load), and what a module saves in stop(SERVER_STOPPING) for
+        // its restart was lost. Here each new module thread starts 40 ms late, as a busy machine would run it.
+        val late = ModuleFixture(threads = ModuleThreads("late-module", onStart = { Thread.sleep(LATE_START_MS) }))
+        try {
+            late.module(
+                "keeper",
+                ModuleFixture.source("keeper", members = """public void stop(ModuleContext m, StopReason why) { m.storage().put("stopped", why.name()); }"""),
+            )
+            late.start()
+            LogCapture().use { logs ->
+                val deployed = (1..3).map { late.deploy(late.spec("keeper")) }
+                late.engine.stopping()
+
+                val saved = deployed.map { view -> late.store.get().module(view.ref.id)?.storage?.get("stopped") }
+                assertEquals(List(3) { "SERVER_STOPPING" }, saved, "each module's stop ran and saved its storage: ${logs.messages}")
+                assertEquals(emptyList(), logs.at(Level.WARN).filter { "its stop" in it })
+            }
+        } finally {
+            late.close()
+        }
+    }
+
     /** A tick of the server, 5 ms after the last one returned: the module thread asks again meanwhile (a real server's ticks are 50 ms apart). */
     private fun heldTick() {
         Thread.sleep(5)
@@ -691,5 +718,8 @@ class ModuleEngineTest {
     private companion object {
         /** The ticks of a second of the game. */
         const val TICKS_A_SECOND = 20
+
+        /** How late each new module thread starts, past a call's 25 ms (FLAKY-6's probe G). */
+        const val LATE_START_MS = 40L
     }
 }

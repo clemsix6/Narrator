@@ -39,10 +39,14 @@ import java.util.concurrent.locks.LockSupport
  *
  * One caller at a time (the server thread, or one bench worker): calls never overlap; a call made from a module thread
  * nests in the one that thread runs ([run]).
+ *
+ * [onStart] runs first on each new module thread, before it takes a call: tests hold the thread back there, as a busy
+ * machine does before it schedules a thread just started (FLAKY-6). The game keeps the default.
  */
 class ModuleThreads(
     private val name: String = "narrator2-module",
     val lost: LostThreads = LostThreads(),
+    private val onStart: () -> Unit = {},
 ) {
     private val log = Log.forge
     private var worker: Worker? = null
@@ -120,10 +124,10 @@ class ModuleThreads(
     /**
      * Waits again for [held] (FORGE-ABANDON), at most [budgetNanos], serving its SDK requests as [run] does: [Ran.DONE]
      * once it ran to its end, [Ran.ABANDONED] when given up again (held still: the caller may resume it later) or cut
-     * ([cut]), [Ran.STUCK] when no module code may run any more. [served] is what this resume served. The caller's
-     * thread, never while a call runs.
+     * ([cut]), [Ran.STUCK] when no module code may run any more. A caller that may wait has its [patience], as in [run].
+     * [served] is what this resume served. The caller's thread, never while a call runs.
      */
-    fun resume(held: Held, budgetNanos: Long): Ran {
+    fun resume(held: Held, budgetNanos: Long, patience: Patience? = null): Ran {
         check(!running) { "a module's call runs already: calls never overlap" }
         if (lost.stuck) return Ran.STUCK
         val call = held.call
@@ -131,7 +135,7 @@ class ModuleThreads(
         running = true
         served = 0
         try {
-            return attend(call, budgetNanos, null, Phase.RESUMED, Phase.HELD)
+            return attend(call, budgetNanos, patience, Phase.RESUMED, Phase.HELD)
         } finally {
             running = false
         }
@@ -321,6 +325,7 @@ class ModuleThreads(
         }
 
         override fun run() {
+            onStart()
             while (runNext()) continue
         }
 

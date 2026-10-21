@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.forge.host
 import io.github.clemsix6.narrator2.forge.Built
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.ModuleContext
+import io.github.clemsix6.narrator2.forge.api.StopReason
 import io.github.clemsix6.narrator2.forge.rt.Meter
 import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import io.github.clemsix6.narrator2.mechanics.module.ModuleFixture
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test
 import java.lang.management.ManagementFactory
 import java.lang.management.ThreadMXBean
 import java.lang.reflect.Proxy
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -306,6 +308,86 @@ class HeldBackTest {
         assertEquals(listOf("first", "second"), fake.logs.toList(), "resumed: its second request served, then it computed")
     }
 
+    @Test
+    fun `a stop held back past its 25 ms is waited for, and runs to its end`() {
+        // FLAKY-6 (its probe H): a stop given up once its caller was held serving it was held, then cut by the unload that
+        // follows a stop, half done. A stop is waited for as a start is, while its thread has not computed.
+        val fake = FakeContext()
+        val held = Holding(fake.context)
+        val host = Hosts.host("Stopper", Hosts.source("Stopper", STOPPER), threads, faults = faults)
+        assertTrue(host.started(held.context), "${host.disabled}")
+        held.next = 60
+        val stopped = host.stop(StopReason.STOPPED)!!
+        assertFalse(stopped.skipped)
+        assertNull(stopped.fault, "the machine's doing")
+        assertTrue(stopped.nanos >= 60_000_000, "${stopped.nanos / 1e6} ms")
+        assertFalse(host.busy(), "never given up")
+        assertEquals(listOf("stop STOPPED", "stopped"), fake.logs.toList())
+        host.unload()
+        assertEquals(0, threads.lost.alive())
+    }
+
+    @Test
+    fun `a stop asked while a call given up still runs comes after that call, never instead`() {
+        // Before FLAKY-6's fix, the stop was skipped at once (the module waits for its call given up), then the unload cut
+        // both: what the call and the stop had left to do was lost. The call is waited for first, as patiently.
+        val fake = FakeContext()
+        val held = Holding(fake.context)
+        val source = Hosts.source("Racer", STOPPER, "m.timers().every(1, () -> { m.log(\"asked\"); m.log(\"then\"); });")
+        val host = Hosts.host("Racer", source, threads, faults = faults)
+        assertTrue(host.started(held.context), "${host.disabled}")
+        held.next = 60
+        val (called, late) = host.callRun { fake.timers[0].run() }
+        assertFalse(called.skipped, "started in $late tries")
+        assertNull(called.fault)
+
+        val stopped = host.stop(StopReason.STOPPED)!!
+        assertFalse(stopped.skipped, "the stop ran")
+        assertNull(stopped.fault)
+        assertEquals(listOf("asked", "then", "stop STOPPED", "stopped"), fake.logs.toList(), "the call to its end, then the stop")
+        assertEquals(emptyList(), faults)
+        assertEquals(1, host.starved, "the call given up, settled: nobody's fault")
+    }
+
+    @Test
+    fun `a stop held back past its patience is lost with a warning, nobody's fault`() {
+        val fake = FakeContext()
+        val held = Holding(fake.context)
+        val host = Hosts.host("Stopper", Hosts.source("Stopper", STOPPER), threads, faults = faults)
+        assertTrue(host.started(held.context), "${host.disabled}")
+        LogCapture().use { logs ->
+            held.next = PAST_PATIENCE_MS // the caller held serving the stop's first request, past a start's patience
+            val stopped = host.stop(StopReason.STOPPED)!!
+            assertNull(stopped.fault, "the machine's doing")
+            host.unload()
+
+            assertTrue(logs.at(Level.WARN).any { "C-70 Stopper: its stop was given up at" in it }, "${logs.at(Level.WARN)}")
+            assertEquals(listOf("stop STOPPED"), fake.logs.toList(), "what it asks once its module is unloaded is refused")
+            assertEquals(emptyList(), faults)
+        }
+    }
+
+    @Test
+    fun `a stop its module thread does not even start within its patience is lost with a warning`() {
+        val starts = AtomicInteger()
+        val late = ModuleThreads("late-module", onStart = { if (starts.incrementAndGet() > 1) Thread.sleep(PAST_PATIENCE_MS) })
+        try {
+            val fake = FakeContext()
+            val host = Hosts.host("Stopper", Hosts.source("Stopper", STOPPER), late, faults = faults)
+            assertTrue(host.started(fake.context), "${host.disabled}")
+            LogCapture().use { logs ->
+                late.renew() // the next module thread starts past the stop's patience (another module unloaded, a busy machine)
+                val stopped = host.stop(StopReason.STOPPED)!!
+                assertTrue(stopped.skipped, "it never ran")
+                assertTrue(logs.at(Level.WARN).any { "C-70 Stopper: its stop does not run: the module thread did not start it within" in it }, "${logs.at(Level.WARN)}")
+                assertEquals(emptyList(), fake.logs.toList())
+                assertEquals(emptyList(), faults)
+            }
+        } finally {
+            late.close()
+        }
+    }
+
     /**
      * The threads of [hosts]' held calls, once each waits for its SDK request: its module set its `asking` before it asked,
      * and its thread is parked (a held call's request waits for its host). Threads of [PARKED].
@@ -397,5 +479,11 @@ class HeldBackTest {
 
         /** How long a costly SDK request holds its caller: past the module thread's spin as it waits (200 µs). */
         const val REQUEST_NANOS = 300_000L
+
+        /** A module's `stop` that logs twice: `stop <why>`, then `stopped`. */
+        const val STOPPER = "public void stop(ModuleContext m, StopReason why) { m.log(\"stop \" + why); m.log(\"stopped\"); }"
+
+        /** Past a start's (and a stop's) patience, 2 s, with a margin. */
+        val PAST_PATIENCE_MS = ModuleHost.STARTUP_PATIENCE_NANOS / 1_000_000 + 100
     }
 }

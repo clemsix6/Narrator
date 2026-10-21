@@ -65,8 +65,9 @@ data class Fault(val kind: Kind, val call: String, val cause: String, val line: 
  *   nobody's — or once its thread's CPU time shows it computed past its budget ([computing]: then it is **abandoned**,
  *   cut, lost, and disables at once). A call the module thread did not even start in time is **skipped**, nobody's
  *   fault ([Called.skipped]: its caller may ask it again). Both are logged and counted apart ([starved], [skipped]).
- *   Its constructor and `start`, and every call of a host with [patienceNanos] (the bench), wait past their budget as
- *   long as the module thread has not computed ([STARTUP_PATIENCE_NANOS]).
+ *   Its constructor, `start` and `stop` ([stop]: never lost in silence, FLAKY-6), and every call of a host with
+ *   [patienceNanos] (the bench), wait past their budget as long as the module thread has not computed
+ *   ([STARTUP_PATIENCE_NANOS]).
  * - **Faults** (§3.7), counted over ten sliding minutes: a *limit* (2 disable; an abandoned call disables at once), an
  *   *exception* (3 disable), *slowness* ([second]: its own work, [Called.work]), *memory* ([second], [gauge]); any
  *   fault in the constructor or `start` disables at once. Once disabled, no code of the module ever runs again.
@@ -196,11 +197,21 @@ class ModuleHost(
         return call(START, STARTUP_CALL_NANOS, STARTUP_CALL_NANOS * timeScale, startup = true) { module.start(seen) }
     }
 
-    /** The module's `stop` (an end that is not a disabling), in a call of its own. */
+    /**
+     * The module's `stop` (an end that is not a disabling), in a call of its own, never lost in silence (FLAKY-6). Its
+     * caller waits for it as for a start, as long as its thread has not computed ([STARTUP_PATIENCE_NANOS] at most): a
+     * module thread just started (another module unloaded just before, [unload]) or held back by a busy machine no longer
+     * skips it, and a stop held back while its caller serves it no longer stays half done. A call given up before is
+     * waited for first, within the same patience: the stop comes after it, never instead. A stop that computes past its
+     * budget is abandoned, a fault; one held back past that patience is lost with a warning, nobody's fault.
+     */
     fun stop(why: StopReason): Called? {
         val module = instance ?: return null
         val seen = context ?: return null
-        return call(STOP) { module.stop(seen, why) }
+        val until = System.nanoTime() + STARTUP_PATIENCE_NANOS * timeScale
+        resume(until)
+        val left = maxOf(patienceNanos, until - System.nanoTime())
+        return call(STOP, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, waits = left) { module.stop(seen, why) }
     }
 
     /**
@@ -238,10 +249,20 @@ class ModuleHost(
     }
 
     /**
-     * [budget] of its own work; [nominal], the game's budget for it, which its allocation allowance follows; [after],
-     * the host's own work on the module thread once the call is disarmed (the gauge's walk, which runs no module code).
+     * [budget] of its own work; [nominal], the game's budget for it, which its allocation allowance follows; [waits], how
+     * long past its budget its caller may wait while its thread has not computed (a start's patience, a stop's, the
+     * bench's); [after], the host's own work on the module thread once the call is disarmed (the gauge's walk, which runs
+     * no module code).
      */
-    private fun call(what: String, nominal: Long, budget: Long, startup: Boolean, after: ((Outcome) -> Unit)? = null, body: () -> Unit): Called? {
+    private fun call(
+        what: String,
+        nominal: Long,
+        budget: Long,
+        startup: Boolean,
+        waits: Long = if (startup) maxOf(patienceNanos, STARTUP_PATIENCE_NANOS * timeScale) else patienceNanos,
+        after: ((Outcome) -> Unit)? = null,
+        body: () -> Unit,
+    ): Called? {
         if (disabled != null || unloaded || stalled != null) return null
         // A nested call runs inside this host's own running call, on its module thread: what is left to settle is the
         // caller's (and a call nested in a call given up is refused by the module threads).
@@ -251,7 +272,11 @@ class ModuleHost(
             if (disabled != null) return null
             if (given != null) {
                 skipped++
-                log.debug { "$label: its $what call is skipped, a call given up before still runs" }
+                if (what == STOP) {
+                    log.warn("$label: its stop does not run: a call given up before still runs past its patience, its thread held back by an overloaded machine (nobody's fault)")
+                } else {
+                    log.debug { "$label: its $what call is skipped, a call given up before still runs" }
+                }
                 return Called(0, -1, null, skipped = true)
             }
         }
@@ -261,7 +286,6 @@ class ModuleHost(
         val allowance = (ForgeLimits.CALL_ALLOCATION_BYTES * calls).coerceAtMost(ForgeLimits.ALLOCATION_PER_MINUTE_BYTES)
         val outcome = Outcome()
         var held: ModuleThreads.Held? = null
-        val waits = if (startup) maxOf(patienceNanos, STARTUP_PATIENCE_NANOS * timeScale) else patienceNanos
         // A call with a budget of its own (a scenario: what is left of the bench) has had all the time it may have.
         val patience = waits.takeIf { it > 0 && budget <= STARTUP_CALL_NANOS * timeScale }?.let { nanos ->
             ModuleThreads.Patience(nanos) { running -> computing(running, budget) }
@@ -305,7 +329,8 @@ class ModuleHost(
             }
             ModuleThreads.Ran.LATE -> {
                 skipped++
-                log.debug { "$label: its $what call was skipped: the module thread did not start it within ${(budget + abandonMarginNanos) / NANOS_PER_MS} ms (an overloaded machine), nobody's fault" }
+                val late = "the module thread did not start it within ${nanos / NANOS_PER_MS} ms (an overloaded machine), nobody's fault"
+                if (what == STOP) log.warn("$label: its stop does not run: $late") else log.debug { "$label: its $what call was skipped: $late" }
                 Called(nanos, -1, null, skipped = true)
             }
             ModuleThreads.Ran.STUCK -> {
@@ -434,6 +459,8 @@ class ModuleHost(
             meter?.revoke()
             threads.cut(call.held)
             log.warn("$label: $stalled; it does not start (nobody's fault)")
+        } else if (call.what == STOP) {
+            log.warn("$label: its stop was given up at ${nanos / NANOS_PER_MS} ms, its thread held back by an overloaded machine past its patience: what it asks once its module is unloaded is refused (nobody's fault)")
         } else {
             log.info("$label: its ${call.what} call was given up at ${nanos / NANOS_PER_MS} ms, its thread held back; it runs on, resumed when it asks the server, the module waiting for it")
         }
@@ -447,15 +474,19 @@ class ModuleHost(
      * while the call computes or is held back between two requests: the caller does not wait for that. Whether it
      * resumed the call.
      *
+     * Patient [until] then (its module stops, [stop]): the caller waits for the call to end, past its budget as long as
+     * its thread has not computed, up to [until], whether it asks the server or not.
+     *
      * A resume counts when it happens (FORGE-ABANDON-FIX), as a call does: its wall time in [msPerSecond] and
      * [resumedNanos], what it served in the second's work (the slowness). Counted only once the call ended, a call
      * resumed at each tick held the server thread, tick after tick, without a fault.
      */
-    private fun resume(): Boolean {
+    private fun resume(until: Long? = null): Boolean {
         val call = given ?: return false
-        if (disabled != null || stalled != null || unloaded || !call.held.asking) return false
+        if (disabled != null || stalled != null || unloaded || (until == null && !call.held.asking)) return false
+        val patience = until?.let { ModuleThreads.Patience(maxOf(0, it - System.nanoTime())) { running -> computing(running, call.budget) } }
         val started = System.nanoTime()
-        val ran = threads.resume(call.held, call.budget + abandonMarginNanos)
+        val ran = threads.resume(call.held, call.budget + abandonMarginNanos, patience)
         resumedNanos = System.nanoTime() - started
         spentThisSecond += resumedNanos
         workThisSecond += threads.served
@@ -696,7 +727,8 @@ class ModuleHost(
          * How long past its budget a start (the constructor, `start`) is waited for while its thread has not computed
          * (M5-LOAD): a start cannot be given up and finish alone (its SDK calls would be refused), and a saturated machine
          * held a cold start (28 ms of work) back for over a second. The server thread waits that long only when the
-         * machine holds the module thread back, once per deployment.
+         * machine holds the module thread back, once per deployment. A `stop` has as much, shared with the call given up
+         * it waits for first ([stop], FLAKY-6): its module is unloaded right after, nothing of it may be held for later.
          */
         const val STARTUP_PATIENCE_NANOS = 2_000L * 1_000_000
 
