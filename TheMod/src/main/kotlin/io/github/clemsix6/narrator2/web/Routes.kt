@@ -113,10 +113,17 @@ class PageContext internal constructor(val services: NarratorServices, private v
      * its turn, then as much for the read; statements should stop as soon ([rows] does). Fails with
      * [JournalUnavailableException] or [JournalTimeoutException], which the page shows.
      */
-    fun <T> read(query: (Connection) -> T): T {
+    fun <T> read(query: (Connection) -> T): T = inTurn { services.journal.read(READ_TIMEOUT_MS, query) }
+
+    /**
+     * Runs [work] in the dashboard's turn, like [read], for a service that takes a read connection of its own (the
+     * player sheets, `SqlRunner`): still one read of the dashboard at a time. Waits [READ_TIMEOUT_MS] at most for the
+     * turn, then fails with [JournalTimeoutException].
+     */
+    fun <T> inTurn(work: suspend () -> T): T {
         if (!reads.tryAcquire(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw JournalTimeoutException(READ_TIMEOUT_MS)
         try {
-            return runBlocking { services.journal.read(READ_TIMEOUT_MS, query) }
+            return runBlocking { work() }
         } finally {
             reads.release()
         }
