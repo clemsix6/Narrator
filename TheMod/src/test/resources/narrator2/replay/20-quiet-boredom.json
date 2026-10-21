@@ -1,0 +1,19 @@
+{
+  "id": "quiet_boredom",
+  "title": "Two players get bored on a quiet evening",
+  "source": "m6-18 run 3 (quiet evening) chapter 3 (director-feae491c), turn 7003000012, after the chapter's first two turns",
+  "context": "HEARTBEAT: Gaspard and Firmin idle for 15 minutes, « On s'ennuie un peu là, non ? », « Grave. Il se passe rien. »; the line Idea gives P-32 « La course de l'escargot »; target Gaspard and Firmin",
+  "transcript": "transcripts/m6-18-run3-director-feae491c.jsonl",
+  "turn": "7003000012",
+  "prompt_sha": "0ec6854dd53e",
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    },
+    {
+      "name": "acts before announcing",
+      "kind": "act_before_announce"
+    }
+  ]
+}

@@ -90,8 +90,8 @@ internal class ReplaySample(
 }
 
 /**
- * Replays one situation with one version of the prompt: the chapter's first message, then up to [MAX_REQUESTS] requests
- * (M6 review, finding 6). Nothing is executed: a read gets the situation's frozen result at its first call in the turn
+ * Replays one situation with one version of the prompt: the chapter's first message (or, for a later turn, the chapter
+ * before it then that turn's message, M6-FIX-13), then up to [MAX_REQUESTS] requests (M6 review, finding 6). Nothing is executed: a read gets the situation's frozen result at its first call in the turn
  * ([ReplaySituation.read]), then [NOTHING_MORE]; an act gets the fixture's answer, else the answer the real tool gives
  * ([ReplayActs], M6-18: a punishment's duration, a law's end). Every request is charged to [budget], and none is sent that
  * could cross it.
@@ -115,7 +115,8 @@ internal class ReplayRunner(
         val lines = mutableListOf<ReplayLine>()
         val stats = mutableListOf<CallStats>()
         val served = mutableSetOf<String>()
-        val world = ReplayActs.Situation.of(situation.blocks)
+        val world = ReplayActs.Situation.of(situation.world)
+        situation.history.forEach(conversation::append)
         var pending = opening(situation)
         fun done(requests: Int, end: TurnEnd, detail: String? = null) = ReplaySample(situation.id, version.label, sample, calls, lines, requests, end, detail, stats)
         try {
@@ -240,6 +241,9 @@ internal class ReplayVerdict(
     companion object {
         const val FUNNY_TOLERANCE = 0.2
 
+        /** The number of A's sample that is the turn as the real evening played it ([SituationSpec.promptSha]). */
+        const val REAL_SAMPLE = 0
+
         fun of(
             situations: List<ReplaySituation>,
             samples: List<ReplaySample>,
@@ -258,7 +262,7 @@ internal class ReplayVerdict(
                 }
             }
             fun gridOf(version: String) = GridSummary.of(samples.filter { it.version == version }.flatMap { s -> s.lines.indices.mapNotNull { grades[lineId(s, it)] } })
-            val played = samples.count { it.end != TurnEnd.BUDGET }
+            val played = samples.count { it.end != TurnEnd.BUDGET && it.sample != REAL_SAMPLE }
             val why = buildList {
                 if (played < planned) add("${planned - played} of $planned samples not played (budget)")
                 samples.filter { it.end == TurnEnd.FAILED }.forEach { add("${it.situation} ${it.version} #${it.sample} failed: ${it.detail}") }
@@ -278,14 +282,19 @@ internal class ReplayVerdict(
  *
  * - `NARRATOR2_REPLAY_A`, `NARRATOR2_REPLAY_B`: the two `director.md` files; the bundled one when not set (B = A then: the
  *   pass that measures the noise of the replay).
- * - `NARRATOR2_REPLAY_SAMPLES`: samples per situation and version, 2 by default.
+ * - `NARRATOR2_REPLAY_SAMPLES`: samples per situation and version, 2 by default; `NARRATOR2_REPLAY_SAMPLES_A` and
+ *   `NARRATOR2_REPLAY_SAMPLES_B` set one version's (0 to 4): a version's first sample of a situation pays its prompt into
+ *   the cache, its next ones read it (M6-FIX-13).
+ * - `NARRATOR2_REPLAY_REAL`: `true` to count, as A's sample 0, the turn as the real evening played it, when its fixture
+ *   says the evening played with A's prompt ([SituationSpec.promptSha]): free, and graded with the rest.
  * - `NARRATOR2_REPLAY_ONLY`: the situations to play, by id, comma-separated; all of them by default.
  * - `NARRATOR2_REPLAY_BUDGET`: the run's budget in dollars, [DEFAULT_BUDGET] by default and never above [HARD_CAP], judge
  *   included. A situation is not started when its four turns could cross it, nor a request.
  * - `NARRATOR2_REPLAY_STORYTELLER`: `true` to declare `inspire`, the 48th tool (once M6-16 is merged).
  *
  * Turns run one after the other: A then B for each sample of a situation, so that a stop by the budget leaves whole
- * situations. The report goes to `build/reports/liveTest/replay/<run>/`, with every turn's transcript.
+ * situations. Situations of the same chapter share its opening and, for each version, its prompt in the cache: play them
+ * together, in the order of their files. The report goes to `build/reports/liveTest/replay/<run>/`, with every turn's transcript.
  */
 @Tag("live")
 class DirectorReplayEval {
@@ -296,6 +305,11 @@ class DirectorReplayEval {
         val a = version("A", System.getenv("NARRATOR2_REPLAY_A"), bundled)
         val b = version("B", System.getenv("NARRATOR2_REPLAY_B"), bundled)
         val samplesPer = System.getenv("NARRATOR2_REPLAY_SAMPLES")?.toIntOrNull()?.coerceIn(1, 4) ?: 2
+        val samplesOf = mapOf(
+            a.label to (System.getenv("NARRATOR2_REPLAY_SAMPLES_A")?.toIntOrNull()?.coerceIn(0, 4) ?: samplesPer),
+            b.label to (System.getenv("NARRATOR2_REPLAY_SAMPLES_B")?.toIntOrNull()?.coerceIn(0, 4) ?: samplesPer),
+        )
+        val real = System.getenv("NARRATOR2_REPLAY_REAL") == "true"
         val only = System.getenv("NARRATOR2_REPLAY_ONLY")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
         val cap = (System.getenv("NARRATOR2_REPLAY_BUDGET")?.toDoubleOrNull() ?: DEFAULT_BUDGET).coerceAtMost(HARD_CAP)
         val storyteller = System.getenv("NARRATOR2_REPLAY_STORYTELLER") == "true"
@@ -307,8 +321,12 @@ class DirectorReplayEval {
         val dir = Path.of("build/reports/liveTest/replay/$run").toAbsolutePath().also { Files.createDirectories(it) }
         val transcripts = Transcripts(dir.resolve("transcripts"), enabled = true)
         val budget = LiveBudget(cap)
-        val planned = situations.size * samplesPer * 2
-        println("[replay] ${situations.size} situations × $samplesPer samples × 2 versions = $planned turns · ${tools.names.size} tools · budget ${ToneJudge.dollars(cap)} · A ${a.source} (${a.sha}) · B ${b.source} (${b.sha})")
+        val perSituationTurns = samplesOf.values.sum()
+        val planned = situations.size * perSituationTurns
+        println(
+            "[replay] ${situations.size} situations × (A ${samplesOf[a.label]} + B ${samplesOf[b.label]}) samples = $planned turns${if (real) " + the real turns as A#0" else ""} · " +
+                "${tools.names.size} tools · budget ${ToneJudge.dollars(cap)} · A ${a.source} (${a.sha}) · B ${b.source} (${b.sha})",
+        )
 
         val samples = mutableListOf<ReplaySample>()
         val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL, maxRetries = 2))
@@ -317,13 +335,14 @@ class DirectorReplayEval {
             val runner = ReplayRunner(client, tools, transcripts, budget, reserve)
             var played = 0
             for (situation in situations) {
-                val perSituation = if (played == 0) samplesPer * 2 * ReplayRunner.REQUEST_ESTIMATE_DOLLARS else samples.sumOf { it.dollars } / played
+                val perSituation = if (played == 0) perSituationTurns * ReplayRunner.REQUEST_ESTIMATE_DOLLARS else samples.sumOf { it.dollars } / played
                 if (!budget.allows(perSituation + reserve)) {
                     println("[replay] ${situation.id}: not started, the budget could be crossed (${ToneJudge.dollars(budget.spent)} spent, ${ToneJudge.dollars(perSituation)} per situation)")
                     continue
                 }
-                for (n in 1..samplesPer) {
-                    for (version in listOf(a, b)) {
+                if (real) realSample(situation, a)?.let { samples += it }
+                for (n in 1..samplesOf.values.max()) {
+                    for (version in listOf(a, b).filter { n <= samplesOf.getValue(it.label) }) {
                         val sample = runner.run(situation, version, n)
                         samples += sample
                         println(
@@ -340,12 +359,13 @@ class DirectorReplayEval {
             val situation = situations.first { it.id == sample.situation }
             sample.lines.mapIndexed { i, line ->
                 val acts = sample.calls.filter { it.request <= line.request && it.name in CheckSpec.DEFAULT_ACTS }.map { ReplaySituations.actLine(it.name, it.result) }
-                JudgedLine(ReplayVerdict.lineId(sample, i), line.text, situation.spec.context, situation.spec.previous + sample.lines.take(i).map { it.text }, acts)
+                JudgedLine(ReplayVerdict.lineId(sample, i), line.text, situation.spec.context, situation.previous + sample.lines.take(i).map { it.text }, acts)
             }
         }.shuffled(Random(JUDGE_SEED))
         val judged = ToneJudge(LiveGateway.BASE_URL, key, budget).use { it.grade(lines) }
         val verdict = ReplayVerdict.of(situations, samples, a.label, b.label, judged.grades, planned, judged.problems)
-        val report = report(situations, samples, a, b, judged, lines, verdict, budget, samplesPer, tools.names.size)
+        val sampling = "A ${samplesOf[a.label]}${if (real) " (+ the real turn as A#0)" else ""}, B ${samplesOf[b.label]} samples"
+        val report = report(situations, samples, a, b, judged, lines, verdict, budget, sampling, tools.names.size)
         Files.writeString(dir.resolve("report.md"), report)
         Files.writeString(dir.resolve("samples.json"), samplesJson(samples, judged.grades).toString())
         println(report)
@@ -355,6 +375,23 @@ class DirectorReplayEval {
 
     private fun version(label: String, path: String?, bundled: String): PromptVersion =
         if (path.isNullOrBlank()) PromptVersion(label, bundled, "bundled director.md") else PromptVersion(label, Files.readString(Path.of(path)), path)
+
+    /**
+     * The turn as the real evening played it, as A's sample [ReplayVerdict.REAL_SAMPLE]: only when the evening played with
+     * A's prompt ([SituationSpec.promptSha]), and costing nothing. Its history differs from the replay's by its thinking only.
+     */
+    private fun realSample(situation: ReplaySituation, a: PromptVersion): ReplaySample? {
+        val turn = situation.real ?: return null
+        if (situation.spec.promptSha != a.sha) {
+            println("[replay] ${situation.id}: the real turn is left out, the evening's prompt (${situation.spec.promptSha}) is not A (${a.sha})")
+            return null
+        }
+        val lines = turn.calls.mapNotNull { call ->
+            val arguments = runCatching { Json.parseToJsonElement(call.input) as? JsonObject }.getOrNull() ?: return@mapNotNull null
+            ReplaySituations.lineOf(call.name, arguments)?.let { ReplayLine(call.request, call.name, it) }
+        }
+        return ReplaySample(situation.id, a.label, ReplayVerdict.REAL_SAMPLE, turn.calls, lines, turn.requests, TurnEnd.ENDED, "the real evening", emptyList())
+    }
 
     companion object {
         const val DEFAULT_BUDGET = 7.0
@@ -388,14 +425,14 @@ class DirectorReplayEval {
             lines: List<JudgedLine>,
             verdict: ReplayVerdict,
             budget: LiveBudget,
-            samplesPer: Int,
+            sampling: String,
             tools: Int,
         ): String = buildString {
             fun pct(n: Int, of: Int) = if (of == 0) "-" else "%.0f %%".format(Locale.ROOT, 100.0 * n / of)
             append("# Director replay (M6 §4.5)\n\n")
             append("- A: ${a.source} · ${a.text.length} characters · sha ${a.sha}\n")
             append("- B: ${b.source} · ${b.text.length} characters · sha ${b.sha}\n")
-            append("- ${situations.size} situations · $samplesPer samples per version · $tools tools declared · at most ${ReplayRunner.MAX_REQUESTS} requests per turn\n\n")
+            append("- ${situations.size} situations · $sampling · $tools tools declared · at most ${ReplayRunner.MAX_REQUESTS} requests per turn\n\n")
             append("## Verdict: ${if (verdict.passes) "B PASSES" else "B FAILS"}\n\n")
             verdict.reasons().ifEmpty { listOf("no structural check lost, funny within ${ReplayVerdict.FUNNY_TOLERANCE}, no more eliminatory failure") }.forEach { append("- $it\n") }
             append("\n| | A | B |\n|---|---|---|\n")
