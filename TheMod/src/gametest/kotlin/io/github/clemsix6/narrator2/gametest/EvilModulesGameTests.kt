@@ -33,7 +33,8 @@ import java.util.concurrent.atomic.AtomicReference
  * The runtime side of the attack battery (M5 §16.2, §16.3, task M5-18), on the server thread with the real sandbox:
  * the deep hash and equality of a shared structure — the explicit `hashCode`, the implicit key of a map, a record that
  * wraps it, `Arrays.deepHashCode` — are now bounded by the guard (M5-18's fix for M5-05's open finding): a clean
- * ForgeLimit in a few ms, with **no lost thread**, so the server's tick is never held past a call's budget; so are the
+ * ForgeLimit in a few ms, with **no lost thread**, so the server's tick is never held past a call's budget, but for what
+ * a busy machine holds the module thread back ([BusyMachine.SLACK_MILLIS]: a start waits for it, M5-LOAD); so are the
  * copies, factories, lookups (M5-FIX-2), `Stream.distinct` and the collectors that hash (M5-FIX-2b). What stays the
  * host's is an O(n·m) scan in one call: bounded by the host's abandon, the server goes on at the budget and the lost
  * thread ends on its own.
@@ -69,8 +70,16 @@ class EvilModulesGameTests {
                         helper.assertTrue(host.disabled != null, "$name ran to the end: $cause")
                         helper.assertTrue("abandoned" !in cause, "$name was abandoned, not bounded by the guard: $cause")
                         helper.assertTrue("too large to hash" in cause || "time budget" in cause, "$name: $cause")
+                        // Its own work stayed within the start's budget: past it, the meter stops the module (« time
+                        // budget »), and a long step of the JDK, which the meter cannot see, is abandoned by the host once
+                        // the thread's CPU clock shows it (« abandoned »): both checked above. The wall clock adds what a
+                        // busy machine held its thread back: a start is waited for while its thread has not computed
+                        // (M5-LOAD, up to 2 s), so a bound on the wall gets a busy machine's slack (FLAKY-6: 55 ms of wall
+                        // clock failed under load, `RecordHash` 162 ms, `SetOfHash` 99 ms). The CPU clock cannot bound the
+                        // work instead: it moves by steps of 15.6 ms under Windows, and reads steps above what a thread
+                        // cut into slices by a busy machine did.
                         val held = (called?.nanos ?: 0) / 1e6
-                        helper.assertTrue(held < budgetMs, "$name held the tick $held ms (bounded, not abandoned)")
+                        helper.assertTrue(held < budgetMs + BusyMachine.SLACK_MILLIS, "$name held the tick $held ms (bounded, not abandoned)")
                         Log.forge.info("[evil] $name stopped in %.1f ms (%s), no lost thread".format(held, cause))
                         host.unload()
                     }
