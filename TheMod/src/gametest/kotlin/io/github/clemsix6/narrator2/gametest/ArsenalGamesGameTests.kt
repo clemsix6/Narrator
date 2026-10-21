@@ -95,7 +95,7 @@ class ArsenalGamesGameTests {
             }
 
             rig.onServer { prey.live.teleportTo(wolf.live.x + 1.0, wolf.live.y, wolf.live.z) }
-            rig.await("the prey turned wolf, once the wolf has counted to three") {
+            rig.await("the prey turned wolf, once the wolf has counted to three", COUNT_TICKS) {
                 lines(prey).last().startsWith("Tu es le loup") && lines(wolf).last().startsWith("Loup : ${prey.name} · ")
             }
             rig.onServer { wolf.live.teleportTo(wolf.live.x - 6.0, wolf.live.y, wolf.live.z) }
@@ -133,7 +133,7 @@ class ArsenalGamesGameTests {
             val view = rig.deploy("simon_says", """{"players": ["${bob.name}", "${ann.name}"], "rounds": 3}""", challenge.ref)
 
             rig.await("the rest before the first order") { lines(ann).any { it.startsWith("Prêts ? · ordre suivant dans ") } }
-            rig.await("the first order above both hotbars", 30_000) { order(bob) != null && order(ann) != null }
+            rig.await("the first order above both hotbars", FIRST_ORDER_TICKS, 30_000) { order(bob) != null && order(ann) != null }
             val order = order(ann)!!
             check(order == order(bob)) { "the same order for both: $order, ${order(bob)}" }
             println("[M5-16] simon_says in the server: the first order is « $order »")
@@ -204,18 +204,29 @@ class ArsenalGamesGameTests {
 
         fun start() = engine.start(helper.level.server)
 
+        /** The engine's ticks so far ([tick]; its seconds jumped by the tests count one each). Server thread; read from any. */
+        @Volatile
+        var ticks = 0
+            private set
+
         /** A tick of the engine, 50 ms later. Server thread. */
         fun tick() {
             clock.advance(Duration.ofMillis(TICK_MS))
             engine.tick(helper.level.server)
+            ticks++
             for (view in book.list()) seconds += view.msPerSecond
         }
 
         suspend fun <T> onServer(block: () -> T): T = helper.level.server.onServerThread(10_000, block)
 
-        /** Ticks the engine until [condition] holds, [meanwhile] before each check (the acts' coroutines run their tools between the ticks). */
-        suspend fun await(what: String, timeoutMs: Long = 15_000, meanwhile: () -> Unit = {}, condition: () -> Boolean) =
-            awaitCondition(what, timeoutMs) {
+        /**
+         * Ticks the engine until [condition] holds, [meanwhile] before each check (the acts' coroutines run their tools between
+         * the ticks): one tick a check, [ticks] of them and [timeoutMs] of the wall clock spent before it fails ([awaitTicks]).
+         * A busy batch makes each check slower, never the games' ticks: `simon_says` gives its first order 200 ticks in, which
+         * took 17 s of a budget of 30 s under load (FLAKY-5).
+         */
+        suspend fun await(what: String, ticks: Int = SLACK_TICKS, timeoutMs: Long = 15_000, meanwhile: () -> Unit = {}, condition: () -> Boolean) =
+            awaitTicks(what, ticks, { this.ticks }, timeoutMs) {
                 onServer {
                     meanwhile()
                     tick()
@@ -242,7 +253,7 @@ class ArsenalGamesGameTests {
 
         /** Deployment [ref] ended, by the engine: its canon row, resolved. [meanwhile] runs before each tick until then. */
         suspend fun awaitEnd(ref: Ref, meanwhile: () -> Unit = {}): CanonEntry {
-            await("$ref ended", 30_000, meanwhile) { store.snapshot.module(ref.id) == null }
+            await("$ref ended", END_TICKS, 30_000, meanwhile) { store.snapshot.module(ref.id) == null }
             return awaitResolved(ref) { sink.kept.any { it.decision == ModuleEngine.ENDED && it.subject == "$ref" } }
         }
 
@@ -292,6 +303,18 @@ class ArsenalGamesGameTests {
 
         /** A tick of the rig's clock, as on a server at 20 ticks a second. */
         const val TICK_MS = 50L
+
+        /** Engine ticks for what follows an act or a step of a game within a tick or two: a line, particles, a verdict. */
+        const val SLACK_TICKS = 100
+
+        /** Engine ticks for the wolf to count to three (3 s, 60 ticks) once the prey is within reach. */
+        const val COUNT_TICKS = 60 + SLACK_TICKS
+
+        /** Engine ticks for `simon_says`'s first order: 10 s (200 ticks) after its start, twice that allowed. */
+        const val FIRST_ORDER_TICKS = 400
+
+        /** Engine ticks for a game to end once its verdict is due: `simon_says` watches 4 s (80 ticks), then judges. */
+        const val END_TICKS = 400
 
         val DIRECTOR = Caller(Role.DIRECTOR, "director-gametest", turnId = 4242, taskId = null)
 
