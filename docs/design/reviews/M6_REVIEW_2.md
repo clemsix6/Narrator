@@ -25,7 +25,14 @@ de la lecture sans exécution. Le superviseur décide. Les lots de la fin ne par
 **État de départ.** J'ai relancé les tests unitaires de `main` (`a74534d`) dans mon worktree (`gradlew.bat test
 --continue`) : **2 187 tests, 0 échec, 0 ignoré**, en 7 min 49 s, sur une machine chargée par deux autres builds. C'est
 le compte de la passation de M6-FIX-1. Je n'ai pas relancé les GameTests ; le build final de M6-FIX-1 donne « All 398
-required tests passed ». Les sondes citées dans les constats ont tourné dans des worktrees de relecture, puis ont été supprimées.
+required tests passed ». Les sondes citées dans les constats ont tourné dans des worktrees de relecture, puis ont été
+supprimées.
+
+**`main` a bougé pendant la relecture.** Il est à `a37f052` : M6-12, FORGE-ABANDON et M6-08 sont fusionnés (partie 3).
+Aucun des fichiers de code visés par les constats et les lots ci-dessous n'a changé entre `a74534d` et `a37f052`
+(vérifié avec `git diff --stat`). Seul `docs/MEMOIRE.md` a gagné deux lignes vers la ligne 220, sans toucher aux lignes
+citées. Deux conséquences sur les lots : `memory/Memory.kt` (M6-08) est libre, et M6-12 ne réutilise ni `TraceParts`
+ni `DashboardQueries`.
 
 **Bilan : 12 constats. 0 bloquant, 1 important, 3 mineurs, 8 finitions.** S'y ajoutent trois décisions à prendre.
 
@@ -182,13 +189,16 @@ required tests passed ». Les sondes citées dans les constats ont tourné dans 
        - `mechanics/rule/RuleEngine.kt:790` ;
        - la cause d'annulation `the server is stopping` (`runtime/ShutdownSequence.kt:97`) ;
        - correctif : une formulation neutre (« the Narrator stops »), sans changer d'interface ;
-     - une Forge arrêtée en pleine construction écrit un `ERROR` (`forge/ForgeService.kt:137`, `:496`) : c'est le
-       domaine de FORGE-ABANDON, qui le rend sans objet si la Forge part ;
+     - une Forge arrêtée en pleine construction écrit `ERROR the built-in module … was not built: the server is
+       stopping` (`forge/ForgeService.kt:259`, la raison venant de `:137` et `:496`). Correctif : dans ce `catch`,
+       sortir de la boucle avec un `INFO` quand la Forge est arrêtée. FORGE-ABANDON, fusionné, n'a pas touché ce
+       fichier ;
      - le KDoc de `NarratorServices` (`runtime/NarratorServices.kt:41`) parle de services qui vivent « as long as the
        server » ; c'est désormais « as long as the runtime ».
    - Fichiers : `runtime/RestartSequence.kt`, `runtime/NarratorServices.kt`, `command/Replies.kt`,
-     `command/AdminCommands.kt`, `mechanics/module/ModuleEngine.kt`, `mechanics/rule/RuleEngine.kt` (et
-     `runtime/ShutdownSequence.kt`, déjà dans le lot du constat 4) ; test `RestartSequenceTest`.
+     `command/AdminCommands.kt`, `mechanics/module/ModuleEngine.kt`, `mechanics/rule/RuleEngine.kt`,
+     `forge/ForgeService.kt` (et `runtime/ShutdownSequence.kt`, déjà dans le lot du constat 4) ; test
+     `RestartSequenceTest`.
 
 7. **FINITION (revue de l'étape 2 : lectures non bornées, et un risque d'échec du rêve entier).**
    - `memory/dream/DreamInputs.kt:316` : `docVersions(Review)` lit **toutes** les versions de la revue (contenu et
@@ -411,8 +421,8 @@ required tests passed ». Les sondes citées dans les constats ont tourné dans 
   `active` : le Directeur lance un récit prévu, le Scénariste l'abandonne. Sinon, le dire dans `dreamer.md` (M6-16)
   et accepter le trou.
 - **D7 — La simplification des traces** (constat 10) : la faire maintenant, ou la laisser. **Recommandation : la
-  faire après la fusion de M6-12** (qui réutilise `TraceParts`), dans un lot court. Le gain principal est un seul
-  calcul du coût par rôle, avec un seul libellé de `$ ?`. Sans urgence.
+  faire**, dans un lot court. M6-12 est fusionné et ne réutilise ni `TraceParts` ni `DashboardQueries`. Le gain
+  principal est un seul calcul du coût par rôle, avec un seul libellé de `$ ?`. Sans urgence.
 
 ## Lots de corrections proposés
 
@@ -421,30 +431,28 @@ Chaque lot possède ses fichiers ; **aucun fichier n'est commun à deux lots**.
 | Lot | Constats / décisions | Fichiers | Touche un fichier en cours ? | Critère |
 |---|---|---|---|---|
 | **M6-FIX-4 — le programme du rêve** | 1, 2, 7, 8, 12 (trous du rêve) ; D5 | `memory/dream/ProgrammeInputs.kt`, `memory/dream/DreamInputs.kt`, `memory/dream/Dreamer.kt` (option du constat 8), `style/StyleReport.kt` (compte des répliques relisibles) ; tests `ProgrammeInputsTest`, `DreamerTest`, `DreamInputsTest`, `StyleReportTest` | **Non**. M6-08 lit `StyleReport` sans le modifier ; M6-12 (`StylePage`) lit `StyleReport.measures` : aucune signature ne change, seul le compte `lines` des blocs du Rêveur. Rejouer `DreamReplayTest` | 12 idées ouvertes et au moins 4 closes montrées au maximum ; aucune réplique ne vaut suite pour une saison ; revue lue sans toutes ses versions, le style non décisif ; trous du rêve couverts ; build vert |
-| **M6-FIX-5 — une seule plume** | 3 ; D6 | `memory/DuckMemoryStore.kt`, `tool/memory/MemoryTools.kt` ; tests `DuckMemoryStoreTest`, `MemoryToolsTest`, `DreamerToolsTest` | **Non** | le Rêveur refusé sur un récit `planned` (magasin et outil), message clair ; build vert |
-| **M6-FIX-6 — le redémarrage** | 4, 5, 6 (sauf la Forge), 12 (trous du redémarrage) | `journal/Journal.kt`, `journal/DuckJournal.kt`, `runtime/ShutdownSequence.kt`, `runtime/RestartSequence.kt`, `runtime/NarratorServices.kt`, `NarratorRuntime.kt`, `command/Replies.kt`, `command/AdminCommands.kt`, `mechanics/module/ModuleEngine.kt`, `mechanics/rule/RuleEngine.kt` ; tests `RestartSequenceTest`, `ShutdownSequenceTest`, `DuckJournalTest` | **Non** (ni M6-08, ni M6-12, ni FIX-2, ni `forge/**`). `DisabledJournal` et les journaux factices des tests gardent la valeur par défaut de `closed` | un ancien Journal resté ouvert donne un échec clair, sans `prepare` ; rien de préparé quand le serveur s'arrête ; refus sans adresse ; libellés neutres ; build vert, `RestartGameTests` compris |
-| **M6-FIX-7 — les traces** | 9, 10, 12 (trous des transcriptions) ; D7 | `web/pages/TranscriptPage.kt`, `web/DashboardQueries.kt`, `web/pages/TraceParts.kt`, `web/pages/CostsPage.kt`, `web/pages/OverviewPage.kt`, `trace/TraceQueries.kt`, `trace/Prices.kt`, `command/TraceCommands.kt` ; tests `TranscriptPageTest`, `TracePagesTest`, `DashboardQueriesTest`, `TraceQueriesTest`, `TraceTextTest`, `PricesTest` | Aucun fichier de la liste de M6-12 ou de FIX-2. **Mais** M6-12 peut réutiliser `TraceParts` et `DashboardQueries` : partir **après la fusion de M6-12** | heures des transcriptions au fuseau du tableau de bord ; un seul calcul du coût par rôle et un seul libellé de `$ ?` ; lien et ligne trop longue testés ; build vert |
+| **M6-FIX-5 — une seule plume** | 3 ; D6 ; en option, la simplification de `propose_idea` (constat 10 de la partie 1) | `memory/DuckMemoryStore.kt`, `tool/memory/MemoryTools.kt` ; pour l'option : `memory/MemoryStore.kt`, `memory/MemoryService.kt`, `memory/Memory.kt`, `tool/storyteller/StorytellerTools.kt`, `testing/FakeMemory.kt` (test) ; tests `DuckMemoryStoreTest`, `MemoryToolsTest`, `DreamerToolsTest`, `StorytellerToolsTest` | **Non** : `memory/Memory.kt` était à M6-08, désormais fusionné | le Rêveur refusé sur un récit `planned` (magasin et outil), message clair ; option : `addIdea` rend ce qu'il a clos, et `propose_idea` ne relit plus les idées ouvertes ; build vert |
+| **M6-FIX-6 — le redémarrage** | 4, 5, 6, 12 (trous du redémarrage) | `journal/Journal.kt`, `journal/DuckJournal.kt`, `runtime/ShutdownSequence.kt`, `runtime/RestartSequence.kt`, `runtime/NarratorServices.kt`, `NarratorRuntime.kt`, `command/Replies.kt`, `command/AdminCommands.kt`, `mechanics/module/ModuleEngine.kt`, `mechanics/rule/RuleEngine.kt`, `forge/ForgeService.kt` ; tests `RestartSequenceTest`, `ShutdownSequenceTest`, `DuckJournalTest` | **Non** (FORGE-ABANDON, fusionné, n'a pas touché `ForgeService.kt`). `DisabledJournal` et les journaux factices des tests gardent la valeur par défaut de `closed` | un ancien Journal resté ouvert donne un échec clair, sans `prepare` ; rien de préparé quand le serveur s'arrête ; refus sans adresse ; libellés neutres, plus d'`ERROR` de la Forge à l'arrêt ; build vert, `RestartGameTests` compris |
+| **M6-FIX-7 — les traces** | 9, 10, 12 (trous des transcriptions) ; D7 | `web/pages/TranscriptPage.kt`, `web/DashboardQueries.kt`, `web/pages/TraceParts.kt`, `web/pages/CostsPage.kt`, `web/pages/OverviewPage.kt`, `trace/TraceQueries.kt`, `trace/Prices.kt`, `command/TraceCommands.kt` ; tests `TranscriptPageTest`, `TracePagesTest`, `DashboardQueriesTest`, `TraceQueriesTest`, `TraceTextTest`, `PricesTest` | **Non** : aucun fichier de M6-FIX-2 (`Routes.kt`, `Html.kt`, `Dashboard.kt`, `DashboardCommands.kt`, `NarratorConfig.kt`), et M6-12, fusionné, ne réutilise ni `TraceParts` ni `DashboardQueries` | heures des transcriptions au fuseau du tableau de bord ; un seul calcul du coût par rôle et un seul libellé de `$ ?` ; lien et ligne trop longue testés ; build vert |
 | **M6-FIX-8 — docs et KDoc** | 11 | `memory/Hygiene.kt`, `tool/memory/MemoryArgs.kt`, `memory/MemoryTypes.kt`, `style/Style.kt`, `style/StyleWatchImpl.kt`, `command/StyleCommands.kt`, `docs/MEMOIRE.md`, `docs/design/M6.md` (§3.7) ; test `StyleCommandsTest` | **Non** ; `Diversity` gagne un champ par défaut, compatible à la source (M6-12 n'en dépend pas) | `/narrator style` juste quand tout est `plain` ; KDoc et docs à jour ; build vert |
 
-**Ordre conseillé.** M6-FIX-4 part tout de suite : c'est le constat important, et il ne touche aucun fichier en cours.
-M6-FIX-5 et M6-FIX-6 partent en parallèle. M6-FIX-8 aussi : il est court. M6-FIX-7 attend la fusion de M6-12. Aucun
-lot ne touche `forge/**` (FORGE-ABANDON), ni `director.md`, `storyteller.md`, `dreamer.md` ou `ToolCatalog` (M6-16).
+**Ordre conseillé.** Les cinq lots peuvent partir en parallèle : aucun ne touche un fichier de M6-FIX-2 ni de M6-16
+(`director.md`, `storyteller.md`, `dreamer.md`, `ToolCatalog`), et M6-08, M6-12 et FORGE-ABANDON sont fusionnés.
+M6-FIX-4 passe en premier s'il faut choisir, puisqu'il porte le constat important. M6-FIX-5 garde l'option
+`propose_idea` pour la fin : c'est elle qui touche le plus de fichiers, pour un gain faible (deux lectures des idées
+ouvertes par `propose_idea`). Si le temps manque, l'abandonner.
 
 **Hors lots.**
-- **La simplification de `propose_idea`** (constat 10 de la partie 1) changerait `MemoryStore.addIdea`. Elle touche
-  donc `memory/DuckMemoryStore.kt`, `memory/MemoryStore.kt`, `memory/MemoryService.kt` (l'enveloppe du cache), le faux
-  magasin des tests (`testing/FakeMemory.kt`) et **`memory/Memory.kt`** (le magasin désactivé), qui est un fichier de
-  M6-08. Le gain est faible : deux lectures des idées ouvertes par `propose_idea`. Je propose de l'abandonner, ou de la
-  faire après M6-08 dans M6-FIX-5, si elle n'est pas encore partie.
 - **Pour M6-16** :
   - `dreamer.md:57` : y ajouter la part de `plain`, et préciser que le registre dominant se compte parmi les registres
     de la voix (passation de FIX-1) ;
-  - décider du retrait de `sql` au Scénariste (environ 3 100 tokens de préfixe par programme, passation de M6-07) ;
-  - si FORGE-ABANDON retire la Forge : `storyteller.md` (« les modules de <arsenal> », « idée forge »), le bloc
-    `<arsenal>` et les sortes d'idée `module` et `forge` sont à revoir avec lui.
-- **Pour M6-08** : seuls le battement et `inspire` doivent enregistrer des rendus (`dealt`). Si le briefing
-  (`<programme>`) en enregistrait un pour chaque idée montrée, les compteurs, `<ideas>` et la règle « jamais rendue
-  d'abord » de `makeRoom` perdraient leur sens.
+  - décider du retrait de `sql` au Scénariste (environ 3 100 tokens de préfixe par programme, passation de M6-07).
+- **Pour la partie 3**, vu en vérifiant que `main` n'avait pas touché aux lots :
+  - M6-08 n'enregistre aucun rendu pour les idées de `<programme>` (`MemoryBriefing.programme` rend un `Built` sans
+    `Showing`) : seuls le battement (`RecallChannel.HEARTBEAT`) et `inspire` en enregistrent, comme il le faut pour
+    `makeRoom` et `<ideas>` ;
+  - la page Style de M6-12 compte ses répliques par `StyleReport.lines` (`web/pages/StylePage.kt:167`), qui inclut
+    les titres, la barre d'action et les livres (voir le constat 8).
 - **Pour M6-FIX-2** (constat 2 de la partie 1) : une page fait plusieurs requêtes dans une seule lecture, chacune
   bornée à 5 s (7 pour `/turns/<id>`, par `TraceQueries.turn`). Une fois l'appelant parti à 5 s, la connexion peut
   rester prise jusqu'à environ 35 s. Avec le correctif prévu (permis rendu à la vraie fin), le tableau de bord répond
