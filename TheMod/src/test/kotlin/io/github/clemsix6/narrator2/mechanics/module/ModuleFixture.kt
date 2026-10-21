@@ -76,6 +76,8 @@ internal class ModuleFixture(
     val clock: TestClock = TestClock(Instant.ofEpochMilli(MechanicsSamples.evening)),
     val forge: FakeForge = FakeForge(clock),
     val fakeMemory: FakeMemory = FakeMemory(clock),
+    /** The module threads; a test holds each new one back at its start (FLAKY-6: `ModuleThreads.onStart`). */
+    val threads: ModuleThreads = ModuleThreads("module-engine-test"),
 ) : AutoCloseable {
     /** The canon drafts written, in order (the fake store does not keep their mechanic). */
     val drafts = CopyOnWriteArrayList<CanonDraft>()
@@ -110,7 +112,6 @@ internal class ModuleFixture(
 
     /** The test's thread is the server thread: at its priority (8, `MinecraftServer.spin`), which the module thread takes (M5-LOAD). */
     private val testPriority = Thread.currentThread().priority.also { Thread.currentThread().priority = SERVER_PRIORITY }
-    val threads = ModuleThreads("module-engine-test")
     val runner = Runner()
     val server = Server()
 

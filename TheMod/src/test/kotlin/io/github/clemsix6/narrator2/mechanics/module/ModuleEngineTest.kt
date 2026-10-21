@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.host.Fault
 import io.github.clemsix6.narrator2.forge.host.Hosts
+import io.github.clemsix6.narrator2.forge.host.ModuleThreads
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.RuleKind
@@ -290,6 +291,113 @@ class ModuleEngineTest {
             assertTrue(logs.messages.any { "${view.ref} quitter: its fact call was given up" in it }, logs.messages.toString())
             assertTrue(logs.messages.none { "heard encore" in it }, "the turn of a resume is the call's: its end comes before any other call: ${logs.messages}")
         }
+    }
+
+    @Test
+    fun `a call held and resumed at each tick counts at each tick - the tick's budget, its milliseconds a second, its slowness`() {
+        // The FORGE-ABANDON review's probe A: thirty reads a call, each holding the server thread 30 ms (a busy machine).
+        // Each call is given up at its first read, then resumed at each tick, one read a tick. Counted only once a call
+        // ended, its resumes held the server thread 155 ticks in 160 without a fault, shown as 0 to 32 ms a second.
+        f.module("drip", ModuleFixture.source("drip", body = """m.timers().every(1, () -> { for (int i = 0; i < 30; i++) m.world().dayTime(); });"""))
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("drip"))
+            f.server.heldMillis = 30
+            val shown = mutableListOf<Double>()
+            var seconds = 0
+            while (f.faults.isEmpty() && seconds < 8) {
+                repeat(TICKS_A_SECOND) { tick ->
+                    // A minute after the tick's first warning, the next one counts the slow ticks since.
+                    if (seconds == 2 && tick == TICKS_A_SECOND / 2) f.clock.advance(Duration.ofMinutes(1))
+                    heldTick()
+                }
+                f.engine.second(f.clock.millis())
+                seconds++
+                f.engine.views(f.clock.millis()).singleOrNull()?.let { shown += it.msPerSecond }
+            }
+            f.server.heldMillis = 0
+
+            assertEquals(listOf(Fault.Kind.SLOWNESS), f.faults.map { it.second.kind }, "its slowness, in $seconds seconds; it showed $shown ms a second")
+            val fault = f.faults.single().second
+            assertTrue(fault.cause.startsWith("over 50 ms of its code a second, 5 seconds in a row"), fault.cause)
+            assertEquals(ForgeLimits.SLOW_SECONDS, seconds, "disabled at its fifth slow second: what its caller served counts as it is served")
+            // 30 ms a tick held, 20 ticks a second: about 600 ms a second; a busy machine may delay a few resumes.
+            assertTrue(shown.size == ForgeLimits.SLOW_SECONDS - 1 && shown.all { it >= 5.0 * ForgeLimits.DEPLOYMENT_MS_PER_SECOND }, "its milliseconds a second: $shown")
+            val slowTicks = logs.at(Level.WARN).filter { "the modules took" in it }.map { it.substringAfterLast("; ").substringBefore(" slow ticks").toIntOrNull() }
+            assertEquals(2, slowTicks.size, "the first slow tick, then the first a minute later: $slowTicks")
+            assertTrue(
+                (slowTicks[1] ?: 0) >= TICKS_A_SECOND,
+                "each tick that resumed the call is slow for the tick's budget: ${slowTicks[1]} slow ticks in ${TICKS_A_SECOND * 2 + TICKS_A_SECOND / 2}",
+            )
+            f.await("its end") { ending().isNotEmpty() }
+            assertEquals(listOf("disabled"), ending())
+            assertTrue(resolved(view.ref).second!!.startsWith("disabled: slowness in second: "))
+        }
+    }
+
+    @Test
+    fun `the rest of a call given up keeps the call's four acts, though a fact came meanwhile`() {
+        // The FORGE-ABANDON review's probe F: four acts, a read held back past the call's deadline (given up and held),
+        // then four more once resumed. The fact that came in the same tick was skipped by the host: nothing of it ran, so
+        // the count of acts stays the call's (before: reset by that skipped call, the last four acts went, eight a call).
+        f.module(
+            "eight",
+            ModuleFixture.source(
+                "eight",
+                body = """
+                    m.events().on(GameFact.Chat.class, c -> {
+                        if (!c.text().equals("a")) return;
+                        for (int i = 0; i < 4; i++) m.acts().hud(null, "x" + i);
+                        m.world().dayTime();
+                        for (int i = 0; i < 4; i++) m.acts().hud(null, "y" + i).then(o -> m.log("late " + o.status()));
+                    });
+                """,
+            ),
+        )
+        f.start()
+        LogCapture().use { logs ->
+            f.deploy(f.spec("eight"))
+            f.server.heldOnce = 60
+            chat("a")
+            chat("b")
+            f.await("the callbacks of its last four acts") { logs.messages.count { "late " in it } >= 4 }
+
+            assertEquals(4, f.runner.ran.count { it.second == "hud" }, "four acts a call: ${f.runner.ran.map { it.second }}")
+            assertEquals(List(4) { "late denied" }, logs.messages.filter { "late " in it }.map { "late " + it.substringAfter("late ").substringBefore(' ') })
+        }
+    }
+
+    @Test
+    fun `each module the server stops gets its stop, though each new module thread starts late`() {
+        // FLAKY-6: unloading a module starts the next module thread at once, and the next module's stop is handed to it
+        // microseconds later; a busy machine may not run that thread within the call's 25 ms. The stop was then skipped
+        // and never asked again (910 retraits in 2,000 under load), and what a module saves in stop(SERVER_STOPPING) for
+        // its restart was lost. Here each new module thread starts 40 ms late, as a busy machine would run it.
+        val late = ModuleFixture(threads = ModuleThreads("late-module", onStart = { Thread.sleep(LATE_START_MS) }))
+        try {
+            late.module(
+                "keeper",
+                ModuleFixture.source("keeper", members = """public void stop(ModuleContext m, StopReason why) { m.storage().put("stopped", why.name()); }"""),
+            )
+            late.start()
+            LogCapture().use { logs ->
+                val deployed = (1..3).map { late.deploy(late.spec("keeper")) }
+                late.engine.stopping()
+
+                val saved = deployed.map { view -> late.store.get().module(view.ref.id)?.storage?.get("stopped") }
+                assertEquals(List(3) { "SERVER_STOPPING" }, saved, "each module's stop ran and saved its storage: ${logs.messages}")
+                assertEquals(emptyList(), logs.at(Level.WARN).filter { "its stop" in it })
+            }
+        } finally {
+            late.close()
+        }
+    }
+
+    /** A tick of the server, 5 ms after the last one returned: the module thread asks again meanwhile (a real server's ticks are 50 ms apart). */
+    private fun heldTick() {
+        Thread.sleep(5)
+        f.clock.advance(Duration.ofMillis(ModuleFixture.TICK_MS))
+        f.engine.tick(f.clock.millis())
     }
 
     @Test
@@ -605,5 +713,13 @@ class ModuleEngineTest {
         assertEquals(1, f.book.leaks)
         f.engine.second(f.clock.millis())
         assertEquals(1, f.decisions(ModuleEngine.LEAK, DecisionRecord.Kind.FORGE).size, "told once")
+    }
+
+    private companion object {
+        /** The ticks of a second of the game. */
+        const val TICKS_A_SECOND = 20
+
+        /** How late each new module thread starts, past a call's 25 ms (FLAKY-6's probe G). */
+        const val LATE_START_MS = 40L
     }
 }

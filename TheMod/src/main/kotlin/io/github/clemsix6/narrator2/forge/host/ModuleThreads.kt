@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.forge.host
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.forge.rt.ForgeLimit
+import io.github.clemsix6.narrator2.forge.rt.Meter
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -38,17 +39,21 @@ import java.util.concurrent.locks.LockSupport
  *
  * One caller at a time (the server thread, or one bench worker): calls never overlap; a call made from a module thread
  * nests in the one that thread runs ([run]).
+ *
+ * [onStart] runs first on each new module thread, before it takes a call: tests hold the thread back there, as a busy
+ * machine does before it schedules a thread just started (FLAKY-6). The game keeps the default.
  */
 class ModuleThreads(
     private val name: String = "narrator2-module",
     val lost: LostThreads = LostThreads(),
+    private val onStart: () -> Unit = {},
 ) {
     private val log = Log.forge
     private var worker: Worker? = null
     private var running = false
     private val made = AtomicInteger()
 
-    /** The nanoseconds the caller spent serving the SDK requests of the last call it handed over ([run]): work done for the module. */
+    /** The nanoseconds the caller spent serving the SDK requests of the last call it handed over or resumed ([run], [resume]): work done for the module. */
     var served = 0L
         private set
 
@@ -118,10 +123,11 @@ class ModuleThreads(
 
     /**
      * Waits again for [held] (FORGE-ABANDON), at most [budgetNanos], serving its SDK requests as [run] does: [Ran.DONE]
-     * once it ran to its end, [Ran.ABANDONED] when given up again (held still: the caller may resume it later),
-     * [Ran.STUCK] when no module code may run any more. The caller's thread, never while a call runs.
+     * once it ran to its end, [Ran.ABANDONED] when given up again (held still: the caller may resume it later) or cut
+     * ([cut]), [Ran.STUCK] when no module code may run any more. A caller that may wait has its [patience], as in [run].
+     * [served] is what this resume served. The caller's thread, never while a call runs.
      */
-    fun resume(held: Held, budgetNanos: Long): Ran {
+    fun resume(held: Held, budgetNanos: Long, patience: Patience? = null): Ran {
         check(!running) { "a module's call runs already: calls never overlap" }
         if (lost.stuck) return Ran.STUCK
         val call = held.call
@@ -129,31 +135,38 @@ class ModuleThreads(
         running = true
         served = 0
         try {
-            return attend(call, budgetNanos, null, Phase.RESUMED, Phase.HELD)
+            return attend(call, budgetNanos, patience, Phase.RESUMED, Phase.HELD)
         } finally {
             running = false
         }
     }
 
     /**
-     * Abandons [held] (FORGE-ABANDON: it computed past its budget, or its module is unloaded): its SDK request waiting,
-     * and every later one, throw [ForgeLimit] into its thread, which unwinds and **never touches the world again**. A
-     * call that ended is left as it is. The caller's thread.
+     * Abandons [held] (FORGE-ABANDON: it computed past its budget, or its module is unloaded), held or being resumed:
+     * its SDK request waiting, and every later one, throw [ForgeLimit] into its thread, which unwinds and **never
+     * touches the world again**; a [resume] that attends it gives it up. A call that ended is left as it is. The
+     * caller's thread.
      */
     fun cut(held: Held) {
-        if (held.call.state.compareAndSet(Phase.HELD, Phase.ABANDONED)) refuse(held.call, held.thread)
+        val before = held.call.state.getAndUpdate { if (it == Phase.HELD || it == Phase.RESUMED) Phase.ABANDONED else it }
+        if (before == Phase.HELD || before == Phase.RESUMED) refuse(held.call, held.thread)
     }
 
     /**
      * Waits for [call] (in [running]) until it is done, serving its SDK requests, or past [budgetNanos] (and [patience])
-     * moves it to [givenUp]: [Ran.ABANDONED] then, or [Ran.LATE] when its module thread had not even started it.
+     * moves it to [givenUp]: [Ran.ABANDONED] then, or [Ran.LATE] when its module thread had not even started it. A call
+     * [cut] meanwhile (by a request served here) is [Ran.ABANDONED] at once.
      */
     private fun attend(call: Call, budgetNanos: Long, patience: Patience?, running: Phase, givenUp: Phase): Ran {
         val deadline = System.nanoTime() + budgetNanos
         val givenUpAt = deadline + (patience?.nanos ?: 0)
         var askedAt = deadline
         while (true) {
-            if (call.state.get() == Phase.DONE) return Ran.DONE
+            when (call.state.get()) {
+                Phase.DONE -> return Ran.DONE
+                Phase.ABANDONED -> return Ran.ABANDONED
+                else -> {}
+            }
             val now = System.nanoTime()
             val past = now - deadline >= 0
             if (past) {
@@ -312,6 +325,7 @@ class ModuleThreads(
         }
 
         override fun run() {
+            onStart()
             while (runNext()) continue
         }
 
@@ -362,20 +376,30 @@ class ModuleThreads(
         /**
          * [body], run by the caller of the call this thread serves; refused once that call was abandoned. While the call
          * is held (FORGE-ABANDON), the request waits for its caller to resume it (or to cut it): both wake this thread.
+         *
+         * The wait is never the module's computing (FORGE-ABANDON-FIX): this thread spins a little while the caller
+         * attends the call (a request is served in a microsecond), then parks until it is served, and the CPU time it
+         * spent waiting is taken out of its call's evidence of computing ([Meter.waited]). A call held for ticks may wait
+         * for hundreds of slow requests: counted, that wait read as computing, and an honest module was abandoned.
          */
         fun <T> ask(body: () -> T): T {
             val call = serving ?: throw IllegalStateException("module code ran outside a call")
             if (call.state.get() == Phase.ABANDONED) throw ForgeLimit(ABANDONED_MESSAGE)
             val request = Request(body)
-            call.request = request
-            if (call.parked) LockSupport.unpark(call.caller)
-            val spinUntil = System.nanoTime() + REQUEST_SPIN_NANOS
-            while (!request.done) {
-                when (call.state.get()) {
-                    Phase.ABANDONED -> throw ForgeLimit(ABANDONED_MESSAGE)
-                    Phase.HELD -> LockSupport.park(this)
-                    else -> if (System.nanoTime() - spinUntil < 0) Thread.onSpinWait() else LockSupport.parkNanos(this, REQUEST_PARK_NANOS)
+            val waiting = Meter.waitStarts()
+            try {
+                call.request = request
+                if (call.parked) LockSupport.unpark(call.caller)
+                val spinUntil = System.nanoTime() + REQUEST_SPIN_NANOS
+                while (!request.done) {
+                    when (call.state.get()) {
+                        Phase.ABANDONED -> throw ForgeLimit(ABANDONED_MESSAGE)
+                        Phase.HELD -> LockSupport.park(this)
+                        else -> if (System.nanoTime() - spinUntil < 0) Thread.onSpinWait() else LockSupport.park(this)
+                    }
                 }
+            } finally {
+                Meter.waited(waiting)
             }
             request.error?.let { throw it }
             @Suppress("UNCHECKED_CAST")
@@ -393,9 +417,8 @@ class ModuleThreads(
         /** After a call, the module thread spins this long for the next one before it parks (a tick's calls come in a burst). */
         private const val IDLE_SPIN_NANOS = 100_000L
 
-        /** A module thread waiting for its SDK request spins this long, then parks by slices (the caller unparks it). */
+        /** A module thread waiting for its SDK request spins this long, then parks until served (the caller unparks it). */
         private const val REQUEST_SPIN_NANOS = 200_000L
-        private const val REQUEST_PARK_NANOS = 100_000L
 
         /** A patient caller, past a call's budget, parks by slices of this and asks whether the call's thread computed as often. */
         private const val POLL_NANOS = 1_000_000L

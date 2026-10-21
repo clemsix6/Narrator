@@ -42,7 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Consumer
 import kotlin.math.floor
 
-/** One call of a module's own code, measured and guarded by its host (M5-05, `ModuleHost`): never throws, a fault is the host's to count. */
+/**
+ * One call of a module's own code, measured and guarded by its host (M5-05, `ModuleHost`): never throws, a fault is the
+ * host's to count. A call its host skips (nothing of it ran) tells the queue ([ActQueue.skipped]).
+ */
 fun interface ModuleCall {
     fun run(what: String, body: () -> Unit)
 }
@@ -101,7 +104,8 @@ class Act(
  *   episode, `already_punished`, `fair_share` and categories for the guards, as one firing of a rule (M5 §2, 5).
  * - **A call given up and resumed** (FORGE-ABANDON, `ModuleHost.busy`): its host serves the rest of it between two
  *   invocations; the acts it asks then wait together ([late]) and leave before those of the next invocation, once the
- *   call ended (the engine makes no other call of the module while it runs), as one act of the engine.
+ *   call ended (the engine makes no other call of the module while it runs), as one act of the engine. They count in
+ *   that call's acts, whatever call its host skipped meanwhile ([skipped]).
  * - **Queue**: one coroutine per deployment ([scope]) runs the acts one after the other, never on the server thread.
  * - **Limits** ([ForgeLimits]): beyond [ForgeLimits.ACTS_PER_CALL] acts in a call, [ForgeLimits.ACTS_PER_MINUTE] acts
  *   or [ForgeLimits.LINES_PER_MINUTE] lines a minute, an act is `DENIED (module_acts)` and nothing goes. `hud` is never
@@ -137,8 +141,11 @@ class ActQueue(
     /** The acts asked between invocations, by a call given up that its host resumed: they leave before the next invocation's (server thread). */
     private val late = mutableListOf<Asked>()
 
-    /** The acts the call running now asked, refused ones included. */
+    /** The acts the module's last call asked, refused ones included: the call running now, or the rest of one given up that its host resumes. */
     private var inCall = 0
+
+    /** [inCall] as the invocation running now began: the count of a call given up, kept when its host skips this one ([skipped]). */
+    private var lastCall = 0
 
     /** When each act of the last minute left, and each line ([Act.Kind.LINE]). Server thread. */
     private val sent = ArrayDeque<Long>()
@@ -177,6 +184,7 @@ class ActQueue(
         sendLate()
         val acts = mutableListOf<Asked>()
         batch = acts
+        lastCall = inCall
         inCall = 0
         try {
             call.run(what, body)
@@ -187,9 +195,20 @@ class ActQueue(
     }
 
     /**
+     * The module's host skipped the call of the invocation running now: nothing of it ran (a call given up before still
+     * runs, M5-LOAD), it asked nothing. The count of acts stays that call given up's, whose rest its host may resume:
+     * [ForgeLimits.ACTS_PER_CALL] acts a call, never as many again because a call was skipped meanwhile (FORGE-ABANDON
+     * review, finding 3). Server thread, inside [invocation] (its [ModuleCall]).
+     */
+    fun skipped() {
+        check(batch != null) { "a call of the module of $ref was skipped outside an invocation" }
+        inCall = lastCall
+    }
+
+    /**
      * [act], asked by the call running now: kept until the call returns, or answered at once when the SDK or a limit
      * refuses it. Server thread, inside [invocation]; between two, the rest of a call given up that its host resumed
-     * ([late], its acts counted with those it asked before).
+     * ([late], its acts counted with those it asked before, whatever call was skipped meanwhile: [skipped]).
      */
     internal fun ask(act: Act): Pending {
         val asked = Asked(act)
