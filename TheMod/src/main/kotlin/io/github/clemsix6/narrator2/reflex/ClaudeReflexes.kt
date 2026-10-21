@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
+import io.github.clemsix6.narrator2.trace.TraceSink
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import java.time.Instant
@@ -98,41 +99,8 @@ class ClaudeReflexes(private val services: NarratorServices) : Reflexes {
         }
     }
 
-    private fun record(purpose: LlmCallRecord.Purpose, startedAt: Instant, effort: String, call: ReflexCall) {
-        try {
-            val trace = services.trace
-            trace.llmCall(
-                LlmCallRecord(
-                    id = trace.nextId(IdKind.LLM_CALL),
-                    provider = LlmCallRecord.Provider.ANTHROPIC,
-                    purpose = purpose,
-                    conversationId = null,
-                    turnId = null,
-                    role = ROLE,
-                    model = call.model,
-                    effort = effort,
-                    startedAt = startedAt,
-                    endedAt = startedAt.plusMillis(call.latencyMs),
-                    latencyMs = call.latencyMs.toInt(),
-                    ttftMs = null,
-                    attempts = 1,
-                    requestId = call.requestId,
-                    messageId = call.messageId,
-                    inputTokens = call.inputTokens,
-                    cacheReadTokens = call.cacheReadTokens,
-                    cacheWriteTokens = call.cacheWriteTokens,
-                    outputTokens = call.outputTokens,
-                    stopReason = call.stopReason,
-                    refusalCategory = call.refusalCategory,
-                    error = call.error,
-                    httpStatus = call.httpStatus,
-                    thinking = null,
-                ),
-            )
-        } catch (e: Exception) {
-            log.error("cannot record a reflex call in llm_calls", e)
-        }
-    }
+    private fun record(purpose: LlmCallRecord.Purpose, startedAt: Instant, effort: String, call: ReflexCall) =
+        recordReflexCall(services.trace, purpose, startedAt, effort, call)
 
     private fun logHeuristic(input: ChatTriageInput, verdict: ChatVerdict) = log.debug {
         "chat triage ${input.message.player} by heuristic: to you ${ReflexThresholds.p(verdict.toNarrator)}, ${verdict.tone.id}, " +
@@ -147,5 +115,45 @@ class ClaudeReflexes(private val services: NarratorServices) : Reflexes {
         const val SOURCE_PREFIX = "reflex:"
 
         private fun elapsedMs(start: Long) = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+    }
+}
+
+/**
+ * Writes the `llm_calls` row of one call of the reflexes' model, started at [startedAt] with [effort], for [purpose]:
+ * provider `anthropic`, role [ClaudeReflexes.ROLE], no conversation, one attempt. Shared by the reflexes and the line
+ * review (M6 §3.3). Never throws: a failure to record is logged.
+ */
+fun recordReflexCall(trace: TraceSink, purpose: LlmCallRecord.Purpose, startedAt: Instant, effort: String, call: ReflexCall) {
+    try {
+        trace.llmCall(
+            LlmCallRecord(
+                id = trace.nextId(IdKind.LLM_CALL),
+                provider = LlmCallRecord.Provider.ANTHROPIC,
+                purpose = purpose,
+                conversationId = null,
+                turnId = null,
+                role = ClaudeReflexes.ROLE,
+                model = call.model,
+                effort = effort,
+                startedAt = startedAt,
+                endedAt = startedAt.plusMillis(call.latencyMs),
+                latencyMs = call.latencyMs.toInt(),
+                ttftMs = null,
+                attempts = 1,
+                requestId = call.requestId,
+                messageId = call.messageId,
+                inputTokens = call.inputTokens,
+                cacheReadTokens = call.cacheReadTokens,
+                cacheWriteTokens = call.cacheWriteTokens,
+                outputTokens = call.outputTokens,
+                stopReason = call.stopReason,
+                refusalCategory = call.refusalCategory,
+                error = call.error,
+                httpStatus = call.httpStatus,
+                thinking = null,
+            ),
+        )
+    } catch (e: Exception) {
+        Log.reflex.error("cannot record a reflex call (${purpose.name.lowercase()}) in llm_calls", e)
     }
 }
