@@ -12,14 +12,12 @@ import io.github.clemsix6.narrator2.memory.ChronicleEntry
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.Decay
 import io.github.clemsix6.narrator2.memory.DocKey
-import io.github.clemsix6.narrator2.memory.DuckPlayClock
 import io.github.clemsix6.narrator2.memory.GagState
 import io.github.clemsix6.narrator2.memory.INTERACTION_COLUMNS
 import io.github.clemsix6.narrator2.memory.Interaction
 import io.github.clemsix6.narrator2.memory.MEMORY_COLUMNS
 import io.github.clemsix6.narrator2.memory.MemoryDoc
 import io.github.clemsix6.narrator2.memory.MemoryEntry
-import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.MergeCandidate
 import io.github.clemsix6.narrator2.memory.Names
 import io.github.clemsix6.narrator2.memory.Note
@@ -46,6 +44,7 @@ import io.github.clemsix6.narrator2.memory.uuid
 import io.github.clemsix6.narrator2.memory.uuids
 import io.github.clemsix6.narrator2.reflex.HeuristicWords
 import io.github.clemsix6.narrator2.runtime.NarratorServices
+import io.github.clemsix6.narrator2.style.StyleReport
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.shownName
 import kotlinx.serialization.Serializable
@@ -54,7 +53,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
-import java.sql.Connection
 import java.sql.ResultSet
 import java.time.Duration
 import java.time.Instant
@@ -68,28 +66,29 @@ import kotlin.math.roundToLong
 /**
  * What each step of a dream reads (M3 §8.2): its first message, built by the code from the Journal and the
  * memory, every block within its budget (the constants of the companion, checked at their maximum by a
- * test). A message starts with `<job kind="dream" run="…" step="N" of="5" task="…"/>`, then its blocks,
+ * test). A message starts with `<job kind="dream" run="…" step="N" of="6" task="…"/>`, then its blocks,
  * each `<tag …>` … `</tag>`; a block with nothing to show says why. Everything a player or a model wrote is
  * escaped ([ModelText]): the memory reaches the model as recorded facts, never as instructions. Reads only.
  *
  * - **Step 1, one conversation per player** ([candidates], [player]): the full sheet, the traits it hides,
  *   what is new about the player since their last reflection (memories, interactions, stats before and
  *   after), the reflexes' signals, the pairs they are in, their latest public messages with whom each addressed.
- * - **Step 2** ([review]): the Narrator's tics, its latest lines with the players' reactions, the running
- *   gags and nicknames with their uses, the previous review.
+ * - **Step 2** ([review]): the Narrator's tics, its latest lines with the players' reactions, its registers and
+ *   how players took them, its lines flagged for their tone and the diversity of its lines since the previous
+ *   review (M6 §4.6, [StyleReport]), the running gags and nicknames with their uses, the previous review.
  * - **Step 3** ([chronicle]): the chapter entries no session covers yet, grouped by server session; the
  *   season in progress; the closed seasons; the saga.
  * - **Step 4** ([grimoire]): the Grimoire, one line per player, the review, the latest session, the open
- *   canon (the mechanics engine's rows marked, M4 §3.3), the arcs with their themes and the themes at rest
- *   (M4 §10: a new arc takes neither), the open notes.
- * - **Step 5** ([merges]): the merge candidates of the hygiene, with both texts.
+ *   canon (the mechanics engine's rows marked, M4 §3.3), the open arcs with their themes, the open notes. What
+ *   comes next (arcs to plan, themes at rest) is the programme's ([ProgrammeInputs], step 5, the storyteller's).
+ * - **Step 6** ([merges]): the merge candidates of the hygiene, with both texts.
  */
 internal class DreamInputs(private val services: NarratorServices) {
     private val memory get() = services.memory
     private val journal get() = services.journal
 
     /** The zone of the times shown: the Journal's (`journal.timeZone`), else the engine's clock. */
-    private val zone: ZoneId
+    val zone: ZoneId
         get() = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: services.clock.zone
 
     // ── Step 1: the players ─────────────────────────────────────────────────────────────────────────
@@ -306,38 +305,50 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     // ── Step 2: the review of the Narrator's play ───────────────────────────────────────────────────
 
-    /** The first message of step 2; null when there is nothing to review (no line, no gag, no review). */
+    /**
+     * The first message of step 2; null when there is nothing to review (no line, no gag, no review). Its style blocks
+     * (M6 §4.6) cover the period since the previous review (the first review: since the oldest line read), compared
+     * with the period between the two reviews before it.
+     */
     suspend fun review(runId: Long, now: Instant): String? {
         val language = services.settings.get().config.language
         val words = HeuristicWords.bundled(language) ?: HeuristicWords.bundled(DEFAULT_LANGUAGE)
+        val reviews = memory.store.docVersions(DocKey.Review.key)
+        val review = reviews.firstOrNull()
         val read = journal.read(READ_TIMEOUT_MS) { connection ->
             val tics = Tics.render(Tics.read(connection), now)
             val lines = connection.query(
                 "SELECT id, ts, text, recipients FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT ?", LINES_COUNT,
             ) { Said(getLong(1), instant(2), "narrator", getString(3)) }
             val reactions = if (lines.isEmpty() || words == null) emptyList() else Reactions.read(connection, lines.minOf { it.ts }, now.plusMillis(1), words)
-            Triple(tics, lines, reactions)
+            val from = minOf(review?.writtenAt ?: lines.minOfOrNull { it.ts } ?: now, now)
+            val before = reviews.getOrNull(1)?.let { StyleReport.Period(it.writtenAt, reviews[0].writtenAt) }
+            val style = words?.let { StyleReport.review(connection, StyleReport.Period(from, now), before, it, zone) }
+            Read(tics, lines, reactions, style)
         }
-        val (tics, lines, reactions) = read
+        val (tics, lines, reactions, style) = read
         val gags = memory.store.canon(CanonFilter(kinds = GAG_KINDS, open = true, limit = GAGS_COUNT))
-        val review = memory.store.doc(DocKey.Review.key)
         if (lines.isEmpty() && gags.isEmpty() && review == null) return null
         val byLine = reactions.groupBy { it.lineId }
         val lineItems = lines.map { line ->
             val who = byLine[line.id]?.joinToString(" · ") { "${it.player.shownName} ${it.kind.id}" } ?: "no reaction"
             "- [${dayTime(line.ts)}] e${line.id} → $who: ${ModelText.quote(line.text, LINE_TEXT_MAX)}"
         }
-        return listOf(
+        return listOfNotNull(
             job(runId, 2, "review"),
             block("tics", "", tics.map { "- $it" }, TICS_MAX, "(none found in the Narrator's latest ${Tics.LINES} lines)"),
             block(
                 "lines", "count=\"${lines.size}\" order=\"latest first\" reactions=\"${ModelText.attribute(Reactions.summary(reactions))}\"",
                 lineItems, LINES_MAX, "(the Narrator has said nothing yet)",
             ),
+            style,
             block("gags", "count=\"${gags.size}\"", gags.map(::gagLine), GAGS_MAX, "(no running gag nor nickname open)"),
             document("review", review, REVIEW_MAX, "(none yet: write the first one)"),
         ).joinToString("\n")
     }
+
+    /** What step 2 reads from the Journal: the tics, the latest lines, their reactions, the style blocks (null without reaction words). */
+    private data class Read(val tics: List<String>, val lines: List<Said>, val reactions: List<Reactions.Reaction>, val style: String?)
 
     private fun gagLine(entry: CanonEntry): String {
         val to = entry.players.takeIf { it.isNotEmpty() }?.let { " → ${ToolText.names(it)}" }.orEmpty()
@@ -451,7 +462,6 @@ internal class DreamInputs(private val services: NarratorServices) {
         val session = store.chronicle(ChronicleLevel.SESSION, 1).firstOrNull()
         val open = store.canon(CanonFilter(open = true, limit = CANON_READ))
         val (arcs, canon) = open.partition { it.kind == CanonKind.ARC }
-        val resting = journal.read(READ_TIMEOUT_MS) { restingThemes(it, now) }
         val notes = store.openNotes()
         return listOf(
             job(runId, 4, "grimoire"),
@@ -460,44 +470,16 @@ internal class DreamInputs(private val services: NarratorServices) {
             document("review", store.doc(DocKey.Review.key), REVIEW_MAX, "(none yet)"),
             session?.let { entry("session", it, "", SESSION_MAX) } ?: block("session", "", emptyList(), SESSION_MAX, "(none yet)"),
             block("canon", "count=\"${canon.size}\"", shared(canon.take(CANON_COUNT).map(::canonItem), CANON_MAX), CANON_MAX, "(no open entry)"),
-            block("arcs", "count=\"${arcs.size}\"", arcLines(arcs, resting), ARCS_MAX, "(no arc open)"),
+            block("arcs", "count=\"${arcs.size}\"", arcs.map { canonItem(it).let { (head, body) -> head + body } }, ARCS_MAX, "(no arc open)"),
             block("notes", "count=\"${notes.size}\"", notes.map(::noteLine), NOTES_MAX, "(no open note)"),
         ).joinToString("\n")
     }
 
     /**
-     * The lines of `<arcs>`: the themes at rest first, when there are some (short, never cut), then each open
-     * arc with its theme, which it holds while open (M4 §10): a new arc needs a theme of neither.
+     * A canon entry as a dream reads it: `- C-60 arc → Bartok (planned, theme proces_des_parieurs, since 10-02): ` and its
+     * statement, escaped, to be cut to a share of a block ([shared]).
      */
-    private fun arcLines(arcs: List<CanonEntry>, resting: List<String>): List<String> {
-        val open = arcs.map { canonItem(it).let { (head, body) -> head + body } }
-        if (resting.isEmpty()) return open
-        val rest = "Themes at rest (${MemoryLimits.THEME_REST_PLAY_HOURS}h of world play once their arc closed): ${resting.joinToString(" · ")}"
-        return listOf(rest) + open.ifEmpty { listOf("(no arc open)") }
-    }
-
-    /**
-     * The themes whose last arc closed less than [MemoryLimits.THEME_REST_PLAY_HOURS] hours of world play ago
-     * (M4 §10, as the store counts them: the sessions played since, an open one up to now), the latest
-     * closed first, [RESTING_COUNT] at most: `vengeance_du_warden until about 10-02 15:40 (C-60 closed 10-01
-     * 19:40)`. A theme an open arc holds is left out: that arc's line names it.
-     */
-    private fun restingThemes(connection: Connection, now: Instant): List<String> {
-        val closed = connection.query(CLOSED_THEMES_SQL) { Triple(getString(1), getLong(2), instant(3)) }
-        if (closed.isEmpty()) return emptyList()
-        val running = connection.query("SELECT session_id FROM sessions WHERE left_at IS NULL") { getLong(1) }.toSet()
-        val rest = Duration.ofHours(MemoryLimits.THEME_REST_PLAY_HOURS.toLong()).seconds
-        val themes = mutableListOf<String>()
-        for ((theme, id, closedAt) in closed) {
-            val left = rest - DuckPlayClock.unionSeconds(connection, closedAt, now, running)
-            if (left <= 0) break // the themes closed before it have been played over longer still
-            themes += "${ModelText.escape(theme)} until about ${dayTime(now.plusSeconds(left))} (C-$id closed ${dayTime(closedAt)})"
-            if (themes.size >= RESTING_COUNT) break
-        }
-        return themes
-    }
-
-    private fun canonItem(entry: CanonEntry): Pair<String, String> {
+    fun canonItem(entry: CanonEntry): Pair<String, String> {
         val to = entry.players.takeIf { it.isNotEmpty() }?.let { " → ${ToolText.names(it)}" }.orEmpty()
         val state = listOfNotNull(
             if (entry.status == CanonStatus.PLANNED) "planned" else null,
@@ -516,9 +498,9 @@ internal class DreamInputs(private val services: NarratorServices) {
         return "- ${note.ref} ${note.kind.id}$about (${day(note.createdAt)}$shown): ${ModelText.escape(note.text)}"
     }
 
-    // ── Step 5: the merges ──────────────────────────────────────────────────────────────────────────
+    // ── Step 6: the merges ──────────────────────────────────────────────────────────────────────────
 
-    /** The first message of step 5; null without candidates. */
+    /** The first message of step 6; null without candidates. */
     suspend fun merges(runId: Long, candidates: List<MergeCandidate>): String? {
         if (candidates.isEmpty()) return null
         val rows = candidates.flatMap { listOf(it.a, it.b) }.distinct().mapNotNull { memory.store.memory(it) }.associateBy { it.ref }
@@ -527,7 +509,7 @@ internal class DreamInputs(private val services: NarratorServices) {
             val b = rows[pair.b] ?: return@flatMap emptyList()
             listOf("<pair a=\"${pair.a}\" b=\"${pair.b}\" similarity=\"${decimal(pair.similarity)}\">", memoryLine(a), memoryLine(b), "</pair>")
         }
-        return listOf(job(runId, 5, "merges"), block("candidates", "count=\"${candidates.size}\"", items, CANDIDATES_MAX, "")).joinToString("\n")
+        return listOf(job(runId, MERGE_STEP, "merges"), block("candidates", "count=\"${candidates.size}\"", items, CANDIDATES_MAX, "")).joinToString("\n")
     }
 
     private fun memoryLine(row: MemoryEntry): String {
@@ -538,20 +520,21 @@ internal class DreamInputs(private val services: NarratorServices) {
             "${ModelText.escape(row.title)}: ${ModelText.escape(row.content)}"
     }
 
-    // ── Shared ──────────────────────────────────────────────────────────────────────────────────────
+    // ── Shared (with the programme's opening, ProgrammeInputs) ──────────────────────────────────────
 
-    private fun job(runId: Long, step: Int, task: String, attributes: String = ""): String =
+    /** `<job kind="dream" run="12" step="5" of="6" task="programme"/>`, with [attributes] when given. */
+    fun job(runId: Long, step: Int, task: String, attributes: String = ""): String =
         "<job kind=\"dream\" run=\"$runId\" step=\"$step\" of=\"$STEPS\" task=\"$task\"${if (attributes.isEmpty()) "" else " $attributes"}/>"
 
     /** `<tag attributes>`, its [lines] (or [empty]), `</tag>`, cut at a line within [max] characters. */
-    private fun block(tag: String, attributes: String, lines: List<String>, max: Int, empty: String): String {
+    fun block(tag: String, attributes: String, lines: List<String>, max: Int, empty: String): String {
         val open = if (attributes.isEmpty()) "<$tag>" else "<$tag $attributes>"
         if (lines.isEmpty()) return "$open$empty</$tag>"
         return ExchangeLog.fit(listOf(open) + lines + "</$tag>", max)
     }
 
     /** A document (the Grimoire, the review) with its version, or [empty]. */
-    private fun document(tag: String, doc: MemoryDoc?, max: Int, empty: String): String =
+    fun document(tag: String, doc: MemoryDoc?, max: Int, empty: String): String =
         if (doc == null) block(tag, "", emptyList(), max, empty) else textBlock(tag, "version=\"${doc.version}\" written=\"${dayTime(doc.writtenAt)}\"", emptyList(), doc.content, max)
 
     /** A chronicle entry: its ref, period and covers, its title, then its text. */
@@ -562,14 +545,14 @@ internal class DreamInputs(private val services: NarratorServices) {
     }
 
     /** `<tag attributes>`, the [head] lines, then [text] (escaped, its lines kept) cut to what is left of [max], `</tag>`. */
-    private fun textBlock(tag: String, attributes: String, head: List<String>, text: String, max: Int): String {
+    fun textBlock(tag: String, attributes: String, head: List<String>, text: String, max: Int): String {
         val open = if (attributes.isEmpty()) "<$tag>" else "<$tag $attributes>"
         val fixed = (listOf(open) + head + "</$tag>").sumOf { it.length + 1 }
         return (listOf(open) + head + ModelText.cut(ModelText.lines(text), (max - fixed).coerceAtLeast(1)) + "</$tag>").joinToString("\n")
     }
 
     /** Items `head + body` sharing [room] characters: each body is cut to its share, never under [MIN_BODY]. */
-    private fun shared(items: List<Pair<String, String>>, room: Int): List<String> {
+    fun shared(items: List<Pair<String, String>>, room: Int): List<String> {
         if (items.isEmpty()) return emptyList()
         val share = (room - BLOCK_ROOM) / items.size
         return items.map { (head, body) -> head + ModelText.cut(body, (share - head.length - 1).coerceAtLeast(MIN_BODY)) }
@@ -594,9 +577,9 @@ internal class DreamInputs(private val services: NarratorServices) {
 
     private fun minutes(value: Double): String = ToolText.duration((value * 60_000).roundToLong())
 
-    private fun day(at: Instant): String = DAY.withZone(zone).format(at)
+    fun day(at: Instant): String = DAY.withZone(zone).format(at)
 
-    private fun dayTime(at: Instant): String = DAY_TIME.withZone(zone).format(at)
+    fun dayTime(at: Instant): String = DAY_TIME.withZone(zone).format(at)
 
     private fun time(at: Instant): String = TIME.withZone(zone).format(at)
 
@@ -642,8 +625,11 @@ internal class DreamInputs(private val services: NarratorServices) {
     )
 
     companion object {
-        /** The steps of a dream. */
-        const val STEPS = 5
+        /** The steps of a dream (M6 §6.3): players, review, chronicle, Grimoire, programme, merges. */
+        const val STEPS = 6
+
+        /** The step of the merges, the last one. */
+        const val MERGE_STEP = 6
 
         /** The `memory_state` key of the last reflection on a player: `reflected:<uuid>`. */
         const val REFLECTED_PREFIX = "reflected:"
@@ -689,19 +675,20 @@ internal class DreamInputs(private val services: NarratorServices) {
         const val CANON_MAX = 6_000
         const val CANON_COUNT = 40
         const val ARCS_MAX = 3_000
-
-        /** Themes at rest named in `<arcs>`, at most: about 80 characters each. */
-        const val RESTING_COUNT = 8
         const val NOTES_MAX = 3_000
         const val CANDIDATES_MAX = 30_000
+
+        /** The three style blocks of step 2 (M6 §4.6): `<registers>`, `<tone_flags>`, `<diversity>`. */
+        const val STYLE_MAX = StyleReport.REGISTERS_MAX + StyleReport.FLAGS_MAX + StyleReport.DIVERSITY_MAX
 
         /** The longest opening of each step: the sum of its blocks, plus the job line. */
         val STEP_MAX: Map<Int, Int> = mapOf(
             1 to 300 + SHEET_MAX + HIDDEN_TRAITS_MAX + MEMORIES_MAX + INTERACTIONS_MAX + STATS_MAX + SIGNALS_MAX + PAIRS_MAX + CHAT_MAX,
-            2 to 300 + TICS_MAX + LINES_MAX + GAGS_MAX + REVIEW_MAX,
+            2 to 300 + TICS_MAX + LINES_MAX + STYLE_MAX + GAGS_MAX + REVIEW_MAX,
             3 to 300 + SESSIONS_MAX + SEASON_MAX + CLOSED_SEASONS_MAX + SAGA_MAX,
             4 to 300 + GRIMOIRE_MAX + PLAYERS_MAX + REVIEW_MAX + SESSION_MAX + CANON_MAX + ARCS_MAX + NOTES_MAX,
-            5 to 300 + CANDIDATES_MAX,
+            5 to ProgrammeInputs.STEP_MAX,
+            MERGE_STEP to 300 + CANDIDATES_MAX,
         )
 
         /** A player's latest public messages and prayers, with the latest triage of each (`chat_signals`, as the exchange log reads it). */
@@ -712,16 +699,6 @@ internal class DreamInputs(private val services: NarratorServices) {
                        QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY ts DESC) = 1) s ON s.event_id = c.id
             WHERE c.player_uuid = ? AND c.channel IN ('public', 'pray')
             ORDER BY c.ts DESC, c.id DESC LIMIT ?"""
-
-        /**
-         * The last closed arc of each theme no open arc holds (archived arcs left out, as the store does), the
-         * latest closed first: theme, id, when it closed.
-         */
-        private const val CLOSED_THEMES_SQL = """
-            SELECT theme, arg_max(id, resolved_at), max(resolved_at) FROM canon
-            WHERE kind = 'arc' AND theme IS NOT NULL AND resolved_at IS NOT NULL AND NOT archived
-              AND theme NOT IN (SELECT theme FROM canon WHERE kind = 'arc' AND theme IS NOT NULL AND status IN ('planned', 'active') AND NOT archived)
-            GROUP BY theme ORDER BY 3 DESC, 1"""
 
         private const val SIGNALS = "signals"
         private const val PLAYTIME = "playtime"

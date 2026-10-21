@@ -300,17 +300,22 @@ class MemoryToolsTest {
     }
 
     @Test
-    fun `the Dreamer remembers only arcs, lore and observations, never with a quote, and resolves only arcs`() = fixture { f ->
+    fun `the Dreamer remembers only lore and observations, never with a quote, and resolves only arcs`() = fixture { f ->
         val dreamer = f.dreamer(8)
         assertInvalid(
-            "the Dreamer remembers only an arc (planned), lore or an observation, not a promise: what the Narrator tells the players " +
+            "the Dreamer remembers only lore or an observation, not a promise: what the Narrator tells the players " +
                 "is recorded from its own words, by itself or the Chronicler",
             f.call(remember, """{"kind":"promise","what":"Le Narrateur a promis 64 diamants à Bartok.","quote":"je te promets 64 diamants","players":["Bartok"]}""", dreamer),
         )
-        listOf("threat", "challenge", "law", "prophecy", "nickname", "title", "opinion", "running_gag", "claim", "episode").forEach { kind ->
+        listOf("threat", "challenge", "law", "prophecy", "nickname", "title", "opinion", "running_gag", "claim", "episode", "arc").forEach { kind ->
             val result = f.call(remember, """{"kind":"$kind","what":"Bartok est surnommé « le Plongeur ».","players":["Bartok"]}""", dreamer)
-            assertTrue(result.text.startsWith("Invalid arguments: the Dreamer remembers only an arc (planned), lore or an observation, not "), "$kind: ${result.text}")
+            assertTrue(result.text.startsWith("Invalid arguments: the Dreamer remembers only lore or an observation, not "), "$kind: ${result.text}")
         }
+        // M6 §6.5: one pen per subject; the arcs to come are the storyteller's.
+        assertInvalid(
+            "the Dreamer remembers only lore or an observation, not an arc: an arc to come is the storyteller's, who writes the programme after the Grimoire",
+            f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa.","theme":"proces_des_parieurs"}""", dreamer),
+        )
         assertInvalid(
             "quote does not apply to the Dreamer, who never heard the Narrator: leave it out",
             f.call(remember, """{"kind":"lore","what":"Le pic au nord du spawn porte le nom de Dent du Juge.","quote":"la Dent du Juge"}""", dreamer),
@@ -331,10 +336,10 @@ class MemoryToolsTest {
     }
 
     @Test
-    fun `an arc the Dreamer remembers is planned, and the Director starts it`() = fixture { f ->
+    fun `an arc the storyteller remembers is planned, and the Director starts it`() = fixture { f ->
         assertOk(
             "ok: remembered C-1000 (arc, planned)",
-            f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa.","theme":"proces_des_parieurs"}""", f.dreamer(8)),
+            f.call(remember, """{"kind":"arc","what":"Le Narrateur prépare le procès des parieurs du pont de Mimosa.","theme":"proces_des_parieurs"}""", f.storyteller(8)),
         )
         assertOk(
             "ok: C-1000 arc is now active, due 10-08 19:40, in 7d0h; a DUE event will wake you then",

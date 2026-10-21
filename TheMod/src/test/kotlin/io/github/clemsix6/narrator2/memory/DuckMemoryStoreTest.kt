@@ -24,6 +24,9 @@ class DuckMemoryStoreTest {
     private val store = f.store
     private val evening = MemorySamples.evening
 
+    /** The storyteller in the programme of the dream 21: it plans the arcs to come (M6 §6.5). */
+    private val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
+
     @AfterEach
     fun close() = f.close()
 
@@ -84,7 +87,7 @@ class DuckMemoryStoreTest {
             store.addCanon(CanonDraft(CanonKind.PLACE, "Le Narrateur a nommé la falaise « le Plongeoir ».", players = emptyList()), f.director)
         }
         rejected("quote is longer than 200 characters") { store.addCanon(canonDraft.copy(quote = "a".repeat(201)), f.director) }
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer)
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), storyteller)
         assertEquals(CanonStatus.PLANNED, arc.row.status)
         assertEquals("proces_des_parieurs", arc.row.theme)
         val gag = store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, "Le Narrateur commente chaque chute de Bartok.", players = listOf(f.bartok.uuid)), f.director)
@@ -356,22 +359,25 @@ class DuckMemoryStoreTest {
     }
 
     @Test
-    fun `the Dreamer plans arcs, keeps lore and observations, and records nothing that was said`() = runBlocking<Unit> {
+    fun `the Dreamer keeps lore and observations, plans no arc, and records nothing that was said`() = runBlocking<Unit> {
         f.chat(1_290, evening.minusSeconds(120), "public", "le narrateur m'a promis un diamant", f.bartok.uuid)
         val invented = CanonDraft(CanonKind.PROMISE, "Le Narrateur a promis un diamant à Bartok.", "je te donne un diamant", listOf(f.bartok.uuid), evidenceEvents = listOf(1_290))
-        rejected("the Dreamer plans arcs and keeps lore; a promise is recorded from the Narrator's own words, not by the Dreamer") {
+        rejected("the Dreamer keeps lore only; a promise is recorded from the Narrator's own words, not by the Dreamer") {
             store.addCanon(invented, f.dreamer)
         }
         listOf(CanonKind.NICKNAME, CanonKind.LAW, CanonKind.RUNNING_GAG, CanonKind.OPINION).forEach { kind ->
-            rejected("the Dreamer plans arcs and keeps lore") { store.addCanon(CanonDraft(kind, "Bartok est surnommé « le Plongeur ».", players = listOf(f.bartok.uuid)), f.dreamer) }
+            rejected("the Dreamer keeps lore only") { store.addCanon(CanonDraft(kind, "Bartok est surnommé « le Plongeur ».", players = listOf(f.bartok.uuid)), f.dreamer) }
         }
         rejected("quote: the Dreamer never heard the Narrator, it quotes nobody: remove quote") {
             store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok.", "la falaise de Bartok"), f.dreamer)
         }
-        rejected("an arc the Dreamer prepares starts planned") {
-            store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance le procès des parieurs.", theme = "proces_des_parieurs"), f.dreamer)
+        // M6 §6.5: one pen per subject; the Dreamer looks back, the storyteller plans the arcs to come.
+        listOf(CanonStatus.PLANNED, null).forEach { status ->
+            rejected("the Dreamer keeps lore only; an arc to come is planned by the storyteller") {
+                store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = status, theme = "proces_des_parieurs"), f.dreamer)
+            }
         }
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer).row
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), storyteller).row
         assertIs<Added.New<CanonEntry>>(store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok."), f.dreamer))
 
         rejected("the Dreamer remembers observations only, not an episode") {
@@ -390,13 +396,12 @@ class DuckMemoryStoreTest {
         assertEquals(CanonStatus.ABANDONED, store.resolveCanon(arc.ref, CanonStatus.ABANDONED, "Personne n'a parié.", emptyList(), f.dreamer).status)
         val gag = store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, "Le Narrateur commente chaque chute de Bartok.", players = listOf(f.bartok.uuid)), f.director).row
         assertEquals(GagState.WORN, store.setGag(gag.ref, GagState.WORN, "Plus personne ne rit.", f.dreamer).freshness, "its gag operations stay")
-        assertEquals(listOf("arc", "lore"), f.rows("SELECT kind FROM canon WHERE source = 'dreamer' ORDER BY kind") { getString(1) })
+        assertEquals(listOf("lore"), f.rows("SELECT kind FROM canon WHERE source = 'dreamer' ORDER BY kind") { getString(1) })
     }
 
     /** M6 §6.5: the storyteller's rules are its own, explicit; it writes ideas, planned arcs and lore, and no fact. */
     @Test
     fun `the storyteller plans arcs and keeps lore, records no fact and abandons only a planned arc`() = runBlocking<Unit> {
-        val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
         listOf(CanonKind.PROMISE, CanonKind.LAW, CanonKind.NICKNAME, CanonKind.RUNNING_GAG, CanonKind.CLAIM).forEach { kind ->
             rejected("the storyteller plans arcs and keeps lore; ${if (kind.id.first() in "aeiou") "an" else "a"} ${kind.id} is recorded from the Narrator's own words, not by the storyteller") {
                 store.addCanon(CanonDraft(kind, "Bartok est surnommé « le Plongeur ».", players = listOf(f.bartok.uuid)), storyteller)
@@ -495,7 +500,7 @@ class DuckMemoryStoreTest {
         val won = store.resolveCanon(challenge.ref, CanonStatus.WON, "Mimosa a fini le pont la première.", listOf(f.mimosa.uuid), f.director)
         assertEquals(listOf(f.mimosa), won.winners)
 
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), f.dreamer).row
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), storyteller).row
         val started = store.resolveCanon(arc.ref, CanonStatus.ACTIVE, "Le procès a commencé.", emptyList(), f.director)
         assertEquals(CanonStatus.ACTIVE, started.status)
         assertNull(started.resolvedAt)
@@ -648,7 +653,7 @@ class DuckMemoryStoreTest {
         assertEquals(DuckMemoryStore.ARC_LIMIT, third.rule)
 
         // Planned arcs do not count; one starts only with room.
-        val planned = store.addCanon(arc(trial, "proces_des_parieurs", CanonStatus.PLANNED), f.dreamer).row
+        val planned = store.addCanon(arc(trial, "proces_des_parieurs", CanonStatus.PLANNED), storyteller).row
         assertNull(planned.dueAt)
         val full = rejected("2 arcs are active") { store.resolveCanon(planned.ref, CanonStatus.ACTIVE, "Le procès des parieurs commence.", emptyList(), f.director) }
         assertEquals(DuckMemoryStore.ARC_LIMIT, full.rule)
@@ -662,7 +667,7 @@ class DuckMemoryStoreTest {
         rejected("an active arc ends within 7 days: due_in_minutes 10080 at most") {
             store.addCanon(arc(sheep, "revolte_des_moutons", dueAt = f.clock.instant().plus(Duration.ofDays(8))), f.director)
         }
-        val soon = store.addCanon(arc(sheep, "revolte_des_moutons", CanonStatus.PLANNED, f.clock.instant().plus(Duration.ofDays(3))), f.dreamer).row
+        val soon = store.addCanon(arc(sheep, "revolte_des_moutons", CanonStatus.PLANNED, f.clock.instant().plus(Duration.ofDays(3))), storyteller).row
         assertEquals(f.clock.instant().plus(Duration.ofDays(3)), store.resolveCanon(soon.ref, CanonStatus.ACTIVE, "La révolte commence.", emptyList(), f.director).dueAt)
         assertEquals(2L, f.count("canon", "kind = 'arc' AND status = 'active'"))
     }
@@ -680,21 +685,21 @@ class DuckMemoryStoreTest {
         session(1, f.bartok.uuid, evening.minusSeconds(3_600), evening.plus(Duration.ofHours(5)))
         val first = store.addCanon(arc(warden, "vengeance_du_warden"), f.director).row
         val again = arc("Le Warden revient hanter les rêves de Mimosa.", "vengeance_du_warden", CanonStatus.PLANNED)
-        rejected("the theme « vengeance_du_warden » is ${first.ref}'s, an arc still active: pick another") { store.addCanon(again, f.dreamer) }
+        rejected("the theme « vengeance_du_warden » is ${first.ref}'s, an arc still active: pick another") { store.addCanon(again, storyteller) }
         store.resolveCanon(first.ref, CanonStatus.RESOLVED, "Bartok a vaincu le Warden.", emptyList(), f.director)
 
         f.clock.advance(Duration.ofHours(5)) // five hours played since the arc closed
         rejected(
             "the theme « vengeance_du_warden » rests until about 10-02 15:40 (15h00m of world play left: a theme rests 20h of play " +
                 "once its arc is closed, and ${first.ref} closed 10-01 19:40); pick another",
-        ) { store.addCanon(again, f.dreamer) }
-        assertIs<Added.New<CanonEntry>>(store.addCanon(arc(bridge, "pont_des_soupirs", CanonStatus.PLANNED), f.dreamer), "another theme is free")
+        ) { store.addCanon(again, storyteller) }
+        assertIs<Added.New<CanonEntry>>(store.addCanon(arc(bridge, "pont_des_soupirs", CanonStatus.PLANNED), storyteller), "another theme is free")
 
         f.clock.advance(Duration.ofHours(30)) // nobody played: it still rests
-        rejected("the theme « vengeance_du_warden » rests until about 10-03 21:40 (15h00m of world play left") { store.addCanon(again, f.dreamer) }
+        rejected("the theme « vengeance_du_warden » rests until about 10-03 21:40 (15h00m of world play left") { store.addCanon(again, storyteller) }
         session(2, f.mimosa.uuid, f.clock.instant(), null)
         f.clock.advance(Duration.ofHours(15)) // twenty hours played since it closed
-        assertIs<Added.New<CanonEntry>>(store.addCanon(again, f.dreamer))
+        assertIs<Added.New<CanonEntry>>(store.addCanon(again, storyteller))
         assertEquals(listOf("vengeance_du_warden", "pont_des_soupirs", "vengeance_du_warden"), f.rows("SELECT theme FROM canon ORDER BY id") { getString(1) })
     }
 

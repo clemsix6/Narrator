@@ -35,20 +35,25 @@ import java.time.Instant
 /**
  * The Dreamer (M3 §8): during the dead times, it reads back what the memory gathered and consolidates it.
  * `MemoryJobs` runs it, one dream at a time, with the dream's `memory_runs` row already written. A dream is
- * five steps, each made of short conversations of [MemoryAgents] that get exactly what they need
- * ([DreamInputs]) and write through the Dreamer's tools (`tool/memory/DreamerTools.kt`):
+ * six steps (M6 §6.3), each made of short conversations of [MemoryAgents] that get exactly what they need
+ * ([DreamInputs], [ProgrammeInputs]) and write through their role's tools (`tool/memory/DreamerTools.kt`, the
+ * storyteller's `tool/storyteller/StorytellerTools.kt`):
  *
  * 1. **Players**: one conversation per player with something new since their last reflection, the most
  *    active first, `memory.dreamMaxPlayers` at most: traits, skills, relations, the written sections of the
  *    sheet, a dream hint. Once a player's conversation is done, the code stores their reflection
  *    (`memory_state` `reflected:<uuid>`: its time and their stats then).
- * 2. **Review** of the Narrator's play: tics and reactions computed by the code; the review, the freshness
- *    of the running gags.
+ * 2. **Review** of the Narrator's play: tics, reactions, registers and tone flags computed by the code; the
+ *    review, the freshness of the running gags.
  * 3. **Chronicle**: the sessions over since the last one, the season in progress rewritten (or closed at 12
  *    sessions or 30 days), the saga when a season closed.
- * 4. **Grimoire**, rewritten whole within its budget, and the arcs to come; then the code audits the voice
- *    of the dream's writes and of the Grimoire (decision `memory voice_audit`).
- * 5. **Merges** of the near duplicates the hygiene found.
+ * 4. **Grimoire**, rewritten whole within its budget; then the code audits the voice of the dream's writes
+ *    and of the Grimoire (decision `memory voice_audit`).
+ * 5. **Programme**, the storyteller's writing room (role `storyteller`, purpose `programme`): ideas for the coming
+ *    sessions (`P-…`), a season, the arcs to come (planned). Never decisive: its failure leaves the dream's outcome
+ *    as it was; skipped when `memory.programme` is false or nobody played in the last 7 days; decision `memory
+ *    programme` with what it wrote.
+ * 6. **Merges** of the near duplicates the hygiene found.
  *
  * Before step 1 of a new dream, the code's part: the hygiene ([Hygiene.beforeDream]); the stats were
  * computed by `MemoryJobs`. After the dream, a `CHECKPOINT`.
@@ -58,10 +63,10 @@ import java.time.Instant
  *   1, the players reflected on already have nothing new: they are not done twice.
  * - **A failed step does not stop the next ones.** A dream is done when its Grimoire was rewritten (step 4),
  *   failed otherwise, with the steps' results in its report. A 402 stops the dream at once, with the
- *   gateway's [GatewayError.Budget] and the last step passed ([RunOutcome.lastStep]).
+ *   gateway's [GatewayError.Budget] and the last step passed ([RunOutcome.lastStep]), the programme's as any.
  *
- * [RunOutcome.writes] counts the run's rows of `memory_log` (the hygiene's included); [RunOutcome.rejected]
- * its tool calls refused for their arguments.
+ * [RunOutcome.writes] counts the run's rows of `memory_log` (the hygiene's and the storyteller's included);
+ * [RunOutcome.rejected] its tool calls refused for their arguments.
  */
 class Dreamer(
     private val services: NarratorServices,
@@ -72,6 +77,7 @@ class Dreamer(
     private val log = Log.memory
     private val clock = services.clock
     private val inputs = DreamInputs(services)
+    private val programme = ProgrammeInputs(services, inputs)
     private val decisions = Decisions(services.trace, clock)
     private val store get() = services.memory.store
 
@@ -86,6 +92,7 @@ class Dreamer(
                 2 -> review(dream)
                 3 -> chronicle(dream)
                 4 -> grimoire(dream)
+                ProgrammeInputs.STEP -> programme(dream, lastEnd)
                 else -> merges(dream, lastEnd)
             }
             dream.results[step] = result
@@ -161,12 +168,57 @@ class Dreamer(
         }
     }
 
+    /**
+     * The storyteller's writing room (M6 §6.3): its ideas for the coming sessions, written after the Grimoire it reads. It
+     * never decides the dream's outcome: a failure, its inputs' included, is the step's only. [lastEnd]: the previous dream's
+     * end, since when the ideas closed are shown.
+     */
+    private suspend fun programme(dream: Dream, lastEnd: Instant?): StepResult {
+        if (!services.settings.get().config.memory.programme) return StepResult(Status.SKIPPED, "memory.programme is false")
+        val opening = try {
+            programme.opening(dream.runId, clock.instant(), lastEnd)
+                ?: return StepResult(Status.SKIPPED, "no player played in the last ${ProgrammeInputs.ACTIVE_DAYS} days")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("dream run ${dream.runId}: the programme's inputs failed: ${e.javaClass.simpleName}: ${e.message}")
+            return StepResult(Status.FAILED, ModelText.cut("inputs: ${e.message ?: e.javaClass.simpleName}", ERROR_MAX_CHARS))
+        }
+        val result = dream.step(ProgrammeInputs.STEP, "programme", opening, PROGRAMME_STEPS, PROGRAMME_TIMEOUT, Role.STORYTELLER)
+        if (result.status == Status.BUDGET) return result
+        return programmeDone(dream.runId, result)
+    }
+
+    /** The programme's [result], its note saying what the storyteller wrote; decision `memory programme`. Never fails. */
+    private suspend fun programmeDone(runId: Long, result: StepResult): StepResult = try {
+        services.journal.barrier() // the storyteller's writes
+        val (written, closed) = services.journal.read(READ_TIMEOUT_MS) { connection ->
+            connection.query(IDEAS_SQL, runId) { getInt(1) to getInt(2) }.single()
+        }
+        val wrote = "$written idea${if (written == 1) "" else "s"} written, $closed closed"
+        decisions.record(
+            log, DecisionRecord.Kind.MEMORY, "programme", "run $runId", "${result.status.id}: $wrote" + (result.note?.let { " ($it)" } ?: ""),
+            detail = buildJsonObject {
+                put("status", result.status.id)
+                put("written", written)
+                put("closed", closed)
+            },
+            level = if (result.status == Status.DONE) Log.Level.INFO else Log.Level.WARN,
+        )
+        if (result.status == Status.DONE) result.copy(note = wrote) else result
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.warn("dream run $runId: what the programme wrote could not be counted: ${e.javaClass.simpleName}: ${e.message}")
+        result
+    }
+
     /** The merge candidates among the memories written since the last dream ended. */
     private suspend fun merges(dream: Dream, lastEnd: Instant?): StepResult {
         val candidates = hygiene.mergeCandidates(lastEnd)
         val opening = inputs.merges(dream.runId, candidates) ?: return StepResult(Status.SKIPPED, "no merge candidate")
         val read = "${candidates.size} pair${if (candidates.size == 1) "" else "s"} read"
-        return dream.step(5, "merges", opening, MERGE_STEPS, MERGE_TIMEOUT).let { if (it.status == Status.DONE) it.copy(note = read) else it }
+        return dream.step(DreamInputs.MERGE_STEP, "merges", opening, MERGE_STEPS, MERGE_TIMEOUT).let { if (it.status == Status.DONE) it.copy(note = read) else it }
     }
 
     // ── The voice audit (M3 §12.3) ──────────────────────────────────────────────────────────────────
@@ -228,18 +280,18 @@ class Dreamer(
         private var budget: GatewayError.Budget? = null
         private val context = RunContext(runId, RunKind.DREAM, null, null, null)
 
-        /** One conversation of [step]. */
-        suspend fun converse(step: Int, label: String, opening: String, steps: Int, timeout: Duration): AgentRun {
+        /** One conversation of [step], of [role] (the Dreamer's, but the programme's, the storyteller's). */
+        suspend fun converse(step: Int, label: String, opening: String, steps: Int, timeout: Duration, role: Role = Role.DREAMER): AgentRun {
             log.debug { "dream run $runId: step $step opening of ${opening.length} characters" }
-            val run = agents.run(Role.DREAMER, context, label, opening, TurnLimits(steps), timeout)
+            val run = agents.run(role, context, label, opening, TurnLimits(steps), timeout)
             conversations += run.conversationId
             run.budget?.let { budget = it }
             return run
         }
 
-        /** A step made of one conversation ([name] in its label). */
-        suspend fun step(step: Int, name: String, opening: String, steps: Int, timeout: Duration): StepResult {
-            val run = converse(step, "Dream run $runId, step $step: $name", opening, steps, timeout)
+        /** A step made of one conversation of [role] ([name] in its label). */
+        suspend fun step(step: Int, name: String, opening: String, steps: Int, timeout: Duration, role: Role = Role.DREAMER): StepResult {
+            val run = converse(step, "Dream run $runId, step $step: $name", opening, steps, timeout, role)
             val error = run.error?.let { ModelText.cut(it, ERROR_MAX_CHARS) }
             return when {
                 run.budget != null -> StepResult(Status.BUDGET, error)
@@ -291,6 +343,8 @@ class Dreamer(
         val CHRONICLE_TIMEOUT: Duration = Duration.ofMinutes(10)
         const val GRIMOIRE_STEPS = 6
         val GRIMOIRE_TIMEOUT: Duration = Duration.ofMinutes(15)
+        const val PROGRAMME_STEPS = 10
+        val PROGRAMME_TIMEOUT: Duration = Duration.ofMinutes(10)
         const val MERGE_STEPS = 6
         val MERGE_TIMEOUT: Duration = Duration.ofMinutes(5)
 
@@ -311,5 +365,9 @@ class Dreamer(
 
         private const val COUNTS_SQL = "SELECT (SELECT count(*) FROM memory_log WHERE run_id = ?)::INTEGER, " +
             "(SELECT count(*) FROM tool_calls WHERE list_contains(?, conversation_id) AND status = 'invalid')::INTEGER"
+
+        /** The ideas a run's storyteller wrote, and those its writes closed (dropped, replaced, over the cap). */
+        private const val IDEAS_SQL = "SELECT count(*) FILTER (WHERE op = 'insert')::INTEGER, count(*) FILTER (WHERE op = 'update')::INTEGER " +
+            "FROM memory_log WHERE run_id = ? AND table_name = 'ideas' AND actor = 'storyteller'"
     }
 }

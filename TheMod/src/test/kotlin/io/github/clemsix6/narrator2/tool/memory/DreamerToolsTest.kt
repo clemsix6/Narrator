@@ -2,6 +2,8 @@ package io.github.clemsix6.narrator2.tool.memory
 
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonDraft
+import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.ChronicleDraft
 import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.MemoryDraft
@@ -63,27 +65,36 @@ class DreamerToolsTest {
     }
 
     @Test
-    fun `the Dreamer never commits the Narrator, it plans arcs, keeps lore, and resolves arcs only`() {
+    fun `the Dreamer never commits the Narrator nor plans an arc, keeps lore, and resolves arcs only`() {
         val e = f.evening()
         invalid(
             f.call(RememberTool(), """{"kind": "threat", "what": "Le Narrateur a menacé Bartok d'une pluie de slimes.", "players": ["Bartok"]}"""),
-            "the Dreamer remembers only an arc (planned), lore or an observation, not a threat",
+            "the Dreamer remembers only lore or an observation, not a threat",
         )
         invalid(
             f.call(RememberTool(), """{"kind": "nickname", "what": "Bartok est surnommé « la Taupe ».", "quote": "la Taupe", "players": ["Bartok"]}"""),
-            "the Dreamer remembers only an arc (planned), lore or an observation, not a nickname",
+            "the Dreamer remembers only lore or an observation, not a nickname",
         )
         invalid(
             f.call(ResolveTool(), """{"id": "${e.nickname}", "outcome": "retired", "note": "Plus personne ne l'emploie."}"""),
             "the Dreamer resolves only arcs, and ${e.nickname} is a nickname",
         )
         invalid(f.call(ResolveTool(), """{"id": "${e.gag}", "outcome": "retired", "note": "Usé jusqu'à la corde."}"""), "the Dreamer resolves only arcs, and ${e.gag} is a running_gag")
+        // M6 §6.5: an arc to come is the storyteller's.
+        invalid(
+            f.call(RememberTool(), """{"kind": "arc", "what": "Le Narrateur prépare un tournoi de pêche au bord de la lave.", "players": ["Bartok"], "theme": "tournoi_de_peche"}"""),
+            "the Dreamer remembers only lore or an observation, not an arc: an arc to come is the storyteller's, who writes the programme after the Grimoire",
+        )
         assertEquals(listOf("active", "active"), f.rows("SELECT status FROM canon ORDER BY id") { getString(1) })
 
-        val arc = ok(f.call(RememberTool(), """{"kind": "arc", "what": "Le Narrateur prépare un tournoi de pêche au bord de la lave.", "players": ["Bartok"], "theme": "tournoi_de_peche"}"""))
-        val ref = Regex("C-\\d+").find(arc)!!.value
-        assertEquals("ok: remembered $ref (arc → Bartok, planned)", arc)
-        assertTrue(ok(f.call(ResolveTool(), """{"id": "$ref", "outcome": "abandoned", "note": "Le tournoi de pêche n'aura pas lieu."}""")).startsWith("ok: $ref arc → Bartok is now abandoned"))
+        // An arc the play has settled, the Dreamer closes it.
+        val ref = f.write {
+            addCanon(
+                CanonDraft(CanonKind.ARC, "Le Narrateur lance un tournoi de pêche au bord de la lave.", players = listOf(f.bartok.uuid), theme = "tournoi_de_peche"),
+                f.director,
+            ).row.ref
+        }
+        assertTrue(ok(f.call(ResolveTool(), """{"id": "$ref", "outcome": "abandoned", "note": "Le tournoi de pêche n'a pas eu lieu."}""")).startsWith("ok: $ref arc → Bartok is now abandoned"))
         assertTrue(ok(f.call(RememberTool(), """{"kind": "lore", "what": "Le lac de lave du Nether porte le nom de Bain de Bartok."}""")).endsWith("(lore)"))
     }
 
