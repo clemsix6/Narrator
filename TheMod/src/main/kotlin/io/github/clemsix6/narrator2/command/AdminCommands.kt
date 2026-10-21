@@ -114,7 +114,7 @@ object AdminCommands {
     private fun status(source: CommandSourceStack): Int {
         val runtime = NarratorRuntime.current
         if (runtime == null) {
-            source.sendFailure(errorLine("the Narrator is not running, see the server log."))
+            source.sendFailure(errorLine(notRunning()))
             return 0
         }
         statusLines(runtime, NarratorRuntime.configDir).forEach { line -> source.sendSuccess({ line }, false) }
