@@ -50,7 +50,7 @@ class DuckDatabaseTest {
     fun `creates the file and applies the migrations once`() {
         DuckDatabase.open(file, options).use { db ->
             assertEquals(4, db.schemaVersion)
-            assertEquals(3, db.readers.size, "two for the Director and the memory, one more for the dashboard (M6 §8.5)")
+            assertEquals(2, db.readers.size, "two for the Director and the memory; one more only with the dashboard (M6 §8.5)")
             assertEquals(tables.sorted(), db.writer.strings("SELECT table_name FROM duckdb_tables() ORDER BY 1"))
             assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             db.writer.run("INSERT INTO events (id, ts, game_time, type) VALUES (1, now(), 0, 'join')")
