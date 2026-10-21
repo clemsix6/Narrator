@@ -39,7 +39,7 @@ data class HygieneReport(
  * - [tidy], every 10 minutes (`MemoryJobs`): canon expirations, the storyteller's ideas whose hours of world play are
  *   over (M6 §6.2), worn gags, notes done.
  * - [beforeDream], before the first step of each dream: [tidy], then archival of faded trivial memories
- *   and the merge candidates for the Dreamer's step 5. The caller runs `Journal.checkpointAsync()` after
+ *   and the merge candidates for the Dreamer's step 6. The caller runs `Journal.checkpointAsync()` after
  *   the dream.
  *
  * A write the store refuses (the entry was resolved meanwhile) is logged and skipped; Journal exceptions

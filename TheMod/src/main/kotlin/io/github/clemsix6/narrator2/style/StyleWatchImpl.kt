@@ -224,7 +224,7 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         val measures = StyleReport.measures(lines, view.names)
         return Diversity(
             measures.lines, measures.openersDistinct, measures.topRegister, measures.topRegisterShare, measures.registerEntropy,
-            measures.crutches, measures.tics,
+            measures.crutches, measures.tics, measures.plainShare.takeIf { measures.reviewed > 0 },
         )
     }
 
