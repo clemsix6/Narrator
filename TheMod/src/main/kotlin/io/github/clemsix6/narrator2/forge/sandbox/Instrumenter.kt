@@ -61,7 +61,10 @@ object Instrumenter {
     private const val COLLECTION = "java/util/Collection"
     private const val LIST = "java/util/List"
     private const val MAP = "java/util/Map"
+    private const val SET = "java/util/Set"
     private const val ARRAYS = "java/util/Arrays"
+    private const val COLLECTIONS = "java/util/Collections"
+    private const val OBJECT_TYPE = "Ljava/lang/Object;"
 
     private const val CONCAT_BOOTSTRAP =
         "(Ljava/lang/invoke/MethodHandles\$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;"
@@ -164,8 +167,12 @@ object Instrumenter {
         val guardedDescriptor = if (form == Form.STATIC) member.descriptor else "(L${member.owner};" + member.descriptor.substring(1)
     }
 
-    /** A constructor whose capacity argument sits [depth] category-1 values below the top of the stack, or whose top is a CharSequence ([trusted]). */
-    private class ConstructorRule(val member: RewrittenMember, val depth: Int, val trusted: Boolean = false)
+    /**
+     * A constructor whose argument is checked by `Guarded.[check]` ([checkDescriptor]: it takes the argument and gives
+     * it back) before the call: a capacity [depth] category-1 values below the top of the stack, or, at the top, a
+     * CharSequence to trust or the collection or map a hash table copies.
+     */
+    private class ConstructorRule(val member: RewrittenMember, val depth: Int = 0, val check: String = "capacity", val checkDescriptor: String = "(I)I")
 
     private fun instance(owner: String, name: String, descriptor: String, guarded: String = name) =
         CallRule(RewrittenMember(owner, name, descriptor), Form.INSTANCE, guarded)
@@ -266,6 +273,32 @@ object Instrumenter {
         add(static(ARRAYS, "deepHashCode", "([Ljava/lang/Object;)I", "deepHashCode"))
         add(static(ARRAYS, "equals", "([Ljava/lang/Object;[Ljava/lang/Object;)Z", "arraysEquals"))
         add(static(ARRAYS, "deepEquals", "([Ljava/lang/Object;[Ljava/lang/Object;)Z", "arraysDeepEquals"))
+        // The rest of that family (M5-FIX-2): lookups and removals, copies of a hash table, immutable factories,
+        // distinct and the collectors that hash. Copy constructors are checked where they are called (CONSTRUCTORS).
+        add(instance(COLLECTION, "remove", "(Ljava/lang/Object;)Z"))
+        add(instance(MAP, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;"))
+        add(instance(MAP, "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z"))
+        add(instance(MAP, "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
+        add(instance(MAP, "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
+        add(instance(MAP, "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z"))
+        add(instance(MAP, "computeIfPresent", "(Ljava/lang/Object;Ljava/util/function/BiFunction;)Ljava/lang/Object;"))
+        add(instance(MAP, "containsValue", "(Ljava/lang/Object;)Z"))
+        add(instance(LIST, "indexOf", "(Ljava/lang/Object;)I"))
+        add(instance(LIST, "lastIndexOf", "(Ljava/lang/Object;)I"))
+        add(instance("java/util/Deque", "removeFirstOccurrence", "(Ljava/lang/Object;)Z"))
+        add(instance("java/util/Deque", "removeLastOccurrence", "(Ljava/lang/Object;)Z"))
+        add(static(COLLECTIONS, "frequency", "(Ljava/util/Collection;Ljava/lang/Object;)I"))
+        add(static(COLLECTIONS, "disjoint", "(Ljava/util/Collection;Ljava/util/Collection;)Z"))
+        add(instance("java/util/HashMap", "clone", "()Ljava/lang/Object;"))
+        add(instance("java/util/HashSet", "clone", "()Ljava/lang/Object;"))
+        for (count in 1..10) add(static(SET, "of", "(${OBJECT_TYPE.repeat(count)})L$SET;", "setOf"))
+        add(static(SET, "of", "([$OBJECT_TYPE)L$SET;", "setOf"))
+        add(static(SET, "copyOf", "(L$COLLECTION;)L$SET;", "setCopyOf"))
+        for (pairs in 1..10) add(static(MAP, "of", "(${OBJECT_TYPE.repeat(2 * pairs)})L$MAP;", "mapOf"))
+        add(static(MAP, "ofEntries", "([Ljava/util/Map\$Entry;)L$MAP;", "mapOfEntries"))
+        add(static(MAP, "copyOf", "(L$MAP;)L$MAP;", "mapCopyOf"))
+        // Stream.distinct and the hashing collectors (toSet, toMap, groupingBy…) are NOT wrapped: they stay the host's
+        // to abandon (M5 §3.8, the documented residual of M5-FIX-2). Closing them would be a lazy-stream wrapper.
     }
 
     private val CALLS_BY_SIGNATURE: Map<String, List<CallRule>> = CALLS.groupBy { it.member.name + it.member.descriptor }
@@ -281,7 +314,8 @@ object Instrumenter {
 
     /**
      * Every public constructor with a leading `int` of [SandboxPolicy.CAPACITY_CTOR_TYPES] (the one list), its capacity
-     * checked where it sits; and `StringBuilder(CharSequence)`, which reserves the length it is told.
+     * checked where it sits; `StringBuilder(CharSequence)`, which reserves the length it is told; and the copy
+     * constructors of the hash tables, which hash every element or key again in one call (M5-FIX-2).
      */
     private val CONSTRUCTORS: Map<String, ConstructorRule> = (
         SandboxPolicy.CAPACITY_CTOR_TYPES.flatMap { owner ->
@@ -292,7 +326,13 @@ object Instrumenter {
                     check(above.size <= 2 && above.none { it == java.lang.Long.TYPE || it == java.lang.Double.TYPE }) { "cannot reach the capacity of $constructor" }
                     ConstructorRule(RewrittenMember(owner, "<init>", Type.getConstructorDescriptor(constructor)), above.size)
                 }
-        } + ConstructorRule(RewrittenMember(BUILDER, "<init>", "(Ljava/lang/CharSequence;)V"), 0, trusted = true)
+        } + ConstructorRule(RewrittenMember(BUILDER, "<init>", "(Ljava/lang/CharSequence;)V"), check = "trusted", checkDescriptor = "(Ljava/lang/CharSequence;)Ljava/lang/CharSequence;") +
+            listOf("java/util/HashSet", "java/util/LinkedHashSet").map { owner ->
+                ConstructorRule(RewrittenMember(owner, "<init>", "(L$COLLECTION;)V"), check = "hashedElements", checkDescriptor = "(L$COLLECTION;)L$COLLECTION;")
+            } +
+            listOf("java/util/HashMap", "java/util/LinkedHashMap").map { owner ->
+                ConstructorRule(RewrittenMember(owner, "<init>", "(L$MAP;)V"), check = "hashedKeys", checkDescriptor = "(L$MAP;)L$MAP;")
+            }
         ).associateBy { it.member.owner + it.member.descriptor }
 
     private fun callRule(opcode: Int, owner: String, name: String, descriptor: String, own: Set<String>): CallRule? {
@@ -497,7 +537,7 @@ object Instrumenter {
             instruction()
             module.refuseNamed(owner)
             if (opcode == Opcodes.INVOKESPECIAL) {
-                if (name == "<init>") CONSTRUCTORS[owner + descriptor]?.let(::checkCapacity)
+                if (name == "<init>") CONSTRUCTORS[owner + descriptor]?.let(::checkArgument)
             } else {
                 val rule = callRule(opcode, owner, name, descriptor, module.own)
                 if (rule != null) return guarded(rule.guarded, rule.guardedDescriptor)
@@ -505,20 +545,19 @@ object Instrumenter {
             super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
         }
 
-        /** Checks a constructor's capacity where it sits, the category-1 arguments above it put back as they were. */
-        private fun checkCapacity(rule: ConstructorRule) {
-            if (rule.trusted) return guarded("trusted", "(Ljava/lang/CharSequence;)Ljava/lang/CharSequence;")
+        /** Checks a constructor's argument where it sits, the category-1 arguments above it put back as they were. */
+        private fun checkArgument(rule: ConstructorRule) {
             when (rule.depth) {
-                0 -> guarded("capacity", "(I)I")
+                0 -> guarded(rule.check, rule.checkDescriptor)
                 1 -> {
                     super.visitInsn(Opcodes.SWAP)
-                    guarded("capacity", "(I)I")
+                    guarded(rule.check, rule.checkDescriptor)
                     super.visitInsn(Opcodes.SWAP)
                 }
                 else -> {
                     super.visitInsn(Opcodes.DUP2_X1)
                     super.visitInsn(Opcodes.POP2)
-                    guarded("capacity", "(I)I")
+                    guarded(rule.check, rule.checkDescriptor)
                     super.visitInsn(Opcodes.DUP_X2)
                     super.visitInsn(Opcodes.POP)
                 }

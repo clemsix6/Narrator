@@ -85,8 +85,14 @@ internal class ModuleFixture(
             return fakeMemory.store.addCanon(draft, author)
         }
 
-        /** As the real store with the engine's notes: one in the first or second person is refused (`VoiceGuard`). */
+        /**
+         * As the real store with the engine's ends: a row closed already, a status its kind does not close with, and a note
+         * in the first or second person (`VoiceGuard`) are refused.
+         */
         override suspend fun resolveCanon(ref: Ref, status: CanonStatus, note: String, winners: List<UUID>, author: Author): CanonEntry {
+            val row = fakeMemory.store.canon(ref) ?: throw MemoryRejected("no canon entry $ref")
+            if (!row.status.open) throw MemoryRejected("$ref is already ${row.status.id}; remember a new entry instead")
+            if (!row.kind.allows(row.status, status)) throw MemoryRejected("a ${row.kind.id} cannot be ${status.id}")
             VoiceGuard.check(note, "note", MemoryLimits.RESOLUTION, boundQuotes = false)?.let { throw MemoryRejected(it) }
             return fakeMemory.store.resolveCanon(ref, status, note, winners, author)
         }

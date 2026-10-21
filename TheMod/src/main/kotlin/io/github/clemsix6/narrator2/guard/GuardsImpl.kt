@@ -321,7 +321,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
             BlockRestorer.activeOn(player.uuid).isNotEmpty()
     }
 
-    override fun rescue(player: ServerPlayer, why: String) = death.rescue(player, why)
+    override fun rescue(player: ServerPlayer, why: String, inPlace: Boolean) = death.rescue(player, why, inPlace)
 
     /**
      * `ALLOW_DEATH` of [player]: whether the death may happen. A blow of a punishment's creature never kills

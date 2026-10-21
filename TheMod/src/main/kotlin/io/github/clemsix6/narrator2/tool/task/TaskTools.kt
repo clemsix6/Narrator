@@ -18,8 +18,10 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * Delegation to the workers (M1_M2 §9.6): `delegate`, `tasks`. `ToolCatalog` builds the family once
- * per conversation; both tools are shown only when a worker role is wired ([ToolEnv.workerRoles]).
+ * Delegation to the workers (M1_M2 §9.6): `delegate`, `tasks`. `ToolCatalog` builds the family once per conversation
+ * ([ToolEnv.workerRoles]): `delegate` is shown when a role it offers is wired (the Analyst, the scout), `tasks` when any
+ * worker role is, the forger included (M5 review, D3): with the Journal down and the Forge up, the Director still lists
+ * and cancels the forger's tasks.
  */
 @Suppress("UNUSED_PARAMETER")
 fun taskTools(services: NarratorServices): List<NarratorTool<*>> = listOf(DelegateTool(), TasksTool())
@@ -123,7 +125,8 @@ class TasksTool : NarratorTool<TasksArgs>(
     args = TasksArgs.serializer(),
     effect = ToolEffect.TASK,
 ) {
-    override fun isAvailable(env: ToolEnv): Boolean = anyWorker(env)
+    /** Any worker role, the forger included: its tasks are listed and cancelled here, although `delegate` never starts one. */
+    override fun isAvailable(env: ToolEnv): Boolean = env.workerRoles.isNotEmpty()
 
     override suspend fun run(ctx: ToolContext, args: TasksArgs): ToolResult {
         val workers = ctx.services.workers

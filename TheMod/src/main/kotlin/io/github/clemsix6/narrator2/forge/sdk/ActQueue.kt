@@ -444,11 +444,13 @@ class ModuleActs(
         queue.ask(Act("launch", json { put("player", player); put("direction", direction); put("strength", strength) }, player))
 
     override fun teleport(player: String?, to: Place?): Pending {
+        // The player's dimension is read once (a lookup on the server thread), and only for a place to check.
         val refusal = when {
             to == null -> ToolResult.invalid("teleport needs a place to go")
-            player != null && dimensionOf(player).let { it != null && it != to.dimension() } ->
-                ToolResult.invalid("a module moves a player within their own dimension: ${ModelText.name(player)} is in ${dimensionOf(player)}, not ${to.dimension()}")
-            else -> null
+            player == null -> null
+            else -> dimensionOf(player)?.takeIf { it != to.dimension() }?.let { there ->
+                ToolResult.invalid("a module moves a player within their own dimension: ${ModelText.name(player)} is in $there, not ${to.dimension()}")
+            }
         }
         return queue.ask(
             Act(

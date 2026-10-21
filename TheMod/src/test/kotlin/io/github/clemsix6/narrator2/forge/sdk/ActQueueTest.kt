@@ -89,10 +89,12 @@ class ActQueueTest {
 
     private class Setup(val queue: ActQueue, val acts: ModuleActs, val ground: GroundView, val creatures: CreatureControl)
 
-    private fun TestScope.setup(dimensions: Map<String, String> = emptyMap()): Setup {
+    /** [dimensions]: the players' dimensions, each read recorded in [reads] (a lookup on the server thread in the game). */
+    private fun TestScope.setup(dimensions: Map<String, String> = emptyMap(), reads: MutableList<String> = mutableListOf()): Setup {
         val queue = ActQueue(c70, runner, backgroundScope, clock, host, Executor { it.run() })
         val creatures = CreatureControl(services, c70.id, queue)
-        return Setup(queue, ModuleActs(queue, creatures) { dimensions[it] }, GroundView(queue), creatures)
+        val dimensionOf = { player: String -> dimensions[player].also { reads += player } }
+        return Setup(queue, ModuleActs(queue, creatures, dimensionOf), GroundView(queue), creatures)
     }
 
     /** A callback of the module that records what it got, and whether its host was armed then. */
@@ -404,12 +406,15 @@ class ActQueueTest {
 
     @Test
     fun `a module moves a player within their own dimension only`() = runTest {
-        val (queue, acts) = setup(mapOf("Bartok" to "overworld")).let { it.queue to it.acts }
+        val reads = mutableListOf<String>()
+        val (queue, acts) = setup(mapOf("Bartok" to "overworld"), reads).let { it.queue to it.acts }
         val outcomes = Callback()
         queue.invocation("start") {
             acts.teleport("Bartok", Place("nether", 0.0, 64.0, 0.0)).then(outcomes)
             acts.teleport("Bartok", Place("overworld", 100.5, 70.0, -20.5)).then(outcomes)
+            acts.teleport("Bartok", null).then(outcomes)
         }
+        assertEquals(listOf("Bartok", "Bartok"), reads, "the dimension read once a move, refused or not, and not without a place (M5 review, finding 7)")
         runCurrent()
         queue.deliver()
         assertEquals(

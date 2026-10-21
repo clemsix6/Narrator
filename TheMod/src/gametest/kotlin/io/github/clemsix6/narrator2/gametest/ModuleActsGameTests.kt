@@ -13,11 +13,14 @@ import io.github.clemsix6.narrator2.forge.sdk.GroundView
 import io.github.clemsix6.narrator2.forge.sdk.ModuleActs
 import io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures
 import io.github.clemsix6.narrator2.gametest.ForgeContractsGameTests.Companion.FORGE_ENVIRONMENT
+import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.count
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.floor
 import io.github.clemsix6.narrator2.guard.AttributeKey
 import io.github.clemsix6.narrator2.guard.BlockRestorer
+import io.github.clemsix6.narrator2.guard.CreatureShield
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
+import io.github.clemsix6.narrator2.guard.NarratorMob
 import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.Verdict
@@ -57,9 +60,9 @@ import java.util.UUID
 /**
  * In-game tests of the SDK's acts, creatures and blocks (task M5-07, M5 §4.4, §4.5, §16.3), in the batch of the Forge:
  * a module's acts go through the real tools and guards, one act of the engine per call; its creatures are its own and
- * marked, push nobody (design review, finding 3 (a)), aim at their target only and never kill a bystander (finding 3
- * (b)); it claims no boss nor anyone's creature (finding 4) and gives back what it claimed where it was; its blocks go
- * in thin air only.
+ * marked, push nobody (design review, finding 3 (a)), aim at their target only, never kill a bystander (finding 3 (b))
+ * nor anyone (code review, D1); it claims no boss nor anyone's creature (finding 4) and gives back what it claimed where
+ * it was; its blocks go in thin air only.
  *
  * Each test runs a deployment of its own ([Rig]) on the server's runtime, its acts on the server thread (an unconfined
  * queue: each act is done before its call returns), and gives back everything at the end.
@@ -349,9 +352,9 @@ class ModuleActsGameTests {
 
     /**
      * A module's creature aims at the player its attack (an act the guards accepted) sent it to, nobody else; its blows
-     * reach nobody else; and a bystander who dies near it, or by it, is rescued, never counted (design review, finding 3
-     * (b)), while its target's death is the death guard's, which the attack armed. Another player's blow is never the
-     * Narrator's.
+     * reach nobody else; and a bystander who dies near it is rescued, never counted (design review, finding 3 (b)), while
+     * its target's death of another cause is the death guard's, which the attack armed (its fatal blow is a rescue:
+     * [aModulesCreatureIsBoundToNobodyAndNeverKills]). Another player's blow is never the Narrator's.
      */
     @GameTest(environment = FORGE_ENVIRONMENT)
     fun aModulesCreatureAimsAtItsTargetOnlyAndNeverKillsABystander(helper: GameTestHelper) = withTestPlayers(helper, 2) { (ann, bob) ->
@@ -381,10 +384,7 @@ class ModuleActsGameTests {
                 helper.assertEquals(20f, bob.live.health, "Bob's health")
                 helper.assertTrue(ann.live.hurtServer(level, level.damageSources().mobAttack(zombie), 4f), "it reaches Ann")
 
-                helper.assertTrue(
-                    ModuleCreatures.allowDeath(ann.live, level.damageSources().mobAttack(zombie), rig.guards),
-                    "its target's death is the death guard's",
-                )
+                helper.assertTrue(ModuleCreatures.allowDeath(ann.live, level.damageSources().lava(), rig.guards), "its target's death of another cause is the death guard's")
                 helper.assertTrue(ModuleCreatures.allowDeath(bob.live, level.damageSources().playerAttack(ann.live), rig.guards), "another player's blow is never the Narrator's")
                 val killsBefore = GuardStates.read(bob.live).narratorKills.size
                 bob.live.health = 0.5f
@@ -392,6 +392,65 @@ class ModuleActsGameTests {
                 helper.assertEquals(DeathGuard.RESCUE_HEALTH, bob.live.health, "Bob rescued")
                 helper.assertTrue(GuardStates.read(bob.live).shield != null, "and shielded a while")
                 helper.assertEquals(killsBefore, GuardStates.read(bob.live).narratorKills.size, "never counted")
+            } finally {
+                zombie.discard()
+            }
+        }
+    }
+
+    /**
+     * A module's creature never kills (M5 review, D1: a creature the Narrator summons never kills, a module's included),
+     * and is its module's, not a player's (M4-LEFTOVERS' test, moved here). A zombie `spawn` marked as a punishment of
+     * Ann is hers alone until the module makes it its own: then it is bound to nobody, and `creature_attack` sends it at
+     * Bob, at 1 health. Its blow lands; the fatal one is refused, by the server's own hooks, and turned into a rescue
+     * where Bob stands, nothing lost, nothing counted. The zombie stays its module's, and stays when Ann leaves.
+     */
+    @GameTest(environment = FORGE_ENVIRONMENT)
+    fun aModulesCreatureIsBoundToNobodyAndNeverKills(helper: GameTestHelper) = withTestPlayers(helper, 2) { (ann, bob) ->
+        floor(helper)
+        ann.standAt(BlockPos(2, 1, 2))
+        bob.standAt(BlockPos(6, 1, 6))
+        ann.makeVulnerable()
+        bob.makeVulnerable()
+        Rig(helper, 990_708).use { rig ->
+            // What `spawn` does with a zombie sent at Ann, then the summoning's outcome settled (`Act.settle`): the module's.
+            val zombie = EntityTypes.ZOMBIE.create(helper.level, EntitySpawnReason.COMMAND)!!
+            zombie.snapTo(helper.absoluteVec(Vec3(4.5, 1.0, 4.5)))
+            zombie.isNoAi = true // the test strikes for it
+            rig.guards.mobs.mark(zombie, rig.runtime.clock.millis() + 120_000, ann.uuid, harmful = true, punishment = NarratorMob.SPAWN)
+            helper.assertTrue(helper.level.addFreshEntity(zombie), "a zombie")
+            try {
+                helper.assertEquals(ann.uuid, CreatureShield.boundTo(zombie)?.player, "summoned, the zombie is Ann's")
+                helper.assertTrue(rig.creatures.reserve(1), "room for it")
+                rig.creatures.adopt(listOf(zombie.uuid), 1, ann.name, targeting = true)
+                helper.assertEquals(listOf(zombie.stringUUID), rig.creatures.own().map { it.uuid() }, "the module's own")
+                helper.assertEquals(null, CreatureShield.boundTo(zombie), "bound to nobody: its module aims it")
+
+                val attack = rig.outcome { rig.creatures.get(zombie.stringUUID)!!.attack(bob.name) }
+                helper.assertTrue(attack.ok(), attack.text())
+                helper.assertTrue(zombie.target === bob.live, "sent at Bob, not the player it was summoned for: ${zombie.target}")
+
+                bob.live.inventory.add(ItemStack(Items.DIAMOND, 5))
+                bob.live.damageCooldownTime = 0
+                helper.assertTrue(zombie.doHurtTarget(helper.level, bob.live), "its blow lands")
+                helper.assertTrue(bob.live.health < bob.live.maxHealth && !bob.live.isDeadOrDying, "a blow that does not kill hurts: ${bob.live.health}")
+
+                val kills = GuardStates.read(bob.live).narratorKills
+                val where = bob.live.position()
+                bob.live.health = 1f
+                bob.live.damageCooldownTime = 0
+                zombie.doHurtTarget(helper.level, bob.live)
+                helper.assertFalse(bob.live.isDeadOrDying, "the fatal blow is refused")
+                helper.assertEquals(DeathGuard.RESCUE_HEALTH, bob.live.health, "rescued, with three hearts")
+                helper.assertTrue(bob.live.position().distanceTo(where) < 0.01, "where he stood: ${bob.live.position()} (was $where)")
+                helper.assertEquals(5, count(bob.live, Items.DIAMOND), "nothing lost")
+                val state = GuardStates.read(bob.live)
+                helper.assertTrue(state.narratorKills == kills && state.lastDeathAt == null && !state.protectedDeath, "no death, none counted: $state")
+                helper.assertTrue((state.shield?.until ?: 0L) > System.currentTimeMillis(), "shielded from the Narrator a while: ${state.shield}")
+                helper.assertTrue(zombie.isAlive && rig.creatures.own().any { it.uuid() == zombie.stringUUID }, "the zombie stays its module's")
+
+                ann.close()
+                helper.assertFalse(zombie.isRemoved, "nor goes with Ann")
             } finally {
                 zombie.discard()
             }
