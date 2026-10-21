@@ -207,7 +207,9 @@ class ProgrammeEndToEndTests {
                     )
                 }
                 !isDirector(request) -> reply { text("Rien à dire.") }
-                "<chapter_end chapter=" in textSince(request) -> reply { text("Joueurs vus : $player. Résumé de chapitre du programme.") }
+                // 100 characters or more: a shorter summary is no summary, and asked again (M6-FIX-9).
+                "<chapter_end chapter=" in textSince(request) ->
+                    reply { text("Joueurs vus : $player. Résumé de chapitre du programme : le joueur a miné un peu de pierre, et le Narrateur a tiré des idées.") }
                 resulted -> reply { text("Fin du tour.") }
                 "<heartbeat" in textSince(request) && "Idea: P-" in textSince(request) -> reply { toolUse("inspire", "{}") }
                 else -> reply { text("Rien à dire.") }

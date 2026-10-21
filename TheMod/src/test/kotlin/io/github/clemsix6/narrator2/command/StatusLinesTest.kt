@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.director.PendingReminder
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.journal.JournalFixture
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.memory.Idea
@@ -65,7 +66,7 @@ class StatusLinesTest {
         assertEquals("Mechanics: on · 0 challenges · 0 rules · 0 trap blocks pending", lines[11], "the engine of the tests (FakeMechanics), no trap set")
         assertEquals("Forge: on · 0 modules running", lines[12], "the Forge of the tests (FakeForge), no module")
         assertEquals("Style: watch on · line review off (no reflex model: no LLMGW key) · tone notes on · resting openers refused", lines[13])
-        assertEquals("Storyteller: off (no worker takes its tasks) · programme: no open idea", lines[14], "the workers of the tests (FakeWorkers): the Analyst only")
+        assertEquals("Storyteller: off (the Journal is unavailable) · programme: no open idea", lines[14], "no Journal: the storyteller takes no task")
         assertEquals("Dashboard: off (dashboard.enabled is false)", lines[15])
         assertTrue(lines.size <= 27, "status stays short: ${lines.size} lines")
     }
@@ -89,8 +90,12 @@ class StatusLinesTest {
         assertEquals("Storyteller: on · programme: 3 open ideas, 2 dealt · the newest P-47 written 19:20:00", lines[14])
         assertEquals("Dashboard: on http://127.0.0.1:8770/", lines[15])
 
-        val noMemory = lines(TestServices(clock = clock, memory = DisabledMemory("memory.enabled is false")))
-        assertEquals("Storyteller: off (the memory is unavailable)", noMemory[14])
+        val noJournal = lines(TestServices(clock = clock, memory = DisabledMemory("the Journal is unavailable")))
+        assertEquals("Storyteller: off (the Journal is unavailable)", noJournal[14], "the Journal first: without it, no memory either")
+        JournalFixture().use { fixture ->
+            val noMemory = lines(TestServices(clock = clock, journal = fixture.journal, memory = DisabledMemory("memory.enabled is false")))
+            assertEquals("Storyteller: off (the memory is unavailable)", noMemory[14])
+        }
         val off = testSettings(NarratorConfig(style = StyleConfig(lineReview = false, toneNotes = false, refuseRestingOpeners = false)))
         assertEquals(
             "Style: watch off (no Journal, or not wired: see the server log) · line review off (style.lineReview is false) · tone notes off · resting openers only named",

@@ -193,7 +193,8 @@ class StyleAssemblyGameTests {
             """{"reason": "La cour juge en style de tribunal.", "register": "courtroom", "dark": $dark, "cruel": 0.0, "flat": 0.0, "out_of_character": 0.0, "repeats": 0.0, "crutches": []}"""
 
         companion object {
-            const val SUMMARY = "Résumé de chapitre de l'assemblage du style."
+            /** A summary of 100 characters or more: a shorter one is no summary, and asked again (M6-FIX-9). */
+            const val SUMMARY = "Résumé de chapitre de l'assemblage du style : la cour a jugé un prévenu pour jardinage nocturne, puis s'est retirée pour délibérer."
             const val SHORT = "Silence, prévenu."
             const val TITLE = "LA COUR SE RETIRE POUR DÉLIBÉRER"
 

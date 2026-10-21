@@ -1,7 +1,11 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.NarratorRuntime
+import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.runtime.RestartReport
 import io.github.clemsix6.narrator2.web.DisabledDashboard
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withTimeout
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import java.net.URI
@@ -10,11 +14,13 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 /**
  * The runtime's own dashboard, assembled (M6 §8, §15.2, task M6-17). Off by default (M6-FIX-2), it is turned on here as an
- * operator does it: `"dashboard": { "enabled": true }` in the configuration (on port 0: any free port), then
- * `/narrator restart`. The new Narrator's dashboard answers on `127.0.0.1` and refuses a browser without a session; the
+ * operator does it: `"dashboard": { "enabled": true }` in the configuration (on port 0: any free port), then a restart as
+ * `/narrator restart` runs it (`/narrator restart` from a real console: the real server of M6-17, see its handoff). The
+ * new Narrator's dashboard answers on `127.0.0.1` and refuses a browser without a session; the
  * link of `/narrator dashboard`, from the console, opens one session, then is worth nothing; every page of the menu
  * serves; `/narrator status` says where it listens. It stops with its Narrator: the restart that turns it off again runs
  * the first half of the server's stop (`ShutdownSequence.stopInGame`, the dashboard first), and its port is closed.
@@ -33,7 +39,7 @@ class DashboardAssemblyGameTests {
         }
         val config = Files.readString(NarratorRuntime.configFile)
         try {
-            // On, as an operator turns it on: the configuration, then /narrator restart.
+            // On, as an operator turns it on: the configuration, then a restart.
             Files.writeString(NarratorRuntime.configFile, """{ "dashboard": { "enabled": true, "port": 0 } }""")
             restart(helper)
             val runtime = NarratorRuntime.current ?: error("no Narrator after the restart")
@@ -85,12 +91,16 @@ class DashboardAssemblyGameTests {
         }
     }
 
-    /** `/narrator restart` from the console, once it answered that the Narrator restarted. */
+    /**
+     * A restart of the Narrator, as `/narrator restart` runs it, asked by [BY]: not by the console, whose restarts
+     * `RestartGameTests` counts (`operator restarted` by `Server`) in the same Journal, whatever the order of the batches.
+     */
     private suspend fun restart(helper: GameTestHelper) {
-        val output = operatorCommands(helper, "narrator restart")
-        awaitCondition("the restart", 60_000) { output.lines.any { it.startsWith(RESTARTED) || "restart failed" in it || it.startsWith("[Narrator] cannot restart") } }
-        val done = output.lines.first { it.startsWith(RESTARTED) || "restart failed" in it || it.startsWith("[Narrator] cannot restart") }
-        check(done.startsWith(RESTARTED) && done.endsWith(": Journal available · memory on · mechanics on · forge on")) { "the restart: ${output.lines}" }
+        val server = helper.level.server
+        val report = CompletableFuture<RestartReport>()
+        check(server.onServerThread { NarratorRuntime.restart(server, BY, { report.complete(it) }) }) { "a restart already runs" }
+        val done = withTimeout(60_000) { report.await() }
+        check(done.ok && done.summary == "Journal available · memory on · mechanics on · forge on") { "the restart: ${done.text()}" }
     }
 
     /** A GET of [url], with the session [cookie] if any, without following a redirect. Off the server thread. */
@@ -110,7 +120,8 @@ class DashboardAssemblyGameTests {
         /** The configuration of the in-game runs (`seedGameTestConfig` in `build.gradle.kts`): no dashboard. */
         const val GAMETEST_CONFIG = """{ "dashboard": { "enabled": false } }"""
 
-        const val RESTARTED = "[Narrator] Narrator restarted in "
+        /** Who asks for this test's restarts. */
+        const val BY = "gametest-dashboard"
 
         /** The pages of the menu (M6 §8.4). */
         val PAGES = listOf("/", "/turns", "/conversations", "/tasks", "/decisions", "/costs", "/memory", "/players", "/mechanics", "/forge", "/style", "/sql")

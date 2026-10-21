@@ -259,6 +259,7 @@ object AdminCommands {
     /** The storyteller in the `ready` line and `/narrator status`: `on` while it takes tasks, else `off (why)`. */
     fun storytellerState(services: NarratorServices): String = when {
         Role.STORYTELLER in services.workers.roles -> "on"
+        !services.journal.available -> "off (the Journal is unavailable)"
         !services.memory.available -> "off (the memory is unavailable)"
         services.phase != Phase.RUNNING -> "off (the server is stopping)"
         else -> "off (no worker takes its tasks)"
