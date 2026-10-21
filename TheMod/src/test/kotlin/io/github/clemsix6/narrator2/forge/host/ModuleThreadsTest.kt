@@ -249,6 +249,79 @@ class ModuleThreadsTest {
     }
 
     @Test
+    fun `a held call given up again as it is resumed stays held, and a later resume runs it to its end`() {
+        val threads = ModuleThreads("test-module")
+        val release = CountDownLatch(1)
+        val served = CopyOnWriteArrayList<String>()
+        var held: ModuleThreads.Held? = null
+        try {
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.run(budget, hold = { held = it }) {
+                release.await(60, TimeUnit.SECONDS)
+                served += ModuleThreads.toCaller { Thread.sleep(RESUME_MILLIS * 10); "slow" } // served past the resume's budget
+                served += ModuleThreads.toCaller { "last" }
+            })
+            val call = assertNotNull(held)
+            release.countDown()
+            awaitAsking(call)
+
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.resume(call, RESUME_MILLIS * 1_000_000), "given up again once its request was served")
+            assertTrue(threads.served > RESUME_MILLIS * 1_000_000, "what this resume served, past its budget: ${threads.served} ns")
+            awaitAsking(call)
+            assertFalse(call.ended, "held still")
+            assertEquals(listOf("slow"), served.toList())
+            assertEquals(0, threads.lost.alive(), "held, not lost")
+
+            assertEquals(ModuleThreads.Ran.DONE, threads.resume(call, patient))
+            assertTrue(call.ended)
+            assertEquals(listOf("slow", "last"), served.toList())
+        } finally {
+            release.countDown()
+            threads.close()
+        }
+    }
+
+    @Test
+    fun `a call cut while it is resumed is given up at once, and the SDK refuses it from then on`() {
+        // Its end comes while its caller serves it (FORGE-ABANDON review, finding 7): cut held or resumed alike.
+        val threads = ModuleThreads("test-module")
+        val release = CountDownLatch(1)
+        val served = CopyOnWriteArrayList<String>()
+        val refused = AtomicReference<Throwable>()
+        val ended = CountDownLatch(1)
+        var held: ModuleThreads.Held? = null
+        try {
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.run(budget, hold = { held = it }) {
+                release.await(60, TimeUnit.SECONDS)
+                served += ModuleThreads.toCaller { threads.cut(checkNotNull(held)); "cut" }
+                try {
+                    served += ModuleThreads.toCaller { "after" }
+                } catch (thrown: Throwable) {
+                    refused.set(thrown)
+                }
+                ended.countDown()
+            })
+            val call = assertNotNull(held)
+            release.countDown()
+            awaitAsking(call)
+
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.resume(call, patient), "cut while resumed: its caller goes on at once")
+            assertTrue(ended.await(60, TimeUnit.SECONDS))
+            assertEquals(listOf("cut"), served.toList(), "nothing served once cut")
+            assertTrue(refused.get() is ForgeLimit && refused.get()!!.message == ModuleThreads.ABANDONED_MESSAGE, "${refused.get()}")
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.resume(call, patient), "a call cut is never resumed")
+        } finally {
+            release.countDown()
+            threads.close()
+        }
+    }
+
+    /** Waits until [call]'s thread waits for an SDK request. */
+    private fun awaitAsking(call: ModuleThreads.Held) {
+        val asking = System.nanoTime() + 60_000_000_000L
+        while (!call.asking) check(System.nanoTime() < asking) { "the held call never asked" }
+    }
+
+    @Test
     fun `past two lost threads alive the Forge is stuck, once, until the server restarts`() {
         val stuck = mutableListOf<String>()
         val lost = LostThreads(onStuck = { stuck += it })
@@ -375,5 +448,10 @@ class ModuleThreadsTest {
         } finally {
             threads.close()
         }
+    }
+
+    private companion object {
+        /** A resume's budget, for a request served past it (a resume is never late: its call runs already). */
+        const val RESUME_MILLIS = 2L
     }
 }

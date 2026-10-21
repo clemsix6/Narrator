@@ -56,8 +56,14 @@ l'appel va à sa fin, chaque requête du SDK servie sur le thread serveur, dans 
 - `ActQueue` : un acte demandé entre deux invocations (le reste d'un appel repris) rejoint `late` ; ces actes partent
   **ensemble**, comme un acte du moteur, avant ceux de l'invocation suivante (`invocation`, `deliver`), c'est-à-dire une fois
   l'appel fini (le moteur ne fait aucun autre appel du module tant qu'il est tenu) ; à la fermeture, ils sont `dropped`
-  comme les autres. Ils comptent dans les 4 actes de l'appel (`inCall` n'est remis à zéro qu'à l'invocation suivante).
-  L'ancienne `IllegalStateException` « asked an act outside one of its calls » disparaît : c'était sa seule cause possible.
+  comme les autres. Ils comptent dans les 4 actes de l'appel. *(Corrigé par FORGE-ABANDON-FIX : c'était faux jusque-là.
+  Une invocation que l'hôte saute, un fait arrivé dans le même tick par exemple, remettait `inCall` à zéro, et le reste
+  de l'appel repris gagnait 4 actes de plus. Depuis, le moteur le signale à la file (`ActQueue.skipped`), qui garde le
+  compte de l'appel tenu.)*
+  L'ancienne `IllegalStateException` « asked an act outside one of its calls » disparaît. *(Corrigé : ce n'était pas
+  sa seule cause. Un appel de jauge, fait hors de toute invocation, peut initialiser une classe du module dont le
+  `<clinit>` demande un acte. Avant, cet acte était refusé par l'exception, une faute* exception *; maintenant, il rejoint
+  `late` et part à l'invocation suivante, plafonds de la minute compris. Accepté tel quel : relecture, constat 6.)*
 
 Résultat pour `password_race` : le titre et la victoire partent à la fin de l'invocation ; au tick suivant, le moteur
 reprend l'appel, sert le `then` ; l'issue de la victoire revient, son rappel appelle `ctx.end`, le module finit
@@ -68,9 +74,9 @@ reprend l'appel, sert le `then` ; l'issue de la victoire revient, son rappel app
 | Garantie | Comment |
 |---|---|
 | Un fil perdu n'agit plus jamais sur le monde | perdu = abandonné (il a calculé) ou module déchargé : `abandoned()` et `unload()` appellent `cut` avant `lose` ; la requête en attente et les suivantes lèvent `ForgeLimit`, le compteur est révoqué comme avant. Un fil **tenu** n'agit sur le monde que par le thread serveur, pendant une reprise, comme pendant l'appel lui-même |
-| Au plus 2 fils perdus | inchangé : seul un abandon (ou un déchargement) perd un fil. Un fil tenu n'est pas compté, comme le fil « qui finit seul » d'avant ; au plus un par déploiement (le module attend) |
+| Au plus 2 fils perdus | inchangé : seul un abandon (ou un déchargement) perd un fil. Un fil tenu n'est pas compté, comme le fil « qui finit seul » d'avant ; au plus un par déploiement (le module attend). *(Précisé par FORGE-ABANDON-FIX : au déchargement, le compteur est révoqué **avant** `cut`, et un fil tenu garé sur sa requête n'est plus compté perdu. Refusé, il se dénoue sans exécuter de code du module ; compté, il pouvait bloquer la Forge quand trois modules finissaient ensemble.)* |
 | Faute seulement avec preuve de travail | inchangé : `settle`, `computing`, le compteur. La reprise n'ajoute aucune faute |
-| Rien ne bloque le thread serveur | une reprise attend au plus le budget d'un appel (25 ms), seulement quand le fil tenu a posté une requête ; sinon 0. Le temps d'une reprise compte dans `msPerSecond` et le temps servi dans le travail de la seconde (lenteur) |
+| Rien ne bloque le thread serveur | une reprise attend au plus le budget d'un appel (25 ms), seulement quand le fil tenu a posté une requête ; sinon 0. *(Corrigé par FORGE-ABANDON-FIX : la phrase suivante était fausse ici. Le temps d'une reprise ne comptait que dans le `msPerSecond` de l'hôte, que personne ne lit, et le temps servi n'entrait dans la lenteur qu'à la fin de l'appel, d'un bloc. Un appel tenu pouvait ainsi occuper le thread serveur à chaque tick sans être compté.)* Depuis FORGE-ABANDON-FIX, chaque reprise compte au moment où elle a lieu : son temps mural dans le budget du tick et dans `ModuleView.msPerSecond` (le `d.spent` du moteur, par `ModuleHost.resumedNanos`), son temps servi dans le travail de la seconde (lenteur) |
 | Un démarrage retenu (`stalled`) | inchangé : coupé (`cut`), le déploiement finit `disabled` sans faute |
 | Le banc | inchangé en pratique : un appel lâché après 10 s de patience est tenu, le banc échoue (`OVERLOADED`) et décharge l'hôte, qui le coupe |
 
@@ -140,7 +146,10 @@ requête `end` y est refusée, `ending()` jamais rempli).
   module waiting for it` (`INFO`), puis `… ended without computing past its budget … nobody's fault` comme avant. Une
   reprise lâchée de nouveau : `DEBUG` (`… resumed, was given up again`).
 - **Le moteur** (`ModuleEngine`, non modifié) : son `d.spent` (avertissement du tick lent) ne compte pas le temps d'une
-  reprise, que l'hôte compte dans `msPerSecond`. `stop` reste sauté tant qu'un appel est tenu (comme avant), puis
+  reprise, que l'hôte compte dans `msPerSecond`. *(Dépassé : depuis FORGE-ABANDON-FIX, `Deployment.busy()` ajoute à
+  `d.spent` le temps de la reprise, `ModuleHost.resumedNanos`.)* `stop` reste sauté tant qu'un appel est tenu (comme avant), puis
+  *(dépassé : depuis FORGE-ABANDON-FIX, `ModuleHost.stop` attend d'abord la fin de l'appel tenu, puis le `stop` lui-même,
+  avec la patience d'un démarrage ; un `stop` perdu malgré tout l'est avec un `WARN`, voir la passation FORGE-ABANDON-FIX §5)*
   `unload` le coupe. Les actes du reste d'un appel repris partent au tick qui suit sa fin (`deliver` ou l'invocation
   suivante) ; comme tout acte encore en file, ils sont `dropped` si l'appel a demandé `ctx.end` (règle de `sdk.md` :
   finir dans le rappel du dernier acte, ce que fait `password_race`).
