@@ -148,7 +148,7 @@ class DashboardQueriesTest {
     }
 
     @Test
-    fun `usage costs each role's tokens at the price of the model that answered, a model without a price as $ ?`() {
+    fun `usage costs each role's tokens at the price of the model that answered, the fallback model's included`() {
         val fallback = journal.nextId(IdKind.LLM_CALL)
         journal.llmCall(
             LlmCallRecord(
@@ -161,10 +161,11 @@ class DashboardQueriesTest {
 
         val costs = read { it.tokensByRole(0) }.mapValues { (_, tokens) -> prices.costOf(tokens) }
         assertEquals(setOf("director", "analyst", "reflex"), costs.keys)
-        // Opus 5.5 at 4 / 20 / 0.20 / 8 $ per million: (1 850 × 4 + 244 800 × 0.20 + 412 × 20) / 1 M.
-        assertEquals(0.0646, costs.getValue("director").dollars, 1e-9)
-        assertEquals(Cost(costs.getValue("director").dollars, priced = 4, unpriced = 1), costs.getValue("director"))
-        assertEquals("\$0.065 + 1 call at \$ ?", costs.getValue("director").text, "the fallback model has no price")
+        // Opus 5.5 at 4 / 20 / 0.20 / 8 $ per million: (1 850 × 4 + 244 800 × 0.20 + 412 × 20) / 1 M;
+        // the fallback model, Opus 4.8, at 5 / 25 $: (500 × 5 + 50 × 25) / 1 M.
+        assertEquals(0.0646 + 0.00375, costs.getValue("director").dollars, 1e-9)
+        assertEquals(Cost(costs.getValue("director").dollars, priced = 5, unpriced = 0), costs.getValue("director"))
+        assertEquals("\$0.068", costs.getValue("director").text, "the fallback model at its own price")
         assertEquals("\$0.016", costs.getValue("analyst").text)
         assertEquals("\$0.000024", costs.getValue("reflex").text, "Haiku: (90 × 0.10 + 30 × 0.50) / 1 M")
         assertTrue(read { it.tokensByRole(TraceDataset.NOW.plusSeconds(1).toEpochMilli()) }.isEmpty())

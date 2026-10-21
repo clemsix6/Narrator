@@ -113,7 +113,8 @@ private fun load(services: NarratorServices, reads: StartupReads): PreparedMemor
  * the index serves the store, the hygiene and the recall; the play clock serves everything that dates or
  * decays; one [MemoryAgents] runs the conversations of the Chronicler and the Dreamer; one [Reminiscence]
  * finds the reminiscences of the wake-ups ([WakeAttachments]) and the cues of the jobs ([JobHooks]); one
- * [Hygiene] serves the jobs and the Dreamer.
+ * [Hygiene] serves the jobs and the Dreamer. Every piece writes through the one store that the cache of the open
+ * ideas watches, so that the cache follows the hygiene's expirations and the reverts as well as the tools' writes.
  */
 private fun assemble(services: NarratorServices, prepared: PreparedMemory.Loaded): MemoryService {
     val journal = services.journal
@@ -124,7 +125,9 @@ private fun assemble(services: NarratorServices, prepared: PreparedMemory.Loaded
     val settings = { services.settings.get().config.memory }
 
     val index = SearchIndex()
-    val store = DuckMemoryStore(journal, index, playClock, clock, services.trace)
+    val duckStore = DuckMemoryStore(journal, index, playClock, clock, services.trace)
+    val ideas = OpenIdeas(duckStore)
+    val store = ideas.watching(duckStore)
 
     val recall = HybridRecall(journal, index, playClock, clock)
     val sheets = DuckPlayerSheets(journal, playClock, services.players, zone)
@@ -148,7 +151,7 @@ private fun assemble(services: NarratorServices, prepared: PreparedMemory.Loaded
     )
     val jobs = MemoryJobs(services, store, state, DuckJobsData(journal), Chronicler(services, agents), Dreamer(services, agents, hygiene, state), hooks)
     val memory = MemoryService(
-        store, recall, sheets, playClock, jobs, agents,
+        store, ideas, recall, sheets, playClock, jobs, agents,
         MemoryBriefing(store, recall, sheets, journal, { services.players.online.map { it.ref } }, zone),
         WakeAttachments(JoinBrief(store, sheets, journal, zone), reminiscence),
         services.scope,
