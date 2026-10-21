@@ -6,6 +6,7 @@ import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
 import java.time.OffsetDateTime
+import kotlin.math.roundToLong
 
 /**
  * The reads behind `/narrator trace`, `why` and `usage`, and the consumption line of `/narrator status`
@@ -124,41 +125,30 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
         player,
     ) { DeathLine(instant(1)!!, getString(2), getString(3), getString(4)) }
 
-    /** Model calls since [since] (epoch milliseconds), per provider and role, the busiest first. */
-    fun usage(since: Long): List<Usage> = rows(
-        """
-        SELECT provider, role, count(*), count(error),
-               coalesce(sum(input_tokens), 0), coalesce(sum(cache_read_tokens), 0), coalesce(sum(cache_write_tokens), 0),
-               coalesce(sum(output_tokens), 0), CAST(coalesce(avg(latency_ms), 0) AS BIGINT)
-        FROM llm_calls WHERE started_at >= to_timestamp(CAST(? AS DOUBLE) / 1000)
-        GROUP BY provider, role ORDER BY provider, count(*) DESC, role
-        """.trimIndent(),
-        since,
-    ) {
-        Usage(
-            provider = getString(1), role = getString(2), calls = getInt(3), failed = getInt(4),
-            inputTokens = getLong(5), cacheReadTokens = getLong(6), cacheWriteTokens = getLong(7), outputTokens = getLong(8),
-            averageLatencyMs = getLong(9),
-        )
-    }
+    /**
+     * Model calls since [since] (epoch milliseconds), per provider and role, the busiest first, each with its calls by
+     * the model that answered ([Usage.models]): what `/narrator usage`, the status line and the dashboard's overview
+     * count and price ([Prices.costOf]). One statement, summed by provider, role and model.
+     */
+    fun usage(since: Long): List<Usage> =
+        rows(USAGE, since) { ModelUsage(getString(1), getString(2), modelTokens(3), getLong(10)) }
+            .groupBy { it.provider to it.role }
+            .map { (key, rows) ->
+                val all = ModelTokens.sum(key.second, rows.map { it.tokens })
+                Usage(
+                    provider = key.first, role = key.second, calls = all.calls.toInt(), failed = all.failed.toInt(),
+                    inputTokens = all.input, cacheReadTokens = all.cacheRead, cacheWriteTokens = all.cacheWrite, outputTokens = all.output,
+                    averageLatencyMs = (rows.sumOf { it.latencyMs }.toDouble() / all.calls).roundToLong(), models = rows.map { it.tokens },
+                )
+            }
+            .sortedWith(compareBy<Usage> { it.provider }.thenByDescending { it.calls }.thenBy { it.role })
+
+    /** A row of [USAGE]: the calls of one provider, role and model, and the sum of their latencies. */
+    private class ModelUsage(val provider: String, val role: String, val tokens: ModelTokens, val latencyMs: Long)
 
     // ── Rows ────────────────────────────────────────────────────────────────────────────────────────
 
     private fun turnSummary(turnId: Long): TurnSummary? = single("$TURN_SUMMARY WHERE t.turn_id = ?", turnId) { turnSummary() }
-
-    private fun ResultSet.turnSummary() = TurnSummary(
-        turnId = getLong(1),
-        conversationId = getString(2),
-        chapter = int(3),
-        startedAt = instant(4)!!,
-        endedAt = instant(5),
-        trigger = getString(6),
-        outcome = getString(7),
-        woke = getString(8),
-        tools = getString(9)?.split(',').orEmpty(),
-        contextTokens = long(10),
-        llmCalls = getInt(11),
-    )
 
     /** From column [from]: id, ts, kind, player, what, where. */
     private fun ResultSet.toldEvent(from: Int) = ToldEvent(
@@ -217,31 +207,31 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
         return statement
     }
 
-    private fun ResultSet.instant(column: Int): Instant? = when (val value = getObject(column)) {
-        null -> null
-        is OffsetDateTime -> value.toInstant()
-        is Timestamp -> value.toInstant()
-        is Instant -> value
-        else -> error("column $column is not a timestamp: ${value.javaClass}")
-    }
-
-    private fun ResultSet.long(column: Int): Long? = getLong(column).takeUnless { wasNull() }
-
-    private fun ResultSet.int(column: Int): Int? = getInt(column).takeUnless { wasNull() }
-
-    private fun ResultSet.double(column: Int): Double? = getDouble(column).takeUnless { wasNull() }
-
-    /** A list of names written by `array_to_string(…, ',')`; null for a NULL list (everyone). */
-    private fun ResultSet.names(column: Int): List<String>? = getString(column)?.split(',')?.filter { it.isNotEmpty() }
-
     companion object {
         const val DEFAULT_TIMEOUT_SECONDS = 5
 
         private const val WAKE = "wake"
         private const val INJECTED = "injected"
 
-        /** Columns of [TurnSummary], from `turns t`; the counts come from the calls themselves, so a running turn has them too. */
-        private val TURN_SUMMARY = """
+        /**
+         * The sums of a group of `llm_calls` that [modelTokens] reads after a model column: calls, failed, input, cache
+         * read, cache write and output tokens.
+         */
+        internal const val TOKEN_SUMS = "count(*), count(error), coalesce(sum(input_tokens), 0), coalesce(sum(cache_read_tokens), 0), " +
+            "coalesce(sum(cache_write_tokens), 0), coalesce(sum(output_tokens), 0)"
+
+        /** Since a time in epoch milliseconds, the parameter. */
+        private const val SINCE = "to_timestamp(CAST(? AS DOUBLE) / 1000)"
+
+        /** The calls since a time by provider, role and model ([TOKEN_SUMS]), and the sum of their latencies. */
+        private const val USAGE = "SELECT provider, role, model, $TOKEN_SUMS, coalesce(sum(latency_ms), 0) " +
+            "FROM llm_calls WHERE started_at >= $SINCE GROUP BY provider, role, model ORDER BY provider, role, model"
+
+        /**
+         * Columns of [TurnSummary], from `turns t` ([turnSummary] reads them); the counts come from the calls themselves,
+         * so a running turn has them too. The dashboard's list of turns adds its filters to it.
+         */
+        internal val TURN_SUMMARY = """
             SELECT t.turn_id, t.conversation_id, c.chapter, t.started_at, t.ended_at, t.trigger, t.outcome,
                    (SELECT d.reason FROM engine_decisions d WHERE d.kind = 'wake' AND d.turn_id = t.turn_id ORDER BY d.id LIMIT 1),
                    (SELECT string_agg(u.tool, ',' ORDER BY u.id) FROM tool_calls u WHERE u.turn_id = t.turn_id),
@@ -286,6 +276,44 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
                 "cache_write_tokens, output_tokens, thinking, purpose, model FROM llm_calls"
     }
 }
+
+/** The [TurnSummary] of a row of [TraceQueries.TURN_SUMMARY]. */
+internal fun ResultSet.turnSummary() = TurnSummary(
+    turnId = getLong(1),
+    conversationId = getString(2),
+    chapter = int(3),
+    startedAt = instant(4)!!,
+    endedAt = instant(5),
+    trigger = getString(6),
+    outcome = getString(7),
+    woke = getString(8),
+    tools = getString(9)?.split(',').orEmpty(),
+    contextTokens = long(10),
+    llmCalls = getInt(11),
+)
+
+/** The [ModelTokens] of a row: the model at column [from], then the sums of [TraceQueries.TOKEN_SUMS]. */
+internal fun ResultSet.modelTokens(from: Int) = ModelTokens(
+    model = getString(from), calls = getLong(from + 1), failed = getLong(from + 2), input = getLong(from + 3),
+    cacheRead = getLong(from + 4), cacheWrite = getLong(from + 5), output = getLong(from + 6),
+)
+
+private fun ResultSet.instant(column: Int): Instant? = when (val value = getObject(column)) {
+    null -> null
+    is OffsetDateTime -> value.toInstant()
+    is Timestamp -> value.toInstant()
+    is Instant -> value
+    else -> error("column $column is not a timestamp: ${value.javaClass}")
+}
+
+private fun ResultSet.long(column: Int): Long? = getLong(column).takeUnless { wasNull() }
+
+private fun ResultSet.int(column: Int): Int? = getInt(column).takeUnless { wasNull() }
+
+private fun ResultSet.double(column: Int): Double? = getDouble(column).takeUnless { wasNull() }
+
+/** A list of names written by `array_to_string(…, ',')`; null for a NULL list (everyone). */
+private fun ResultSet.names(column: Int): List<String>? = getString(column)?.split(',')?.filter { it.isNotEmpty() }
 
 /**
  * One Director turn, in short.
@@ -428,7 +456,12 @@ data class MessageFate(
 /** A player's death as the death guard explained it: its decision's time, subject, reason and `detail` (JSON text). */
 data class DeathLine(val ts: Instant, val player: String, val reason: String?, val detail: String?)
 
-/** Model calls of one provider (`anthropic`) and role over a period; [failed] ended with an error. */
+/**
+ * Model calls of one provider (`anthropic`) and role over a period; [failed] ended with an error.
+ *
+ * @property models the same calls by the model that answered, a fallback model included: what they cost
+ *   ([Prices.costOf]).
+ */
 data class Usage(
     val provider: String,
     val role: String,
@@ -439,4 +472,5 @@ data class Usage(
     val cacheWriteTokens: Long,
     val outputTokens: Long,
     val averageLatencyMs: Long,
+    val models: List<ModelTokens> = emptyList(),
 )

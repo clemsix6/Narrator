@@ -1,9 +1,10 @@
 package io.github.clemsix6.narrator2.web
 
-import io.github.clemsix6.narrator2.command.TraceText
-import io.github.clemsix6.narrator2.trace.Prices
+import io.github.clemsix6.narrator2.trace.ModelTokens
 import io.github.clemsix6.narrator2.trace.TraceQueries
 import io.github.clemsix6.narrator2.trace.TurnSummary
+import io.github.clemsix6.narrator2.trace.modelTokens
+import io.github.clemsix6.narrator2.trace.turnSummary
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Timestamp
@@ -13,7 +14,8 @@ import java.time.OffsetDateTime
 /**
  * The reads of the dashboard's trace pages (M6 §8.4, §8.5): the Director's turns, the conversations, the tasks and the
  * engine's decisions, a page at a time and filtered; the calls and tokens behind the costs, summed by the database. The
- * details of one turn or one task come from [TraceQueries], as for `/narrator trace`.
+ * details of one turn or one task come from [TraceQueries], as for `/narrator trace`, and so do the columns of a turn in
+ * the list ([TraceQueries.TURN_SUMMARY]) and the calls by role ([TraceQueries.usage]).
  *
  * Runs on the dashboard's read connection ([PageContext.read]), one page's reads at a time; every statement stops after
  * [READ_TIMEOUT_MS] ([rows]). A list reads one row more than a page ([Paging.limit]); a sum covers a bounded period.
@@ -32,12 +34,8 @@ class DashboardQueries(private val connection: Connection) {
             else -> where.add(TURN_OUTCOME, filter.outcome)
         }
         filter.chapter?.let { where.add(TURN_CHAPTER, it) }
-        return connection.rows("$TURNS${where.sql} ORDER BY t.turn_id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
-            TurnSummary(
-                turnId = getLong(1), conversationId = getString(2), chapter = int(3), startedAt = instant(4)!!, endedAt = instant(5),
-                trigger = getString(6), outcome = getString(7), woke = getString(8), tools = getString(9)?.split(',').orEmpty(),
-                contextTokens = long(10), llmCalls = getInt(11),
-            )
+        return connection.rows("${TraceQueries.TURN_SUMMARY}${where.sql} ORDER BY t.turn_id DESC LIMIT ? OFFSET ?", *where.params(paging.limit, paging.offset)) {
+            turnSummary()
         }
     }
 
@@ -96,22 +94,12 @@ class DashboardQueries(private val connection: Connection) {
     /** The model calls since [since] (epoch milliseconds), by hour ([HourCalls.hour], hours since the epoch) and by model. */
     fun callsByHour(since: Long): List<HourCalls> = connection.rows(CALLS_BY_HOUR, since) { HourCalls(getLong(1), modelTokens(2)) }
 
-    /** The model calls since [since] (epoch milliseconds) of each role, by the model that answered: what `/narrator usage` prices. */
-    fun tokensByRole(since: Long): Map<String, List<ModelTokens>> =
-        connection.rows(TOKENS_BY_ROLE, since) { getString(1) to modelTokens(2) }.groupBy({ it.first }, { it.second })
-
     // ── Rows ────────────────────────────────────────────────────────────────────────────────────────
 
     private fun ResultSet.conversationRow() = ConversationRow(
         conversationId = getString(1), role = getString(2), label = getString(3), chapter = int(4), taskId = long(5),
         startedAt = instant(6)!!, endedAt = instant(7), endReason = getString(8), summary = getString(9), transcript = getString(10),
         calls = getLong(11), turns = getLong(12),
-    )
-
-    /** From column [from]: model, calls, failed, input, cache read, cache write, output. */
-    private fun ResultSet.modelTokens(from: Int) = ModelTokens(
-        model = getString(from), calls = getLong(from + 1), failed = getLong(from + 2), input = getLong(from + 3),
-        cacheRead = getLong(from + 4), cacheWrite = getLong(from + 5), output = getLong(from + 6),
     )
 
     private fun ResultSet.instant(column: Int): Instant? = when (val value = getObject(column)) {
@@ -143,24 +131,13 @@ class DashboardQueries(private val connection: Connection) {
     }
 
     internal companion object {
-        /** The model's columns, after a model column: calls, failed, input, cache read, cache write, output. */
-        private const val TOKENS = "count(*), count(error), coalesce(sum(input_tokens), 0), coalesce(sum(cache_read_tokens), 0), " +
-            "coalesce(sum(cache_write_tokens), 0), coalesce(sum(output_tokens), 0)"
+        /** The model's columns, after a model column ([modelTokens]): calls, failed, input, cache read, cache write, output. */
+        private const val TOKENS = TraceQueries.TOKEN_SUMS
 
         /** Since a time in epoch milliseconds, the parameter. */
         private const val SINCE = "to_timestamp(CAST(? AS DOUBLE) / 1000)"
 
-        /** The columns of [TurnSummary], as `TraceQueries` reads them: the counts come from the calls, so a running turn has them too. */
-        private val TURNS = """
-            SELECT t.turn_id, t.conversation_id, c.chapter, t.started_at, t.ended_at, t.trigger, t.outcome,
-                   (SELECT d.reason FROM engine_decisions d WHERE d.kind = 'wake' AND d.turn_id = t.turn_id ORDER BY d.id LIMIT 1),
-                   (SELECT string_agg(u.tool, ',' ORDER BY u.id) FROM tool_calls u WHERE u.turn_id = t.turn_id),
-                   (SELECT coalesce(l.input_tokens, 0) + coalesce(l.cache_read_tokens, 0) + coalesce(l.cache_write_tokens, 0)
-                    FROM llm_calls l WHERE l.turn_id = t.turn_id AND l.provider = 'anthropic' AND l.input_tokens IS NOT NULL
-                    ORDER BY l.id DESC LIMIT 1),
-                   (SELECT count(*) FROM llm_calls l WHERE l.turn_id = t.turn_id AND l.provider = 'anthropic')
-            FROM turns t LEFT JOIN conversations c ON c.conversation_id = t.conversation_id
-        """.trimIndent()
+        /** The conditions of the list of turns, after the columns of `/narrator trace` ([TraceQueries.TURN_SUMMARY]). */
         private const val TURN_TRIGGER = "t.trigger = ?"
         private const val TURN_RUNNING = "t.outcome IS NULL"
         private const val TURN_OUTCOME = "t.outcome = ?"
@@ -205,15 +182,13 @@ class DashboardQueries(private val connection: Connection) {
             GROUP BY 1, 2
         """
 
-        private const val TOKENS_BY_ROLE = "SELECT role, model, $TOKENS FROM llm_calls WHERE started_at >= $SINCE GROUP BY role, model"
-
         /** Every statement and condition of this file, for the test that none names a private table. */
         val STATEMENTS: List<String> = listOf(
-            TURNS, TURN_TRIGGER, TURN_RUNNING, TURN_OUTCOME, TURN_CHAPTER,
+            TraceQueries.TURN_SUMMARY, TURN_TRIGGER, TURN_RUNNING, TURN_OUTCOME, TURN_CHAPTER,
             CONVERSATIONS, CONVERSATION_ROLE, CONVERSATION_TOKENS,
             TASKS, TASK_ROLE, TASK_STATUS,
             DECISIONS, DECISION_KIND, DECISION_DECISION, DECISION_SUBJECT, DECISION_SINCE, DECISION_TURN,
-            CALLS_BY_KIND, CALLS_BY_HOUR, TOKENS_BY_ROLE,
+            CALLS_BY_KIND, CALLS_BY_HOUR,
         )
     }
 }
@@ -289,57 +264,3 @@ data class KindCalls(val role: String, val purpose: String, val tokens: ModelTok
 
 /** The calls to one model within one [hour], counted in hours since the epoch. */
 data class HourCalls(val hour: Long, val tokens: ModelTokens)
-
-/**
- * Calls to one [model] (the one that answered, `llm_calls.model`) and the tokens they used; a call that failed before any
- * reply used none.
- */
-data class ModelTokens(
-    val model: String,
-    val calls: Long,
-    val failed: Long,
-    val input: Long,
-    val cacheRead: Long,
-    val cacheWrite: Long,
-    val output: Long,
-) {
-    /** The tokens the model read: input, cache read and cache write. */
-    val read: Long get() = input + cacheRead + cacheWrite
-
-    operator fun plus(other: ModelTokens) = ModelTokens(
-        model, calls + other.calls, failed + other.failed, input + other.input, cacheRead + other.cacheRead,
-        cacheWrite + other.cacheWrite, output + other.output,
-    )
-
-    companion object {
-        /** The sum of [tokens], whatever their models, named [model]. */
-        fun sum(model: String, tokens: Iterable<ModelTokens>) = tokens.fold(ModelTokens(model, 0, 0, 0, 0, 0, 0), ModelTokens::plus)
-    }
-}
-
-/**
- * What calls cost (M6 §8.7): the [dollars] of the [priced] calls, at the configuration's prices, and the calls of a model
- * without a price ([unpriced]), whose cost is unknown (`$ ?`): nothing is guessed from a model's name.
- */
-data class Cost(val dollars: Double, val priced: Long, val unpriced: Long) {
-    /** `$1.92`; `$ ?` when every call is of a model without a price; `$1.92 + 3 calls at $ ?` when some are. */
-    val text: String
-        get() = when {
-            unpriced == 0L -> Prices.dollars(dollars)
-            priced == 0L -> Prices.dollars(null)
-            else -> "${Prices.dollars(dollars)} + $unpriced ${TraceText.plural(unpriced.toInt(), "call")} at ${Prices.dollars(null)}"
-        }
-
-    operator fun plus(other: Cost) = Cost(dollars + other.dollars, priced + other.priced, unpriced + other.unpriced)
-
-    companion object {
-        /** No call. */
-        val NONE = Cost(0.0, 0, 0)
-    }
-}
-
-/** What [tokens] cost, each at the price of its model. */
-fun Prices.costOf(tokens: Iterable<ModelTokens>): Cost = tokens.fold(Cost.NONE) { sum, used ->
-    val dollars = cost(used.model, used.input, used.output, used.cacheRead, used.cacheWrite)
-    sum + if (dollars == null) Cost(0.0, 0, used.calls) else Cost(dollars, used.calls, 0)
-}

@@ -3,7 +3,6 @@ package io.github.clemsix6.narrator2.web
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.FILE_SECRET
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.PRIVATE_SECRET
-import io.github.clemsix6.narrator2.web.pages.OverviewPage
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.lang.reflect.InvocationTargetException
@@ -87,7 +86,7 @@ class DashboardPrivacyTest {
         pages.forEach { path -> assertEquals(200, pageOf(routes, token, path).status, path) }
         val statements = journal.statements.toList()
         assertTrue(statements.size > 40, "${statements.size} statements recorded")
-        (statements + DashboardQueries.STATEMENTS + OverviewPage.COST_BY_ROLE).forEach { sql ->
+        (statements + DashboardQueries.STATEMENTS).forEach { sql ->
             assertFalse("private_messages" in sql.lowercase(), "a statement names the private messages: $sql")
         }
     }
