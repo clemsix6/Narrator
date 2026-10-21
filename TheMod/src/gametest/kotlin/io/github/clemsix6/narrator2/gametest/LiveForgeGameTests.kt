@@ -37,6 +37,7 @@ import io.github.clemsix6.narrator2.tool.action.playerActionTools
 import io.github.clemsix6.narrator2.tool.action.punishTools
 import io.github.clemsix6.narrator2.tool.action.worldActionTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
+import io.github.clemsix6.narrator2.trace.Prices
 import io.netty.channel.ChannelFutureListener
 import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.CoroutineScope
@@ -159,19 +160,6 @@ private const val EVENING_MAX_TICKS = 108_000
 private const val EVALS_BUDGET = 10.0
 private const val EVENING_BUDGET = 5.0
 private const val RUN_BUDGET = 15.0
-
-/** ForgePrices per million tokens, as given by the owner: Opus 5.5 (cache writes at the 1-hour rate) and Haiku 5.5 (the reflexes). */
-private val OPUS_PRICES = ForgePrices(input = 4.0, output = 20.0, cacheRead = 0.20, cacheWrite = 8.0)
-private val HAIKU_PRICES = ForgePrices(input = 0.10, output = 0.50, cacheRead = 0.01, cacheWrite = 0.20)
-
-private data class ForgePrices(val input: Double, val output: Double, val cacheRead: Double, val cacheWrite: Double) {
-    fun cost(input: Long, cacheRead: Long, cacheWrite: Long, output: Long): Double =
-        (input * this.input + cacheRead * this.cacheRead + cacheWrite * this.cacheWrite + output * this.output) / 1_000_000.0
-
-    companion object {
-        fun of(model: String): ForgePrices = if ("haiku" in model) HAIKU_PRICES else OPUS_PRICES
-    }
-}
 
 /** The forger alone: the Director asleep (a task's report then reaches nobody), no reflex. */
 private const val FORGER_CONFIG = """{ "director": { "enabled": false }, "reflex": { "enabled": false } }"""
@@ -558,9 +546,9 @@ private class ForgeRun(val helper: GameTestHelper, private val title: String, pr
         val m = from
         val out = StringBuilder()
         out.append("# $title\n\n")
-        out.append("Run of ${DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(zone).format(Instant.ofEpochMilli(started))}; prices per million tokens: Opus ")
-        out.append("input ${OPUS_PRICES.input} \$, output ${OPUS_PRICES.output} \$, cache read ${OPUS_PRICES.cacheRead} \$, cache write ${OPUS_PRICES.cacheWrite} \$ (1 h); ")
-        out.append("Haiku (reflexes) ${HAIKU_PRICES.input} / ${HAIKU_PRICES.output} / ${HAIKU_PRICES.cacheRead} / ${HAIKU_PRICES.cacheWrite} \$.\n\n")
+        out.append("Run of ${DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(zone).format(Instant.ofEpochMilli(started))}; prices per million tokens ")
+        out.append("(the configuration's `prices`; input / output / cache read / cache write at 1 h): ")
+        out.append(runtime.settings.get().config.prices.entries.joinToString(" · ") { (model, p) -> "$model ${p.input} / ${p.output} / ${p.cacheRead} / ${p.cacheWrite} \$" }).append(".\n\n")
         out.append("This test: **${spendOf("id > ${m.llmCall}")}**; the whole run so far: ${dollars(spent())}.\n\n")
         out.append("## Timeline\n\n").append(timeline).append('\n')
         out.append(results).append('\n')
@@ -663,9 +651,11 @@ private class ForgeRun(val helper: GameTestHelper, private val title: String, pr
 
         /** The module's name in the arguments of `forge_test` and `forge_save` (its source left out of the report's list). */
         val NAME_ARG = Regex(""""name"\s*:\s*"([^"]*)"""")
-
-        fun cost(model: String, tokens: List<Long>): Double = ForgePrices.of(model).cost(tokens[0], tokens[1], tokens[2], tokens[3])
     }
+
+    /** What [tokens] (input, cache read, cache write, output) of [model] cost at the configuration's prices (`trace/Prices`); 0 without a price. */
+    private fun cost(model: String, tokens: List<Long>): Double =
+        Prices.of(runtime.settings.get().config).cost(model, tokens[0], tokens[3], tokens[1], tokens[2]) ?: 0.0
 }
 
 /**

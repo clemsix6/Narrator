@@ -78,9 +78,7 @@ class LiveReflexEvalTest {
             val answered = model.values.count { it.source.startsWith(ClaudeReflexes.SOURCE_PREFIX) }
             val latencies = model.values.filter { it.source != HeuristicReflexes.SOURCE }.map { it.latencyMs }.sorted()
             val calls = services.traces.llmCalls
-            val dollars = calls.sumOf {
-                ((it.inputTokens ?: 0) * INPUT + (it.cacheReadTokens ?: 0) * CACHE_READ + (it.cacheWriteTokens ?: 0) * CACHE_WRITE + (it.outputTokens ?: 0) * OUTPUT) / 1_000_000.0
-            }
+            val dollars = calls.sumOf { LivePrices.dollars(it) }
             val beatsRight = heartbeats.count { (beats.getValue(it.id).worth >= ReflexThresholds.HEARTBEAT_WORTH) == it.worth }
 
             fun rate(scores: Map<String, Score>, pick: (Score) -> Boolean) = scores.values.count(pick)
@@ -197,11 +195,5 @@ class LiveReflexEvalTest {
 
     private companion object {
         const val DATASET = "/narrator2/reflex/chat-triage-eval.json"
-
-        // Haiku 5.5, dollars per million tokens: cache writes at the 1 h rate (LLMGW places `ttl=1h` markers).
-        const val INPUT = 0.10
-        const val OUTPUT = 0.50
-        const val CACHE_READ = 0.01
-        const val CACHE_WRITE = 0.20
     }
 }

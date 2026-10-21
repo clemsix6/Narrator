@@ -444,7 +444,7 @@ class LiveMemoryCycleTest {
         val conversation = Conversation(Role.ANALYST, "E4 voice judge", listOf(TextBlockParam.builder().text(JUDGE).build()), transcripts = w.transcripts)
         val result = runBlocking { w.client.send(conversation, listOf(MessageParam.builder().role(MessageParam.Role.USER).content(numbered).build())) }
         val stats = result.stats
-        val judgeCall = LiveCall(0, "judge", conversation.id, "analyst", stats.effort, Instant.now(), stats.durationMs.toInt(), stats.inputTokens, stats.cacheReadTokens, stats.cacheWriteTokens, stats.outputTokens, stats.stopReason, stats.error)
+        val judgeCall = LiveCall(0, "judge", conversation.id, "analyst", stats.effort, Instant.now(), stats.durationMs.toInt(), stats.inputTokens, stats.cacheReadTokens, stats.cacheWriteTokens, stats.outputTokens, stats.stopReason, stats.error, stats.model)
         LiveReports.record("LiveMemoryCycleTest", "E4 judge", listOf(judgeCall))
         val verdicts = runCatching {
             Json.parseToJsonElement(result.text.substringAfter("[", "").let { "[$it" }.substringBeforeLast("]") + "]") as JsonArray

@@ -4,6 +4,7 @@ import com.mojang.authlib.GameProfile
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.DirectorState
+import io.github.clemsix6.narrator2.trace.Prices
 import io.netty.channel.ChannelFutureListener
 import io.netty.channel.embedded.EmbeddedChannel
 import kotlinx.coroutines.delay
@@ -88,12 +89,6 @@ private const val OPTIONAL_BUDGET = 0.45
 
 /** Dollars spent beyond which the evening goes straight to the chapter close and the report. */
 private const val HARD_BUDGET = 0.80
-
-/** Prices per million tokens (Opus 5.5, as given by the owner); cache writes at the 1-hour rate, twice the input. */
-private const val PRICE_INPUT = 4.0
-private const val PRICE_OUTPUT = 20.0
-private const val PRICE_CACHE_READ = 0.20
-private const val PRICE_CACHE_WRITE = 8.0
 
 /** The evening, told step by step in real time. */
 private class Evening(private val helper: GameTestHelper) {
@@ -237,23 +232,28 @@ private class Evening(private val helper: GameTestHelper) {
 
     // ── Costs and report ────────────────────────────────────────────────────────────────────────────
 
-    /** Dollars spent by every Claude call so far. */
+    /** Dollars spent by every Claude call so far, each at the price of the model that answered. */
     private suspend fun spent(): Double {
         if (!live) return 0.0
-        val row = runCatchingJournal(
-            runtime,
-            "SELECT coalesce(sum(input_tokens), 0), coalesce(sum(cache_read_tokens), 0), coalesce(sum(cache_write_tokens), 0), " +
-                "coalesce(sum(output_tokens), 0) FROM llm_calls WHERE provider = 'anthropic'",
-        ) ?: return 0.0
-        return cost(row.map { (it as Long?) ?: 0L })
+        return runCatching {
+            rows(
+                "SELECT model, coalesce(sum(input_tokens), 0), coalesce(sum(cache_read_tokens), 0), coalesce(sum(cache_write_tokens), 0), " +
+                    "coalesce(sum(output_tokens), 0) FROM llm_calls WHERE provider = 'anthropic' GROUP BY model",
+            ).sumOf { row -> cost(row[0].toString(), row.drop(1).map { (it as Long?) ?: 0L }) }
+        }.getOrDefault(0.0)
     }
+
+    /** What [tokens] (input, cache read, cache write, output) of [model] cost at the configuration's prices (`trace/Prices`); 0 without a price. */
+    private fun cost(model: String, tokens: List<Long>): Double =
+        Prices.of(runtime.settings.get().config).cost(model, tokens[0], tokens[3], tokens[1], tokens[2]) ?: 0.0
 
     private suspend fun writeReport(): Path {
         val zone = ZoneId.systemDefault()
         val out = StringBuilder()
         out.append("# M2 live acceptance: an evening with the Narrator\n\n")
         out.append("Run of ${DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(zone).format(Instant.ofEpochMilli(started))}; ")
-        out.append("prices per million tokens: input $PRICE_INPUT \$, output $PRICE_OUTPUT \$, cache read $PRICE_CACHE_READ \$, cache write $PRICE_CACHE_WRITE \$ (1 h).\n\n")
+        out.append("prices per million tokens (the configuration's `prices`; input / output / cache read / cache write at 1 h): ")
+        out.append(runtime.settings.get().config.prices.entries.joinToString(" · ") { (model, p) -> "$model ${p.input} / ${p.output} / ${p.cacheRead} / ${p.cacheWrite} \$" }).append(".\n\n")
         out.append("## Timeline\n\n").append(timeline).append('\n')
         out.append("## Chat, as the players read it\n\n")
         rows(
@@ -283,10 +283,10 @@ private class Evening(private val helper: GameTestHelper) {
         var tokens = LongArray(4)
         rows(
             "SELECT id, purpose, role, turn_id, latency_ms, ttft_ms, coalesce(input_tokens, 0), coalesce(cache_read_tokens, 0), coalesce(cache_write_tokens, 0), " +
-                "coalesce(output_tokens, 0), coalesce(stop_reason, error) FROM llm_calls WHERE provider = 'anthropic' ORDER BY id",
+                "coalesce(output_tokens, 0), coalesce(stop_reason, error), model FROM llm_calls WHERE provider = 'anthropic' ORDER BY id",
         ).forEach { r ->
             val counts = r.subList(6, 10).map { (it as Long?) ?: 0L }
-            val cost = cost(counts)
+            val cost = cost(r[11].toString(), counts)
             total += cost
             tokens = LongArray(4) { tokens[it] + counts[it] }
             out.append("| ${r.joinToString(" | ")} | ${"%.4f".format(Locale.ROOT, cost)} |\n")
@@ -339,9 +339,6 @@ private class Evening(private val helper: GameTestHelper) {
 
     private companion object {
         val QUIET_STATES = setOf(DirectorState.IDLE, DirectorState.DISABLED, DirectorState.PAUSED)
-
-        fun cost(tokens: List<Long>): Double =
-            (tokens[0] * PRICE_INPUT + tokens[1] * PRICE_CACHE_READ + tokens[2] * PRICE_CACHE_WRITE + tokens[3] * PRICE_OUTPUT) / 1_000_000.0
 
         fun dollars(value: Double) = "%.3f \$".format(Locale.ROOT, value)
     }
