@@ -240,3 +240,15 @@ veille mesure les répliques relues, jamais un titre ni une ligne trop courte ni
   10 min 39 s. Aucun test instable rencontré.
 - La règle de longueur de `director.md` (« une à trois phrases par message ») n'a pas changé avec M6-FIX-13.
 - Aucun appel réel à Claude, aucun tunnel ouvert.
+
+## Décisions du superviseur (22/10/2026)
+
+Fusionnée après M6-POLISH, sans conflit.
+
+1. **Un chapitre vidé reste ouvert 10 min : accepté.** Un retour rapide réveille le même chapitre, et le Directeur voit
+   l'arrivée. On ne paie pas un résumé et un briefing (≈ 0,2 $) à chaque reconnexion.
+2. **`punish` et `spawn` ne s'additionnent pas dans une même règle : accepté.** Le cas reste borné par `livingMobs`. On
+   y reviendra si une partie réelle le montre.
+3. **Plafond non revérifié quand le chaos baisse : accepté.** Chaque appel garde son propre plafond à l'exécution.
+4. **La longueur reste hors de `line_labels`.** Elle n'apparaît que dans les décisions (`tone_noted`), et le tableau de
+   bord, optionnel, ne justifie pas une migration.
