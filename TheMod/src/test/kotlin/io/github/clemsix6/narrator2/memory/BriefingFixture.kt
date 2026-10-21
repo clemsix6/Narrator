@@ -83,9 +83,14 @@ internal class BriefingFixture(journal: Journal? = null) : AutoCloseable {
 
     fun hit(id: Long, line: String) = RecallHit(Ref(RefKind.MEMORY, id), 0.8, 0.7, 1.0, line)
 
-    /** A line of the Narrator in the `chat` table (for the tics). */
+    /** A line of the Director in the `chat` table, said in its turn [id] (for the tics). */
     fun said(id: Long, at: Instant, text: String) {
-        direct.db.writer.update("INSERT INTO chat (id, ts, channel, text) VALUES (?, ?, 'narrator', ?)", id, at, text)
+        direct.db.writer.update("INSERT INTO chat (id, ts, channel, text, turn_id) VALUES (?, ?, 'narrator', ?, ?)", id, at, text, id)
+    }
+
+    /** [player]'s name in the Journal (`player_names`): the tics read it as a name. */
+    fun named(player: PlayerRef, at: Instant = NOW) {
+        direct.db.writer.update("INSERT INTO player_names (player_uuid, name, first_seen) VALUES (?, ?, ?)", player.uuid, player.name, at)
     }
 
     /** A closed session of [player]. */

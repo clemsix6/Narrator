@@ -2,18 +2,13 @@ package io.github.clemsix6.narrator2.tool
 
 import com.anthropic.core.jsonMapper
 import io.github.clemsix6.narrator2.llm.Role
-import io.github.clemsix6.narrator2.memory.IdeaKind
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
 import io.github.clemsix6.narrator2.tool.memory.dreamerTools
 import io.github.clemsix6.narrator2.tool.memory.memoryTools
-import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaArgs
-import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaTool
 import io.github.clemsix6.narrator2.tool.storyteller.InspireArgs
 import io.github.clemsix6.narrator2.tool.storyteller.InspireTool
-import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaArgs
-import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaTool
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.runBlocking
@@ -320,13 +315,8 @@ class ToolCatalogTest {
     @Test
     fun `the tools of M6 answer FAILED until they are wired`() = runBlocking<Unit> {
         val ctx = ToolContext(services, Caller(Role.STORYTELLER, "storyteller-1", turnId = null, taskId = null), services.clock, 5_000)
-        val idea = ProposeIdeaArgs(
-            IdeaKind.CHALLENGE, "La course au pic", "Une course au sommet du pic enneigé.", "Bartok en ligne", novelty = 4, funScore = 4, fairness = 5,
-        )
         val results = listOf(
-            InspireTool().run(ctx, InspireArgs()),
-            ProposeIdeaTool().run(ctx, idea),
-            DropIdeaTool().run(ctx, DropIdeaArgs("P-41", "Le moment est passé.")),
+            InspireTool().run(ctx, InspireArgs()), // propose_idea and drop_idea are wired (M6-06, StorytellerToolsTest)
         )
         results.forEach { assertEquals(ToolResult.failed("not wired yet"), it) }
     }

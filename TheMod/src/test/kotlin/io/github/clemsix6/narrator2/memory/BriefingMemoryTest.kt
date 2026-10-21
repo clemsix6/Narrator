@@ -44,11 +44,36 @@ class BriefingMemoryTest {
             assertTrue(sheets.reduced!![0].startsWith("Bartok · « le Plongeur » · 61h played"), sheets.reduced!![0])
 
             val notes = byTag.getValue("notes")
-            assertTrue(notes.lines.last().startsWith("Style: overused lately: « Ah Bartok encore » ×4"), notes.lines.last())
+            assertTrue(notes.lines.last().startsWith("Style: overused lately: « Ah, Mimosa et Bartok » ×4 (last "), notes.lines.last())
             assertEquals(notes.lines.dropLast(1), notes.reduced, "the reduced notes leave the tics out")
 
             assertEquals("version=\"12\" written=\"10-03 04:00\"", byTag.getValue("grimoire").attributes)
             assertEquals(BriefingSamples.GRIMOIRE.lines().filter { it.isNotBlank() }, byTag.getValue("grimoire").lines)
+        }
+    }
+
+    /**
+     * M6 §3.4, §3.6: the briefing's `Style: overused lately` reads the Director's lines with their names and numbers
+     * normalized, so that « Onze secondes » and « Dix-sept secondes » are one opener; a rule's line, which repeats by
+     * design and has no turn, is never a tic.
+     */
+    @Test
+    fun `the overused openers are the Director's, their names and numbers normalized`() = runBlocking<Unit> {
+        BriefingFixture().use { f ->
+            f.named(bartok)
+            f.named(mimosa)
+            listOf(
+                "Onze secondes ! Bartok remporte la course du soir.", "Douze secondes, et Mimosa franchit la ligne en tête.",
+                "Vingt secondes : la pioche de Bartok a fondu en route.", "Dix-sept secondes ! Un record pour Mimosa et Bartok.",
+            ).forEachIndexed { i, text -> f.said(9_100L + i, NOW.minus(Duration.ofMinutes(40L - i)), text) }
+            repeat(5) { i ->
+                f.direct.db.writer.update(
+                    "INSERT INTO chat (id, ts, channel, text) VALUES (?, ?, 'narrator', ?)", 9_200L + i, NOW.minus(Duration.ofMinutes(30L - i)),
+                    "Décret divin : la taxe frappe encore, mortels.",
+                )
+            }
+            val style = f.sections().getValue("notes").lines.last()
+            assertEquals("Style: overused lately: « Dix-sept secondes » ×4 (last 37m ago)", style)
         }
     }
 
@@ -477,7 +502,10 @@ internal object BriefingSamples {
         )
         f.note(14, NoteKind.DREAM_HINT, "3 morts de chute cette semaine, toutes dans la même chambre d'épreuve.", listOf(bartok))
 
-        listOf("Ah, Bartok, encore la lave ?", "Ah, Bartok, encore un coffre vide.", "Ah, Bartok, encore à genoux.", "Ah, Bartok, encore raté.")
+        // One opener once the names are normalized (M6 §3.4): `ah <nom>`, « Mimosa et Bartok » one name.
+        f.named(bartok)
+        f.named(mimosa)
+        listOf("Ah, Bartok, encore la lave ?", "Ah, Mimosa, toujours sur ton pont ?", "Ah, Bartok, encore un coffre vide.", "Ah, Mimosa et Bartok, à genoux tous les deux.")
             .forEachIndexed { i, text -> f.said(9_000L + i, at("2026-10-03T19:00:00Z").plusSeconds(60L * i), text) }
     }
 

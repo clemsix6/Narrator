@@ -53,6 +53,8 @@ data class RecallContext(val conversationId: String?, val turnId: Long?, val eve
  *    - [Source.DREAMER] (it reads the players' chat, never hears the Narrator): only observations among
  *      the memories; only planned arcs and lore in the canon, without quote; resolves arcs only; no
  *      interaction. Its running gags change through [setGag];
+ *    - [Source.STORYTELLER] (it invents what comes next, M6 §6.5): no memory, no interaction; only planned arcs and
+ *      lore in the canon, without quote; resolves a planned arc only, to abandon it. It alone writes ideas;
  *    - a row the mechanics engine tracks (`mechanic`, M4 §3.3) is written by the Director's engine tools
  *      only, and changes status only through [Source.ENGINE] or [Source.OPERATOR]; arcs (M4 §10) have a
  *      theme that rests once their arc closed, two at most are active, and an active one is due within 7 days;
@@ -164,14 +166,21 @@ interface MemoryStore {
 
     /**
      * An idea of the storyteller (M6 §6.2), `open`, due after [IdeaDraft.playHours] of world play, indexed so that a
-     * later idea can be compared with it. Its kind, register, notes and bounds are checked ([MemoryLimits]); the rules
-     * of the storyteller's programme (open ideas at most, no repeat of a recent idea, refs, players, module, brief, voice)
-     * are the store's too.
+     * later idea can be compared with it. Only [Source.STORYTELLER] writes one. Checked: its texts ([VoiceGuard]), notes
+     * and bounds ([MemoryLimits]); known players; refs that exist, facts only ([RefKind.facts]), an open arc among them
+     * for an `arc_step`; a module named for a `module` only, a brief of [MemoryLimits.IDEA_BRIEF_MIN] to
+     * [MemoryLimits.IDEA_BRIEF] characters for a `forge` only (whether the module is ready is the tool's to check: the
+     * arsenal is not in the database); no repeat of an idea of the last 14 days (BM25 against it at 0.6 of BM25 against
+     * itself). A new season closes the open one (`dropped`, `replaced by P-…`); beyond [MemoryLimits.OPEN_IDEAS] open
+     * ideas, the oldest other than the season, never dealt if one is, expires (`superseded by P-…`). Never a duplicate.
      */
     suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea>
 
     /** Closes the open idea [ref]: `dropped`, with [reason] (≤ [MemoryLimits.IDEA_DROP_REASON]). Nothing is deleted. */
     suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea
+
+    /** Closes the open ideas whose hours of world play are over: `expired` (the hygiene, M6 §6.2). Returns them. */
+    suspend fun expireIdeas(author: Author): List<Idea>
 
     /**
      * The ideas [refs] were dealt to the Director through [channel] (`inspire`, a heartbeat, M6 §5): `dealt + 1`,

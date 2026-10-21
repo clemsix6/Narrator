@@ -32,7 +32,11 @@ import java.util.UUID
  * an arc has a theme that rests once its arc closed, two arcs at most are active, each due within 7 days.
  *
  * Ideas (M6 §6.2): the storyteller's `P-` rows, indexed like the facts but never recalled, never evidence, never
- * archived: they close (`dropped`, `expired`); [dealt] counts each time one is put before the Director.
+ * archived: they close (`dropped`, `expired`); [dealt] counts each time one is put before the Director. The store keeps
+ * the programme's rules ([addIdea]): one season, twelve open ideas, no repeat of a recent one, an end in world play.
+ *
+ * Each [Source] has its explicit rules, none passes unchecked: the storyteller (M6 §6.5) writes ideas, planned arcs and
+ * lore, no memory, no interaction.
  *
  * What the store computes, never the writer: ids ([IdKind.MEMORY]), times of writing, play clocks
  * ([playClock]; an interaction's from the sessions at its time, [DuckPlayClock.playerSecondsAt]), the
@@ -139,32 +143,45 @@ class DuckMemoryStore(
             VoiceGuard.check(text, field, max, names.all, boundQuotes = author.source in MODELS)?.let(::reject)
         }
 
-        /** What the Dreamer, which reads the players' chat and never hears the Narrator, may remember: observations. */
+        /**
+         * Who may remember what: the Dreamer, which reads the players' chat and never hears the Narrator, observations
+         * only; the storyteller, which invents what comes next, no fact at all (M6 §6.5); the others any kind.
+         */
         fun memoryKind(kind: MemoryKind) {
-            if (author.source == Source.DREAMER && kind != MemoryKind.OBSERVATION) {
-                reject("the Dreamer remembers observations only, not ${an(kind.id)}: remember it as an observation")
+            when (author.source) {
+                Source.DREAMER -> if (kind != MemoryKind.OBSERVATION) {
+                    reject("the Dreamer remembers observations only, not ${an(kind.id)}: remember it as an observation")
+                }
+                Source.STORYTELLER -> reject("the storyteller remembers no fact about the players: an idea goes in propose_idea, a planned arc or lore in the canon")
+                Source.DIRECTOR, Source.CHRONICLER, Source.ENGINE, Source.OPERATOR -> Unit
             }
         }
 
         /**
          * Who may put what in the canon (decision 8): the Narrator's commitments come from its own words.
-         * - The Dreamer plans arcs (`planned`) and keeps lore, without quote: it never heard the Narrator.
+         * - The Dreamer ([DREAMER_CANON]) and the storyteller ([STORYTELLER_CANON]) plan arcs (`planned`) and keep
+         *   lore, without quote: they never heard the Narrator.
          * - The Chronicler copies the Narrator's words: for the kinds said to players ([SAID_KINDS]) a quote
          *   is required, and any quote must be [Quotes.substantial] and inside a Narrator line cited in the
          *   evidence ([Quotes.narratorLines]).
+         * - The Director (its own words, as it speaks), the engine and the operators write what they decide.
          */
         fun canonSource(draft: CanonDraft, status: CanonStatus) {
             when (author.source) {
-                Source.DREAMER -> {
-                    if (draft.kind !in DREAMER_CANON) {
-                        reject("the Dreamer plans arcs and keeps lore; ${an(draft.kind.id)} is recorded from the Narrator's own words, not by the Dreamer")
-                    }
-                    if (draft.kind == CanonKind.ARC && status != CanonStatus.PLANNED) reject("an arc the Dreamer prepares starts planned: the Narrator starts it")
-                    if (draft.quote != null) reject("quote: the Dreamer never heard the Narrator, it quotes nobody: remove quote")
-                }
+                Source.DREAMER -> planner("the Dreamer", DREAMER_CANON, draft, status)
+                Source.STORYTELLER -> planner("the storyteller", STORYTELLER_CANON, draft, status)
                 Source.CHRONICLER -> narratorQuote(draft.kind, draft.quote, draft.evidenceEvents, draft.evidenceTools)
-                else -> Unit
+                Source.DIRECTOR, Source.ENGINE, Source.OPERATOR -> Unit
             }
+        }
+
+        /** What [who], which plans and never heard the Narrator, may put in the canon: [kinds], an arc planned, without quote. */
+        private fun planner(who: String, kinds: Set<CanonKind>, draft: CanonDraft, status: CanonStatus) {
+            if (draft.kind !in kinds) {
+                reject("$who plans arcs and keeps lore; ${an(draft.kind.id)} is recorded from the Narrator's own words, not by $who")
+            }
+            if (draft.kind == CanonKind.ARC && status != CanonStatus.PLANNED) reject("an arc $who prepares starts planned: the Narrator starts it")
+            if (draft.quote != null) reject("quote: $who never heard the Narrator, it quotes nobody: remove quote")
         }
 
         private fun narratorQuote(kind: CanonKind, quote: String?, events: List<Long>, tools: List<Long>) {
@@ -269,6 +286,65 @@ class DuckMemoryStore(
                 ?: reject("quote cannot be checked: memory job $runId is unknown; leave quote out")
             if (Quotes.saidByPlayer(connection, player, quote, from, to)) return
             reject("quote must be words ${names.ref(player).name} said in this window; leave quote out or copy them exactly")
+        }
+
+        /** An `arc_step` builds on its arc (M6 §6.2): a planned or active arc among its [refs]. */
+        fun arcStep(refs: List<Ref>) {
+            val arc = refs.filter { it.kind == RefKind.CANON }.any { ref ->
+                val entry = connection.readRow(ref) as? CanonEntry
+                entry != null && entry.kind == CanonKind.ARC && entry.status.open
+            }
+            if (!arc) reject("an arc_step builds on its arc: cite a planned or active arc (C-…) in refs")
+        }
+
+        /**
+         * No repeat (M6 §6.2): an idea of the last [IDEA_REPEAT_WINDOW], whatever became of it, that [text] matches at
+         * [IDEA_REPEAT_SIMILARITY] or more ([Indexer.similarity]: BM25 against it over BM25 against itself, the rule of
+         * the merge candidates, M3 §8.6) refuses the new one.
+         */
+        fun notRepeated(text: String) {
+            val recent = connection.query("SELECT id FROM ideas WHERE created_at >= ? ORDER BY id DESC", now.minus(IDEA_REPEAT_WINDOW)) {
+                Ref(RefKind.IDEA, getLong(1))
+            }
+            if (recent.isEmpty()) return
+            val close = indexer.similarity(connection, text, recent).filterValues { it >= IDEA_REPEAT_SIMILARITY }.maxByOrNull { it.value }?.key ?: return
+            val idea = row<Idea>(close, RefKind.IDEA, "an idea")
+            reject("too close to $close « ${ModelText.escape(idea.title)} » (${fate(idea)}): find something else")
+        }
+
+        /** `open, never dealt`, `dropped 1d2h ago, dealt 2 times, last 2d4h ago`: what became of [idea]. */
+        private fun fate(idea: Idea): String {
+            val closed = idea.closedAt?.let { " ${ago(it)} ago" }.orEmpty()
+            val dealt = when (idea.dealt) {
+                0 -> "never dealt"
+                1 -> "dealt once${idea.lastDealtAt?.let { " ${ago(it)} ago" }.orEmpty()}"
+                else -> "dealt ${idea.dealt} times${idea.lastDealtAt?.let { ", last ${ago(it)} ago" }.orEmpty()}"
+            }
+            return "${idea.status.id}$closed, $dealt"
+        }
+
+        private fun ago(at: Instant): String = ToolText.duration(Duration.between(at, now).toMillis())
+
+        /**
+         * Room for [added] (M6 §6.2): a season closes the open season (`dropped`, replaced); beyond
+         * [MemoryLimits.OPEN_IDEAS] open ideas, the oldest other than the season expires (`superseded`), one never dealt
+         * before one dealt. Returns the ideas it closed.
+         */
+        fun makeRoom(added: Idea): List<Idea> {
+            val open = connection.ideas("SELECT $IDEA_COLUMNS FROM ideas WHERE status = 'open' AND id <> ? ORDER BY created_at, id", added.ref.id)
+            val replaced = open.filter { added.kind == IdeaKind.SEASON && it.kind == IdeaKind.SEASON }
+            val over = open.size - replaced.size + 1 - MemoryLimits.OPEN_IDEAS
+            val superseded = open.filter { it.kind != IdeaKind.SEASON }.sortedBy { it.dealt > 0 }.take(over.coerceAtLeast(0))
+            return replaced.map { closeIdea(it.ref, IdeaStatus.DROPPED, "replaced by the season ${added.ref}") } +
+                superseded.map { closeIdea(it.ref, IdeaStatus.EXPIRED, "superseded by ${added.ref}: ${MemoryLimits.OPEN_IDEAS} ideas open at most") }
+        }
+
+        /** Closes the open idea [ref] as [status], for [reason] (`closed_at`, `close_reason`, audited); returns it. */
+        fun closeIdea(ref: Ref, status: IdeaStatus, reason: String): Idea {
+            val before = connection.snapshot(ref)
+            connection.update("UPDATE ideas SET status = ?, closed_at = ?, close_reason = ? WHERE id = ?", status.id, now, reason, ref.id)
+            logRow(ref, LogOp.UPDATE, before, reason)
+            return row(ref, RefKind.IDEA, "an idea")
         }
 
         /**
@@ -418,6 +494,9 @@ class DuckMemoryStore(
             if (author.source == Source.DREAMER && old.kind != CanonKind.ARC) {
                 reject("the Dreamer settles arcs only; $ref is ${an(old.kind.id)}, settled by the Narrator from what happens in game")
             }
+            if (author.source == Source.STORYTELLER && (old.kind != CanonKind.ARC || old.status != CanonStatus.PLANNED || status != CanonStatus.ABANDONED)) {
+                reject("the storyteller only abandons a planned arc; the Narrator starts arcs and settles the rest from what happens in game")
+            }
             if (!old.kind.allows(old.status, status)) {
                 val allowed = old.kind.closedBy.joinToString(", ") { it.id }
                 reject("${an(old.kind.id)} cannot be ${status.id}; use $allowed")
@@ -465,7 +544,12 @@ class DuckMemoryStore(
         if (draft.evidenceEvents.isNotEmpty() || draft.toolCalls.isNotEmpty() || draft.quote != null) journal.barrier()
         val what = "interaction ${draft.kind.id} ${draft.valence}"
         val added = write<Added<Interaction>>(what, author) { job ->
-            if (author.source == Source.DREAMER) reject("the Dreamer does not rate interactions: the Narrator and the Chronicler note them as they happen")
+            val rater = when (author.source) {
+                Source.DREAMER -> "the Dreamer"
+                Source.STORYTELLER -> "the storyteller"
+                Source.DIRECTOR, Source.CHRONICLER, Source.ENGINE, Source.OPERATOR -> null
+            }
+            if (rater != null) reject("$rater does not rate interactions: the Narrator and the Chronicler note them as they happen")
             val player = job.players(listOf(draft.player), "player").single()
             within(draft.valence, MemoryLimits.VALENCE, "valence")
             job.voice(draft.summary, "summary", MemoryLimits.INTERACTION_SUMMARY)
@@ -881,12 +965,15 @@ class DuckMemoryStore(
     }
 
     /**
-     * An idea (M6 §6.2): its texts pass [VoiceGuard], its notes, players, refs and hours are bounded; it is written
-     * `open`, due [IdeaDraft.playHours] of world play from now, indexed and audited.
+     * An idea (M6 §6.2), the storyteller's only: its texts pass [VoiceGuard], its notes, hours, players and refs are
+     * checked, its lever ([lever]) and its arc ([Job.arcStep]); it must not repeat a recent idea ([Job.notRepeated]). It is
+     * written `open`, due [IdeaDraft.playHours] of world play from now, indexed and audited; then it makes its room
+     * ([Job.makeRoom]: the season it replaces, the idea beyond the twelve it supersedes), in the same job.
      */
     override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> {
         val what = "idea ${draft.kind.id}"
-        val idea = write(what, author) { job ->
+        val (idea, closed) = write(what, author) { job ->
+            if (author.source != Source.STORYTELLER) reject("ideas are the storyteller's: the ${author.source.id} writes none")
             job.voice(draft.title, "title", MemoryLimits.IDEA_TITLE)
             job.voice(draft.pitch, "pitch", MemoryLimits.IDEA_PITCH)
             job.voice(draft.fit, "fit", MemoryLimits.IDEA_FIT)
@@ -894,47 +981,62 @@ class DuckMemoryStore(
             within(draft.funScore, MemoryLimits.IDEA_SCORE, "fun")
             within(draft.fairness, MemoryLimits.IDEA_SCORE, "fairness")
             within(draft.playHours, MemoryLimits.IDEA_PLAY_HOURS, "hours")
-            if (draft.players.size > MAX_PLAYERS) reject("players: $MAX_PLAYERS at most")
-            if (draft.refs.size > MemoryLimits.IDEA_REFS) reject("refs: ${MemoryLimits.IDEA_REFS} refs at most")
-            draft.brief?.let { brief ->
-                if (brief.codePointCount(0, brief.length) > MemoryLimits.IDEA_BRIEF) reject("brief: ${MemoryLimits.IDEA_BRIEF} characters at most")
-            }
+            lever(draft)
+            val players = job.players(draft.players, "players")
+            val refs = job.refs(draft.refs, "refs", RefKind.facts, MemoryLimits.IDEA_REFS)
+            if (draft.kind == IdeaKind.ARC_STEP) job.arcStep(refs)
+            job.notRepeated(ideaText(draft.title, draft.pitch))
             val ref = job.next(RefKind.IDEA)
             val expires = playClock.worldPlaySeconds(job.now.toEpochMilli()) + draft.playHours * SECONDS_PER_HOUR
             job.connection.update(
                 "INSERT INTO ideas (id, created_at, kind, title, pitch, fit, players, register, novelty, fun, fairness, refs, module, brief, " +
                     "status, expires_play_s, source, run_id, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ref.id, job.now, draft.kind.id, draft.title, draft.pitch, draft.fit, uuidArray(draft.players.distinct()), draft.register?.id,
-                draft.novelty, draft.funScore, draft.fairness, longArray(draft.refs.map { it.id }.distinct()), draft.module, draft.brief,
+                ref.id, job.now, draft.kind.id, draft.title, draft.pitch, draft.fit, uuidArray(players), draft.register?.id,
+                draft.novelty, draft.funScore, draft.fairness, longArray(refs.map { it.id }), draft.module, draft.brief?.trim(),
                 IdeaStatus.OPEN.id, expires, author.source.id, author.runId, author.conversationId,
             )
             val row = job.row<Idea>(ref, RefKind.IDEA, "an idea")
             job.index(row)
             job.logRow(ref, LogOp.INSERT, null)
-            row
+            row to job.makeRoom(row)
         }
         recordWrite("${idea.ref}", what, author, listOf(draft.title, draft.pitch, draft.fit))
+        closed.forEach { recordWrite("${it.ref}", "idea ${it.status.id} (${it.closeReason})", author) }
         return Added.New(idea)
     }
 
     override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea {
         val row = write("drop $ref", author) { job ->
+            if (author.source != Source.STORYTELLER) reject("ideas are the storyteller's: the ${author.source.id} drops none")
             val old = job.row<Idea>(ref, RefKind.IDEA, "an idea")
-            if (old.status != IdeaStatus.OPEN) reject("$ref is ${old.status.id} already")
+            if (old.status != IdeaStatus.OPEN) reject("$ref is ${old.status.id} already: nothing to drop")
             if (reason.isBlank()) reject("reason: say why the idea no longer holds")
-            if (reason.codePointCount(0, reason.length) > MemoryLimits.IDEA_DROP_REASON) {
-                reject("reason: ${MemoryLimits.IDEA_DROP_REASON} characters at most")
-            }
-            val before = job.connection.snapshot(ref)
-            job.connection.update(
-                "UPDATE ideas SET status = ?, closed_at = ?, close_reason = ? WHERE id = ?",
-                IdeaStatus.DROPPED.id, job.now, reason, ref.id,
-            )
-            job.logRow(ref, LogOp.UPDATE, before, reason)
-            job.row<Idea>(ref, RefKind.IDEA, "an idea")
+            job.voice(reason, "reason", MemoryLimits.IDEA_DROP_REASON)
+            job.closeIdea(ref, IdeaStatus.DROPPED, reason)
         }
-        recordWrite("$ref", "idea dropped", author)
+        recordWrite("$ref", "idea dropped", author, listOf(reason))
         return row
+    }
+
+    /**
+     * The ideas still open once their hours of world play are over: `expired` ([IDEA_DUE]), as [author] (the hygiene).
+     * Looked for on the read pool first: no write job when there is none.
+     */
+    override suspend fun expireIdeas(author: Author): List<Idea> {
+        val due = read { connection ->
+            val world = playClock.worldPlaySeconds(clock.millis())
+            connection.query("SELECT id FROM ideas WHERE status = 'open' AND expires_play_s <= ? ORDER BY id", world) { getLong(1) }
+        }
+        if (due.isEmpty()) return emptyList()
+        val expired = write("expire ideas", author) { job ->
+            val world = playClock.worldPlaySeconds(job.now.toEpochMilli())
+            job.connection.query(
+                "SELECT id FROM ideas WHERE status = 'open' AND expires_play_s <= ? AND list_contains(?, id) ORDER BY id",
+                world, longArray(due),
+            ) { Ref(RefKind.IDEA, getLong(1)) }.map { job.closeIdea(it, IdeaStatus.EXPIRED, IDEA_DUE) }
+        }
+        expired.forEach { recordWrite("${it.ref}", "idea expired", author) }
+        return expired
     }
 
     override suspend fun dealt(refs: List<Ref>, channel: RecallChannel, context: RecallContext) {
@@ -1095,7 +1197,16 @@ class DuckMemoryStore(
         private val THEME_REST: Duration = Duration.ofHours(MemoryLimits.THEME_REST_PLAY_HOURS.toLong())
 
         /** The authors whose texts are a model's: the passages they quote are bounded ([VoiceGuard.MAX_QUOTED]). */
-        private val MODELS = setOf(Source.DIRECTOR, Source.CHRONICLER, Source.DREAMER)
+        private val MODELS = setOf(Source.DIRECTOR, Source.CHRONICLER, Source.DREAMER, Source.STORYTELLER)
+
+        /** A new idea must not repeat one written this recently (M6 §6.2), whatever became of it. */
+        private val IDEA_REPEAT_WINDOW: Duration = Duration.ofDays(14)
+
+        /** Similarity from which a new idea repeats an older one ([Indexer.similarity], as the merge candidates, M3 §8.6). */
+        private const val IDEA_REPEAT_SIMILARITY = 0.6
+
+        /** Why the hygiene closes an idea ([expireIdeas]). */
+        const val IDEA_DUE = "its hours of world play are over"
 
         /**
          * The kinds of canon the Narrator says to the players: what the Chronicler records of them quotes the
@@ -1108,6 +1219,9 @@ class DuckMemoryStore(
 
         /** What the Dreamer may add to the canon: an arc it plans, lore. Its running gags only change freshness ([setGag]). */
         val DREAMER_CANON = setOf(CanonKind.ARC, CanonKind.LORE)
+
+        /** What the storyteller may add to the canon (M6 §6.5): an arc it plans, lore. */
+        val STORYTELLER_CANON = setOf(CanonKind.ARC, CanonKind.LORE)
     }
 }
 
@@ -1130,6 +1244,28 @@ private fun theme(kind: CanonKind, theme: String?) {
 
 /** How much of a refused theme its message shows. */
 private const val THEME_SHOWN = 60
+
+/**
+ * An idea's lever (M6 §6.2): an idea `module` names the arsenal's module, an idea `forge` has the brief for
+ * `forge_module` ([MemoryLimits.IDEA_BRIEF_MIN] to [MemoryLimits.IDEA_BRIEF] characters); no other kind has either.
+ */
+private fun lever(draft: IdeaDraft) {
+    val module = draft.module
+    if (draft.kind == IdeaKind.MODULE) {
+        if (module.isNullOrBlank()) reject("an idea module names the module of the arsenal it deploys: give module")
+    } else if (module != null) {
+        reject("module only goes with an idea module: leave it out")
+    }
+    val brief = draft.brief?.trim()
+    if (draft.kind != IdeaKind.FORGE) {
+        if (brief != null) reject("brief only goes with an idea forge: leave it out")
+        return
+    }
+    val length = brief?.codePointCount(0, brief.length) ?: 0
+    val fix = "what players see, who, how long, how it ends, what it must never do"
+    if (length < MemoryLimits.IDEA_BRIEF_MIN) reject("an idea forge needs its brief for forge_module, ${MemoryLimits.IDEA_BRIEF_MIN} characters at least (got $length): $fix")
+    if (length > MemoryLimits.IDEA_BRIEF) reject("brief is longer than ${MemoryLimits.IDEA_BRIEF} characters (got $length): shorten it")
+}
 
 /** Someone's exact words: exempt from [VoiceGuard], but bounded. */
 private fun quote(quote: String?, max: Int) {

@@ -393,6 +393,47 @@ class DuckMemoryStoreTest {
         assertEquals(listOf("arc", "lore"), f.rows("SELECT kind FROM canon WHERE source = 'dreamer' ORDER BY kind") { getString(1) })
     }
 
+    /** M6 §6.5: the storyteller's rules are its own, explicit; it writes ideas, planned arcs and lore, and no fact. */
+    @Test
+    fun `the storyteller plans arcs and keeps lore, records no fact and abandons only a planned arc`() = runBlocking<Unit> {
+        val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
+        listOf(CanonKind.PROMISE, CanonKind.LAW, CanonKind.NICKNAME, CanonKind.RUNNING_GAG, CanonKind.CLAIM).forEach { kind ->
+            rejected("the storyteller plans arcs and keeps lore; ${if (kind.id.first() in "aeiou") "an" else "a"} ${kind.id} is recorded from the Narrator's own words, not by the storyteller") {
+                store.addCanon(CanonDraft(kind, "Bartok est surnommé « le Plongeur ».", players = listOf(f.bartok.uuid)), storyteller)
+            }
+        }
+        rejected("quote: the storyteller never heard the Narrator, it quotes nobody: remove quote") {
+            store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok.", "la falaise de Bartok"), storyteller)
+        }
+        rejected("an arc the storyteller prepares starts planned: the Narrator starts it") {
+            store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance le procès des parieurs.", theme = "proces_des_parieurs"), storyteller)
+        }
+        val quoting = CanonDraft(CanonKind.LORE, "« La falaise du spawn porte le nom de Bartok le Grand. » selon la légende.")
+        rejected("what quotes too much") { store.addCanon(quoting, storyteller) } // its passages between quotes are bounded, as a model's
+        listOf(MemoryKind.EPISODE, MemoryKind.OBSERVATION).forEach { kind ->
+            rejected("the storyteller remembers no fact about the players") {
+                store.addMemory(MemoryDraft(kind, "Bartok", "Bartok aime les gâteaux.", listOf(f.bartok.uuid)), storyteller)
+            }
+        }
+        rejected("the storyteller does not rate interactions") {
+            store.addInteraction(InteractionDraft(f.bartok.uuid, InteractionKind.REQUEST, 0, "a réclamé un gâteau"), storyteller)
+        }
+        assertEquals(0, f.count("canon") + f.count("memories") + f.count("interactions"))
+
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur prépare le procès des parieurs.", status = CanonStatus.PLANNED, theme = "proces_des_parieurs"), storyteller).row
+        assertIs<Added.New<CanonEntry>>(store.addCanon(CanonDraft(CanonKind.LORE, "La falaise du spawn porte le nom de Bartok."), storyteller))
+        val active = store.addCanon(CanonDraft(CanonKind.ARC, "Le Narrateur lance la vengeance des moutons.", theme = "vengeance_des_moutons"), f.director).row
+        val promise = store.addCanon(canonDraft, f.director).row
+        val only = "the storyteller only abandons a planned arc"
+        rejected(only) { store.resolveCanon(promise.ref, CanonStatus.BROKEN, "Le Narrateur n'a pas rendu les bottes.", emptyList(), storyteller) }
+        rejected(only) { store.resolveCanon(active.ref, CanonStatus.ABANDONED, "La vengeance est oubliée.", emptyList(), storyteller) }
+        rejected(only) { store.resolveCanon(arc.ref, CanonStatus.ACTIVE, "Le procès commence.", emptyList(), storyteller) }
+        assertEquals(CanonStatus.ABANDONED, store.resolveCanon(arc.ref, CanonStatus.ABANDONED, "Personne n'a parié.", emptyList(), storyteller).status)
+        assertEquals(listOf("arc", "lore"), f.rows("SELECT kind FROM canon WHERE source = 'storyteller' ORDER BY kind") { getString(1) })
+        assertEquals(listOf("storyteller"), f.rows("SELECT DISTINCT actor FROM memory_log WHERE row_key = '${arc.ref.id}'") { getString(1) })
+        assertEquals(CanonKind.LORE, store.addCanon(quoting, f.operator).row.kind, "an operator quotes what it likes")
+    }
+
     @Test
     fun `quotes compare without case, accents, apostrophes, quote marks, spaces and edge punctuation`() {
         assertEquals("je te rends tes bottes demain, promis", Quotes.normalize("  « Je te rends  tes bottes demain, promis ! »"))

@@ -11,6 +11,8 @@ import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.DisabledMemory
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.DuckPlayerSheets
+import io.github.clemsix6.narrator2.memory.IdeaDraft
+import io.github.clemsix6.narrator2.memory.IdeaKind
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryJobsControl
@@ -20,6 +22,8 @@ import io.github.clemsix6.narrator2.memory.Note
 import io.github.clemsix6.narrator2.memory.NoteKind
 import io.github.clemsix6.narrator2.memory.PlayerSheet
 import io.github.clemsix6.narrator2.memory.PlayerSheets
+import io.github.clemsix6.narrator2.memory.RecallChannel
+import io.github.clemsix6.narrator2.memory.RecallContext
 import io.github.clemsix6.narrator2.memory.RecallHit
 import io.github.clemsix6.narrator2.memory.RecallPurpose
 import io.github.clemsix6.narrator2.memory.Ref
@@ -536,6 +540,55 @@ class MemoryCommandsTest {
         assertEquals(listOf("narrator", "memory", "rollback", "key_and_version"), parsed("narrator memory rollback grimoire 3"))
         assertEquals(listOf("narrator", "memory", "revert", "run"), parsed("narrator memory revert 7"))
         listOf("chronicle", "dream", "pause", "resume").forEach { assertEquals(listOf("narrator", "memory", it), parsed("narrator memory $it")) }
+    }
+
+    // ── ideas (M6 §13) ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `memory ideas lists the open ideas, or all of them, with what became of each`() = runBlocking<Unit> {
+        assertEquals(
+            listOf("[Narrator] ideas · open · 0 ideas", "No open idea.", "Details: /narrator memory show <ref>"),
+            MemoryCommands.ideas(services, all = false, 1).unwrapped(),
+        )
+        val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
+        f.playClock.world = 10_000
+        val race = IdeaDraft(
+            IdeaKind.CHALLENGE, "La course au pic", "Une course au sommet du pic enneigé.", "Bartok et Mimosa en ligne.",
+            listOf(bartok.uuid, mimosa.uuid), novelty = 4, funScore = 4, fairness = 5, playHours = 30,
+        )
+        val first = f.store.addIdea(race, storyteller).row
+        val gift = f.store.addIdea(IdeaDraft(IdeaKind.FAVOR, "Le gâteau", "Un gâteau tombe du ciel.", "N'importe quand.", novelty = 3, funScore = 5, fairness = 5), storyteller).row
+        f.store.dealt(listOf(first.ref), RecallChannel.INSPIRE, RecallContext("director-c13", 42, null))
+        f.store.dropIdea(gift.ref, "Le gâteau a déjà servi.", storyteller)
+        fake.clock.world = 10_000 + 2 * 3_600
+
+        assertEquals(
+            listOf(
+                "[Narrator] ideas · open · 1 idea",
+                "${first.ref} challenge → Bartok, Mimosa · open · 28h00m of play left · dealt 1 (last 19:40:00) · n4 f4 e5: « La course au pic »",
+                "Details: /narrator memory show <ref>",
+            ),
+            MemoryCommands.ideas(services, all = false, 1).unwrapped(),
+        )
+        assertEquals(
+            listOf(
+                "[Narrator] ideas · all · 2 ideas",
+                "${gift.ref} favor → everyone · dropped 19:40:00 · never dealt · n3 f5 e5: « Le gâteau » · \"Le gâteau a déjà servi.\"",
+                "${first.ref} challenge → Bartok, Mimosa · open · 28h00m of play left · dealt 1 (last 19:40:00) · n4 f4 e5: « La course au pic »",
+                "Details: /narrator memory show <ref>",
+            ),
+            MemoryCommands.ideas(services, all = true, 1).unwrapped(),
+        )
+
+        val dispatcher = CommandDispatcher<CommandSourceStack>()
+        dispatcher.register(LiteralArgumentBuilder.literal<CommandSourceStack>("narrator").also(MemoryCommands::attach))
+        fun parsed(command: String): List<String> = dispatcher.parse(command, null).also {
+            assertTrue(!it.reader.canRead() && it.exceptions.isEmpty() && it.context.command != null, "$command does not parse: ${it.exceptions}")
+        }.context.nodes.map { it.node.name }
+        assertEquals(listOf("narrator", "memory", "ideas"), parsed("narrator memory ideas"))
+        assertEquals(listOf("narrator", "memory", "ideas", "page"), parsed("narrator memory ideas 2"))
+        assertEquals(listOf("narrator", "memory", "ideas", "all"), parsed("narrator memory ideas all"))
+        assertEquals(listOf("narrator", "memory", "ideas", "all", "page"), parsed("narrator memory ideas all 3"))
     }
 
     @Test
