@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.mechanics.rule
 
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.guard.Caps
 import io.github.clemsix6.narrator2.mechanics.EffectTarget
 import io.github.clemsix6.narrator2.mechanics.EngineActions
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
@@ -25,6 +26,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 import net.minecraft.core.Registry
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
@@ -48,9 +50,10 @@ import java.util.UUID
  *    a stand-in, pass the tool's own decoding and dry checks with the Director's caller (`EngineActions.check`):
  *    ids, the chaos level's caps, arguments that contradict each other; then the creature named has the attribute
  *    a `mob_attribute` changes. A rule cannot do what the Director may not;
- * 4. at most one `punish` per target.
+ * 4. at most one `punish` per target;
+ * 5. the caps of one call hold for the whole rule: the amounts its effects of one tool ask add up (M6-18, finding 6).
  *
- * The limit of active rules (step 5) is the rule book's ([RuleBook]): it needs the state.
+ * The limit of active rules (step 6) is the rule book's ([RuleBook]): it needs the state.
  */
 
 /** The kinds of ids a rule's conditions name (M4 §8.3). [tags]: whether `#tag` is allowed. */
@@ -280,7 +283,29 @@ class RuleValidator(private val services: NarratorServices, private val actions:
         val players = players(conditions.players, caller)
         spec.effects.forEachIndexed { index, effect -> effect(index + 1, effect, spec.trigger, conditions, caller) }
         oncePunished(spec.effects)
+        wholeRule(spec.effects)
         return ValidRule(spec.copy(conditions = conditions.copy(players = players.map { it.name }.ifEmpty { null })), players)
+    }
+
+    /**
+     * The chaos level's caps of one call hold for the whole rule (M6-18, finding 6): one firing is one act, so the amounts
+     * its effects of one tool ask add up ([AMOUNTS]), and their sum must pass the cap each effect passed alone. Without
+     * it, a `spawn` of 6 refused at chaos 2 comes back as two `spawn` of 4 and 1: five creatures a firing.
+     */
+    private fun wholeRule(effects: List<RuleEffect>) {
+        val caps = services.guards.caps()
+        for (amount in AMOUNTS) {
+            val asked = effects.withIndex().mapNotNull { (index, effect) -> amount.of(effect)?.let { index + 1 to it } }
+            if (asked.size < 2) continue
+            val total = asked.sumOf { it.second }
+            val cap = amount.cap(caps)
+            if (total <= cap) continue
+            val chaos = services.settings.get().config.chaos
+            reject(
+                "effects ${and(asked.map { it.first.toString() })} (${amount.tool}) ${amount.asks(ToolText.number(total))} together, and at chaos $chaos " +
+                    "one firing may ${amount.asks(ToolText.number(cap))} at most: the caps hold for the whole rule, not for each effect; lower them",
+            )
+        }
     }
 
     /**
@@ -463,6 +488,30 @@ class RuleValidator(private val services: NarratorServices, private val actions:
     private companion object {
         /** A condition, and the triggers it applies to (M4 §8.2). */
         class Field(val name: String, val triggers: Set<RuleTrigger>, val given: (RuleConditions) -> Boolean)
+
+        /**
+         * An amount of [tool] that the chaos level caps for one call ([cap]), read in an effect's [field] ([default] when it
+         * is left out, none when it has none); [asks] says it for a refusal: `summon 5 creatures`.
+         */
+        class Amount(val tool: String, val field: String, val default: Double?, val cap: (Caps) -> Double, val asks: (String) -> String) {
+            fun of(effect: RuleEffect): Double? = if (effect.tool != tool) null else (effect.args[field] as? JsonPrimitive)?.doubleOrNull ?: default
+        }
+
+        /**
+         * The amounts that add up when one firing runs several effects of the same tool: the creatures of `spawn`, the
+         * damage of `lightning`, the power of `explosion`, the distance of a random `teleport` (two hops go twice as far).
+         * Not a level or a duration (an effect or an attribute replaces the one of its kind), nor a `launch` (it sets the
+         * player's speed, it does not add to it); `punish` is once per target ([oncePunished]).
+         */
+        val AMOUNTS = listOf(
+            Amount("spawn", "count", 1.0, { it.spawnsPerAction.toDouble() }) { "summon $it creatures" },
+            Amount("lightning", "damage_hearts", 0.0, { it.lightningHearts }) { "do $it hearts of damage" },
+            Amount("explosion", "power", null, { it.explosionPower }) { "reach an explosion power of $it" },
+            Amount("teleport", "random_radius", null, { it.teleportBlocks.toDouble() }) { "teleport a player $it blocks away" },
+        )
+
+        /** `1 and 2`, `1, 3 and 4`. */
+        fun and(words: List<String>): String = if (words.size < 2) words.joinToString() else words.dropLast(1).joinToString() + " and " + words.last()
 
         /** Triggers with a player ([EffectTarget.ACTOR]): every one but `mob_spawn`. */
         val ACTORS = RuleTrigger.entries.toSet() - RuleTrigger.MOB_SPAWN

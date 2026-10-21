@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.mechanics.rule
 
+import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.mechanics.EffectTarget
 import io.github.clemsix6.narrator2.mechanics.MechanicRejected
 import io.github.clemsix6.narrator2.mechanics.RuleEffect
@@ -10,6 +11,7 @@ import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonMechanic
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
+import io.github.clemsix6.narrator2.testing.testSettings
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -350,6 +352,60 @@ class RuleValidationTest {
         // Eight laws against Bartok at most: the ninth is refused.
         repeat(8) { f.book.create(f.spec(law("chat", SAY, """{"players":["Bartok"]}""")), f.caller) }
         assertTrue(f.refusal(law("chat", SAY, """{"players":["Bartok"]}""")).startsWith("DENIED (rule_limit): 8 rules are active"))
+    }
+
+    /**
+     * The caps of one call hold for the whole rule (M6-18, finding 6): a law refused for six pigs a kill at chaos 2 came
+     * back as two `spawn` of 4 and 1, five pigs a kill. The amounts of one tool's effects add up; other tools apart.
+     */
+    @Test
+    fun `the caps of one call hold for the whole rule, the amounts of one tool's effects adding up`() = runBlocking<Unit> {
+        f.guards.chaos = 2
+        f.services.settings.swap(testSettings(NarratorConfig(chaos = 2)))
+        fun pigs(count: Int?) = """{"tool":"spawn","at":"actor","args":{"entity":"pig"${count?.let { ",\"count\":$it" }.orEmpty()}}}"""
+        val cows = """{"entity":"cow"}"""
+
+        assertEquals("Invalid arguments: effect 1 (spawn): at chaos 2 one call summons at most 4 creatures (asked 6)", f.refusal(law("kill", pigs(6), cows)))
+        assertEquals(
+            "Invalid arguments: effects 1 and 2 (spawn) summon 5 creatures together, and at chaos 2 one firing may summon 4 creatures at most: " +
+                "the caps hold for the whole rule, not for each effect; lower them",
+            f.refusal(law("kill", "${pigs(4)},${pigs(1)}", cows)),
+        )
+        // A count left out is one creature.
+        assertEquals(
+            "Invalid arguments: effects 1, 2, 3 and 4 (spawn) summon 5 creatures together, and at chaos 2 one firing may summon 4 creatures at most: " +
+                "the caps hold for the whole rule, not for each effect; lower them",
+            f.refusal(law("kill", "${pigs(null)},${pigs(null)},${pigs(null)},${pigs(2)}", cows)),
+        )
+        // Two random hops go twice as far.
+        val hop = """{"tool":"teleport","at":"actor","args":{"random_radius":150}}"""
+        assertEquals(
+            "Invalid arguments: effects 1 and 2 (teleport) teleport a player 300 blocks away together, and at chaos 2 one firing may teleport a " +
+                "player 200 blocks away at most: the caps hold for the whole rule, not for each effect; lower them",
+            f.refusal(law("chat", "$hop,$hop")),
+        )
+        assertEquals(emptyList(), f.store.get().rules, "nothing refused is active")
+        // Within the cap together, and other tools apart: accepted.
+        f.book.create(f.spec(law("kill", "${pigs(2)},${pigs(2)}", cows)), f.caller)
+        f.book.create(f.spec(law("kill", """${pigs(4)},{"tool":"explosion","at":"position","args":{"power":2,"hurts":false}}""", cows)), f.caller)
+        assertEquals(2, f.store.get().rules.size)
+
+        // The damage of lightning, the power of explosions, at chaos 3.
+        f.guards.chaos = 3
+        f.services.settings.swap(testSettings(NarratorConfig(chaos = 3)))
+        val bolt = """{"tool":"lightning","at":"actor","args":{"damage_hearts":2}}"""
+        assertEquals(
+            "Invalid arguments: effects 1 and 2 (lightning) do 4 hearts of damage together, and at chaos 3 one firing may do 3 hearts of damage at most: " +
+                "the caps hold for the whole rule, not for each effect; lower them",
+            f.refusal(law("chat", "$bolt,$bolt")),
+        )
+        val blast = """{"tool":"explosion","at":"position","args":{"power":2}}"""
+        assertEquals(
+            "Invalid arguments: effects 1 and 3 (explosion) reach an explosion power of 4 together, and at chaos 3 one firing may reach an explosion " +
+                "power of 3 at most: the caps hold for the whole rule, not for each effect; lower them",
+            f.refusal(law("block_break", "$blast,$SAY,$blast")),
+        )
+        assertEquals(2, f.store.get().rules.size, "nothing more is active")
     }
 
     /** The administration commands are forbidden: a rule runs no command at all. */
