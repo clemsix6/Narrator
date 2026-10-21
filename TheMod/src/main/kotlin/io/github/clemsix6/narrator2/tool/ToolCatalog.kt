@@ -90,10 +90,11 @@ object ToolCatalog {
 
     /**
      * What the storyteller has besides its own (M6 §6.5): `inspire`, which it shares with the Director, the memory's
-     * reads and the writes of planned arcs and lore (the store holds the rest), and `sql`. Nothing that acts on the
-     * world, speaks to players or delegates.
+     * reads and the writes of planned arcs and lore (the store holds the rest). Nothing that acts on the world, speaks
+     * to players or delegates. No `sql` (M6-16): the programme's opening holds what a dream step needs (`ProgrammeInputs`),
+     * `player_profile` and `inspire` what a task needs, and the Journal's schema alone made a third of its prefix.
      */
-    private val STORYTELLER_SHARED = setOf("inspire", "remember", "resolve", "recall", "player_profile", "sql")
+    private val STORYTELLER_SHARED = setOf("inspire", "remember", "resolve", "recall", "player_profile")
 
     /**
      * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1), of

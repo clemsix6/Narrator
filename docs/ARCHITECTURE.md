@@ -217,7 +217,7 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
 | **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, `survey` (terrains plats et dégagés), SQL (positions), `recall` |
 | **Forgeron** | Écrire, tester et sauver un module de la Forge, commandé par `forge_module` | `module_list`, `module_read`, `game_ids`, `forge_test`, `forge_save` (§10.2) |
-| **Scénariste** | Préparer la suite sans jamais agir : pendant le rêve, le programme (des **idées** `P-…` notées sur la nouveauté, le fun et l'équité, adaptées à la progression réelle, une saison, les récits prévus) ; à la demande (`delegate`), trois idées pour un grand moment ([design M6](design/M6.md) §6) | `inspire`, `propose_idea`, `drop_idea`, `remember` (récits prévus, lore), `recall`, `player_profile`, `sql` |
+| **Scénariste** | Préparer la suite sans jamais agir : pendant le rêve, le programme (des **idées** `P-…` notées sur la nouveauté, le fun et l'équité, adaptées à la progression réelle, une saison, les récits prévus) ; à la demande (`delegate`), trois idées pour un grand moment ([design M6](design/M6.md) §6) | `inspire`, `propose_idea`, `drop_idea`, `remember` (récits prévus, lore), `recall`, `player_profile` (sans `sql` depuis M6-16) |
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
