@@ -10,8 +10,6 @@ import io.github.clemsix6.narrator2.tool.memory.dreamerTools
 import io.github.clemsix6.narrator2.tool.memory.memoryTools
 import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaArgs
 import io.github.clemsix6.narrator2.tool.storyteller.DropIdeaTool
-import io.github.clemsix6.narrator2.tool.storyteller.InspireArgs
-import io.github.clemsix6.narrator2.tool.storyteller.InspireTool
 import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaArgs
 import io.github.clemsix6.narrator2.tool.storyteller.ProposeIdeaTool
 import io.github.clemsix6.narrator2.trace.DecisionRecord
@@ -316,7 +314,7 @@ class ToolCatalogTest {
         assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).storytellerAvailable, "off unless said otherwise")
     }
 
-    /** M6 §12.6: the three tools of M6 are declared whole, and answer `FAILED` until their runs are wired. */
+    /** M6 §12.6: the three tools of M6 are declared whole, and answer `FAILED` until their runs are wired (`inspire`'s is, M6-05). */
     @Test
     fun `the tools of M6 answer FAILED until they are wired`() = runBlocking<Unit> {
         val ctx = ToolContext(services, Caller(Role.STORYTELLER, "storyteller-1", turnId = null, taskId = null), services.clock, 5_000)
@@ -324,7 +322,6 @@ class ToolCatalogTest {
             IdeaKind.CHALLENGE, "La course au pic", "Une course au sommet du pic enneigé.", "Bartok en ligne", novelty = 4, funScore = 4, fairness = 5,
         )
         val results = listOf(
-            InspireTool().run(ctx, InspireArgs()),
             ProposeIdeaTool().run(ctx, idea),
             DropIdeaTool().run(ctx, DropIdeaArgs("P-41", "Le moment est passé.")),
         )
