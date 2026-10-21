@@ -20,6 +20,7 @@ import io.github.clemsix6.narrator2.trace.ToldEvent
 import io.github.clemsix6.narrator2.trace.ToolUse
 import io.github.clemsix6.narrator2.trace.TraceQueries
 import io.github.clemsix6.narrator2.trace.TurnDetail
+import io.github.clemsix6.narrator2.trace.TurnRecord
 import io.github.clemsix6.narrator2.trace.TurnSummary
 import io.github.clemsix6.narrator2.trace.Usage
 import kotlinx.coroutines.withTimeoutOrNull
@@ -151,8 +152,8 @@ object TraceCommands {
     private const val HOUR_MS = 3_600_000L
 }
 
-/** How a line of a reply looks: sober colors, gray by default. */
-internal enum class Look { DETAIL, THOUGHT, SAID, FAILURE }
+/** How a line of a reply looks: sober colors, gray by default; [WARNING] went through, but not as asked. */
+internal enum class Look { DETAIL, THOUGHT, SAID, WARNING, FAILURE }
 
 /** A line of a reply before it becomes chat. */
 internal data class Out(val text: String, val look: Look = Look.DETAIL)
@@ -203,8 +204,9 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
                 add(Out("Told between tool calls:"))
                 detail.injected.forEach { add(Out("  ${event(it)}")) }
             }
+            val refused = turn.outcome == TurnRecord.Outcome.REFUSED.id
             detail.calls.forEachIndexed { i, call ->
-                add(Out("Request ${i + 1} · ${request(call)}", if (call.error != null || call.refusalCategory != null) Look.FAILURE else Look.DETAIL))
+                add(request(i, call, refused && i == detail.calls.lastIndex))
                 add(thought(call, THOUGHT_CHARS_IN_TRACE, "  "))
                 call.tools.forEach { add(tool(it)) }
             }
@@ -221,8 +223,9 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         val lines = buildList {
             add(Out(listOfNotNull("Queued ${time(task.createdAt)}", task.startedAt?.let { "started ${time(it)}" }, task.finishedAt?.let { "ended ${time(it)}" }, task.requestedByTurn?.let { "asked by turn #$it" }).joinToString(" · ")))
             add(Out("Brief: ${quote(task.brief, BRIEF_CHARS)}"))
+            val refused = task.error?.startsWith(REFUSED_TASK) == true
             task.calls.forEachIndexed { i, call ->
-                add(Out("Request ${i + 1} · ${request(call)}", if (call.error != null || call.refusalCategory != null) Look.FAILURE else Look.DETAIL))
+                add(request(i, call, refused && i == task.calls.lastIndex))
                 add(thought(call, THOUGHT_CHARS_IN_TRACE, "  "))
                 call.tools.forEach { add(tool(it)) }
             }
@@ -434,7 +437,23 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         return "${time(event.ts)} $body${event.salience?.let { " · $it" }.orEmpty()}"
     }
 
-    private fun request(call: ModelCall): String {
+    /**
+     * The line of request [i]. A safety classifier may stop a request: refused without an answer (the API's `refusal`, or
+     * a fallback model that said nothing: [ended] tells that this request ended its turn or task refused), in red; or
+     * handed to a fallback model that answered (`trace/CallStats`: a usable stop reason with a refusal category), in
+     * yellow, `fallback (cyber) → claude-opus-4-8`.
+     */
+    private fun request(i: Int, call: ModelCall, ended: Boolean): Out {
+        val refused = call.stopReason == REFUSAL || ended
+        val look = when {
+            call.error != null || refused -> Look.FAILURE
+            call.refusalCategory != null -> Look.WARNING
+            else -> Look.DETAIL
+        }
+        return Out("Request ${i + 1} · ${request(call, refused)}", look)
+    }
+
+    private fun request(call: ModelCall, refused: Boolean): String {
         val parts = buildList {
             add(time(call.startedAt))
             add(seconds(call.latencyMs.toLong()))
@@ -445,7 +464,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
             }
             call.outputTokens?.let { add("${tokens(it.toLong())} out") }
             call.stopReason?.let { add(it) }
-            call.refusalCategory?.let { add("refused: $it") }
+            call.refusalCategory?.let { add(if (refused) "refused: $it" else "fallback ($it) → ${call.model}") }
             call.error?.let { add("error: $it") }
         }
         return parts.joinToString(" · ")
@@ -547,6 +566,7 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
         Look.DETAIL -> Component.literal(line.text).withStyle(ChatFormatting.GRAY)
         Look.THOUGHT -> Component.literal(line.text).withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)
         Look.SAID -> Component.literal(line.text).withStyle(ChatFormatting.WHITE)
+        Look.WARNING -> Component.literal(line.text).withStyle(ChatFormatting.YELLOW)
         Look.FAILURE -> Component.literal(line.text).withStyle(ChatFormatting.RED)
     }
 
@@ -571,6 +591,12 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
 
         /** Outcomes of a turn that went as planned. */
         private val QUIET_OUTCOMES = setOf("acted", "idle")
+
+        /** The API's `stop_reason` of a refusal. */
+        private const val REFUSAL = "refusal"
+
+        /** How a worker's task refused by a safety filter ends (`agent/Workers`, `memory/MemoryAgents`): its last request was refused. */
+        private const val REFUSED_TASK = "refused by the safety filter"
 
         /** Decisions that stopped something, shown in red. */
         private val REFUSALS = setOf("denied", "refused", "rescued", "dropped", "closed", "backed off", "blocked", "resent")

@@ -60,6 +60,7 @@
       "io.github.clemsix6.narrator2.gametest.ArsenalWorldGameTests",
       "io.github.clemsix6.narrator2.gametest.ForgeAssemblyGameTests",
       "io.github.clemsix6.narrator2.gametest.ForgeEndToEndTests",
+      "io.github.clemsix6.narrator2.gametest.LeakWatchGameTests",
       "io.github.clemsix6.narrator2.gametest.LiveForgeGameTests"
     ]
   },
