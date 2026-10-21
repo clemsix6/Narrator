@@ -216,6 +216,37 @@ class MemoryServiceTest {
         assertEquals(emptyList(), memory.openIdeas())
     }
 
+    /** M6-FIX-3: the hygiene writes through the store the cache watches, not past it; the 10-minute timer has no part in it. */
+    @Test
+    fun `an idea the hygiene expires leaves the open ideas at once`() = runBlocking<Unit> {
+        val memory = start()
+        publish("20:00:01", PlayerJoined(bartok, OW, sessionId = 1, firstTime = false, isOp = false)) // world play moves while he is online
+        val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
+        val draft = IdeaDraft(IdeaKind.FAVOR, "Le gâteau", "Un gâteau tombe du ciel au prochain orage.", "N'importe quand.", novelty = 3, funScore = 5, fairness = 5, playHours = 1)
+        val idea = memory.store.addIdea(draft, storyteller).row
+        assertEquals(listOf(idea.ref), memory.openIdeas().map { it.ref })
+
+        val playClock = assertIs<DuckPlayClock>(memory.clock)
+        val start = playClock.worldPlaySeconds(clock.millis())
+        repeat(31) {
+            clock.now = clock.now.plusMillis(DuckPlayClock.MAX_GAP_MS) // the most one step counts
+            playClock.tick(clock.millis())
+        }
+        assertTrue(playClock.worldPlaySeconds(clock.millis()) - start >= 3_600, "an hour of world play went by")
+        // The hygiene runs before a dream's first step: once the dream's first request reaches the model, it is done.
+        val hold = Hold()
+        fake.enqueue(reply { hold(hold) })
+        try {
+            memory.jobs.requestDream("test").getOrThrow()
+            assertTrue(hold.awaitReached(), "the dream's first request reached the model")
+
+            assertEquals(IdeaStatus.EXPIRED, (memory.store.row(idea.ref) as Idea).status, "the hygiene closed it")
+            assertEquals(emptyList(), memory.openIdeas(), "the cache followed the hygiene")
+        } finally {
+            hold.release()
+        }
+    }
+
     @Test
     fun `stopping cancels the running job and saves the world play clock`() = runBlocking<Unit> {
         val memory = start()
