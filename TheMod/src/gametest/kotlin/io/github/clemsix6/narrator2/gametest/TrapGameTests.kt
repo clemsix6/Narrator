@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.NarratorRuntime
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.floor
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.mockPlayer
 import io.github.clemsix6.narrator2.gametest.GuardPolicyGameTests.Companion.removePlayers
@@ -13,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
@@ -35,6 +37,7 @@ import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.phys.Vec3
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicBoolean
@@ -341,6 +344,11 @@ class TrapGameTests {
      * A piston pushes a player's glass in place of a pane, and the pane one cell further: at the end of the trap
      * the player's glass stays (M4 review, finding 2). The pushed pane stays too, for good: the restorer knows
      * only the cells it set (finding 39).
+     *
+     * The redstone block makes the piston push at the block events of the level's next tick, and the trap is set at
+     * the start of that very tick ([atNextLevelTick]): the push always comes before a pass of the restorer (at the end
+     * of the server's tick) can see the pane due. Set from here with its 1.5 s, it was taken away before the push
+     * whenever the rest of this tick, the batch's other tests, took longer (FLAKY-5).
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun aGlassPushedInPlaceOfAPaneByAPistonStays(helper: GameTestHelper) {
@@ -354,9 +362,11 @@ class TrapGameTests {
         helper.setBlock(piston, Blocks.PISTON.defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST))
         helper.setBlock(theirs, Blocks.GLASS)
         PlacedBlocks.mark(level, helper.absolutePos(theirs), Blocks.GLASS.defaultBlockState(), UUID.randomUUID())
-        helper.assertEquals(2, BlockRestorer.place(level, cells, TrapShapes.cageBlock, System.currentTimeMillis() + 1_500, player, null).getOrThrow(), "set")
         helper.setBlock(piston.west(), Blocks.REDSTONE_BLOCK)
+        val set = AtomicReference<Result<Int>>()
+        atNextLevelTick(level) { set.set(runCatching { BlockRestorer.place(level, cells, TrapShapes.cageBlock, System.currentTimeMillis() + 1_500, player, null).getOrThrow() }) }
         helper.startSequence()
+            .thenAwait { helper.assertEquals(2, set.get()?.getOrThrow(), "set, before the piston pushes") }
             .thenAwait {
                 helper.assertTrue(helper.getBlockState(theirs).`is`(Blocks.PISTON_HEAD), "the piston pushes")
                 helper.assertTrue(helper.getBlockState(pane).`is`(Blocks.GLASS) && helper.getBlockState(pushedTo).`is`(Blocks.GLASS), "both glass blocks moved")
@@ -489,6 +499,26 @@ class TrapGameTests {
 
         private val watches = CopyOnWriteArrayList<ChunkWatch>()
         private val hooked = AtomicBoolean()
+
+        /** What runs at the start of a level's next tick, once: [atNextLevelTick]. */
+        private val nextLevelTick = ConcurrentLinkedQueue<Pair<ServerLevel, () -> Unit>>()
+        private val levelTickHooked = AtomicBoolean()
+
+        /**
+         * Runs [task] at the start of [level]'s next tick, before its block events, once. Called from a test, which runs
+         * after the levels' ticks: the block events queued by the test run in that same next tick, after [task]. The hook,
+         * registered once and never taken off, never throws into the server's tick: [task] reports what it did itself.
+         */
+        private fun atNextLevelTick(level: ServerLevel, task: () -> Unit) {
+            if (levelTickHooked.compareAndSet(false, true)) {
+                ServerTickEvents.START_LEVEL_TICK.register { ticking ->
+                    val due = nextLevelTick.filter { it.first === ticking }
+                    nextLevelTick.removeAll(due.toSet())
+                    for ((_, run) in due) runCatching(run).onFailure { Log.of("GameTest").error("a task of a trap test at the start of a level tick failed", it) }
+                }
+            }
+            nextLevelTick += level to task
+        }
 
         /**
          * Watches [watch]'s chunk. The hooks, registered once and never taken off, come after the restorer's
