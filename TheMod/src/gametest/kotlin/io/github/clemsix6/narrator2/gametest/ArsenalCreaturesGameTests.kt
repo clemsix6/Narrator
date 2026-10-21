@@ -137,8 +137,11 @@ class ArsenalCreaturesGameTests {
     }
 
     /**
-     * `parade` of three chickens behind Bob, who walks fourteen blocks east: the line follows him, each chicken right behind
-     * the one ahead; then one is killed, and a new one is summoned and joins the line. Stopped by an operator, they go.
+     * `parade` of three chickens behind Bob, who walks fourteen blocks east: the line follows him and closes up behind him
+     * in single file, each chicken within [LINK] blocks of the one ahead, watched at every tick of three seconds once it
+     * settled; a break (a chicken that wanders off, as chickens do between two steps of the parade) is mended within a
+     * second ([MEND_TICKS]). Then one is killed, and a new one is summoned and joins the line. Stopped by an operator, they
+     * go.
      */
     @GameTest(environment = FORGE_ENVIRONMENT, structure = FIELD, skyAccess = true, maxTicks = ASYNC_MAX_TICKS)
     fun theParadeFollowsItsPlayerAndAKilledMarcherIsSummonedAgain(helper: GameTestHelper) {
@@ -158,15 +161,26 @@ class ArsenalCreaturesGameTests {
                 rig.onServer { rig.afterTick = { if (rig.ticks % WALK_TICKS == 0) walk.removeFirstOrNull()?.let { bob.live.teleportTo(it.x, it.y, it.z) } } }
                 rig.await("Bob's walk", PARADE_WAIT_MS, view.ref) { walk.isEmpty() }
                 val walked = rig.onServer { rig.ticks }
-                rig.await("the line settled behind Bob", PARADE_WAIT_MS, view.ref) { rig.ticks >= walked + SETTLE_TICKS }
+                // Once the line settled behind Bob, its longest link at each tick of WATCH_TICKS.
+                val watched = mutableListOf<Double>()
+                rig.onServer { rig.afterTick = { if (rig.ticks > walked + SETTLE_TICKS) watched += file(rig.ownCreatures(view.ref), bob.live.position()) } }
+                rig.await("the line settled behind Bob, then watched", PARADE_WAIT_MS, view.ref) { rig.ticks >= walked + SETTLE_TICKS + WATCH_TICKS }
+                val links = rig.onServer {
+                    rig.afterTick = {}
+                    watched.toList()
+                }
                 val (behind, end) = rig.onServer { rig.ownCreatures(view.ref) to bob.live.position() }
                 val start = helper.absoluteVec(Vec3(WALK_FROM + 0.5, 1.0, LANE + 0.5))
                 check(behind.map { it.uuid }.toSet() == first.keys) { "the same three chickens" }
                 check(behind.all { it.position().distanceTo(end) < it.position().distanceTo(start) }) {
                     "they followed Bob from $start to $end: ${first.values} then ${behind.map { it.position() }}"
                 }
-                val links = rig.onServer { line(rig.ownCreatures(view.ref), bob.live.position()) }
-                check(links != null) { "in single file behind Bob at $end, each within $LINK blocks of the one ahead: ${behind.map { it.position() }}" }
+                val broken = links.map { it > LINK }
+                val longestBreak = broken.fold(0 to 0) { (run, longest), off -> (if (off) run + 1 else 0).let { it to maxOf(longest, it) } }.second
+                check(links.size >= WATCH_TICKS && longestBreak < MEND_TICKS) {
+                    "in single file behind Bob at $end, each within $LINK blocks of the one ahead, a break mended within $MEND_TICKS ticks: " +
+                        "broken $longestBreak ticks in a row; the longest link at each of ${links.size} ticks: ${links.joinToString { "%.1f".format(it) }}"
+                }
 
                 // One is killed: Bob is told (the fact CreatureGone, « died »), and a new one is summoned and joins the line.
                 val victim = behind[1]
@@ -177,7 +191,7 @@ class ArsenalCreaturesGameTests {
                 check(victim.isDeadOrDying) { "the chicken is dead" }
                 rig.await("a new chicken in the line", PARADE_WAIT_MS, view.ref) {
                     val now = rig.ownCreatures(view.ref)
-                    now.size == 3 && now.any { it.uuid !in first } && line(now, bob.live.position()) != null
+                    now.size == 3 && now.any { it.uuid !in first } && file(now, bob.live.position()) <= LINK
                 }
                 rig.await("Bob told of the fallen chicken", alive = view.ref) { bob.chat().any { FALLEN in it.content().string } }
 
@@ -188,7 +202,8 @@ class ArsenalCreaturesGameTests {
                 val slowest = rig.onServer { rig.slowestTicks() }
                 Log.forge.info(
                     "M5-15 in the server: parade of 3 chickens, deployed at tick $deployed, Bob walked until tick $walked, the line behind him " +
-                        "(${links.joinToString { "%.1f".format(it) }} blocks apart), one killed at tick $killed and summoned again: " +
+                        "(its longest link ${"%.1f".format(links.min())} to ${"%.1f".format(links.max())} blocks over ${links.size} ticks, " +
+                        "broken ${broken.count { it }} ticks, $longestBreak in a row at most), one killed at tick $killed and summoned again: " +
                         "an engine tick took ${micros(ticks, 0.5)} µs (median), " +
                         "${micros(ticks, 0.95)} µs (95th percentile), ${micros(ticks, 1.0)} µs at most over ${ticks.size} ticks; " +
                         "its calls ${"%.2f".format(rig.slowestSecondMs)} ms in its slowest second; slowest ticks $slowest",
@@ -365,32 +380,37 @@ class ArsenalCreaturesGameTests {
 
         /**
          * Blocks at most from Bob to the first chicken, and from each chicken to the next: their places are a block
-         * apart, moveTo stops about a block short, and the line steps twice a second.
+         * apart, a marcher walks again only beyond two blocks, moveTo stops about a block short (a chicken may stay
+         * 2.4 blocks off for seconds), and the line steps twice a second.
          */
         const val LINK = 3.5
 
         /** Ticks the line has to close up behind Bob once he stops: five seconds of the game. */
         const val SETTLE_TICKS = 100
+
+        /** Ticks the line is watched then, each one: three seconds, six steps of the parade. */
+        const val WATCH_TICKS = 60
+
+        /**
+         * Ticks a break of the line lasts at most: a second, two steps of the parade. Between two steps a chicken wanders
+         * as chickens do (`RandomStrollGoal`), and the next step sends it back once it is two blocks off: measured under
+         * load (M5-FIX-1), a break lasted 7 ticks at most, 0 to 10 ticks in a run.
+         */
+        const val MEND_TICKS = 20
         const val PARADE_WAIT_MS = 30_000L
 
         /**
-         * The distances of the line behind [feet]: the chicken nearest to Bob, then the one nearest to it, and so on, each
-         * within [LINK] of the one before; null when they are not strung out so.
+         * The longest link of the single file [chickens] make behind [feet] at best: over the orders they may walk in, Bob
+         * to the first and each to the next, the order whose longest link is the shortest. Whatever order the module keeps
+         * them in (the order they became its own, which the test does not see), its file has a link no shorter; taking
+         * the chicken nearest to the one ahead instead fails a file whose last one stands a step in front of Bob.
          */
-        fun line(chickens: List<Mob>, feet: Vec3): List<Double>? {
-            val left = chickens.map { it.position() }.toMutableList()
-            var ahead = feet
-            val links = mutableListOf<Double>()
-            while (left.isNotEmpty()) {
-                val next = left.minBy { it.distanceTo(ahead) }
-                val link = next.distanceTo(ahead)
-                if (link > LINK) return null
-                links += link
-                left.remove(next)
-                ahead = next
-            }
-            return links
-        }
+        fun file(chickens: List<Mob>, feet: Vec3): Double =
+            orders(chickens.map { it.position() }).minOf { order -> (listOf(feet) + order).zipWithNext { a, b -> a.distanceTo(b) }.maxOrNull() ?: 0.0 }
+
+        /** Every order of [items]: 6 for the parade's three chickens. */
+        fun <T> orders(items: List<T>): List<List<T>> =
+            if (items.size <= 1) listOf(items) else items.indices.flatMap { i -> orders(items.filterIndexed { j, _ -> j != i }).map { listOf(items[i]) + it } }
 
         fun median(values: List<Double>): Double = values.sorted()[values.size / 2]
 

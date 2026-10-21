@@ -38,8 +38,8 @@ import kotlin.math.floor
  *   [SPAWN] for a creature of `spawn` that can hurt or was sent at [player] (M4-LEFTOVERS: a punishment of that player
  *   too). Such a creature is [player]'s alone: it goes for nobody else and hurts nobody else ([CreatureShield.boundTo]),
  *   it goes when [player] dies or leaves ([NarratorMobs.retirePunishments]), and its fatal blow is a rescue, never a
- *   death ([GuardsImpl.allowDeath]): a creature the Narrator summons never kills. A module's creature is the
- *   exception: its module aims it (M5 §4.5, `ModuleCreatures`).
+ *   death ([GuardsImpl.allowDeath]): a creature the Narrator summons never kills. A module that makes it its own takes
+ *   this mark off: its module aims it, and its fatal blow is a rescue all the same (M5 §4.5, `ModuleCreatures`).
  */
 data class NarratorMob(
     val expiresAt: Long,

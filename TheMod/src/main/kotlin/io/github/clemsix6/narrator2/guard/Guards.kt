@@ -187,9 +187,10 @@ interface Guards {
      * Saves [player] from a death the engine refuses (a duel, M4 §5.5): the death guard's own rescue (out of
      * the danger, to the respawn point or safe ground, fire out, air, health, no fall damage for a while),
      * without counting the quota, then a [shield] of [RESCUE_SHIELD_MS]. Decision `death_guard rescued` with
-     * [why]. Server thread.
+     * [why]. [inPlace]: the danger was a blow that will not come again (a module's creature, which the shield keeps
+     * away), and the player stays where they stand, nothing lost (M5 review, D1). Server thread.
      */
-    fun rescue(player: ServerPlayer, why: String)
+    fun rescue(player: ServerPlayer, why: String, inPlace: Boolean = false)
 
     /** What limits the Narrator with each of [players] now (M4 §4.5, the `Pacing` and `Offerings` lines), in the order given. Any thread. */
     fun pacing(players: List<UUID>, now: Long): List<PlayerPacing>

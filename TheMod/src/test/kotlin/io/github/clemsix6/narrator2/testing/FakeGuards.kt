@@ -160,7 +160,7 @@ class FakeGuards(
 
     override fun isPunished(player: ServerPlayer): Boolean = player.uuid in punished
 
-    override fun rescue(player: ServerPlayer, why: String) {
+    override fun rescue(player: ServerPlayer, why: String, inPlace: Boolean) {
         rescues += player.uuid to why
     }
 

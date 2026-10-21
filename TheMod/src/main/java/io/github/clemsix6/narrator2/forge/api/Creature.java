@@ -57,7 +57,8 @@ public interface Creature {
 
     /**
      * It goes for the online player {@code player}, never anything else: an act ({@link Acts}), hostile, refused like
-     * any punishment; the death guard watches over the player.
+     * any punishment; the death guard watches over the player. Its blows hurt but never kill: a fatal one is a rescue
+     * where the player stands, nothing lost.
      */
     Pending attack(String player);
 

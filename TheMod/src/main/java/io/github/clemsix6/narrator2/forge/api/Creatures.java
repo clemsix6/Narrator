@@ -4,9 +4,9 @@ import java.util.List;
 
 /**
  * The creatures of a deployment (M5 §4.5): those {@link Acts#spawn} summoned for it, and those it claimed.
- * {@link Limits#MAX_OWN_CREATURES} at once. They are the Narrator's (they never pick up items, break blocks or
- * attack anything but players), take no fall damage while they are its own, never push players, and get back to
- * normal when it ends: a summoned one vanishes, a claimed one goes back where it was claimed, unchanged.
+ * {@link Limits#MAX_OWN_CREATURES} at once. They are the Narrator's (they never pick up items, break blocks,
+ * attack anything but players nor kill one), take no fall damage while they are its own, never push players, and
+ * get back to normal when it ends: a summoned one vanishes, a claimed one goes back where it was claimed, unchanged.
  */
 public interface Creatures {
     /** Its creatures alive and loaded, in the order they became its own. */

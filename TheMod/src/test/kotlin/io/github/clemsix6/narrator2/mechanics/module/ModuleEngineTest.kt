@@ -9,11 +9,15 @@ import io.github.clemsix6.narrator2.forge.host.Hosts
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
 import io.github.clemsix6.narrator2.mechanics.MechanicsState
 import io.github.clemsix6.narrator2.mechanics.RuleKind
+import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.MechanicsSamples
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonPrimitive
 import org.apache.logging.log4j.Level
 import org.junit.jupiter.api.AfterEach
@@ -123,8 +127,44 @@ class ModuleEngineTest {
 
             assertEquals(CanonStatus.FULFILLED to ModuleEngine.ENDED_ITSELF_NOTE, resolved(view.ref), "the line closes all the same (M5-16, defect 2)")
             f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
-            assertTrue(logs.at(Level.WARN).any { "the canon row of ${view.ref} refused its note" in it }, logs.messages.toString())
+            assertTrue(logs.at(Level.WARN).any { "the canon row of ${view.ref} refused its end" in it }, logs.messages.toString())
             assertEquals(listOf("${view.ref} rude ended by itself: « Tu as gagné, je te félicite » (0 acts, 0 faults)"), f.moduleLines(), "the Director reads its words")
+        }
+    }
+
+    @Test
+    fun `a status the row's kind refuses still closes its canon, with the ending's status for that kind`() {
+        f.module("finisher", ModuleFixture.source("finisher", body = """m.timers().after(5, () -> m.end("Mimosa a gagné la partie"));"""))
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("finisher", kind = RuleKind.PLAN))
+            // A row whose kind is not the deployment's (M5 review, finding 4): a law is never `fulfilled`.
+            f.fakeMemory.store.rows[view.ref] = f.canon(view.ref).copy(kind = CanonKind.LAW)
+            f.ticks(5)
+
+            assertEquals(CanonStatus.RETIRED to ModuleEngine.ENDED_ITSELF_NOTE, resolved(view.ref), "a row the engine ends never stays open")
+            assertTrue(logs.at(Level.WARN).any { "the canon row of ${view.ref} refused its end (a law cannot be fulfilled): resolved retired" in it }, logs.messages.toString())
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
+            assertEquals(listOf("fulfilled"), ending())
+        }
+    }
+
+    @Test
+    fun `a canon row closed before its module ends stays as it was, without a warning`() {
+        f.module("waiter", ModuleFixture.source("waiter"))
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("waiter", minutes = 5))
+            val operator = Author(Source.OPERATOR, operator = "Clement")
+            runBlocking { f.fakeMemory.store.resolveCanon(view.ref, CanonStatus.RETIRED, "Clement a retiré la loi à la main.", emptyList(), operator) }
+            f.clock.advance(Duration.ofMinutes(5))
+            f.second()
+
+            f.await("its decision, then its line") { ending().isNotEmpty() && f.moduleLines().isNotEmpty() }
+            assertEquals(listOf("expired"), ending())
+            assertEquals(CanonStatus.RETIRED to "Clement a retiré la loi à la main.", f.canon(view.ref).let { it.status to it.resolution }, "left as the operator closed it")
+            assertTrue(logs.messages.any { "the canon row of ${view.ref} refused its end" in it && "already retired, nothing to close" in it }, logs.messages.toString())
+            assertEquals(emptyList(), logs.at(Level.WARN).filter { "${view.ref}" in it }, "nothing went wrong")
         }
     }
 
@@ -414,12 +454,16 @@ class ModuleEngineTest {
         try {
             g.start()
             g.second()
+            g.second()
+            g.second()
 
             assertEquals(built, f.forge.built.size, "nothing built")
             assertEquals(emptyList(), g.store.get().modules)
-            assertEquals(listOf("the Forge is switched off (by Clement): ${view.ref} did not start again"), g.moduleLines())
+            assertEquals(listOf("the Forge is switched off (by Clement): ${view.ref} did not start again"), g.moduleLines(), "told once, at the first second")
             g.await("its canon") { !g.canon(view.ref).status.open }
             assertEquals(CanonStatus.RETIRED to ModuleEngine.FORGE_OFF_NOTE, g.canon(view.ref).let { it.status to it.resolution })
+            g.await("its decision") { g.decisions(ModuleEngine.ENDED).isNotEmpty() }
+            assertEquals(listOf("forge_off"), g.decisions(ModuleEngine.ENDED).map { it.detail!!.getValue(ModuleEngine.ENDING).jsonPrimitive.content }, "ended once")
         } finally {
             g.close()
         }
