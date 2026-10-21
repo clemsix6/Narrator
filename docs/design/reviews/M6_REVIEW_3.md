@@ -397,3 +397,15 @@ deux ne demande de rejeu : les retouches du prompt sont courtes, et M6-18 (T6) l
   - T6 : compter les résumés de chapitre de moins de 100 caractères (constat 1, s'il n'est pas corrigé avant), et la
     part des ouvertures de chapitre sur une arrivée qui restent muettes (constat 2) ;
   - T5 et T6 : le nombre de commandes au Scénariste par soirée (D11).
+
+## Décisions du superviseur (21/10/2026)
+
+- **D8 — oui.** On garde « Fin. » en fin de tour, avec le garde-fou : un résumé de chapitre de moins d'environ
+  100 caractères n'en est pas un (le moteur le refuse et le redemande ou garde le précédent, sans le prendre pour un
+  résumé), et une phrase dans `chapter_summary.md`. Lot M6-FIX-9.
+- **D9 — oui.** « Un début de chapitre » sort de la liste des moments où se taire (`director.md:206`) : un chapitre
+  s'ouvre presque toujours sur une arrivée. Le propriétaire relira la section « Ne rien faire ». Lot M6-FIX-9.
+- **D10 — oui.** `DuckJournal.read` rend sa connexion avant de réveiller l'appelant. Lot M6-FIX-10.
+- **D11 — non**, pas de limite horaire aux commandes au Scénariste pour l'instant : M6-18 les compte par soirée, et on
+  décidera sur ces chiffres.
+- Les deux lots partent en parallèle ; leurs fichiers sont disjoints de M6-17 et de FORGE-ABANDON-FIX.
