@@ -60,7 +60,7 @@ class NoScriptTest {
             assertSafe(path, response)
         }
 
-        val overview = text(get(routes, "/"))
+        val overview = bodyText(get(routes, "/"))
         assertContains(overview, "&lt;img src=x onerror=alert(1)&gt;", message = "the player's name")
         assertContains(overview, "href=\"/players/%3Cimg%20src%3Dx%20onerror%3Dalert%281%29%3E\"", message = "the name in a link, encoded")
         assertContains(overview, "Challenge C-50: &quot;&gt;&lt;b&gt;bold&lt;/b&gt;", message = "a line of the situation")
@@ -91,39 +91,18 @@ class NoScriptTest {
         val response = get(routes, "/")
         assertEquals(200, response.status)
         assertSafe("/ without a Journal", response)
-        val page = text(response)
+        val page = bodyText(response)
         assertContains(page, ">Bartok</a>")
         assertContains(page, "Not shown: the Journal is unavailable: unit test.")
         Routes.PAGES.forEach { page -> assertSafe("/${page.root} without a Journal", get(routes, "/${page.root}")) }
     }
 
-    private fun assertSafe(what: String, response: WebResponse) {
-        assertEquals(Routes.CSP, response.headers["Content-Security-Policy"], what)
-        assertEquals("nosniff", response.headers["X-Content-Type-Options"], what)
-        assertEquals("no-store", response.headers["Cache-Control"], what)
-        assertEquals("no-referrer", response.headers["Referrer-Policy"], what)
-        if (response.contentType?.startsWith("text/html") != true) return
-        val html = text(response)
-        assertFalse("<script" in html.lowercase(), "$what: <script")
-        assertFalse("javascript:" in html.lowercase(), "$what: javascript:")
-        TAG.findAll(html).forEach { match ->
-            val tag = match.value
-            val names = VALUE.replace(tag, "\"\"")
-            assertFalse(EVENT_ATTRIBUTE.containsMatchIn(names), "$what: an on… attribute in $tag")
-            assertFalse(STYLE_ATTRIBUTE.containsMatchIn(names), "$what: a style attribute in $tag")
-            URL.findAll(tag).forEach { url ->
-                val target = url.groupValues[1]
-                assertTrue(target.startsWith("/") && !target.startsWith("//") || target.startsWith("#"), "$what: a link out of the dashboard in $tag")
-            }
-        }
-    }
+    private fun assertSafe(what: String, response: WebResponse) = assertSafePage(what, response)
 
     private fun get(routes: Routes, path: String): WebResponse =
         routes.respond(WebCall("GET", path.substringBefore('?'), path.substringAfter('?', "").ifEmpty { null }, "127.0.0.1:$PORT", listOf(cookie())))
 
     private fun cookie() = "${Routes.COOKIE}=${token.value}"
-
-    private fun text(response: WebResponse) = String(response.body, StandardCharsets.UTF_8)
 
     private fun player(name: String) = LivePlayer(
         ref = PlayerRef(UUID.nameUUIDFromBytes(name.toByteArray()), name), sessionId = 1, joinedAt = 0, isOp = false, gameMode = "survival",
@@ -144,15 +123,44 @@ class NoScriptTest {
             "/tasks/7", "/decisions?kind=guard", "/costs", "/memory/M-1", "/players/${encodeSegment(NAME_TRAP)}", "/players/Bartok",
             "/mechanics", "/forge/parade/1", "/style", "/sql?q=SELECT%201", "/style.css", "/nope",
         )
-
-        /** A tag as written by the dashboard: text never holds a raw `<`. */
-        val TAG = Regex("<[a-zA-Z][^>]*>")
-
-        /** An attribute's value, removed before the names are checked. */
-        val VALUE = Regex("\"[^\"]*\"")
-
-        val EVENT_ATTRIBUTE = Regex("\\son[a-z-]*\\s*=", RegexOption.IGNORE_CASE)
-        val STYLE_ATTRIBUTE = Regex("\\sstyle\\s*=", RegexOption.IGNORE_CASE)
-        val URL = Regex("\\s(?:href|action|src)=\"([^\"]*)\"", RegexOption.IGNORE_CASE)
     }
 }
+
+/** The body of [response] as text. */
+internal fun bodyText(response: WebResponse) = String(response.body, StandardCharsets.UTF_8)
+
+/**
+ * What every answer of the dashboard must hold (M6 §8.1, §8.3, §8.6), for the tests of any page ([what] names it in a
+ * failure): the security headers; and for a page, no `<script`, no `javascript:`, no `on…` nor `style` attribute, and
+ * links that stay inside the dashboard.
+ */
+internal fun assertSafePage(what: String, response: WebResponse) {
+    assertEquals(Routes.CSP, response.headers["Content-Security-Policy"], what)
+    assertEquals("nosniff", response.headers["X-Content-Type-Options"], what)
+    assertEquals("no-store", response.headers["Cache-Control"], what)
+    assertEquals("no-referrer", response.headers["Referrer-Policy"], what)
+    if (response.contentType?.startsWith("text/html") != true) return
+    val html = bodyText(response)
+    assertFalse("<script" in html.lowercase(), "$what: <script")
+    assertFalse("javascript:" in html.lowercase(), "$what: javascript:")
+    TAG.findAll(html).forEach { match ->
+        val tag = match.value
+        val names = VALUE.replace(tag, "\"\"")
+        assertFalse(EVENT_ATTRIBUTE.containsMatchIn(names), "$what: an on… attribute in $tag")
+        assertFalse(STYLE_ATTRIBUTE.containsMatchIn(names), "$what: a style attribute in $tag")
+        URL.findAll(tag).forEach { url ->
+            val target = url.groupValues[1]
+            assertTrue(target.startsWith("/") && !target.startsWith("//") || target.startsWith("#"), "$what: a link out of the dashboard in $tag")
+        }
+    }
+}
+
+/** A tag as written by the dashboard: text never holds a raw `<`. */
+private val TAG = Regex("<[a-zA-Z][^>]*>")
+
+/** An attribute's value, removed before the names are checked. */
+private val VALUE = Regex("\"[^\"]*\"")
+
+private val EVENT_ATTRIBUTE = Regex("\\son[a-z-]*\\s*=", RegexOption.IGNORE_CASE)
+private val STYLE_ATTRIBUTE = Regex("\\sstyle\\s*=", RegexOption.IGNORE_CASE)
+private val URL = Regex("\\s(?:href|action|src)=\"([^\"]*)\"", RegexOption.IGNORE_CASE)
