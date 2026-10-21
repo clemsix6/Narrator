@@ -291,3 +291,17 @@ nommés, `DreamReplayTest` qui envoie le prompt du jar). Lancer T4 au prochain l
 - **Archives** (`C:\Users\Clément\Desktop\Narrator2\.research\m6-live\m6-fix-13\`) : `director-A-main-0ec6854dd53e.md`,
   `director-B1.md`, `director-B2.md` (la version finale), `prompts-B1.diff`, `prompts-final.diff`, `replay/` (les deux
   lancements), `analysis.md`, `analyze.py`, `excerpt.py`, `logs/` (journaux Gradle, script et journal du tunnel).
+
+## Décisions du superviseur (22/10/2026)
+
+Fusionnée (`25ccb33`).
+
+1. **T4 non lancé.** Il passera dans la vérification réelle finale de M6, une fois les quatre lots fusionnés, avec la
+   soirée calme. Elle couvre ensemble le moteur (M6-FIX-11), le Chroniqueur (M6-FIX-12) et ces prompts.
+2. **Les titres.** La grille §4.2 ne change pas : on ne déplace pas le seuil pour faire passer la mesure. On ne retouche
+   pas non plus `director.md` de nouveau, faute de place. Sur les répliques parlées, B atteint 1,73, au-dessus du seuil
+   de 1,5. La question des titres aux simples accueils passe dans la liste du propriétaire.
+3. **Relecture du propriétaire** : les retouches listées dans la passation entrent dans la liste des points à relire à la
+   fin de M6.
+4. **Marges.** Il ne reste qu'un caractère de marge sous le plafond de 35 000 de `director.md`, et 106 sous celui de
+   9 000 de `storyteller.md`. Désormais, toute retouche de ces deux prompts retire autant qu'elle ajoute.
