@@ -206,6 +206,52 @@ class TraceTextTest {
     }
 
     @Test
+    fun `a request a fallback model answered is a warning, a refusal without an answer stays a failure`() {
+        val detail = data.read { it.turn(42) }!!
+        val (first, second, third) = detail.calls
+        assertEquals("claude-opus-5-5", first.model, "the model that answered, from the Journal")
+        fun requests(report: Report) = report.lines.filter { it.text.startsWith("Request ") }
+        fun color(line: Out) = colorOf(text.page(Report("t", listOf(line)), 1, null).last())
+        val yellow = TextColor.fromLegacyFormat(ChatFormatting.YELLOW)
+        val red = TextColor.fromLegacyFormat(ChatFormatting.RED)
+        val gray = TextColor.fromLegacyFormat(ChatFormatting.GRAY)
+
+        // The classifier handed request 1 to claude-opus-4-8, which answered with its tool calls; then a refusal of the API.
+        val served = first.copy(refusalCategory = "cyber", model = "claude-opus-4-8")
+        val refused = third.copy(stopReason = "refusal", refusalCategory = "cyber", outputTokens = 0)
+        val lines = requests(text.turn(detail.copy(summary = detail.summary.copy(outcome = "refused"), calls = listOf(served, second, refused))))
+        assertEquals(
+            listOf(
+                "Request 1 · 19:29:57 · 5.2 s · 61k in (60k cached) · 300 out · tool_use · fallback (cyber) → claude-opus-4-8",
+                "Request 2 · 19:30:06 · 2.1 s · 61k in (61k cached) · 80 out · tool_use",
+                "Request 3 · 19:30:10 · 0.9 s · 62k in (62k cached) · 0 out · refusal · refused: cyber",
+            ),
+            lines.map { it.text },
+        )
+        assertEquals(listOf(Look.WARNING, Look.DETAIL, Look.FAILURE), lines.map { it.look })
+        assertEquals(listOf(yellow, gray, red), lines.map(::color))
+
+        // A fallback that said nothing ends its turn refused: its last request, though its stop reason is end_turn.
+        val silent = third.copy(refusalCategory = "cyber", model = "claude-opus-4-8")
+        val endedRefused = requests(text.turn(detail.copy(summary = detail.summary.copy(outcome = "refused"), calls = listOf(served, second, silent))))
+        assertEquals("Request 3 · 19:30:10 · 0.9 s · 62k in (62k cached) · 12 out · end_turn · refused: cyber", endedRefused.last().text)
+        assertEquals(listOf(Look.WARNING, Look.DETAIL, Look.FAILURE), endedRefused.map { it.look })
+        val answered = requests(text.turn(detail.copy(calls = listOf(served, second, silent))))
+        assertEquals("Request 3 · 19:30:10 · 0.9 s · 62k in (62k cached) · 12 out · end_turn · fallback (cyber) → claude-opus-4-8", answered.last().text)
+        assertEquals(Look.WARNING, answered.last().look, "the turn acted: the fallback answered")
+
+        // A worker's task: done on a fallback's report, or refused by the safety filter when the fallback said nothing.
+        val task = data.read { it.task(7) }!!
+        val work = task.calls.single().copy(stopReason = "end_turn", refusalCategory = "cyber", model = "claude-opus-4-8")
+        val done = requests(text.task(task.copy(calls = listOf(work)))).single()
+        assertEquals("Request 1 · 19:30:17 · 3.0 s · 3k in (0 cached) · 200 out · end_turn · fallback (cyber) → claude-opus-4-8", done.text)
+        assertEquals(Look.WARNING, done.look)
+        val failed = requests(text.task(task.copy(status = "failed", result = null, error = "refused by the safety filter (category cyber)", calls = listOf(work)))).single()
+        assertEquals("Request 1 · 19:30:17 · 3.0 s · 3k in (0 cached) · 200 out · end_turn · refused: cyber", failed.text)
+        assertEquals(Look.FAILURE, failed.look)
+    }
+
+    @Test
     fun `long lines wrap at spaces, indented, and a word longer than a line is cut`() {
         val words = "  " + List(30) { "word$it" }.joinToString(" ")
         val wrapped = text.wrap(Out(words, Look.THOUGHT))
