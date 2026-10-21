@@ -82,6 +82,10 @@ internal class DuckJournal private constructor(
     }
     private val resourcesClosed = AtomicBoolean()
 
+    /** Set once [closeResources] closed the database: until then, the Journal [holdsDatabase]. */
+    @Volatile
+    private var databaseClosed = false
+
     /**
      * Tells the operators online, in the chat: set by the runtime once the server's players can be
      * reached. Called on the writer thread; must not block.
@@ -115,6 +119,8 @@ internal class DuckJournal private constructor(
     private var lastReport = Report(0, null, System.nanoTime())
 
     override val available: Boolean get() = writer.available && !writer.finished && !closing
+
+    override val holdsDatabase: Boolean get() = !databaseClosed
 
     override fun nextIdSeed(kind: IdKind): Long = ids.seed(kind)
 
@@ -251,7 +257,9 @@ internal class DuckJournal private constructor(
     /**
      * Stops taking facts, writes what is queued, closes the open sessions (`server_stop`), ends the
      * reads, checkpoints and closes the database, within [timeout]. The last quarter of [timeout] (2 s
-     * at most) is kept for the ending; what is still queued then is lost and counted in the log.
+     * at most) is kept for the ending; what is still queued then is lost and counted in the log. A writer
+     * still running at [timeout] closes the database itself once it ends; until then the Journal
+     * [holdsDatabase], and a new call waits for it again.
      */
     override fun close(timeout: Duration) {
         val deadline = System.nanoTime() + timeout.toNanos()
@@ -264,7 +272,7 @@ internal class DuckJournal private constructor(
         if (writer.awaitStop(TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))) {
             closeResources()
         } else {
-            log.error("the writer did not stop within ${timeout.toMillis()} ms: the database stays open until the server exits")
+            log.error("the writer did not stop within ${timeout.toMillis()} ms: the database stays open until the writer ends")
         }
     }
 
@@ -475,6 +483,7 @@ internal class DuckJournal private constructor(
         if (!resourcesClosed.compareAndSet(false, true)) return
         endReads()
         if (!released) db.close()
+        databaseClosed = true
         ids.close()
     }
 

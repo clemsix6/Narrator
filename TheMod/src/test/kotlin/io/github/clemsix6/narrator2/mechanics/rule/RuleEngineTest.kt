@@ -255,7 +255,7 @@ class RuleEngineTest {
         create(chatLaw(notify()))
         chat(bartok, "nul")
         engine.stop()
-        assertEquals("the server stops: 0 firings in progress and 1 waiting dropped", decisions("skipped").single().reason)
+        assertEquals("the Narrator stops: 0 firings in progress and 1 waiting dropped", decisions("skipped").single().reason)
         tick()
         Thread.sleep(100)
         assertEquals(emptyList(), f.director.signals.toList())

@@ -79,11 +79,12 @@ import java.time.Clock
  * [prepareMemory]). [wire] then creates the rest, without waiting, on the server thread, in this order, each factory
  * receiving the runtime with the services created before it: bus, guards, Observer, reflexes, workers, memory, style
  * watch, line review, Forge, mechanics, Director, dashboard. At `SERVER_STARTED` both run on the server thread, before
- * the first tick (ARCHITECTURE §17.8); at a restart, [prepare] runs on the restart's own thread. The Forge comes before
- * the mechanics, whose modules' part builds and runs its modules; it starts off the server thread (its arsenal, the
- * built-in modules compiled) while the rest starts. The dashboard comes last: it reads the others, nothing reads it. At
- * `SERVER_STOPPING` ([ShutdownSequence]) the dashboard stops first, then the mechanics (their modules stop with the
- * server, then the modules' thread ends), then the Forge (its compiler thread ends), then the memory.
+ * the first tick (ARCHITECTURE §17.8); at a restart, [create] and [prepare] run on the restart's own thread, once the
+ * old runtime is closed: an old Journal still closing keeps a new one from opening ([stopAndClose], `RestartSequence`).
+ * The Forge comes before the mechanics, whose modules' part builds and runs its modules; it starts off the server thread
+ * (its arsenal, the built-in modules compiled) while the rest starts. The dashboard comes last: it reads the others,
+ * nothing reads it. At `SERVER_STOPPING` ([ShutdownSequence]) the dashboard stops first, then the mechanics (their
+ * modules stop with the server, then the modules' thread ends), then the Forge (its compiler thread ends), then the memory.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -171,7 +172,7 @@ class NarratorRuntime private constructor(
      * states, then the memory's reads. Bounded (10 s, then 30 s). The server thread at the server's start, the
      * restart's thread at a restart; never throws for an unavailable Journal or memory.
      */
-    private fun prepare() {
+    override fun prepare() {
         val config = settings.get().config
         journal = openJournalOrDisable(dataDir, config.journal, clock, dashboard = config.dashboard.enabled)
         players = PlayerStates()
@@ -217,7 +218,7 @@ class NarratorRuntime private constructor(
     /** Undoes a [prepare] or a [wire] that failed halfway, at the server's start. Server thread. */
     private fun abandon() {
         stopInGame()
-        stopAndClose()
+        runCatching { stopAndClose() }.onFailure { log.error("the Narrator that could not start did not close", it) }
     }
 
     /** End of a server tick. Server thread. */
@@ -278,7 +279,9 @@ class NarratorRuntime private constructor(
 
     /**
      * The half that waits, bounded: the memory, the work in flight, the Director's subscriptions, the bus, the Journal,
-     * the clients; on a runtime never wired, what [prepare] opened. Off the server thread at a restart.
+     * the clients; on a runtime never wired, what [prepare] opened. Throws while the Journal still holds its database
+     * (its writer outlived the close's time): nothing may open the file then. Called again, it waits for that Journal
+     * once more. Off the server thread at a restart.
      */
     override fun stopAndClose() {
         if (::shutdown.isInitialized) {
@@ -289,6 +292,9 @@ class NarratorRuntime private constructor(
             scope.cancel()
             if (::journal.isInitialized) runCatching { journal.close() }.onFailure { log.error("the Journal failed to close", it) }
             settings.get().close()
+        }
+        check(!::journal.isInitialized || !journal.holdsDatabase) {
+            "its Journal is still closing after ${Journal.DEFAULT_CLOSE_TIMEOUT.toSeconds()} s, its database open until its writer ends"
         }
     }
 
@@ -368,34 +374,22 @@ class NarratorRuntime private constructor(
         }
 
         /**
-         * A new Narrator for [server], prepared (M6 §9, step 2): its settings loaded, its Journal opened, its memory read.
-         * Off the server thread, bounded; what it opened is closed when it fails.
-         */
-        fun prepare(server: MinecraftServer): NarratorRuntime {
-            val runtime = create(server)
-            try {
-                runtime.prepare()
-            } catch (e: Exception) {
-                runtime.stopAndClose()
-                throw e
-            }
-            return runtime
-        }
-
-        /**
          * `/narrator restart` on [server], asked by [by] (M6 §9): false when a restart already runs; the caller checked
-         * [RestartSequence.refusal] first. [done] gets the report on the server thread. [prepare] makes the new Narrator:
-         * in-game tests hold the Journal's file before it. Server thread.
+         * [RestartSequence.refusal] first. [done] gets the report on the server thread. [create] makes the new Narrator,
+         * which the restart then prepares: in-game tests hold the Journal's file before it. Server thread.
          */
         fun restart(
             server: MinecraftServer,
             by: String,
             done: (RestartReport) -> Unit,
-            prepare: () -> NarratorRuntime = { prepare(server) },
-        ): Boolean = restarts.start(server, by, current, prepare, stopping = { !server.isRunning }, done)
+            create: () -> NarratorRuntime = { create(server) },
+        ): Boolean = restarts.start(server, by, current, create, stopping = { !server.isRunning }, done)
 
-        /** The runtime of [server] with its settings: loaded from the files, or the defaults when they cannot be. Reads files. */
-        private fun create(server: MinecraftServer): NarratorRuntime {
+        /**
+         * The runtime of [server] with its settings, not prepared yet: loaded from the files, or the defaults when they
+         * cannot be. Reads files: never on the server thread, but at its start.
+         */
+        fun create(server: MinecraftServer): NarratorRuntime {
             val settings = try {
                 SettingsLoader.load(configDir, environment)
             } catch (e: Exception) {

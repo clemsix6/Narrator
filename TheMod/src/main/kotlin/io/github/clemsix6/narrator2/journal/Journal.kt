@@ -77,6 +77,13 @@ interface Journal : TraceSink, AutoCloseable {
     /** False when the Journal could not open, or went degraded: reads fail, writes are counted as lost. */
     val available: Boolean
 
+    /**
+     * Whether the Journal still holds its database: from its opening until [close] has closed it, outages included (its
+     * writer opens the file again). A close that ran out of its time leaves it held until the writer ends: nothing may
+     * open the file meanwhile, and a restart waits for it (M6 §9). False for a Journal that holds none.
+     */
+    val holdsDatabase: Boolean get() = false
+
     /** The first id of [kind] not yet used; the bus takes it once for [IdKind.EVENT]. */
     fun nextIdSeed(kind: IdKind): Long
 
@@ -118,7 +125,9 @@ interface Journal : TraceSink, AutoCloseable {
 
     /**
      * Writes what is queued, closes open sessions (`server_stop`), checkpoints and closes the database,
-     * within [timeout]. What is still queued after [timeout] is lost and counted in the log.
+     * within [timeout]. What is still queued after [timeout] is lost and counted in the log. Returns at
+     * [timeout] even when the writer has not ended ([holdsDatabase] says so); called again, it waits
+     * for it once more, within its new [timeout].
      */
     fun close(timeout: Duration)
 

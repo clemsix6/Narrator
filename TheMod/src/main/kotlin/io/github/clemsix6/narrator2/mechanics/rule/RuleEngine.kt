@@ -787,7 +787,7 @@ class RuleEngine(
         job.cancel()
         waits.clear()
         if (waiting + inProgress > 0) {
-            decision(SKIPPED, null, "the server stops: $inProgress firings in progress and $waiting waiting dropped", Log.Level.INFO)
+            decision(SKIPPED, null, "the Narrator stops: $inProgress firings in progress and $waiting waiting dropped", Log.Level.INFO)
         }
     }
 

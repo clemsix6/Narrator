@@ -433,6 +433,45 @@ class DuckJournalTest {
         assertFailsWith<JournalUnavailableException> { runBlocking { fixture.journal.read(1_000) { 1 } } }
     }
 
+    /**
+     * Constat 4 of the M6 review, part 2: a writer still running when the close's time runs out keeps the database open.
+     * The Journal says so ([Journal.holdsDatabase]) until the writer ends and closes the database itself; a new close
+     * waits for it again; then the file opens again in this JVM.
+     */
+    @Test
+    fun `a writer still running at the close's timeout holds the database until it ends, then the file opens again`() {
+        val fixture = JournalFixture(file)
+        assertTrue(fixture.journal.holdsDatabase, "open")
+        val running = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        val job = Thread {
+            runCatching { runBlocking { fixture.journal.write(60_000) { running.countDown(); held.await(60, TimeUnit.SECONDS) } } }
+        }.apply { start() }
+        try {
+            assertTrue(running.await(10, TimeUnit.SECONDS), "the writer runs the job")
+            LogCapture().use { logs ->
+                fixture.bus.close()
+                fixture.journal.close(Duration.ofMillis(300))
+                assertTrue(fixture.journal.holdsDatabase, "its writer still runs: the database stays open")
+                assertContains(logs.text, "the writer did not stop within 300 ms: the database stays open until the writer ends")
+                fixture.journal.close(Duration.ofMillis(300))
+                assertTrue(fixture.journal.holdsDatabase, "a new close waited for it again, in vain")
+            }
+        } finally {
+            held.countDown()
+        }
+        job.join(10_000)
+        val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (fixture.journal.holdsDatabase) {
+            check(System.nanoTime() < end) { "the writer never closed the database" }
+            Thread.sleep(5)
+        }
+        fixture.journal.close(Duration.ofSeconds(10)) // returns at once
+        DuckDatabase.open(file, JournalFixture.OPTIONS).use { db ->
+            db.writer.createStatement().use { statement -> statement.executeQuery("SELECT count(*) FROM sessions").use { assertTrue(it.next()) } }
+        }
+    }
+
     @Test
     fun `after a restart, ids start past every id used before`() {
         JournalFixture(file).use { journal ->
