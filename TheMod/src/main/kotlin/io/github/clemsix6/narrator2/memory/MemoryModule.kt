@@ -14,6 +14,7 @@ import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Clock
 import java.time.ZoneId
 
 private val log = Log.memory
@@ -25,31 +26,64 @@ private const val START_TIMEOUT_MS = 30_000L
 private const val FAVOR_READ_MS = 5_000L
 
 /**
- * Creates the server's memory (M3-18), after the workers and before the Director: a [MemoryService] over
- * the real pieces, or a [DisabledMemory] that says why when `memory.enabled` is false, when the Journal is
- * unavailable, when the Journal lacks the memory's tables (`V2__memory.sql`), or when the memory cannot
- * start. A `/narrator reload` changes none of that: the memory is built once per server start.
- *
- * Runs on the server thread at `SERVER_STARTED`, before any player can join. It checks the schema and
- * loads the play clocks (a few reads, [START_TIMEOUT_MS] at most all together: [StartupReads]), then
- * follows the joins and the leaves, and starts the jobs in `services.scope`. Nothing in them needs the
- * Director before `Phase.RUNNING`, which comes once the Director exists. They stop at `SERVER_STOPPING`
- * ([Memory.stop], from the shutdown sequence), before the Journal closes.
+ * What [prepareMemory] did ahead of [createMemory] (M6 §9): the memory off with its reason ([Off]), or the Journal's
+ * schema checked and the play clocks loaded ([Loaded]).
  */
-fun createMemory(services: NarratorServices): Memory {
+sealed interface PreparedMemory {
+    /** The memory does not run: [memory] says why. */
+    class Off internal constructor(internal val memory: Memory) : PreparedMemory
+
+    /** The schema is there and the play clocks are loaded, in [zone] ([clock]: the services' clock in that zone). */
+    class Loaded internal constructor(
+        internal val zone: ZoneId,
+        internal val clock: Clock,
+        internal val state: DuckMemoryState,
+        internal val playClock: DuckPlayClock,
+    ) : PreparedMemory
+}
+
+/**
+ * The part of the memory's start that waits for the Journal (M6 §9): it checks the schema and loads the play clocks (a
+ * few reads, [START_TIMEOUT_MS] at most all together: [StartupReads]). [PreparedMemory.Off] when `memory.enabled` is
+ * false, when the Journal is unavailable, when it lacks the memory's tables (`V2__memory.sql`), or when a read fails.
+ * Needs the services' Journal, settings, clock and player states.
+ *
+ * On the server thread at `SERVER_STARTED`, before any player can join (ARCHITECTURE §17.8); on the restart's own thread
+ * at `/narrator restart`, while the logins wait.
+ */
+fun prepareMemory(services: NarratorServices): PreparedMemory {
     if (!services.settings.get().config.memory.enabled) {
         log.info("the memory is off: memory.enabled is false")
-        return DisabledMemory("memory.enabled is false")
+        return PreparedMemory.Off(DisabledMemory("memory.enabled is false"))
     }
-    if (!services.journal.available) return disabled("the Journal is unavailable: ${services.journal.health().lastError ?: "no reason given"}")
+    if (!services.journal.available) return off("the Journal is unavailable: ${services.journal.health().lastError ?: "no reason given"}")
     return try {
         val reads = StartupReads()
         val problems = reads.run("reading the Journal's schema") { schemaProblems(services.journal) }
         if (problems.isNotEmpty()) {
-            disabled("the Journal lacks the memory's schema (${MemorySchema.MIGRATION}): ${problems.joinToString("; ")}")
+            off("the Journal lacks the memory's schema (${MemorySchema.MIGRATION}): ${problems.joinToString("; ")}")
         } else {
-            assemble(services, reads)
+            load(services, reads)
         }
+    } catch (e: Exception) {
+        log.error("the memory could not start: ${e.message}", e)
+        off("it could not start: ${e.message ?: e.javaClass.simpleName}")
+    }
+}
+
+/**
+ * Creates the server's memory (M3-18), after the workers and before the Director, with what [prepared] read: a
+ * [MemoryService] over the real pieces, or the [DisabledMemory] of [prepareMemory], or one that says why the memory
+ * cannot start. A `/narrator reload` changes none of that: the memory is built once per start of the Narrator.
+ *
+ * Runs on the server thread, never waits: it follows the joins and the leaves, and starts the jobs in `services.scope`.
+ * Nothing in them needs the Director before `Phase.RUNNING`, which comes once the Director exists. They stop at
+ * `SERVER_STOPPING` ([Memory.stop], from the shutdown sequence), before the Journal closes.
+ */
+fun createMemory(services: NarratorServices, prepared: PreparedMemory = prepareMemory(services)): Memory = when (prepared) {
+    is PreparedMemory.Off -> prepared.memory
+    is PreparedMemory.Loaded -> try {
+        assemble(services, prepared)
     } catch (e: Exception) {
         log.error("the memory could not start: ${e.message}", e)
         disabled("it could not start: ${e.message ?: e.javaClass.simpleName}")
@@ -61,23 +95,35 @@ private fun disabled(reason: String): Memory {
     return DisabledMemory(reason)
 }
 
+private fun off(reason: String) = PreparedMemory.Off(disabled(reason))
+
+/** The play clocks, read within what is left of [reads]. Times are shown in the Journal's zone. */
+private fun load(services: NarratorServices, reads: StartupReads): PreparedMemory.Loaded {
+    val journal = services.journal
+    val zone = services.settings.get().config.journal.timeZone.ifBlank { null }?.let(ZoneId::of) ?: services.clock.zone
+    val clock = if (zone == services.clock.zone) services.clock else services.clock.withZone(zone)
+    val state = DuckMemoryState(journal, clock)
+    val playClock = DuckPlayClock(state, journal, services.players)
+    reads.run("loading the play clocks") { playClock.load(clock.millis()) }
+    return PreparedMemory.Loaded(zone, clock, state, playClock)
+}
+
 /**
  * The pieces, in the order they need each other (the handoffs of M3-02 to M3-17). One instance of each:
  * the index serves the store, the hygiene and the recall; the play clock serves everything that dates or
  * decays; one [MemoryAgents] runs the conversations of the Chronicler and the Dreamer; one [Reminiscence]
  * finds the reminiscences of the wake-ups ([WakeAttachments]) and the cues of the jobs ([JobHooks]); one
- * [Hygiene] serves the jobs and the Dreamer. Times are shown in the Journal's zone.
+ * [Hygiene] serves the jobs and the Dreamer.
  */
-private fun assemble(services: NarratorServices, reads: StartupReads): MemoryService {
+private fun assemble(services: NarratorServices, prepared: PreparedMemory.Loaded): MemoryService {
     val journal = services.journal
-    val zone = services.settings.get().config.journal.timeZone.ifBlank { null }?.let(ZoneId::of) ?: services.clock.zone
-    val clock = if (zone == services.clock.zone) services.clock else services.clock.withZone(zone)
+    val zone = prepared.zone
+    val clock = prepared.clock
+    val state = prepared.state
+    val playClock = prepared.playClock
     val settings = { services.settings.get().config.memory }
 
     val index = SearchIndex()
-    val state = DuckMemoryState(journal, clock)
-    val playClock = DuckPlayClock(state, journal, services.players)
-    reads.run("loading the play clocks") { playClock.load(clock.millis()) }
     val store = DuckMemoryStore(journal, index, playClock, clock, services.trace)
 
     val recall = HybridRecall(journal, index, playClock, clock)
@@ -126,7 +172,7 @@ private suspend fun schemaProblems(journal: Journal): List<String> = journal.rea
 }
 
 /**
- * The startup's reads, on the calling thread (the server thread, before the first tick): [totalMs] at most
+ * The startup's reads, on the calling thread (the server thread before the first tick, or a restart's): [totalMs] at most
  * all together, whatever their number. [nanoTime] is the monotonic clock that measures them.
  */
 internal class StartupReads(private val totalMs: Long = START_TIMEOUT_MS, private val nanoTime: () -> Long = System::nanoTime) {

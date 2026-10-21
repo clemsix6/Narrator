@@ -23,7 +23,9 @@ import io.github.clemsix6.narrator2.journal.openJournalOrDisable
 import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.mechanics.createMechanics
 import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.PreparedMemory
 import io.github.clemsix6.narrator2.memory.createMemory
+import io.github.clemsix6.narrator2.memory.prepareMemory
 import io.github.clemsix6.narrator2.observer.ObserverState
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.observer.installObserver
@@ -31,6 +33,9 @@ import io.github.clemsix6.narrator2.reflex.Reflexes
 import io.github.clemsix6.narrator2.reflex.createReflexes
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
+import io.github.clemsix6.narrator2.runtime.RestartReport
+import io.github.clemsix6.narrator2.runtime.RestartSequence
+import io.github.clemsix6.narrator2.runtime.Restartable
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.runtime.SettingsHolder
 import io.github.clemsix6.narrator2.runtime.SettingsLoader
@@ -53,6 +58,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.ChatFormatting
 import net.minecraft.server.MinecraftServer
@@ -64,17 +71,19 @@ import java.time.Clock
  * Everything the Narrator runs while a server is up (M1_M2 §2), from `SERVER_STARTED` to
  * `SERVER_STOPPED`: the bus, the Journal, the player states, the Observer, the guards, the reflexes,
  * the workers, the memory, the style watch and the line review, the Forge, the mechanics engine, the Director and the
- * dashboard. None of them is ever rebuilt while the server runs: `/narrator reload` only replaces the [settings]
- * (configuration, prompts, texts and clients).
+ * dashboard. `/narrator reload` only replaces the [settings] (configuration, prompts, texts and clients);
+ * `/narrator restart` (M6 §9, [RestartSequence]) replaces the whole runtime by a new one, on an empty server.
  *
- * Components depend on [NarratorServices], never on this class. They are created in this order, each
- * factory receiving the runtime with the services created before it: Journal, bus, player states,
- * guards, Observer, reflexes, workers, memory, style watch, line review, Forge, mechanics, Director, dashboard. The
- * Forge comes before the mechanics, whose modules' part builds and runs its modules; it starts off the server thread
- * (its arsenal, the built-in modules compiled) while the rest starts. The dashboard comes last: it reads the others,
- * nothing reads it. At `SERVER_STOPPING` ([ShutdownSequence]) the dashboard stops first, then the mechanics (their
- * modules stop with the server, then the modules' thread ends), then the Forge (its compiler thread ends), then the
- * memory.
+ * Components depend on [NarratorServices], never on this class. A runtime starts in two steps (M6 §9). [prepare] opens
+ * what may wait: the Journal (three attempts in 10 s at most), the player states, then the memory's reads (30 s at most,
+ * [prepareMemory]). [wire] then creates the rest, without waiting, on the server thread, in this order, each factory
+ * receiving the runtime with the services created before it: bus, guards, Observer, reflexes, workers, memory, style
+ * watch, line review, Forge, mechanics, Director, dashboard. At `SERVER_STARTED` both run on the server thread, before
+ * the first tick (ARCHITECTURE §17.8); at a restart, [prepare] runs on the restart's own thread. The Forge comes before
+ * the mechanics, whose modules' part builds and runs its modules; it starts off the server thread (its arsenal, the
+ * built-in modules compiled) while the rest starts. The dashboard comes last: it reads the others, nothing reads it. At
+ * `SERVER_STOPPING` ([ShutdownSequence]) the dashboard stops first, then the mechanics (their modules stop with the
+ * server, then the modules' thread ends), then the Forge (its compiler thread ends), then the memory.
  *
  * Data lives in the world folder (`world/narrator2/`), so each world has its own history; configuration
  * and overrides live in `config/narrator2/`.
@@ -83,7 +92,7 @@ class NarratorRuntime private constructor(
     override val server: MinecraftServer,
     initial: Settings,
     override val clock: Clock,
-) : NarratorServices {
+) : NarratorServices, Restartable {
     override val dataDir: Path = server.getWorldPath(LevelResource.ROOT).resolve("narrator2").toAbsolutePath().normalize()
 
     /**
@@ -152,21 +161,34 @@ class NarratorRuntime private constructor(
     lateinit var dashboard: Dashboard
         private set
 
+    /** What [prepare] read of the memory, for [wire]. */
+    private lateinit var preparedMemory: PreparedMemory
+
     private lateinit var shutdown: ShutdownSequence
 
-    /** Creates the server's components, in the order of the class documentation, then runs. Server thread. */
+    /**
+     * Opens what the wiring needs and may wait for: the Journal (or a `DisabledJournal` that says why), the player
+     * states, then the memory's reads. Bounded (10 s, then 30 s). The server thread at the server's start, the
+     * restart's thread at a restart; never throws for an unavailable Journal or memory.
+     */
+    private fun prepare() {
+        journal = openJournalOrDisable(dataDir, settings.get().config.journal, clock)
+        players = PlayerStates()
+        preparedMemory = prepareMemory(this)
+    }
+
+    /** Creates the server's components with what [prepare] opened, in the order of the class documentation, then runs. Server thread; never waits. */
     private fun wire() {
         ticks.update(server)
-        journal = openJournalOrDisable(dataDir, settings.get().config.journal, clock)
         bus = EventBus(clock, ticks::gameTime, journal.nextIdSeed(IdKind.EVENT))
         journal.attach(bus)
         (journal as? DuckJournal)?.tellOperators = ::tellOperatorsOnline
-        players = PlayerStates().also { it.subscribe(bus) { uuid -> server.playerList.getPlayer(uuid) } }
+        players.subscribe(bus) { uuid -> server.playerList.getPlayer(uuid) }
         guards = createGuards(this)
         observer = installObserver(this)
         reflexes = createReflexes(this)
         workers = createWorkers(this)
-        memory = createMemory(this)
+        memory = createMemory(this, preparedMemory)
         style = createStyle(this)
         createLineReviewer(this)
         forge = createForge(this, ::tellOperatorsOnline)
@@ -191,15 +213,10 @@ class NarratorRuntime private constructor(
         }
     }
 
-    /** Undoes a [wire] that failed halfway. */
+    /** Undoes a [prepare] or a [wire] that failed halfway, at the server's start. Server thread. */
     private fun abandon() {
-        phase = Phase.STOPPED
-        scope.cancel()
-        if (::dashboard.isInitialized) dashboard.stop()
-        if (::forge.isInitialized) forge.stop()
-        if (::bus.isInitialized) bus.close()
-        if (::journal.isInitialized) runCatching { journal.close() }.onFailure { log.error("the Journal failed to close", it) }
-        settings.get().close()
+        stopInGame()
+        stopAndClose()
     }
 
     /** End of a server tick. Server thread. */
@@ -239,6 +256,72 @@ class NarratorRuntime private constructor(
         if (current === this) current = null
     }
 
+    /**
+     * The half of a restart's stop that never waits (M6 §9): `STOPPING`, the dashboard, the mechanics, the Forge, the
+     * Observer's flush; on a runtime whose wiring failed, what it made. Then the hooks no longer reach it. Server thread.
+     */
+    override fun stopInGame() {
+        if (::shutdown.isInitialized) {
+            shutdown.stopInGame()
+            shutdown.flush()
+        } else {
+            phase = Phase.STOPPED
+            scope.cancel()
+            if (::dashboard.isInitialized) dashboard.stop()
+            if (::mechanics.isInitialized) mechanics.stop()
+            if (::forge.isInitialized) forge.stop()
+            if (::bus.isInitialized) bus.close()
+        }
+        if (current === this) current = null
+    }
+
+    /**
+     * The half that waits, bounded: the memory, the work in flight, the Director's subscriptions, the bus, the Journal,
+     * the clients; on a runtime never wired, what [prepare] opened. Off the server thread at a restart.
+     */
+    override fun stopAndClose() {
+        if (::shutdown.isInitialized) {
+            shutdown.stopWaiting()
+            shutdown.close()
+        } else {
+            phase = Phase.STOPPED
+            scope.cancel()
+            if (::journal.isInitialized) runCatching { journal.close() }.onFailure { log.error("the Journal failed to close", it) }
+            settings.get().close()
+        }
+    }
+
+    /** [wire], then the running Narrator: the hooks reach it. Server thread. */
+    override fun wireAndRun() {
+        wire()
+        install(this)
+    }
+
+    override fun summary(): String =
+        "Journal ${if (journal.available) "available" else "unavailable"} · " +
+            "memory ${if (memory.available) "on" else "off (${memory.unavailableReason})"} · " +
+            "mechanics ${if (mechanics.available) "on" else "off (${mechanics.unavailableReason})"} · " +
+            "forge ${forgeState(forge, mechanics.modules.halted)}"
+
+    override fun restarted(report: RestartReport) {
+        Decisions(trace, clock).record(
+            Log.main, DecisionRecord.Kind.OPERATOR, "restarted",
+            subject = report.by,
+            reason = "${report.text()} (${report.times()})",
+            detail = buildJsonObject {
+                put("stop_ms", report.stopMs)
+                put("prepare_ms", report.prepareMs)
+                put("wire_ms", report.wireMs)
+                put("gap_ms", report.gapMs)
+                put("total_ms", report.totalMs)
+                put("journal", journal.available)
+                put("memory", memory.available)
+                put("mechanics", mechanics.available)
+                put("forge", forge.available)
+            },
+        )
+    }
+
     companion object {
         private val log = Log.main
 
@@ -248,7 +331,7 @@ class NarratorRuntime private constructor(
 
         /**
          * The Narrator of the running server, from the end of its start to `SERVER_STOPPED`; null
-         * otherwise. Hooks registered at mod initialization go through it and do nothing when it is null.
+         * otherwise, and during a restart. Hooks registered at mod initialization go through it and do nothing when it is null.
          */
         @Volatile
         var current: NarratorRuntime? = null
@@ -258,16 +341,60 @@ class NarratorRuntime private constructor(
         @Volatile
         var environment: (String) -> String? = System::getenv
 
+        /** The restarts of the JVM, one at a time (M6 §9); the logins wait for the one running (`Narrator2`, `QUERY_START`). */
+        val restarts = RestartSequence()
+
         /**
-         * Starts the Narrator for [server] (M1_M2 §2.2). A configuration that cannot be loaded is logged
-         * and replaced by the defaults: facts are still recorded, and the Director sleeps until a
-         * `/narrator reload` succeeds. Server thread.
+         * Starts the Narrator for [server] (M1_M2 §2.2): [prepare] then [wire], on the server thread before the first
+         * tick. A configuration that cannot be loaded is logged and replaced by the defaults: facts are still recorded,
+         * and the Director sleeps until a `/narrator reload` succeeds. Server thread.
          */
         fun start(server: MinecraftServer) {
             current?.let { stale ->
                 log.warn("a previous Narrator was still running; stopping it first")
                 stale.finishShutdown()
             }
+            val runtime = create(server)
+            try {
+                runtime.prepare()
+                runtime.wire()
+            } catch (e: Exception) {
+                log.error("cannot start, the Narrator stays off", e)
+                runtime.abandon()
+                return
+            }
+            install(runtime)
+        }
+
+        /**
+         * A new Narrator for [server], prepared (M6 §9, step 2): its settings loaded, its Journal opened, its memory read.
+         * Off the server thread, bounded; what it opened is closed when it fails.
+         */
+        fun prepare(server: MinecraftServer): NarratorRuntime {
+            val runtime = create(server)
+            try {
+                runtime.prepare()
+            } catch (e: Exception) {
+                runtime.stopAndClose()
+                throw e
+            }
+            return runtime
+        }
+
+        /**
+         * `/narrator restart` on [server], asked by [by] (M6 §9): false when a restart already runs; the caller checked
+         * [RestartSequence.refusal] first. [done] gets the report on the server thread. [prepare] makes the new Narrator:
+         * in-game tests hold the Journal's file before it. Server thread.
+         */
+        fun restart(
+            server: MinecraftServer,
+            by: String,
+            done: (RestartReport) -> Unit,
+            prepare: () -> NarratorRuntime = { prepare(server) },
+        ): Boolean = restarts.start(server, by, current, prepare, stopping = { !server.isRunning }, done)
+
+        /** The runtime of [server] with its settings: loaded from the files, or the defaults when they cannot be. Reads files. */
+        private fun create(server: MinecraftServer): NarratorRuntime {
             val settings = try {
                 SettingsLoader.load(configDir, environment)
             } catch (e: Exception) {
@@ -277,23 +404,17 @@ class NarratorRuntime private constructor(
                 SettingsLoader.fallback(reason)
             }
             Log.applyLevels(settings.config.logging.levels)
-            val runtime = NarratorRuntime(server, settings, Clock.systemDefaultZone())
-            try {
-                runtime.wire()
-            } catch (e: Exception) {
-                log.error("cannot start, the Narrator stays off", e)
-                runtime.abandon()
-                return
-            }
+            return NarratorRuntime(server, settings, Clock.systemDefaultZone())
+        }
+
+        /** [runtime] becomes the running Narrator: the hooks reach it; the `ready` line. Server thread. */
+        private fun install(runtime: NarratorRuntime) {
             current = runtime
+            val settings = runtime.settings.get()
             val config = settings.config
             log.info(
                 "ready · gateway ${config.gateway.baseUrl} · LLMGW key ${if (settings.claude != null) "present" else "missing"} · " +
-                    "Journal ${if (runtime.journal.available) "available" else "unavailable"} · " +
-                    "memory ${if (runtime.memory.available) "on" else "off (${runtime.memory.unavailableReason})"} · " +
-                    "mechanics ${if (runtime.mechanics.available) "on" else "off (${runtime.mechanics.unavailableReason})"} · " +
-                    "forge ${forgeState(runtime.forge, runtime.mechanics.modules.halted)} · dashboard ${dashboardState(runtime.dashboard)} · " +
-                    "data in ${runtime.dataDir}",
+                    "${runtime.summary()} · dashboard ${dashboardState(runtime.dashboard)} · data in ${runtime.dataDir}",
             )
             if (settings.claude == null && settings.loadError == null) log.warn("no LLMGW key: ${SettingsLoader.missingKeyHint(config)}")
         }
