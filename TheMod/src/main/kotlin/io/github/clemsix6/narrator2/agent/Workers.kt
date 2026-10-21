@@ -440,7 +440,7 @@ class Workers(
 
         /**
          * Requests of a storyteller's task at most (M6 §6.4: three to six), whatever `workers.maxSteps` allows beyond: its
-         * prefix (prompt, eight tools, the Journal's schema) is long, and each request reads it again.
+         * prefix (prompt, seven tools) is long, and each request reads it again.
          */
         const val STORYTELLER_STEPS = 6
 

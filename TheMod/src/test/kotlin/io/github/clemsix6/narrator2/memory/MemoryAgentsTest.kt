@@ -90,7 +90,7 @@ class MemoryAgentsTest {
         assertEquals(Author(Source.STORYTELLER, runId = 9, conversationId = id), context.author(id))
         assertEquals(Source.DREAMER, dream.copy(role = Role.DREAMER).author("dreamer-1").source, "the dream's other steps stay the Dreamer's")
         assertEquals(
-            listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"),
+            listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve"),
             request.json.path("tools").map { it.path("name").asText() },
         )
 
