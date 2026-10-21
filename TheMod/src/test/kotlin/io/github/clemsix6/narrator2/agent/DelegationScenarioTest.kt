@@ -114,8 +114,11 @@ class DelegationScenarioTest {
             "- Diamant : overworld 100 -40 200 [R2].\nLimites : aucune.\nRequêtes :\nR1 sql : …\nR2 sql : …"
         analystScript += reply { text(report) }
 
+        // What it waits for is done on other threads too (HTTP to the fake server, the Journal's DuckDB): a guard against a
+        // hang, never a bound on time, which this test does not measure (FLAKY-6: on a saturated machine, the Director's
+        // first turn of a cold JVM took 20 s to open, past the 15 s this wait had).
         fun await(what: String, condition: () -> Boolean) {
-            val deadline = System.nanoTime() + 15_000_000_000L
+            val deadline = System.nanoTime() + PATIENCE_NANOS
             while (true) {
                 scheduler.runCurrent()
                 if (condition()) return
@@ -211,4 +214,9 @@ class DelegationScenarioTest {
         structure = null, underground = true, health = 20f, maxHealth = 20f, food = 20, vehicle = null, lastDeathAt = null,
         lastMoveAt = START.toEpochMilli(), idle = false,
     )
+
+    private companion object {
+        /** How long a step of the scenario may take before the test gives up on it: two minutes, a guard against a hang. */
+        const val PATIENCE_NANOS = 120_000_000_000L
+    }
 }
