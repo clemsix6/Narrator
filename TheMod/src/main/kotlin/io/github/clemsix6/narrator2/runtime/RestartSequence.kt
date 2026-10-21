@@ -101,8 +101,9 @@ data class RestartReport(
  * 4. The decision `operator restarted` and the answer ([RestartReport]), on the server thread.
  *
  * Never two Journals on one file: a Narrator whose close fails (its Journal still closing past its time) leaves the
- * Narrator off, and the next restart closes it again before anything is prepared ([unclosed]). The next restart can
- * start once [THREAD] is done. A login that waits longer than the game allows
+ * Narrator off, and the next restart closes it again before anything is prepared ([unclosed]). Below this, the Journal's
+ * file itself never opens twice in the process (`DuckDatabase.open`), whoever opens it. The next restart can start once
+ * [THREAD] is done. A login that waits longer than the game allows
  * (`ServerLoginPacketListenerImpl.MAX_TICKS_BEFORE_LOGIN`, 600 ticks: 30 s) is disconnected and tries again.
  */
 class RestartSequence(private val wireWaitMs: Long = WIRE_WAIT_MS, private val nanoTime: () -> Long = System::nanoTime) {

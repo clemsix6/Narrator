@@ -106,7 +106,8 @@ class JournalOpenException(message: String, val attempts: Int, cause: Exception)
  *   corrupt, is of a storage version this DuckDB cannot read, or has a WAL that cannot be replayed. A file
  *   held by another process, a sharing violation, an "access denied" caused by an antivirus scan or a file
  *   pending deletion, a full disk: all are tried again, as they may clear;
- * - an [IOException], except [FileAlreadyExistsException] (the folder is a file).
+ * - an [IOException], except [FileAlreadyExistsException] (the folder is a file); a [FileStillOpenException] among
+ *   them (an earlier Journal of this process still closing).
  *
  * Everything else is permanent, and tried only once: a migration that fails (its root cause is a catalog
  * or binder error), a database written by a newer version of the mod, a setting DuckDB refuses (bad

@@ -1,5 +1,7 @@
 package io.github.clemsix6.narrator2.memory.dream
 
+import io.github.clemsix6.narrator2.config.JournalConfig
+import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
@@ -34,7 +36,9 @@ import io.github.clemsix6.narrator2.reflex.Tone
 import io.github.clemsix6.narrator2.style.ComicRegister
 import io.github.clemsix6.narrator2.memory.update
 import io.github.clemsix6.narrator2.style.StyleReport
+import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import kotlinx.coroutines.runBlocking
@@ -42,6 +46,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -74,6 +79,16 @@ class DreamInputsTest {
         assertTrue(opening.length <= DreamInputs.STEP_MAX.getValue(step), "step $step: ${opening.length} > ${DreamInputs.STEP_MAX.getValue(step)}")
         val thin = (budgets.keys - small).filter { tag -> blocks.getValue(tag).length <= maxOf(200, budgets.getValue(tag) / 3) }
         assertEquals(emptyList(), thin, "step $step: every block is filled up: ${blocks.mapValues { it.value.length }}")
+    }
+
+    @Test
+    fun `the times are shown in the Journal's zone, chosen as everywhere else`() {
+        val engine = ZoneId.of("America/Montreal")
+        fun zoneOf(name: String) =
+            DreamInputs(TestServices(clock = TestClock(zone = engine), settings = testSettings(NarratorConfig(journal = JournalConfig(timeZone = name))))).zone
+        assertEquals(ZoneId.of("Europe/Paris"), zoneOf("Europe/Paris"))
+        assertEquals(engine, zoneOf(""), "none named: the engine's clock")
+        assertEquals(engine, zoneOf("Mars/Olympus"), "a name the validation refuses falls back (JournalConfig.zone), never fails a dream")
     }
 
     @Test
