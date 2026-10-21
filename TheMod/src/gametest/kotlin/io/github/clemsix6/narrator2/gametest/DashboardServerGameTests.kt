@@ -17,9 +17,9 @@ import java.util.concurrent.CompletableFuture
 
 /**
  * The dashboard's server in the test server (M6 §8.2, §15.2): `com.sun.net.httpserver` loads under Knot, and a dashboard
- * on port 0 answers. The runtime's own dashboard is off in the test servers (`build.gradle.kts` seeds
- * `dashboard.enabled = false`, so that the servers of several worktrees never fight over port 8770): these tests start
- * their own, through the runtime's factory.
+ * on port 0 answers. The runtime's own dashboard is off in the test servers (off by default, and `build.gradle.kts`
+ * seeds `dashboard.enabled = false` too, so that the servers of several worktrees never fight over port 8770): these
+ * tests start their own, through the runtime's factory.
  */
 class DashboardServerGameTests {
 
@@ -46,7 +46,7 @@ class DashboardServerGameTests {
         }
     }
 
-    /** The test servers start without a dashboard of their own, and `/narrator dashboard` says why. */
+    /** The test servers start without a dashboard of their own, and `/narrator dashboard` says why and how to have one. */
     @GameTest
     fun theTestServersRunWithoutADashboard(helper: GameTestHelper) {
         val runtime = helper.narrator()
@@ -55,6 +55,7 @@ class DashboardServerGameTests {
         val output = CommandOutput()
         helper.level.server.commands.performPrefixedCommand(helper.level.server.createCommandSourceStack().withSource(output), "narrator dashboard")
         helper.assertTrue(output.lines.any { "no dashboard: dashboard.enabled is false." in it }, "reply: ${output.lines}")
+        helper.assertTrue(output.lines.any { "\"enabled\": true" in it && "/narrator restart" in it }, "how to turn it on: ${output.lines}")
         helper.succeed()
     }
 
@@ -71,7 +72,7 @@ class DashboardServerGameTests {
         val anonymous = get(url)
         val csp = anonymous.headers().firstValue("Content-Security-Policy").orElse("")
         if (anonymous.statusCode() == 403 && "Overview" !in anonymous.body() && csp.startsWith("default-src 'none'")) steps += "403 no data"
-        val login = get(dashboard.loginUrl()!!)
+        val login = get(dashboard.newLoginUrl()!!)
         val cookie = login.headers().firstValue("Set-Cookie").orElse("").substringBefore(';')
         if (login.statusCode() == 303 && cookie.startsWith("narrator2=")) steps += "303 cookie"
         val overview = get(url, cookie)

@@ -4,6 +4,7 @@ import io.github.clemsix6.narrator2.command.TraceText
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.journal.JournalTimeoutException
 import io.github.clemsix6.narrator2.journal.JournalUnavailableException
+import io.github.clemsix6.narrator2.journal.ReadWatch
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.web.pages.ConversationsPage
@@ -119,13 +120,46 @@ class PageContext internal constructor(val services: NarratorServices, private v
      * Runs [work] in the dashboard's turn, like [read], for a service that takes a read connection of its own (the
      * player sheets, `SqlRunner`): still one read of the dashboard at a time. Waits [READ_TIMEOUT_MS] at most for the
      * turn, then fails with [JournalTimeoutException].
+     *
+     * The turn ends when [work] has returned **and** the query it started has really ended: a read that timed out runs
+     * on until its statement stops, and the next page waits for it rather than take a second connection ([Turn]).
      */
     fun <T> inTurn(work: suspend () -> T): T {
         if (!reads.tryAcquire(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw JournalTimeoutException(READ_TIMEOUT_MS)
+        val turn = Turn(reads)
         try {
-            return runBlocking { work() }
+            return runBlocking(turn) { work() }
         } finally {
-            reads.release()
+            turn.close()
+        }
+    }
+
+    /**
+     * One turn of the dashboard's reads, holding a permit of [reads]: the Journal tells it when the query of its work
+     * starts and ends ([ReadWatch]). It gives the permit back once the work is over ([close]) and no query of its own
+     * runs. One query at a time; none once the work is over, since nobody would wait for it.
+     */
+    private class Turn(private val reads: Semaphore) : ReadWatch {
+        private var over = false
+        private var running = false
+
+        @Synchronized
+        override fun start(): Boolean {
+            if (over || running) return false
+            running = true
+            return true
+        }
+
+        @Synchronized
+        override fun end() {
+            running = false
+            if (over) reads.release()
+        }
+
+        @Synchronized
+        fun close() {
+            over = true
+            if (!running) reads.release()
         }
     }
 
@@ -158,8 +192,8 @@ fun <T> Connection.rows(sql: String, vararg params: Any, row: ResultSet.() -> T)
  * The dashboard's answers (M6 §8.2, §8.3), whatever serves them: [DashboardServer] or a test. In order:
  * 1. the `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the dashboard's [port], else 421 (DNS rebinding);
  * 2. only `GET` and `HEAD`, else 405: nothing here writes anything;
- * 3. `/style.css` and `/login` are served to anyone (the stylesheet holds no data; the login checks its key);
- * 4. any other path needs the cookie the login set, holding the [token], else 403 and no data;
+ * 3. `/style.css` and `/login` are served to anyone (the stylesheet holds no data; the login checks its code);
+ * 4. any other path needs the cookie the login set, holding the session [token], else 403 and no data;
  * 5. the page of the path's root ([PAGES]), or 404.
  *
  * Every response carries the security headers ([SECURITY_HEADERS]): a CSP that allows no script at all. Refusals are
@@ -215,10 +249,16 @@ class Routes internal constructor(private val services: NarratorServices, privat
         return response
     }
 
-    /** `/login?key=<token>`: the cookie, then `/` (303), the token out of the address bar; a wrong key gets 403. */
+    /**
+     * `/login?key=<code>`: a login code, good once ([DashboardToken.redeem]), gets the cookie holding the session token,
+     * which no address ever shows, then `/` (303). A wrong, used or expired code gets 403.
+     */
     private fun login(call: WebCall, request: WebRequest): WebResponse {
-        if (!token.matches(request.query[KEY])) {
-            return refused(call, 403, "wrong login key", "Wrong login link", "This link is wrong or expired: run /narrator dashboard in game for a new one.")
+        if (!token.redeem(request.query[KEY])) {
+            return refused(
+                call, 403, "wrong login key", "Wrong login link",
+                "This link is wrong, already used or expired: run /narrator dashboard in game for a new one.",
+            )
         }
         log.info("a browser signed in to the dashboard")
         return WebResponse(
@@ -292,7 +332,7 @@ class Routes internal constructor(private val services: NarratorServices, privat
         /** The cookie that holds the token once signed in. */
         const val COOKIE = "narrator2"
 
-        /** The login's parameter: the token. */
+        /** The login's parameter: a login code. */
         const val KEY = "key"
 
         private const val LOGIN = "login"
@@ -328,6 +368,3 @@ class Routes internal constructor(private val services: NarratorServices, privat
         private fun firstSegment(rawPath: String): String = rawPath.trimStart('/').substringBefore('/').take(40)
     }
 }
-
-/** A page that its task has not built yet (M6-11, M6-12): its title, and a line saying so. */
-internal fun notBuiltYet(title: String): Page = Page(title) { p("This page is not built yet.", "muted") }
