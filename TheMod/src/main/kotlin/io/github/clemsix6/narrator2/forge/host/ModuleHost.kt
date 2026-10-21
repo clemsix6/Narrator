@@ -387,7 +387,7 @@ class ModuleHost(
      * Its thread is counted among the lost ones until it ends — but when it waited for an SDK request
      * ([ModuleThreads.Held.asking]): refused, it unwinds at once without running any code of the module (its meter
      * revoked first), and it computed nothing. Counted lost, three modules ended together with their calls held (the
-     * server stops, `forge off`) made the Forge stuck (FORGE-ABANDON-FIX).
+     * server stops, `forge off`) could make the Forge stuck (FORGE-ABANDON-FIX).
      *
      * The module thread goes too ([ModuleThreads.renew]: a new one, started now, takes the next call of any module):
      * once the code of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's
