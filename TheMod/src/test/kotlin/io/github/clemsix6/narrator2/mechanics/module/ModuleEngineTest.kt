@@ -193,8 +193,9 @@ class ModuleEngineTest {
         f.start()
         LogCapture().use { logs ->
             val view = f.deploy(f.spec("reader"))
-            // Its first read holds the server thread 60 ms (a busy machine), past the call's 25 ms: the call is given up,
-            // its next read refused; the second chat waits for it to end, then runs.
+            // Its first read holds the server thread 60 ms (a busy machine), past the call's 25 ms: the call is given up
+            // and held, its next read served when the engine resumes it (FORGE-ABANDON); the second chat waits for it to
+            // end, then runs.
             f.server.heldMillis = 60
             chat("lent")
             chat("vite")
@@ -214,14 +215,48 @@ class ModuleEngineTest {
             val givenUp = logs.messages.count { "${view.ref} reader: its fact call was given up" in it }
             val settled = logs.messages.count { "${view.ref} reader: its fact call, given up, ended without computing past its budget" in it && "nobody's fault" in it }
             assertEquals(givenUp, settled, "each call given up settled as nobody's fault: ${logs.messages}")
-            if (givenUp == 1) {
-                assertEquals(mapOf("vite" to "lu"), storage(), "the call given up was cut, the next one ran: ${logs.messages}")
-            } else {
-                // A busy machine may hold the replayed call back past its deadline once it started (a pause of the whole
-                // JVM: measured under load, over 100 ms every 25 s or so): given up and cut too, nobody's fault.
-                assertEquals(2, givenUp, logs.messages.toString())
-                assertEquals(emptyMap(), storage(), "both calls given up were cut")
-            }
+            // Before FORGE-ABANDON the call given up was cut there, its write lost: { vite=lu }.
+            assertEquals(mapOf("lent" to "lu", "vite" to "lu"), storage(), "the call given up ran to its end, then the next one: ${logs.messages}")
+        }
+    }
+
+    @Test
+    fun `a call given up between its act and its then still ends its module - FLAKY-5's password race`() {
+        f.module(
+            "racer",
+            ModuleFixture.source(
+                "racer",
+                body = """
+                    m.events().on(GameFact.Chat.class, c -> {
+                        m.acts().say("Trouvé : " + c.text());
+                        m.world().dayTime();
+                        Pending last = m.acts().sayTo(c.player(), "Bravo.");
+                        last.then(o -> m.end(c.player() + " a trouvé le mot"));
+                    });
+                """,
+            ),
+        )
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("racer", kind = RuleKind.PLAN))
+            // Its read holds the server thread 60 ms (a busy machine), past the call's 25 ms: the call is given up after
+            // its first act. Before FORGE-ABANDON, that act went (in the game: the challenge won and paid), its last act and
+            // its `then` were refused, and the module never ended.
+            f.server.heldOnce = 60
+            chat("lanterne")
+            f.await("${view.ref} ended") { ending().isNotEmpty() }
+
+            assertEquals(listOf("fulfilled"), ending())
+            assertEquals(CanonStatus.FULFILLED to "Bartok a trouvé le mot", resolved(view.ref))
+            assertEquals(1, logs.messages.count { "${view.ref} racer: its fact call was given up" in it }, logs.messages.toString())
+            assertTrue(logs.messages.any { "${view.ref} racer: its fact call, given up, ended without computing past its budget" in it }, logs.messages.toString())
+            assertEquals(emptyList(), f.decisions(ModuleEngine.FAULT))
+            assertEquals(listOf("say", "say"), f.runner.ran.map { it.second }, "both acts went")
+            assertEquals(
+                listOf(null to "${view.ref}: 1 acts of its module (say)", "Bartok" to "${view.ref}: 1 acts of its module (say)"),
+                f.runner.opened.toList(),
+                "the act asked before the give-up left with its call's end, the one asked after once the call ended",
+            )
         }
     }
 

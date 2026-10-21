@@ -99,6 +99,9 @@ class Act(
  *   [ModuleGame]) are kept, never done inline; once the call has returned they leave together, in order, as **one act of
  *   the engine** ([ActRunner.open] at the first tool, `EngineActions.open("act", C-70, <first player aimed>)`): one
  *   episode, `already_punished`, `fair_share` and categories for the guards, as one firing of a rule (M5 §2, 5).
+ * - **A call given up and resumed** (FORGE-ABANDON, `ModuleHost.busy`): its host serves the rest of it between two
+ *   invocations; the acts it asks then wait together ([late]) and leave before those of the next invocation, once the
+ *   call ended (the engine makes no other call of the module while it runs), as one act of the engine.
  * - **Queue**: one coroutine per deployment ([scope]) runs the acts one after the other, never on the server thread.
  * - **Limits** ([ForgeLimits]): beyond [ForgeLimits.ACTS_PER_CALL] acts in a call, [ForgeLimits.ACTS_PER_MINUTE] acts
  *   or [ForgeLimits.LINES_PER_MINUTE] lines a minute, an act is `DENIED (module_acts)` and nothing goes. `hud` is never
@@ -130,6 +133,9 @@ class ActQueue(
 
     /** The acts the call running now asked and that will leave (server thread); null between calls. */
     private var batch: MutableList<Asked>? = null
+
+    /** The acts asked between invocations, by a call given up that its host resumed: they leave before the next invocation's (server thread). */
+    private val late = mutableListOf<Asked>()
 
     /** The acts the call running now asked, refused ones included. */
     private var inCall = 0
@@ -168,6 +174,7 @@ class ActQueue(
      */
     fun invocation(what: String, body: () -> Unit) {
         check(batch == null) { "a call of the module of $ref runs already" }
+        sendLate()
         val acts = mutableListOf<Asked>()
         batch = acts
         inCall = 0
@@ -181,16 +188,16 @@ class ActQueue(
 
     /**
      * [act], asked by the call running now: kept until the call returns, or answered at once when the SDK or a limit
-     * refuses it. Server thread, inside [invocation].
+     * refuses it. Server thread, inside [invocation]; between two, the rest of a call given up that its host resumed
+     * ([late], its acts counted with those it asked before).
      */
     internal fun ask(act: Act): Pending {
         val asked = Asked(act)
         askedCount.incrementAndGet()
-        val acts = batch
+        val acts = batch ?: late
         val now = clock.millis()
         when {
             state != State.OPEN -> finish(asked, null)
-            acts == null -> throw IllegalStateException("$ref asked an act outside one of its calls")
             ++inCall > ForgeLimits.ACTS_PER_CALL -> finish(asked, denied("${ForgeLimits.ACTS_PER_CALL} acts in one call already, the most: act on the next call"))
             act.refusal != null -> finish(asked, act.refusal)
             act.kind != Act.Kind.HUD && full(sent, ForgeLimits.ACTS_PER_MINUTE, now) ->
@@ -213,6 +220,7 @@ class ActQueue(
      */
     fun deliver() {
         if (state == State.CLOSED) return
+        sendLate()
         while (true) {
             val (asked, result) = done.poll() ?: break
             finish(asked, result)
@@ -240,11 +248,19 @@ class ActQueue(
      */
     fun close() {
         if (state == State.CLOSED) return
+        sendLate()
         state = State.CLOSED
         queue.close()
         ready.clear()
         kept.clear()
         settleLate()
+    }
+
+    /** The [late] acts leave, together (dropped there once the queue is closed). Server thread. */
+    private fun sendLate() {
+        if (late.isEmpty()) return
+        queue.trySend(late.toList())
+        late.clear()
     }
 
     /** The module's callbacks that may still be called, as they are (never called here): roots of the memory gauge (M5-05). Server thread. */
