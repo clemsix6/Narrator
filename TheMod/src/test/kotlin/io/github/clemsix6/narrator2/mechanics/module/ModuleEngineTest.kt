@@ -316,8 +316,8 @@ class ModuleEngineTest {
             }
             f.server.heldMillis = 0
 
-            val fault = f.faults.map { it.second }.single()
-            assertEquals(Fault.Kind.SLOWNESS, fault.kind, fault.text)
+            assertEquals(listOf(Fault.Kind.SLOWNESS), f.faults.map { it.second.kind }, "its slowness, in $seconds seconds; it showed $shown ms a second")
+            val fault = f.faults.single().second
             assertTrue(fault.cause.startsWith("over 50 ms of its code a second, 5 seconds in a row"), fault.cause)
             assertEquals(ForgeLimits.SLOW_SECONDS, seconds, "disabled at its fifth slow second: what its caller served counts as it is served")
             // 30 ms a tick held, 20 ticks a second: about 600 ms a second; a busy machine may delay a few resumes.
