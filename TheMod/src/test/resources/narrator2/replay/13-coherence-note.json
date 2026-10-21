@@ -1,0 +1,19 @@
+{
+  "id": "coherence_note",
+  "title": "A coherence note while a player comes back",
+  "source": "exact opening of m3-post-live chapter 2 (director-3c5f4e85): a coherence note on boots never confiscated, Bartok back",
+  "context": "JOIN Bartok back after 28 minutes (« me revoilà ! tu te souviens de moi ? »), with a coherence note on a promise the Narrator made to Mimosa (offline); target Bartok",
+  "transcript": "transcripts/m3-post-live-director-3c5f4e85.jsonl",
+  "previous": [
+    "Service Client Céleste : la réclamation de Bartok est enregistrée. Motif : « dieu nul ». Plaignant : un homme qui a perdu contre la lave, le vide ET une explosion. Délai de traitement estimé : ta quatrième mort. Je patienterai. Je suis éternel.",
+    "Prière reçue, Mimosa. Les creepers ne signent aucun contrat, hélas : ce sont des créatures sans éducation. Mais ta promesse, elle, est consignée en lettres d'or. Trois diamants demain. Un dieu oublie parfois les prières. Les dettes, jamais.",
+    "Quatrième mort : comme promis, la réclamation de Bartok est traitée. Verdict : rejetée par la lave elle-même, deuxième session de la commission. Tes affaires t'attendent en 182 -56 -262. Bonne baignade.",
+    "Mimosa, je te rends tes bottes dans une heure, promis."
+  ],
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    }
+  ]
+}
