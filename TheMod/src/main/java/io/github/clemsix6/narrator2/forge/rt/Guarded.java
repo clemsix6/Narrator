@@ -33,10 +33,15 @@ import java.util.SequencedCollection;
 import java.util.SequencedMap;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.BinaryOperator;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collector;
+import java.util.stream.Collectors;
 import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -59,6 +64,13 @@ import java.util.stream.Stream;
  * {@code Limits.MAX_ELEMENTS}; a text of {@code Limits.MAX_CHARS} characters, the text of a whole collection, map or
  * array included (its size would be the product of the two others); a range of a stream of {@code Limits.MAX_ARRAY}
  * numbers; a width or a precision of a format of {@code ForgeLimits.FORMAT_DIGITS} digits.
+ *
+ * <p>The deep hash and equality of a shared structure, one call of the JDK the meter cannot see (M5-05, M5-18,
+ * M5-FIX-2): each value the JDK is about to hash or compare whole is walked first and bounded ({@link #deep}) — the
+ * explicit {@code hashCode}/{@code equals}, the lookups and removals, the insertions into a hash table, the copies of
+ * one (constructors, {@code clone}), the immutable factories ({@code Set.of}, {@code Map.of}, {@code copyOf}),
+ * {@code Stream.distinct} and the collectors that hash (M5-FIX-2b). What stays the host's to abandon is an O(n·m)
+ * algorithm in one call (M5 §3.8).
  *
  * <p>A module's class is never a {@code Collection}, a {@code Map} or a {@code CharSequence} (the rewriting refuses
  * it: the JDK trusts their sizes), so every receiver here is the JDK's own and its {@code size()} tells the truth.
@@ -759,6 +771,10 @@ public final class Guarded {
                 nextSample = visited + DEEP_SAMPLE;
             }
         }
+        // Each composite walk ends on a checkpoint too: one call here may make many small walks, each under the stride
+        // above, with no module code between them (Arrays.hashCode/equals of 65,536 elements, Objects.hash, the elements
+        // of a factory; M5-FIX-2), and their sum is what counts.
+        Meter.sample();
     }
 
     /** Whether the JDK walks [value] when it hashes or compares it: a collection, a map, an optional, an atomic, a JDK map entry, and (only [arrays]) an array. A module's class is never a collection, a map nor a CharSequence (the guard forbids it), so every one here is the JDK's own. */
@@ -874,6 +890,412 @@ public final class Guarded {
     public static Object component(Object value) {
         deep(value, false);
         return value;
+    }
+
+    // ── Lookups and removals: one probe hashed or compared, like contains and get (M5-FIX-2) ─────────────────────
+
+    public static boolean remove(Collection<?> collection, Object element) {
+        deep(element, false);
+        return collection.remove(element);
+    }
+
+    public static Object remove(Map<?, ?> map, Object key) {
+        deep(key, false);
+        return map.remove(key);
+    }
+
+    public static boolean remove(Map<?, ?> map, Object key, Object value) {
+        deep(key, false);
+        deep(value, false);
+        return map.remove(key, value);
+    }
+
+    public static <K, V> V getOrDefault(Map<K, V> map, Object key, V fallback) {
+        deep(key, false);
+        return map.getOrDefault(key, fallback);
+    }
+
+    public static <K, V> V replace(Map<K, V> map, K key, V value) {
+        deep(key, false);
+        return map.replace(key, value);
+    }
+
+    public static <K, V> boolean replace(Map<K, V> map, K key, V old, V value) {
+        deep(key, false);
+        deep(old, false);
+        return map.replace(key, old, value);
+    }
+
+    public static <K, V> V computeIfPresent(Map<K, V> map, K key, BiFunction<? super K, ? super V, ? extends V> remapping) {
+        deep(key, false);
+        return map.computeIfPresent(key, remapping);
+    }
+
+    public static boolean containsValue(Map<?, ?> map, Object value) {
+        deep(value, false);
+        return map.containsValue(value);
+    }
+
+    public static int indexOf(List<?> list, Object element) {
+        deep(element, false);
+        return list.indexOf(element);
+    }
+
+    public static int lastIndexOf(List<?> list, Object element) {
+        deep(element, false);
+        return list.lastIndexOf(element);
+    }
+
+    public static boolean removeFirstOccurrence(Deque<?> deque, Object element) {
+        deep(element, false);
+        return deque.removeFirstOccurrence(element);
+    }
+
+    public static boolean removeLastOccurrence(Deque<?> deque, Object element) {
+        deep(element, false);
+        return deque.removeLastOccurrence(element);
+    }
+
+    public static int frequency(Collection<?> collection, Object element) {
+        deep(element, false);
+        return Collections.frequency(collection, element);
+    }
+
+    /** In place of {@code Collections.disjoint}: it hashes or compares each element of one against the other. */
+    public static boolean disjoint(Collection<?> a, Collection<?> b) {
+        deep(a, false);
+        deep(b, false);
+        return Collections.disjoint(a, b);
+    }
+
+    // ── Copies of hash tables: every element or key hashed again in one call of the JDK (M5-FIX-2) ──────────────
+
+    /** Before {@code new HashSet<>(elements)} and {@code new LinkedHashSet<>(elements)}: the elements, bounded, unchanged. */
+    public static <C extends Collection<?>> C hashedElements(C elements) {
+        deep(elements, false);
+        return elements;
+    }
+
+    /** Before {@code new HashMap<>(map)} and {@code new LinkedHashMap<>(map)}: the map, its keys bounded, unchanged. */
+    public static <M extends Map<?, ?>> M hashedKeys(M map) {
+        if (map != null) deep(map.keySet(), false);
+        return map;
+    }
+
+    /** In place of {@code HashMap.clone()} (a {@code LinkedHashMap}'s too), which puts each key again. */
+    public static Object clone(HashMap<?, ?> map) {
+        deep(map.keySet(), false);
+        return map.clone();
+    }
+
+    public static Object clone(HashSet<?> set) {
+        deep(set, false);
+        return set.clone();
+    }
+
+    // ── The immutable factories (M5-FIX-2) ──────────────────────────────────────────────────────────────────────
+    // Each element or key is bounded before the JDK hashes it. A duplicate is refused here, before the JDK, when one of
+    // them is a composite: the JDK's message holds the duplicate's whole text, which nothing would bound.
+
+    public static <E> Set<E> setOf(E e1) {
+        elements(e1);
+        return Set.of(e1);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2) {
+        elements(e1, e2);
+        return Set.of(e1, e2);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3) {
+        elements(e1, e2, e3);
+        return Set.of(e1, e2, e3);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4) {
+        elements(e1, e2, e3, e4);
+        return Set.of(e1, e2, e3, e4);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5) {
+        elements(e1, e2, e3, e4, e5);
+        return Set.of(e1, e2, e3, e4, e5);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5, E e6) {
+        elements(e1, e2, e3, e4, e5, e6);
+        return Set.of(e1, e2, e3, e4, e5, e6);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5, E e6, E e7) {
+        elements(e1, e2, e3, e4, e5, e6, e7);
+        return Set.of(e1, e2, e3, e4, e5, e6, e7);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5, E e6, E e7, E e8) {
+        elements(e1, e2, e3, e4, e5, e6, e7, e8);
+        return Set.of(e1, e2, e3, e4, e5, e6, e7, e8);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5, E e6, E e7, E e8, E e9) {
+        elements(e1, e2, e3, e4, e5, e6, e7, e8, e9);
+        return Set.of(e1, e2, e3, e4, e5, e6, e7, e8, e9);
+    }
+
+    public static <E> Set<E> setOf(E e1, E e2, E e3, E e4, E e5, E e6, E e7, E e8, E e9, E e10) {
+        elements(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10);
+        return Set.of(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10);
+    }
+
+    @SafeVarargs
+    public static <E> Set<E> setOf(E... all) {
+        elements((Object[]) all);
+        return Set.of(all);
+    }
+
+    public static <E> Set<E> setCopyOf(Collection<? extends E> elements) {
+        deep(elements, false);
+        return Set.copyOf(elements);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1) {
+        pairs(k1, v1);
+        return Map.of(k1, v1);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2) {
+        pairs(k1, v1, k2, v2);
+        return Map.of(k1, v1, k2, v2);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3) {
+        pairs(k1, v1, k2, v2, k3, v3);
+        return Map.of(k1, v1, k2, v2, k3, v3);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5, K k6, V v6) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5, K k6, V v6, K k7, V v7) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5, K k6, V v6, K k7, V v7, K k8, V v8) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5, K k6, V v6, K k7, V v7, K k8, V v8,
+                                         K k9, V v9) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9);
+    }
+
+    public static <K, V> Map<K, V> mapOf(K k1, V v1, K k2, V v2, K k3, V v3, K k4, V v4, K k5, V v5, K k6, V v6, K k7, V v7, K k8, V v8,
+                                         K k9, V v9, K k10, V v10) {
+        pairs(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9, k10, v10);
+        return Map.of(k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9, k10, v10);
+    }
+
+    @SafeVarargs
+    public static <K, V> Map<K, V> mapOfEntries(Map.Entry<? extends K, ? extends V>... entries) {
+        pairs(keysAndValues(Arrays.asList(entries)));
+        return Map.ofEntries(entries);
+    }
+
+    public static <K, V> Map<K, V> mapCopyOf(Map<? extends K, ? extends V> map) {
+        pairs(keysAndValues(map.entrySet()));
+        return Map.copyOf(map);
+    }
+
+    private static Object[] keysAndValues(Collection<? extends Map.Entry<?, ?>> entries) {
+        Object[] pairs = new Object[2 * entries.size()];
+        int at = 0;
+        for (Map.Entry<?, ?> entry : entries) {
+            pairs[at++] = entry.getKey();
+            pairs[at++] = entry.getValue();
+        }
+        return pairs;
+    }
+
+    /** The elements of a set the JDK makes: each bounded; a null or a duplicate composite refused as the JDK does, in its order, with a bounded text. */
+    private static void elements(Object... elements) {
+        boolean composite = false;
+        for (Object element : elements) {
+            deep(element, false);
+            composite |= composite(element, false);
+        }
+        if (!composite || elements.length < 2) return;
+        HashSet<Object> seen = HashSet.newHashSet(elements.length);
+        for (Object element : elements) {
+            if (!seen.add(Objects.requireNonNull(element))) throw new IllegalArgumentException("duplicate element: " + Texts.of(element));
+        }
+    }
+
+    /** The {@code key, value} pairs of a map the JDK makes: each key bounded; a null or a duplicate composite key refused as the JDK does, in its order, with a bounded text. */
+    private static void pairs(Object... keysAndValues) {
+        boolean composite = false;
+        for (int i = 0; i < keysAndValues.length; i += 2) {
+            deep(keysAndValues[i], false);
+            composite |= composite(keysAndValues[i], false);
+        }
+        if (!composite || keysAndValues.length < 4) return;
+        HashSet<Object> seen = HashSet.newHashSet(keysAndValues.length / 2);
+        for (int i = 0; i < keysAndValues.length; i += 2) {
+            Object key = Objects.requireNonNull(keysAndValues[i]);
+            Objects.requireNonNull(keysAndValues[i + 1]);
+            if (!seen.add(key)) throw new IllegalArgumentException("duplicate key: " + Texts.of(key));
+        }
+    }
+
+    // ── Stream.distinct and the collectors that hash, in a JDK loop without the module's code (M5-FIX-2b) ──────────
+
+    /** In place of {@code Stream.distinct()}: each element bounded as it reaches the JDK's set of the ones seen. */
+    public static <T> Stream<T> distinct(Stream<T> stream) {
+        return stream.peek(new Each<T, T>(null)).distinct();
+    }
+
+    public static <T> Collector<T, ?, Set<T>> toSet() {
+        return Collectors.mapping(new Each<T, T>(null), Collectors.toSet());
+    }
+
+    /** In place of {@code Collectors.toUnmodifiableSet()}: as the JDK makes it, a set, then {@code Set.of} of its elements. */
+    @SuppressWarnings("unchecked")
+    public static <T> Collector<T, ?, Set<T>> toUnmodifiableSet() {
+        return Collectors.collectingAndThen(Guarded.<T>toSet(), set -> {
+            Object[] all = set.toArray();
+            elements(all);
+            return (Set<T>) Set.of(all);
+        });
+    }
+
+    public static <T, C extends Collection<T>> Collector<T, ?, C> toCollection(Supplier<C> factory) {
+        return Collectors.mapping(new Each<T, T>(null), Collectors.toCollection(factory));
+    }
+
+    /**
+     * In place of {@code Collectors.toMap(keyMapper, valueMapper)}: the JDK's, each key bounded, and a duplicate key
+     * refused with the JDK's message made within the limit (the JDK makes the whole text of the key and both values).
+     */
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper) {
+        Function<? super T, ? extends K> key = keyed(keyMapper);
+        Objects.requireNonNull(valueMapper);
+        return Collector.<T, Map<K, U>>of(
+            HashMap::new,
+            (map, element) -> unique(map, key.apply(element), valueMapper.apply(element)),
+            (left, right) -> {
+                right.forEach((k, v) -> unique(left, k, v));
+                return left;
+            },
+            Collector.Characteristics.IDENTITY_FINISH);
+    }
+
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                            BinaryOperator<U> merge) {
+        return Collectors.toMap(keyed(keyMapper), valueMapper, merge);
+    }
+
+    public static <T, K, U, M extends Map<K, U>> Collector<T, ?, M> toMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                                         BinaryOperator<U> merge, Supplier<M> factory) {
+        return Collectors.toMap(keyed(keyMapper), valueMapper, merge, factory);
+    }
+
+    /** In place of {@code Collectors.toUnmodifiableMap}: as the JDK makes it, a map, then a copy of its entries. */
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toUnmodifiableMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper) {
+        return Collectors.collectingAndThen(Guarded.<T, K, U>toMap(keyMapper, valueMapper), Guarded::mapCopyOf);
+    }
+
+    public static <T, K, U> Collector<T, ?, Map<K, U>> toUnmodifiableMap(Function<? super T, ? extends K> keyMapper, Function<? super T, ? extends U> valueMapper,
+                                                                        BinaryOperator<U> merge) {
+        return Collectors.collectingAndThen(Collectors.toMap(keyed(keyMapper), valueMapper, merge, HashMap::new), Guarded::mapCopyOf);
+    }
+
+    public static <T, K> Collector<T, ?, Map<K, List<T>>> groupingBy(Function<? super T, ? extends K> classifier) {
+        return Collectors.groupingBy(keyed(classifier));
+    }
+
+    public static <T, K, A, D> Collector<T, ?, Map<K, D>> groupingBy(Function<? super T, ? extends K> classifier, Collector<? super T, A, D> downstream) {
+        return Collectors.groupingBy(keyed(classifier), downstream);
+    }
+
+    public static <T, K, D, A, M extends Map<K, D>> Collector<T, ?, M> groupingBy(Function<? super T, ? extends K> classifier, Supplier<M> factory,
+                                                                                 Collector<? super T, A, D> downstream) {
+        return Collectors.groupingBy(keyed(classifier), factory, downstream);
+    }
+
+    public static <T, K> Collector<T, ?, ConcurrentMap<K, List<T>>> groupingByConcurrent(Function<? super T, ? extends K> classifier) {
+        return Collectors.groupingByConcurrent(keyed(classifier));
+    }
+
+    public static <T, K, A, D> Collector<T, ?, ConcurrentMap<K, D>> groupingByConcurrent(Function<? super T, ? extends K> classifier,
+                                                                                         Collector<? super T, A, D> downstream) {
+        return Collectors.groupingByConcurrent(keyed(classifier), downstream);
+    }
+
+    public static <T, K, D, A, M extends ConcurrentMap<K, D>> Collector<T, ?, M> groupingByConcurrent(Function<? super T, ? extends K> classifier,
+                                                                                                     Supplier<M> factory, Collector<? super T, A, D> downstream) {
+        return Collectors.groupingByConcurrent(keyed(classifier), factory, downstream);
+    }
+
+    private static <T, K> Function<T, K> keyed(Function<? super T, ? extends K> keyMapper) {
+        return new Each<>(Objects.requireNonNull(keyMapper));
+    }
+
+    /** A key put once, as the JDK's {@code toMap} does; a duplicate's message within the limit. */
+    private static <K, V> void unique(Map<K, V> map, K key, V value) {
+        V present = map.putIfAbsent(key, Objects.requireNonNull(value));
+        if (present != null) {
+            throw new IllegalStateException(String.format("Duplicate key %s (attempted merging values %s and %s)", Texts.of(key), Texts.of(present), Texts.of(value)));
+        }
+    }
+
+    /** How many elements an {@link Each} lets through between two checks of the call's budget. */
+    private static final int EACH_SAMPLE = 1_024;
+
+    /**
+     * Bounds each element (or the key a mapper makes of it) that a JDK loop is about to hash ({@code distinct}, a
+     * collector), and checks the call's budget every {@link #EACH_SAMPLE} elements: no code of the module runs in such
+     * a loop, so this is its meter.
+     */
+    private static final class Each<T, R> implements Function<T, R>, Consumer<T> {
+        private final Function<? super T, ? extends R> mapper;
+        private int count;
+
+        /** @param mapper what makes the bounded value of an element; null: the element itself. */
+        Each(Function<? super T, ? extends R> mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public R apply(T element) {
+            R value = mapper == null ? (R) element : mapper.apply(element);
+            bound(value);
+            return value;
+        }
+
+        @Override
+        public void accept(T element) {
+            bound(element);
+        }
+
+        private void bound(Object value) {
+            deep(value, false);
+            if (++count % EACH_SAMPLE == 0) Meter.sample();
+        }
     }
 
     // ── Bootstraps ──────────────────────────────────────────────────────────────────────────────────────────────

@@ -244,6 +244,113 @@ class GuardedTest {
     }
 
     @Test
+    fun `the copy constructors, immutable factories and lookups bound a shared structure before the JDK hashes it`() {
+        // L1 = 10,000 references to one list of 10,000: hashing it whole walks 10^8 slots in one JDK call (M5-FIX-2).
+        val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList())
+        fun l1() = java.util.ArrayList<Any?>().apply { repeat(10_000) { add(l0) } }
+        val l1 = l1()
+        // Copy constructors: the collection or the map's keys, bounded before the ctor re-hashes them.
+        assertFailsWith<ForgeLimit> { Guarded.hashedElements(l1) }
+        assertFailsWith<ForgeLimit> { Guarded.hashedKeys(java.util.Collections.singletonMap<Any?, Int>(l1, 1)) }
+        assertFailsWith<ForgeLimit> { Guarded.clone(java.util.HashSet<Any?>().apply { add(l1()) }) }
+        // Immutable factories: Set.of / Map.of / copyOf, each element or key bounded.
+        assertFailsWith<ForgeLimit> { Guarded.setOf(l1, "a", "b") }
+        assertFailsWith<ForgeLimit> { Guarded.setOf(*arrayOf<Any?>(l1, "a")) }
+        assertFailsWith<ForgeLimit> { Guarded.setCopyOf(java.util.List.of(l1, java.util.List.of(1))) }
+        assertFailsWith<ForgeLimit> { Guarded.mapOf(l1, 1, "a", 2) }
+        assertFailsWith<ForgeLimit> { Guarded.mapOfEntries(java.util.Map.entry(l1 as Any, 1 as Any)) }
+        assertFailsWith<ForgeLimit> { Guarded.mapCopyOf(java.util.Collections.singletonMap<Any?, Int>(l1, 1)) }
+        // Lookups and removals: one probe hashed or compared, like contains/get (M5-18).
+        assertFailsWith<ForgeLimit> { Guarded.remove(java.util.HashSet<Any?>(), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.remove(java.util.HashMap<Any?, Int>(), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.getOrDefault(java.util.HashMap<Any?, Int>(), l1, 0) }
+        assertFailsWith<ForgeLimit> { Guarded.computeIfPresent(java.util.HashMap<Any?, Int>(), l1) { _, v -> v } }
+        assertFailsWith<ForgeLimit> { Guarded.containsValue(java.util.Collections.singletonMap(1, l1 as Any?), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.indexOf(java.util.ArrayList(listOf(l1b())), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.frequency(java.util.ArrayList(listOf(l1b())), l1) }
+        assertFailsWith<ForgeLimit> { Guarded.disjoint(java.util.ArrayList(listOf(l1)), java.util.HashSet<Any?>(listOf(1))) }
+
+        // Normal use: a small set, map or lookup is the JDK's own, cheap.
+        assertEquals(java.util.Set.of("a", "b"), Guarded.setOf("a", "b"))
+        assertEquals(java.util.Map.of("a", 1, "b", 2), Guarded.mapOf("a", 1, "b", 2))
+        assertEquals(java.util.Set.copyOf(listOf(1, 2, 3)), Guarded.setCopyOf(listOf(1, 2, 3)))
+        assertEquals(setOf(listOf(1), listOf(2)), Guarded.setOf(listOf(1), listOf(2)), "small composites are fine elements")
+        val table = java.util.HashMap<Any?, Int>().apply { put("k", 1) }
+        assertEquals(1, Guarded.remove(table, "k"))
+        assertEquals(2, (Guarded.clone(java.util.HashSet<Any?>(listOf(1, 2))) as java.util.HashSet<*>).size)
+        assertEquals(7, Guarded.getOrDefault(java.util.HashMap<Any?, Int>(), listOf(1), 7))
+        // A duplicate composite: refused as the JDK refuses it, its text within the limit.
+        assertEquals("duplicate element: [1]", assertFailsWith<IllegalArgumentException> { Guarded.setOf(listOf(1), listOf(1)) }.message)
+        assertEquals("duplicate key: [1]", assertFailsWith<IllegalArgumentException> { Guarded.mapOf(listOf(1), 1, listOf(1), 2) }.message)
+        // The JDK's message for a duplicate holds its whole text: 1,000 texts of 65,000 characters would make one of
+        // 65 million in one call. Here the text is made within the limit, so the refusal is the limit's.
+        val chunk = "x".repeat(65_000)
+        val texts = java.util.ArrayList<String>().apply { repeat(1_000) { add(chunk) } }
+        val same = java.util.ArrayList(texts)
+        assertEquals("a text over $chars characters", assertFailsWith<ForgeLimit> { Guarded.setOf(texts, same) }.message)
+        assertEquals("a text over $chars characters", assertFailsWith<ForgeLimit> { Guarded.mapOf(texts, 1, same, 2) }.message)
+    }
+
+    @Test
+    fun `distinct and the collectors that hash bound each element or key, and otherwise give the JDK's result`() {
+        val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList())
+        val l1 = java.util.ArrayList<Any?>().apply { repeat(10_000) { add(l0) } }
+        // A shared structure reaching the JDK's set or map, inside its loop (M5-FIX-2b).
+        assertFailsWith<ForgeLimit> { Guarded.distinct(Stream.of<Any?>(l1, 1)).count() }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toSet<Any?>()) }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toUnmodifiableSet<Any?>()) }
+        assertFailsWith<ForgeLimit> { Stream.of<Any?>(l1).collect(Guarded.toCollection<Any?, java.util.HashSet<Any?>> { java.util.HashSet() }) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toMap<Int, Any, Int>({ l1 }, { it })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toMap<Int, Any, Int>({ l1 }, { it }, { a, _ -> a })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.toUnmodifiableMap<Int, Any, Int>({ l1 }, { it })) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.groupingBy<Int, Any> { l1 }) }
+        assertFailsWith<ForgeLimit> { Stream.of(1).collect(Guarded.groupingByConcurrent<Int, Any> { l1 }) }
+
+        // Normal use: the JDK's own result.
+        val words = listOf("b", "a", "b", "c", "a")
+        assertEquals(words.stream().distinct().toList(), Guarded.distinct(words.stream()).toList())
+        assertEquals(words.stream().collect(Collectors.toSet()), words.stream().collect(Guarded.toSet<String>()))
+        assertEquals(words.stream().collect(Collectors.toUnmodifiableSet()), words.stream().collect(Guarded.toUnmodifiableSet<String>()))
+        assertEquals(words.stream().collect(Collectors.groupingBy { it.length }), words.stream().collect(Guarded.groupingBy<String, Int> { it.length }))
+        assertEquals(
+            words.stream().collect(Collectors.toMap({ it }, { 1 }, { a: Int, b: Int -> a + b })),
+            words.stream().collect(Guarded.toMap<String, String, Int>({ it }, { 1 }, { a, b -> a + b })),
+        )
+        assertEquals(mapOf("x" to 1, "y" to 2), Stream.of("x", "y").collect(Guarded.toMap<String, String, Int>({ it }, { if (it == "x") 1 else 2 })))
+        assertFailsWith<NullPointerException> { Stream.of("x").collect(Guarded.toMap<String, String, Int?>({ it }, { null })) }
+        var made = 0
+        assertEquals(
+            "Duplicate key a (attempted merging values 1 and 2)",
+            assertFailsWith<IllegalStateException> { Stream.of("a", "a").collect(Guarded.toMap<String, String, Int>({ it }, { ++made })) }.message,
+        )
+        // A duplicate whose values are huge texts: the JDK would make a message of 130 million characters in one call.
+        val chunk = "x".repeat(65_000)
+        val texts = java.util.ArrayList<String>().apply { repeat(1_000) { add(chunk) } }
+        assertEquals(
+            "a text over $chars characters",
+            assertFailsWith<ForgeLimit> { Stream.of(1, 1).collect(Guarded.toMap<Int, Int, Any>({ it }, { texts })) }.message,
+        )
+    }
+
+    @Test
+    fun `many small walks in one call are metered together`() {
+        // 65,536 references to one list of 2,000: each walk is under the meter's sampling stride, and no code of the
+        // module runs between them, so only the checkpoint that ends each composite walk sees their sum (M5-FIX-2).
+        val small = java.util.ArrayList<Any?>((0 until 2_000).toList())
+        val many = Array<Any?>(Limits.MAX_ARRAY) { small }
+        val meter = Meter(javaClass.classLoader)
+        meter.arm(20_000_000L, Long.MAX_VALUE)
+        try {
+            assertTrue("time budget" in assertFailsWith<ForgeLimit> { Guarded.arraysHashCode(many) }.message!!)
+        } finally {
+            meter.disarm()
+        }
+        assertEquals(java.util.Arrays.hashCode(many), Guarded.arraysHashCode(many), "unmetered, the same hash as the JDK's")
+    }
+
+    private fun l1b() = java.util.ArrayList<Any?>().apply { val l0 = java.util.ArrayList<Any?>((0 until 10_000).toList()); repeat(10_000) { add(l0) } }
+
+    @Test
     fun `a sub-list and a list iterator count against their list`() {
         val list = java.util.ArrayList((0 until 10).toList())
         val view = Guarded.subList(list, 2, 5)

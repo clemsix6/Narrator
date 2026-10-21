@@ -179,7 +179,7 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
     private fun ResultSet.modelCall() = ModelCall(
         id = getLong(1), startedAt = instant(2)!!, latencyMs = getInt(3), stopReason = getString(4), refusalCategory = getString(5),
         error = getString(6), inputTokens = int(7), cacheReadTokens = int(8), cacheWriteTokens = int(9), outputTokens = int(10),
-        thinking = getString(11), purpose = getString(12), tools = emptyList(),
+        thinking = getString(11), purpose = getString(12), model = getString(13), tools = emptyList(),
     )
 
     private fun ResultSet.decisionLine(from: Int) = DecisionLine(
@@ -283,7 +283,7 @@ class TraceQueries(private val connection: Connection, private val timeoutSecond
 
         private const val MODEL_CALLS =
             "SELECT id, started_at, latency_ms, stop_reason, refusal_category, error, input_tokens, cache_read_tokens, " +
-                "cache_write_tokens, output_tokens, thinking, purpose FROM llm_calls"
+                "cache_write_tokens, output_tokens, thinking, purpose, model FROM llm_calls"
     }
 }
 
@@ -341,7 +341,12 @@ data class ToolUse(
     val effect: String,
 )
 
-/** One request to Claude, with its thinking summary and the tool calls its reply asked for. */
+/**
+ * One request to Claude, with its thinking summary and the tool calls its reply asked for.
+ *
+ * @property model the model that answered (`llm_calls.model`): a fallback model when a safety classifier handed the
+ *   request over, the call then with a [refusalCategory] and a usable [stopReason] (`CallStats`).
+ */
 data class ModelCall(
     val id: Long,
     val startedAt: Instant,
@@ -355,6 +360,7 @@ data class ModelCall(
     val outputTokens: Int?,
     val thinking: String?,
     val purpose: String,
+    val model: String,
     val tools: List<ToolUse>,
 )
 

@@ -6,11 +6,12 @@ import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import kotlin.system.exitProcess
 
 /**
- * Finding 1 of M5-04 at its worst, in a JVM of its own (`AbandonTest` starts it): L2 = 10,000 × L1 fed to
- * `Stream.distinct()` — a factory the guard does not wrap (M5-18's residual), which hashes it in one call of the JDK,
- * ten minutes of a thread that cannot be stopped. Prints how long the caller waited, the fault once settled (M5-LOAD:
- * given up at the budget, the call is abandoned once its thread computed past it), and what the lost thread does to
- * the JVM's safepoints (`System.gc()` before and while it runs); then exits, which ends it.
+ * The longest call the host alone can stop, in a JVM of its own (`AbandonTest` starts it): the equality scan of
+ * `AbandonTest.SCAN_SETUP` over 10,000 references, one O(n·m) call of the JDK of minutes, a thread that cannot be
+ * stopped. (It hashed L2 = 10,000 × L1 through `Stream.distinct()` before M5-FIX-2b, which the guard now bounds.)
+ * Prints how long the caller waited, the fault once settled (M5-LOAD: given up at the budget, the call is abandoned
+ * once its thread computed past it), and what the lost thread does to the JVM's safepoints (`System.gc()` before and
+ * while it runs); then exits, which ends it.
  */
 object SharedStructureAttack {
     @JvmStatic
