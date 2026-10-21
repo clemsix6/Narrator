@@ -91,6 +91,9 @@ public final class Meter {
     /** The thread's CPU clock at {@link #arm}: read by the host's thread while the call runs (has its thread computed?). */
     private volatile long cpuAtArm = UNARMED;
 
+    /** The thread's CPU clock when the running call tripped (it unwinds since): read by the host's thread, as {@link #cpuAtArm}. */
+    private volatile long cpuAtTrip = UNARMED;
+
     private long allocationStart;
     private long allocationAllowance;
     private long allocatedAtDisarm = -1;
@@ -117,6 +120,7 @@ public final class Meter {
         workedAtDisarm = -1;
         cpuAtDisarm = -1;
         cpuAtArm = cpuNow();
+        cpuAtTrip = UNARMED;
         allocationAllowance = allocationBytes;
         allocationStart = ALLOCATIONS == null ? 0 : ALLOCATIONS.getCurrentThreadAllocatedBytes();
         allocatedAtDisarm = -1;
@@ -173,6 +177,15 @@ public final class Meter {
     }
 
     /**
+     * The thread's CPU clock when the running call tripped, for another thread to count only what it computed since
+     * (FORGE-ABANDON): a tripped call only unwinds, every later {@code enter} or {@code tick} throwing. {@link #UNARMED}
+     * while it has not tripped, between calls, or without a CPU clock. Any thread.
+     */
+    public long cpuAtTrip() {
+        return cpuAtTrip;
+    }
+
+    /**
      * Checks the clock and the allocation now — not batched like {@link #tick} — and trips past either; for a long walk
      * inside the runtime ({@link Guarded}) that calls {@link #sample} between its steps, so it stops at the budget even
      * cold, before the host would abandon the call. Throws into the abandoned thread once {@link #revoke}d.
@@ -214,7 +227,7 @@ public final class Meter {
      */
     public Nested nest(long budgetNanos, long allocationBytes) {
         Nested running = new Nested(
-            armed, budget, deadline, lastClock, worked, cpuCheckedAt, cpuAtArm, workedAtDisarm, cpuAtDisarm,
+            armed, budget, deadline, lastClock, worked, cpuCheckedAt, cpuAtArm, cpuAtTrip, workedAtDisarm, cpuAtDisarm,
             allocationStart, allocationAllowance, allocatedAtDisarm, ticks, depth, tripped);
         long left = armed ? Math.max(0, budget - worked) : budgetNanos;
         arm(Math.min(budgetNanos, left), allocationBytes);
@@ -235,6 +248,7 @@ public final class Meter {
         worked = running.worked + nestedWork;
         cpuCheckedAt = running.cpuCheckedAt;
         cpuAtArm = running.cpuAtArm;
+        cpuAtTrip = running.cpuAtTrip;
         workedAtDisarm = running.workedAtDisarm;
         cpuAtDisarm = running.cpuAtDisarm;
         allocationStart = running.allocationStart + nested;
@@ -248,8 +262,8 @@ public final class Meter {
 
     /** The state of a call while another one runs nested in it. */
     public record Nested(boolean armed, long budget, long deadline, long lastClock, long worked, long cpuCheckedAt, long cpuAtArm,
-                         long workedAtDisarm, long cpuAtDisarm, long allocationStart, long allocationAllowance, long allocatedAtDisarm,
-                         int ticks, int depth, String tripped) {
+                         long cpuAtTrip, long workedAtDisarm, long cpuAtDisarm, long allocationStart, long allocationAllowance,
+                         long allocatedAtDisarm, int ticks, int depth, String tripped) {
     }
 
     /**
@@ -335,6 +349,7 @@ public final class Meter {
     }
 
     private void trip(String why) {
+        if (cpuAtArm >= 0) cpuAtTrip = cpuNow();
         tripped = why + where();
         throw new ForgeLimit(tripped);
     }

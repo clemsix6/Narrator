@@ -212,11 +212,15 @@ internal class ModuleFixture(
 
     /**
      * The server for the engine: the test's thread is its thread; an empty world; Bartok, Mimosa and Josiane have played
-     * here. [heldMillis]: how long its thread is held back while it reads the world's time for a module (a busy machine).
+     * here. [heldMillis]: how long its thread is held back while it reads the world's time for a module (a busy machine);
+     * [heldOnce]: as long, for the next read only.
      */
     class Server : ModuleServer {
         @Volatile
         var heldMillis = 0L
+
+        @Volatile
+        var heldOnce = 0L
 
         override fun execute(task: Runnable) = task.run()
 
@@ -224,7 +228,9 @@ internal class ModuleFixture(
 
         override fun world(own: (Entity) -> Boolean): World = object : World by EmptyWorld {
             override fun dayTime(): Long {
-                if (heldMillis > 0) Thread.sleep(heldMillis)
+                val held = maxOf(heldMillis, heldOnce)
+                heldOnce = 0
+                if (held > 0) Thread.sleep(held)
                 return 0
             }
         }

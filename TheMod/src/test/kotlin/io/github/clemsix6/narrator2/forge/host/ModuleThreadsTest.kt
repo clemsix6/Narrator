@@ -3,11 +3,13 @@ package io.github.clemsix6.narrator2.forge.host
 import io.github.clemsix6.narrator2.forge.rt.ForgeLimit
 import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -164,6 +166,84 @@ class ModuleThreadsTest {
             assertTrue(refused.get() is ForgeLimit, "${refused.get()}")
             assertEquals(0, served.get())
         } finally {
+            threads.close()
+        }
+    }
+
+    @Test
+    fun `a call given up and held asks the SDK only when its caller resumes it, on the caller's thread, until it ends`() {
+        val threads = ModuleThreads("test-module")
+        val caller = Thread.currentThread()
+        val release = CountDownLatch(1)
+        val served = CopyOnWriteArrayList<String>()
+        val ended = CountDownLatch(1)
+        var held: ModuleThreads.Held? = null
+        try {
+            val result = threads.run(budget, hold = { held = it }) {
+                served += ModuleThreads.toCaller { "first on ${Thread.currentThread() == caller}" }
+                release.await(60, TimeUnit.SECONDS) // held back past the caller's deadline (the machine's doing)
+                served += ModuleThreads.toCaller { "second on ${Thread.currentThread() == caller}" }
+                served += ModuleThreads.toCaller { "third on ${Thread.currentThread() == caller}" }
+                ended.countDown()
+            }
+            assertEquals(ModuleThreads.Ran.ABANDONED, result)
+            val call = assertNotNull(held)
+            assertEquals(0, threads.lost.alive(), "held, not lost")
+            assertTrue(call.thread.name.endsWith("(given up)"), call.thread.name)
+            assertEquals(ModuleThreads.Ran.DONE, threads.run(patient) { }, "a fresh thread takes the next calls meanwhile")
+
+            release.countDown()
+            val asking = System.nanoTime() + 60_000_000_000L
+            while (!call.asking) check(System.nanoTime() < asking) { "the held call never asked" }
+            assertEquals(listOf("first on true"), served.toList(), "its request waits: never served behind the caller's back")
+            assertFalse(call.ended)
+
+            assertEquals(ModuleThreads.Ran.DONE, threads.resume(call, patient))
+            assertTrue(ended.await(60, TimeUnit.SECONDS))
+            assertTrue(call.ended)
+            assertEquals(listOf("first on true", "second on true", "third on true"), served.toList(), "the rest of the call, served on the caller's thread")
+            assertEquals(ModuleThreads.Ran.DONE, threads.resume(call, patient), "a call that ended is not resumed")
+            call.thread.join(60_000)
+            assertEquals(ModuleThreads.Ran.DONE, threads.run(patient) { }, "the given-up thread ended with its call, the next calls go on")
+        } finally {
+            release.countDown()
+            threads.close()
+        }
+    }
+
+    @Test
+    fun `a held call cut is refused by the SDK, its request waiting and every later one`() {
+        val threads = ModuleThreads("test-module")
+        val release = CountDownLatch(1)
+        val refused = CopyOnWriteArrayList<Throwable>()
+        val served = AtomicInteger()
+        val ended = CountDownLatch(1)
+        var held: ModuleThreads.Held? = null
+        try {
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.run(budget, hold = { held = it }) {
+                release.await(60, TimeUnit.SECONDS)
+                repeat(2) {
+                    try {
+                        ModuleThreads.toCaller { served.incrementAndGet() }
+                    } catch (thrown: Throwable) {
+                        refused += thrown
+                    }
+                }
+                ended.countDown()
+            })
+            val call = assertNotNull(held)
+            release.countDown()
+            val asking = System.nanoTime() + 60_000_000_000L
+            while (!call.asking) check(System.nanoTime() < asking) { "the held call never asked" }
+
+            threads.cut(call)
+            assertTrue(ended.await(60, TimeUnit.SECONDS))
+            assertEquals(0, served.get(), "nothing served once cut")
+            assertEquals(2, refused.size)
+            assertTrue(refused.all { it is ForgeLimit && it.message == ModuleThreads.ABANDONED_MESSAGE }, "$refused")
+            assertEquals(ModuleThreads.Ran.ABANDONED, threads.resume(call, patient), "a call cut is never resumed")
+        } finally {
+            release.countDown()
             threads.close()
         }
     }
