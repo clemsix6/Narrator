@@ -351,7 +351,7 @@ class MemoryBriefing(
 
     /** `Style: overused lately: « Ministère de la » ×7 (last 2h ago) · …`; null without tics; says so when the chat cannot be read. */
     private suspend fun style(now: Instant): String? = try {
-        val tics = journal.read(READ_TIMEOUT_MS) { Tics.render(Tics.find(Tics.lines(it)), now) }
+        val tics = journal.read(READ_TIMEOUT_MS) { Tics.render(Tics.read(it), now) }
         if (tics.isEmpty()) null else "Style: overused lately: ${tics.joinToString(" · ")}"
     } catch (e: CancellationException) {
         throw e
