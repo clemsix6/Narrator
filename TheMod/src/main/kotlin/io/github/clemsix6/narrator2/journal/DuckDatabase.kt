@@ -44,13 +44,14 @@ class DuckDatabase private constructor(
      * @property memoryLimitMb DuckDB's memory limit (it would otherwise take 80 % of the RAM).
      * @property threads DuckDB's worker threads (it would otherwise take one per core).
      * @property timeZone zone of the TIMESTAMPTZ values read back.
-     * @property readers read connections to open.
+     * @property readers read connections to open: three, so that the dashboard, which reads one query at a time, always
+     *   leaves two to the Director, the memory and the rest (M6 §8.5).
      */
     data class Options(
         val memoryLimitMb: Int = 512,
         val threads: Int = 2,
         val timeZone: ZoneId = ZoneId.systemDefault(),
-        val readers: Int = 2,
+        val readers: Int = 3,
     ) {
         companion object {
             /** Options from the `journal` section; an empty `timeZone` means the server's zone. */
