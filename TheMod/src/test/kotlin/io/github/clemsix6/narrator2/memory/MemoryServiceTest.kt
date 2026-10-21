@@ -201,6 +201,22 @@ class MemoryServiceTest {
     }
 
     @Test
+    fun `the open ideas come from a cache that each write of an idea reads again`() = runBlocking<Unit> {
+        val memory = start()
+        assertEquals(emptyList(), memory.openIdeas())
+        val storyteller = Author(Source.STORYTELLER, runId = 21, conversationId = "storyteller-21")
+        val draft = IdeaDraft(IdeaKind.FAVOR, "Le gâteau", "Un gâteau tombe du ciel au prochain orage.", "N'importe quand.", novelty = 3, funScore = 5, fairness = 5)
+
+        val idea = memory.store.addIdea(draft, storyteller).row
+
+        assertEquals(listOf(idea.ref), memory.openIdeas().map { it.ref })
+        memory.store.dealt(listOf(idea.ref), RecallChannel.INSPIRE, RecallContext(CHAPTER, 7, null))
+        assertEquals(1, memory.openIdeas().single().dealt)
+        memory.store.dropIdea(idea.ref, "Le gâteau a déjà servi.", storyteller)
+        assertEquals(emptyList(), memory.openIdeas())
+    }
+
+    @Test
     fun `stopping cancels the running job and saves the world play clock`() = runBlocking<Unit> {
         val memory = start()
         val hold = Hold()

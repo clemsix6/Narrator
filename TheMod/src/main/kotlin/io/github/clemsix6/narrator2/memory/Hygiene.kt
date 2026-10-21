@@ -17,7 +17,7 @@ import java.time.format.DateTimeFormatter
 data class MergeCandidate(val a: Ref, val b: Ref, val similarity: Double)
 
 /**
- * What a hygiene pass did: canon entries [expired], gags [worn], memories [archived], notes made
+ * What a hygiene pass did: canon entries and ideas [expired], gags [worn], memories [archived], notes made
  * [notesDone], and the [mergeCandidates] for the Dreamer (empty for [Hygiene.tidy]).
  */
 data class HygieneReport(
@@ -36,7 +36,8 @@ data class HygieneReport(
  * The memory's housekeeping, done by the code alone (M3 §6.6, §8.6, §9.3). Nothing is deleted: rows are
  * closed, archived or marked through the [store], as [Source.ENGINE], so every change is audited.
  *
- * - [tidy], every 10 minutes (`MemoryJobs`): canon expirations, worn gags, notes done.
+ * - [tidy], every 10 minutes (`MemoryJobs`): canon expirations, the storyteller's ideas whose hours of world play are
+ *   over (M6 §6.2), worn gags, notes done.
  * - [beforeDream], before the first step of each dream: [tidy], then archival of faded trivial memories
  *   and the merge candidates for the Dreamer's step 5. The caller runs `Journal.checkpointAsync()` after
  *   the dream.
@@ -55,10 +56,11 @@ class Hygiene(
     private val log = Log.memory
     private val dueFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
-    /** Canon expirations, worn gags and notes done at [now]; [runId]: the memory job, for the audit. */
+    /** Canon and idea expirations, worn gags and notes done at [now]; [runId]: the memory job, for the audit. */
     suspend fun tidy(now: Instant, runId: Long? = null): HygieneReport {
         val author = Author(Source.ENGINE, runId = runId)
-        val report = HygieneReport(expired = expire(now, author), worn = wearGags(author), notesDone = closeNotes(now, author))
+        val expired = expire(now, author) + expireIdeas(author)
+        val report = HygieneReport(expired = expired, worn = wearGags(author), notesDone = closeNotes(now, author))
         if (report.expired.isNotEmpty() || report.worn.isNotEmpty() || report.notesDone.isNotEmpty()) log.info("hygiene: ${report.summary()}")
         return report
     }
@@ -136,6 +138,14 @@ class Hygiene(
         val room = MemoryLimits.NOTE_TEXT - head.length - 2
         val statement = entry.statement.let { if (it.length <= room) it else it.take((room - 1).coerceAtLeast(0)) + "…" }
         return "$head$statement »"
+    }
+
+    // ── Ideas (M6 §6.2) ─────────────────────────────────────────────────────────────────────────────
+
+    /** The storyteller's open ideas whose hours of world play are over, closed `expired` by the store: no note, nobody waits for them. */
+    private suspend fun expireIdeas(author: Author): List<Ref> = store.expireIdeas(author).map { idea ->
+        decisions.record(log, DecisionRecord.Kind.MEMORY, "idea_expired", idea.ref.toString(), "${idea.kind.id} « ${idea.title} »: ${idea.closeReason}")
+        idea.ref
     }
 
     // ── Running gags (M3 §9.3) ──────────────────────────────────────────────────────────────────────
