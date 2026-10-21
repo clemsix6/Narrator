@@ -155,4 +155,17 @@ requête `end` y est refusée, `ending()` jamais rempli).
 
 ## Vérifications
 
-(complétées en fin de tâche)
+- **Reproduction avant correctif** : sonde 0 (§5), 5 rouges sur le code d'avant, chacun sur sa vérification ; le test du
+  mot de passe échoue comme FLAKY-5 l'a vu en jeu (`timed out waiting for: C-1 ended`).
+- **Tests ciblés** (`ModuleThreadsTest`, `HeldBackTest`, `ModuleEngineTest`, `ActQueueTest`, `ModuleHostTest`,
+  `AbandonTest`, `MeterTest`, `HostBatteryTest`, `SdkBridgeTest`) : verts ; `HeldBackTest` 5 passages sur 5, le trio
+  moteur, file, fils 3 sur 3, puis le lot (sans `MeterTest`, `HostBatteryTest`, `SdkBridgeTest`) 2 sur 2 après le tour
+  de la reprise.
+- **Build complet** (`.\gradlew.bat build --continue`) après la fusion de `main` (09d020e puis 879c957), avant le tour de la
+  reprise : 2 183 tests unitaires, 0 échec, 0 ignoré ; « All 398 required tests passed ».
+- **Build final** après la dernière fusion de `main` (1f3f2d9, M6-FIX-3) : **2 187 tests unitaires, 0 échec, 0 ignoré** ;
+  **« All 398 required tests passed »**. Puis **`runGameTest` seul** : « All 398 required tests passed » (`password_race`,
+  C-171, `ended (fulfilled): 4 acts, 0 faults`).
+- Aucun test sans rapport n'a échoué. Aucun appel réel à Claude, pas de `runServer`, pas de charge ajoutée.
+- Sondes P1 à P5 retirées ; l'arbre vérifié identique au correctif après chacune (`cmp` du diff, puis `git diff` de
+  `src/main`).
