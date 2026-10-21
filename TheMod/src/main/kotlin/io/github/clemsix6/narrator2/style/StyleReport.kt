@@ -27,9 +27,9 @@ import kotlin.math.roundToInt
  *
  * The watch ([StyleWatch]) keeps the latest lines in memory; this report reads any period from the Journal, on a read
  * connection its caller holds (`Journal.read`): never on the server thread. Only the Director's lines count (channel
- * `narrator`, said in a turn): an operator's `/narrator say`, a rule's or a module's text are not its style, and the
- * review labels none of them. A label whose register is no longer known (a register replaced since) counts as
- * [ComicRegister.OTHER].
+ * `narrator`, said in a turn), those the review reads ([Tics.opens]): an operator's `/narrator say`, a rule's or a
+ * module's text, a title, a line above the hotbar or a book are not its voice, and the review labels none of them. A
+ * label whose register is no longer known (a register replaced since) counts as [ComicRegister.OTHER].
  *
  * The openers and the tics of a period are normalized as the watch's are ([Tics], M6 §3.4): its names, those of
  * `player_names` and the canon's nicknames (`Tics.Names.of(Tics.names(connection))`), become `<nom>`, its numbers `<n>`.
@@ -104,7 +104,7 @@ object StyleReport {
      * The measures of a period (M6 §3.7). The shares count the reviewed lines, but the top register's, which counts the
      * lines of the voice.
      *
-     * @property lines the Director's lines said.
+     * @property lines the Director's lines measured: of a period, those the review reads ([StyleReport.lines]); in the watch, its latest held.
      * @property reviewed those the review labeled.
      * @property registers the reviewed lines of each register.
      * @property crutches each crutch word (in lower case) and the reviewed lines that hold it, the most frequent first.
@@ -153,12 +153,16 @@ object StyleReport {
 
     // ── Reads (a read connection, off the server thread) ────────────────────────────────────────────
 
-    /** The Director's lines said in [period] and their latest labels, oldest first. */
+    /**
+     * The Director's lines said in [period] that the review reads ([Tics.opens], as [coverage] counts them: neither a
+     * title, a line above the hotbar, a book nor a short aside), with their latest labels, oldest first. Every count of the
+     * report is of these lines (M6 review 2, finding 8): a title is no line of the voice, and was never reviewed.
+     */
     fun lines(connection: Connection, period: Period): List<Line> =
         connection.query(
             "$LINE_COLUMNS FROM narrator_lines n JOIN chat c ON c.id = n.id AND c.channel = 'narrator' " +
-                "WHERE c.turn_id IS NOT NULL AND n.ts >= ? AND n.ts < ? ORDER BY n.ts, n.id",
-            period.from, period.to,
+                "WHERE c.turn_id IS NOT NULL AND $REVIEWED_TEXT AND n.ts >= ? AND n.ts < ? ORDER BY n.ts, n.id",
+            Tics.KIND_PATTERN, Tics.OPENER_MIN_CHARS, period.from, period.to,
             timeoutSeconds = QUERY_TIMEOUT_SECONDS,
         ) { line() }
 
@@ -178,16 +182,14 @@ object StyleReport {
     fun coverage(connection: Connection, latest: Int): Coverage =
         connection.query(
             "SELECT count(*), count(register) FROM (SELECT n.register FROM narrator_lines n JOIN chat c ON c.id = n.id AND c.channel = 'narrator' " +
-                "WHERE c.turn_id IS NOT NULL AND NOT regexp_matches(c.text, ?) AND length(c.text) >= ? ORDER BY n.ts DESC, n.id DESC LIMIT ?) latest",
+                "WHERE c.turn_id IS NOT NULL AND $REVIEWED_TEXT ORDER BY n.ts DESC, n.id DESC LIMIT ?) latest",
             Tics.KIND_PATTERN, Tics.OPENER_MIN_CHARS, latest,
             timeoutSeconds = QUERY_TIMEOUT_SECONDS,
         ) { Coverage(getInt(1), getInt(2)) }.single()
 
-    /** How players took each register in [period]: [registers] of its lines and their [Reactions]. */
-    fun registers(connection: Connection, period: Period, words: HeuristicWords): List<RegisterUse> {
-        val lines = lines(connection, period)
-        return registers(lines, reactions(connection, period, lines, words))
-    }
+    /** How players took each register in [period]: [registers] of its [lines] (read when not given) and their [Reactions]. */
+    fun registers(connection: Connection, period: Period, words: HeuristicWords, lines: List<Line> = lines(connection, period)): List<RegisterUse> =
+        registers(lines, reactions(connection, period, lines, words))
 
     /**
      * The Dreamer's three blocks (M6 §4.6) over [period], each within its budget: `<registers>` (each register's lines
@@ -345,6 +347,9 @@ object StyleReport {
     // ── Parts ───────────────────────────────────────────────────────────────────────────────────────
 
     private const val LINE_COLUMNS = "SELECT n.id, epoch_ms(n.ts), n.text, n.register, n.dark, n.cruel, n.out_of_character, n.flat, n.repeats, n.crutches"
+
+    /** A line the review reads ([Tics.opens]), on `chat c`: its two parameters are [Tics.KIND_PATTERN] and [Tics.OPENER_MIN_CHARS]. */
+    private const val REVIEWED_TEXT = "NOT regexp_matches(c.text, ?) AND length(c.text) >= ?"
 
     /** `0.7`, as the flags' threshold is shown. */
     private val THRESHOLD = FLAG.toString()

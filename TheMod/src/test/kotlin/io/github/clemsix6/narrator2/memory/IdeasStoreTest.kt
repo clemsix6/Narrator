@@ -21,7 +21,6 @@ import java.time.ZoneOffset
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -64,7 +63,7 @@ class IdeasStoreTest {
     private fun distinct(i: Int, kind: IdeaKind = IdeaKind.FAVOR) =
         race.copy(kind = kind, title = WORDS[i].first, pitch = "${WORDS[i].first} et ${WORDS[i].second}.", fit = "N'importe quand.", players = emptyList())
 
-    private suspend fun add(draft: IdeaDraft): Idea = assertIs<Added.New<Idea>>(store.addIdea(draft, storyteller)).row
+    private suspend fun add(draft: IdeaDraft): Idea = store.addIdea(draft, storyteller).row
 
     private suspend fun idea(ref: Ref): Idea = store.row(ref) as Idea
 
@@ -180,9 +179,12 @@ class IdeasStoreTest {
     fun `a new season replaces the open one`() = runBlocking<Unit> {
         val manoeuvres = add(distinct(5, IdeaKind.SEASON))
         val other = add(distinct(6))
-        val siege = add(distinct(7, IdeaKind.SEASON))
+        val added = store.addIdea(distinct(7, IdeaKind.SEASON), storyteller)
+        val siege = added.row
 
         val replaced = idea(manoeuvres.ref)
+        assertEquals(listOf(replaced), added.closed, "what the writing closed, as it is now")
+        assertEquals(2, added.open)
         assertEquals(IdeaStatus.DROPPED, replaced.status)
         assertEquals("replaced by the season ${siege.ref}", replaced.closeReason)
         assertEquals(f.clock.instant(), replaced.closedAt)
@@ -202,10 +204,13 @@ class IdeasStoreTest {
         store.dealt(listOf(ideas[0].ref), RecallChannel.HEARTBEAT, RecallContext("director-c13", 42, null))
         assertEquals(12, store.ideas().size)
 
-        val newest = add(distinct(12))
+        val added = store.addIdea(distinct(12), storyteller)
+        val newest = added.row
 
         val open = store.ideas().map { it.ref }
         assertEquals(12, open.size)
+        assertEquals(listOf(ideas[1].ref), added.closed.map { it.ref })
+        assertEquals(12, added.open)
         assertTrue(season.ref in open && ideas[0].ref in open && newest.ref in open, "$open")
         val superseded = idea(ideas[1].ref)
         assertEquals(IdeaStatus.EXPIRED, superseded.status, "the oldest never dealt")
@@ -264,7 +269,7 @@ class IdeasStoreTest {
         val watched = ideas.watching(store)
         assertEquals(emptyList(), ideas.current)
 
-        val first = assertIs<Added.New<Idea>>(watched.addIdea(race, storyteller)).row
+        val first = watched.addIdea(race, storyteller).row
         assertEquals(listOf(first), ideas.current)
         watched.dealt(listOf(first.ref), RecallChannel.INSPIRE, RecallContext("director-c13", 42, null))
         assertEquals(1, ideas.current.single().dealt)

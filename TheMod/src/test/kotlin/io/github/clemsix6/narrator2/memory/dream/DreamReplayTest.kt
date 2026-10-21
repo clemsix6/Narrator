@@ -108,7 +108,7 @@ class DreamReplayTest {
         assertEquals(6, outcome.lastStep)
         assertEquals(1, outcome.rejected, "the invalid Grimoire")
         assertEquals(
-            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 2 ideas written, 0 closed · " +
+            "step 1 done: Bartok, Mimosa · step 2 done · step 3 done · step 4 done: Grimoire version 1 · step 5 done: 2 ideas written, 0 closed, 1 arc planned · " +
                 "step 6 done: 1 pair read",
             outcome.report,
         )
@@ -227,7 +227,7 @@ class DreamReplayTest {
         )
         assertEquals(listOf("planned" to "storyteller"), f.rows("SELECT status, source FROM canon WHERE kind = 'arc'") { getString(1) to getString(2) })
         val decision = f.rows("SELECT reason FROM engine_decisions WHERE kind = 'memory' AND decision = 'programme'") { getString(1) }.single()
-        assertEquals("done: 2 ideas written, 0 closed", decision)
+        assertEquals("done: 2 ideas written, 0 closed, 1 arc planned", decision, "M6 review 2, finding 8: its arcs counted")
 
         // Step 6: the duplicate merged into the memory kept.
         assertEquals(listOf(true to e.lava.id), f.rows("SELECT archived, merged_into FROM memories WHERE id = ${e.lavaAgain.id}") { getBoolean(1) to getLong(2) })

@@ -17,6 +17,7 @@ import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.GagState
 import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaAdded
 import io.github.clemsix6.narrator2.memory.IdeaDraft
 import io.github.clemsix6.narrator2.memory.IdeaStatus
 import io.github.clemsix6.narrator2.memory.Interaction
@@ -389,8 +390,8 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         return 0
     }
 
-    /** An idea `open`, expiring after its hours of play on the fake world clock (0). */
-    override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> {
+    /** An idea `open`, expiring after its hours of play on the fake world clock (0); it closes none (no season replaced, no cap). */
+    override suspend fun addIdea(draft: IdeaDraft, author: Author): IdeaAdded {
         val row = Idea(
             next(RefKind.IDEA), now(), draft.kind, draft.title, draft.pitch, draft.fit, draft.players.map(::player), draft.register,
             draft.novelty, draft.funScore, draft.fairness, draft.refs, draft.module, draft.brief, IdeaStatus.OPEN, dealt = 0,
@@ -398,7 +399,7 @@ class FakeMemoryStore(private val clock: Clock = TestClock()) : MemoryStore {
         )
         rows[row.ref] = row
         wrote("addIdea", row.ref, author)
-        return Added.New(row)
+        return IdeaAdded(row, emptyList(), rows.values.count { it is Idea && it.status == IdeaStatus.OPEN })
     }
 
     override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea {

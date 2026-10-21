@@ -13,6 +13,7 @@ import io.github.clemsix6.narrator2.memory.Decay
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.DuckPlayClock
 import io.github.clemsix6.narrator2.memory.GagState
+import io.github.clemsix6.narrator2.memory.IDEA_COLUMNS
 import io.github.clemsix6.narrator2.memory.Idea
 import io.github.clemsix6.narrator2.memory.IdeaKind
 import io.github.clemsix6.narrator2.memory.IdeaStatus
@@ -20,6 +21,7 @@ import io.github.clemsix6.narrator2.memory.MemoryLimits
 import io.github.clemsix6.narrator2.memory.PlayerSheet
 import io.github.clemsix6.narrator2.memory.SheetSection
 import io.github.clemsix6.narrator2.memory.TraitAxis
+import io.github.clemsix6.narrator2.memory.ideas
 import io.github.clemsix6.narrator2.memory.instant
 import io.github.clemsix6.narrator2.memory.longArray
 import io.github.clemsix6.narrator2.memory.query
@@ -30,7 +32,6 @@ import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.storyteller.Deck
 import io.github.clemsix6.narrator2.storyteller.Intervention
 import io.github.clemsix6.narrator2.storyteller.Interventions
-import io.github.clemsix6.narrator2.storyteller.Table
 import io.github.clemsix6.narrator2.style.StyleReport
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.mechanics.forgeAvailable
@@ -60,8 +61,8 @@ import kotlin.random.Random
  *   gags and their freshness, the laws and plans in force;
  * - `<history>`: what the Narrator did in the latest [HISTORY_SESSIONS] server sessions, by lever ([Interventions]) and by
  *   register, with how players took each register ([StyleReport]);
- * - `<ideas>`: the open ideas, and those closed since the last programme: each time one was dealt to the Director, and
- *   what followed within [FOLLOW_UP] (a lever of its kind, or nothing);
+ * - `<ideas>`: every open idea, then those closed since the last programme without their pitch, each part in its own
+ *   room: each time one was dealt to the Director, and what followed within [FOLLOW_UP] (a lever of its kind, or nothing);
  * - `<arsenal>`: the modules the Director may deploy ([ArsenalLine], the briefing's line), or why there are none;
  * - `<season>`: the Chronicle's season in progress and the open idea of kind season;
  * - `<draws>`: three seeds of the deck ([Deck]), to shake the model's habits; recorded nowhere, dealt to nobody.
@@ -83,21 +84,22 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         val worldPlay = memory.clock.worldPlaySeconds(nowMs)
         val open = store.ideas(IdeaStatus.OPEN, OPEN_READ)
         val closedSince = since ?: now.minus(CLOSED_WINDOW)
-        val closed = store.ideas(null, CLOSED_READ).filter { it.status != IdeaStatus.OPEN && it.closedAt?.let { at -> at >= closedSince } == true }
-        val shownIdeas = open + closed
         val words = HeuristicWords.bundled(services.settings.get().config.language) ?: HeuristicWords.bundled(DEFAULT_LANGUAGE)
         val read = journal.read(READ_TIMEOUT_MS) { connection ->
             val sessions = sessions(connection, now)
             val from = sessions.firstOrNull()?.first ?: now.minus(HISTORY_WINDOW)
             val period = StyleReport.Period(minOf(from, now), now)
-            val deals = deals(connection, shownIdeas)
+            val closed = connection.ideas(CLOSED_SQL, closedSince, CLOSED_READ)
+            val deals = deals(connection, open + closed)
             val firstDeal = deals.values.flatten().minOfOrNull { it.at }
+            val lines = StyleReport.lines(connection, period)
             Read(
                 sessions = sessions.size,
                 from = period.from,
                 interventions = Interventions.recent(connection, listOfNotNull(period.from, firstDeal).min()),
-                lines = StyleReport.lines(connection, period).size,
-                registers = words?.let { StyleReport.registers(connection, period, it) }.orEmpty(),
+                lines = lines.size,
+                registers = words?.let { StyleReport.registers(connection, period, it, lines) }.orEmpty(),
+                closed = closed,
                 deals = deals,
                 resting = restingThemes(connection, now),
             )
@@ -109,20 +111,24 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
             players(active, nowMs),
             canon(read.resting),
             history(read),
-            ideas(shownIdeas, open.size, read, since, worldPlay),
+            ideas(open, read, since, closedSince, worldPlay),
             arsenal(nowMs),
             season(open.firstOrNull { it.kind == IdeaKind.SEASON }, worldPlay),
             draws(runId, active.map { it.first }, now),
         ).joinToString("\n")
     }
 
-    /** What the programme reads from the Journal, on one connection. */
+    /**
+     * What the programme reads from the Journal, on one connection: [lines], the Director's lines the review reads
+     * ([StyleReport.lines]); [closed], the ideas closed since the last programme, those dealt first.
+     */
     private class Read(
         val sessions: Int,
         val from: Instant,
         val interventions: List<Intervention>,
         val lines: Int,
         val registers: List<StyleReport.RegisterUse>,
+        val closed: List<Idea>,
         val deals: Map<Long, List<Deal>>,
         val resting: List<String>,
     )
@@ -307,20 +313,48 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
             .groupBy({ it.first }, { it.second })
     }
 
-    private fun ideas(ideas: List<Idea>, open: Int, read: Read, since: Instant?, worldPlay: Long): String {
-        val items = ideas.sortedWith(compareBy<Idea> { it.status != IdeaStatus.OPEN }.thenByDescending { it.createdAt }).map { idea ->
-            val state = if (idea.status == IdeaStatus.OPEN) {
-                "open, ${ToolText.duration((idea.expiresPlaySeconds - worldPlay).coerceAtLeast(0) * 1_000)} of play left"
-            } else {
-                "${idea.status.id} ${idea.closedAt?.let(inputs::dayTime).orEmpty()} (${ModelText.cut(ModelText.escape(idea.closeReason.orEmpty()), REASON_MAX)})"
-            }
-            val who = if (idea.players.isEmpty()) "everyone" else ToolText.names(idea.players)
-            val notes = "n${idea.novelty} f${idea.funScore} e${idea.fairness}" + (idea.register?.let { " ${it.id}" } ?: "")
-            val head = "- ${idea.ref} ${idea.kind.id} · $state · $who · « ${ModelText.escape(idea.title)} » · $notes · ${dealt(idea, read)}: "
-            head to ModelText.escape(idea.pitch)
+    /**
+     * `<ideas open="12" closed="4" closed_since="10-01 21:30">`, in two parts, neither taking the other's room (M6 review 2,
+     * finding 1): the [open] ideas, the latest first, all of them, their pitches cut so that they fit (water-filling,
+     * [OPEN_PITCH] at most); then the ideas closed since the last programme, without their pitch, those dealt first (what
+     * followed them is the storyteller's feedback), [CLOSED_MAX] characters of them at most, the rest counted.
+     */
+    private fun ideas(open: List<Idea>, read: Read, since: Instant?, closedSince: Instant, worldPlay: Long): String {
+        val after = since?.let { " closed_since=\"${inputs.dayTime(it)}\"" }.orEmpty()
+        if (open.isEmpty() && read.closed.isEmpty()) return "<ideas open=\"0\"$after>(none open, none closed lately)</ideas>"
+        val head = listOf("<ideas open=\"${open.size}\" closed=\"${read.closed.size}\"$after>", if (open.isEmpty()) "Open: none" else "Open, the latest first:")
+        val closed = mutableListOf(if (read.closed.isEmpty()) "Closed since ${inputs.dayTime(closedSince)}: none" else "Closed since ${inputs.dayTime(closedSince)}, those dealt first:")
+        var room = CLOSED_MAX
+        for (idea in read.closed) {
+            val line = ModelText.cut(closedLine(idea, read), CLOSED_LINE_MAX)
+            if (line.length + 1 > room) break
+            closed += line
+            room -= line.length + 1
         }
-        val closed = since?.let { " closed_since=\"${inputs.dayTime(it)}\"" }.orEmpty()
-        return inputs.block("ideas", "open=\"$open\"$closed", inputs.shared(items, IDEAS_MAX), IDEAS_MAX, "(none open, none closed lately)")
+        val left = read.closed.size - (closed.size - 1)
+        if (left > 0) closed += "(+$left more closed)"
+        val tail = closed + "</ideas>"
+        val lines = open.map { openLine(it, read, worldPlay) }
+        val caps = BriefText.share(lines.map { it.length }, IDEAS_MAX - (head + tail).sumOf { it.length + 1 } - lines.size)
+        return (head + lines.mapIndexed { i, line -> ModelText.cut(line, caps[i]) } + tail).joinToString("\n")
+    }
+
+    /**
+     * `- P-41 challenge · 2d0h of play left · Bartok, Mimosa · « La course au pic » · n4 f4 e4 sports_commentary · dealt 2:
+     * …: ` and its pitch, cut to [OPEN_PITCH]: the pitch comes last, the first cut when the room is short.
+     */
+    private fun openLine(idea: Idea, read: Read, worldPlay: Long): String {
+        val left = ToolText.duration((idea.expiresPlaySeconds - worldPlay).coerceAtLeast(0) * 1_000)
+        val who = if (idea.players.isEmpty()) "everyone" else ToolText.names(idea.players)
+        val notes = "n${idea.novelty} f${idea.funScore} e${idea.fairness}" + (idea.register?.let { " ${it.id}" } ?: "")
+        return "- ${idea.ref} ${idea.kind.id} · $left of play left · $who · « ${ModelText.escape(idea.title)} » · $notes · ${dealt(idea, read)}: " +
+            ModelText.cut(ModelText.escape(idea.pitch), OPEN_PITCH)
+    }
+
+    /** `- P-38 law « La loi des bottes » · dropped 10-01 22:12 (Mimosa ne perd plus ses bottes.) · never dealt`: what became of it, no pitch. */
+    private fun closedLine(idea: Idea, read: Read): String {
+        val reason = ModelText.cut(ModelText.escape(idea.closeReason.orEmpty()), REASON_MAX)
+        return "- ${idea.ref} ${idea.kind.id} « ${ModelText.escape(idea.title)} » · ${idea.status.id} ${idea.closedAt?.let(inputs::dayTime).orEmpty()} ($reason) · ${dealt(idea, read)}"
     }
 
     /** `dealt 2: 10-01 20:31 inspire → challenge obtain 4m later; 10-01 21:12 heartbeat → nothing`, the latest [DEALS_SHOWN]. */
@@ -337,7 +371,8 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
 
     /**
      * Whether a lever [key] carries out an idea of its kind: a challenge by a challenge, a punishment by a punishment…;
-     * for a kind without a lever of its own (season, arc_step, forge, twist), any lever pulled.
+     * for a kind without a lever of its own (season, arc_step, forge, twist), any lever pulled, but a line said: the
+     * Narrator speaks within the minute of almost anything (M6 review 2, finding 2).
      */
     private fun follows(idea: Idea, key: String): Boolean = when (idea.kind) {
         IdeaKind.CHALLENGE -> key.startsWith("challenge:")
@@ -348,7 +383,7 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         IdeaKind.PLAN -> key == Interventions.PLAN
         IdeaKind.MODULE -> key == "module:${idea.module}"
         IdeaKind.SPEECH -> key == Interventions.BOOK || key == Interventions.PROPHECY
-        IdeaKind.SEASON, IdeaKind.ARC_STEP, IdeaKind.FORGE, IdeaKind.TWIST -> true
+        IdeaKind.SEASON, IdeaKind.ARC_STEP, IdeaKind.FORGE, IdeaKind.TWIST -> !key.startsWith(SAY)
     }
 
     // ── <arsenal>, <season>, <draws> ────────────────────────────────────────────────────────────────
@@ -401,12 +436,7 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
      */
     private suspend fun draws(runId: Long, players: List<PlayerRef>, now: Instant): String {
         val lines = try {
-            val table = Deck.table(services, players, named = true, InspireKind.ANY, now).let { table ->
-                Table(
-                    table.now, table.players, table.named, table.kind, table.levers, table.hooks, emptyList(), table.worldPlaySeconds, table.online,
-                    table.history, table.leastUsed, table.lastRegisters, table.crutches, table.missing, table.twists,
-                )
-            }
+            val table = Deck.table(services, players, named = true, InspireKind.ANY, now).copy(ideas = emptyList())
             val seeds = Deck.draw(table, Random(runId * SEED_FACTOR + now.toEpochMilli())).seeds
             if (seeds.isEmpty()) {
                 listOf("(no seed: ${table.missing.joinToString(" · ") { it.text }.ifEmpty { "no lever available" }})")
@@ -450,7 +480,14 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         const val PLAYERS_MAX = 6_000
         const val CANON_MAX = 3_000
         const val HISTORY_MAX = 2_500
-        const val IDEAS_MAX = 2_500
+        const val IDEAS_MAX = 4_000
+
+        /** Of [IDEAS_MAX], the room of the closed ideas' lines (M6 review 2, D5): four of [CLOSED_LINE_MAX] at least. */
+        const val CLOSED_MAX = 1_000
+        const val CLOSED_LINE_MAX = 240
+
+        /** Characters of an open idea's pitch at most, less when the room is short. */
+        const val OPEN_PITCH = 100
         const val ARSENAL_MAX = 1_250
         const val SEASON_MAX = 1_500
         const val DRAWS_MAX = 800
@@ -473,8 +510,8 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         /** Open ideas read: the store keeps twelve open (M6 §6.2), this leaves room. */
         private const val OPEN_READ = 50
 
-        /** The latest ideas read for those closed since the last programme: a programme writes eight at most. */
-        private const val CLOSED_READ = 60
+        /** Closed ideas read at most: a programme writes eight at most, a task three; this leaves room. */
+        private const val CLOSED_READ = 100
         private const val DEALS_SHOWN = 3
         private const val REASON_MAX = 80
         private const val SEASONS_READ = 50
@@ -501,6 +538,10 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
 
         /** Each time an idea was put before the Director: `recalls` rows of the ideas (the storyteller's own reading leaves none). */
         private const val DEALS_SQL = "SELECT ref_id, ts, channel FROM recalls WHERE list_contains(?, ref_id) ORDER BY ts"
+
+        /** The ideas closed since a time, however old: those dealt first (what followed them is the feedback), then the latest closed. */
+        private const val CLOSED_SQL = "SELECT $IDEA_COLUMNS FROM ideas WHERE status <> 'open' AND closed_at >= ? " +
+            "ORDER BY dealt > 0 DESC, closed_at DESC, id DESC LIMIT ?"
 
         /**
          * The last closed arc of each theme no open arc holds (archived arcs left out, as the store does), the
