@@ -68,7 +68,8 @@ import java.util.jar.Manifest
  *   `DisabledJournal`, memory and mechanics off; once the file is free, a second `/narrator restart` gives them back.
  *
  * It replaces the server's Narrator three times: it runs alone, in a batch of its own ([RESTART_ENVIRONMENT]), and puts
- * back in its `finally` what it changed (the pace of the challenges, the world's reminders, what it deployed). The
+ * back in its `finally` what it changed (the pace of the challenges, the world's reminders, what it deployed, the
+ * configuration file, which it holds to the in-game runs' own while it restarts: no dashboard listens). The
  * batches after it run on the last Narrator it made.
  */
 class RestartGameTests {
@@ -86,6 +87,10 @@ class RestartGameTests {
         }
         var bobOnline = true
         val made = mutableListOf<Ref>()
+        // A restart reads the configuration again: the in-game runs' own (no dashboard, M6 §8.2), whatever a test before
+        // left in the file, or the dashboard would listen on its port during the tests.
+        val config = Files.readString(NarratorRuntime.configFile)
+        Files.writeString(NarratorRuntime.configFile, GAMETEST_CONFIG)
         try {
             // What a restart must not lose: a challenge, a law, a module, a reminder.
             first.journal.barrier() // Bob's join row, which the law's players are checked against
@@ -140,6 +145,7 @@ class RestartGameTests {
             val second = NarratorRuntime.current
             check(second != null && second !== first && second.phase == Phase.RUNNING && first.phase == Phase.STOPPED) { "a new Narrator: $second, the old ${first.phase}" }
             check(!first.journal.available && second.journal.available) { "the old Journal closed, the new one open" }
+            noDashboard(second)
 
             // Nothing lost.
             val view = second.mechanics.challenges.list().singleOrNull { it.ref == challenge }
@@ -173,6 +179,7 @@ class RestartGameTests {
                 }
                 val third = NarratorRuntime.current!!
                 check(third.journal is DisabledJournal && !third.memory.available && !third.mechanics.available) { "Journal, memory, mechanics off: ${third.summary()}" }
+                noDashboard(third)
             } finally {
                 held.close()
             }
@@ -182,8 +189,10 @@ class RestartGameTests {
             check(again.endsWith(": $WHOLE")) { "restarted again: $again" }
             val fourth = NarratorRuntime.current!!
             check(fourth.journal.available && fourth.memory.available && fourth.mechanics.available) { "whole again: ${fourth.summary()}" }
+            noDashboard(fourth)
             check(decisions(fourth, "restarted", "Server", kind = "operator") == 2L) { "both restarts by the command recorded" }
         } finally {
+            Files.writeString(NarratorRuntime.configFile, config)
             NarratorRuntime.current?.let { cleanUp(it, made) }
             server.onServerThread {
                 StateStore(server).update { it.copy(lastChallengeAt = pace) }
@@ -284,6 +293,9 @@ class RestartGameTests {
         const val MAX_TICKS = 120_000
 
         const val RESTARTED = "[Narrator] Narrator restarted in "
+        /** The configuration of the in-game runs (`seedGameTestConfig` in `build.gradle.kts`): no dashboard. */
+        const val GAMETEST_CONFIG = """{ "dashboard": { "enabled": false } }"""
+
         const val WHOLE = "Journal available · memory on · mechanics on · forge on"
         const val LAW = "Le Narrateur a décrété une loi d'essai sur un redémarrage."
         const val NOTE = "vérifier que le moulin a survécu au redémarrage"
@@ -312,6 +324,10 @@ class RestartGameTests {
             val result = ToolRunner(runtime).invoke(tool, DIRECTOR, json)
             check(result.status == ToolStatus.OK) { "${tool.name}: ${result.text}" }
         }
+
+        /** No dashboard listens: the restart read the in-game runs' configuration. */
+        fun noDashboard(runtime: NarratorRuntime) =
+            check(runtime.dashboard.url == null && runtime.dashboard.unavailableReason == "dashboard.enabled is false") { "no dashboard: ${runtime.dashboard.url} ${runtime.dashboard.unavailableReason}" }
 
         /** The number of decisions [decision] about [subject] of [kind] in [runtime]'s Journal. */
         suspend fun decisions(runtime: NarratorRuntime, decision: String, subject: String, kind: String = "mechanic"): Long =
