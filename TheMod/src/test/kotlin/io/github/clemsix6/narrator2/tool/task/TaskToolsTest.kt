@@ -32,6 +32,16 @@ class TaskToolsTest {
     }
 
     @Test
+    fun `with the Journal down and the Forge up, tasks lists the forger's tasks and delegate is not shown`() {
+        // What `Workers.roles` gives then (WorkersTest): the forger alone, the Analyst and the scout needing the Journal.
+        val env = ToolEnv(journalAvailable = false, workerRoles = setOf(Role.FORGER), memoryAvailable = true, mechanicsAvailable = true, forgeAvailable = true)
+        val director = ToolCatalog.toolSetFor(Role.DIRECTOR, env, TestServices()).names
+        assertTrue("forge_module" in director, "the Director starts the forger's tasks: $director")
+        assertTrue("tasks" in director, "and lists or cancels them (M5 review, D3): $director")
+        assertFalse("delegate" in director, "delegate offers the Analyst and the scout only: $director")
+    }
+
+    @Test
     fun `the role enum of delegate lists the wired roles, the Analyst and the scout`() {
         val schema = ToolSchema.of(DelegateArgs.serializer().descriptor, "delegate").toString()
         assertContains(schema, "\"enum\":[\"analyst\",\"scout\"]")

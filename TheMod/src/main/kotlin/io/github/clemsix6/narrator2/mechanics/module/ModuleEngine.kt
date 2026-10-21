@@ -46,6 +46,7 @@ import io.github.clemsix6.narrator2.mechanics.RuleKind
 import io.github.clemsix6.narrator2.mechanics.StateStore
 import io.github.clemsix6.narrator2.mechanics.rule.RuleText
 import io.github.clemsix6.narrator2.memory.Author
+import io.github.clemsix6.narrator2.memory.CanonKind
 import io.github.clemsix6.narrator2.memory.CanonStatus
 import io.github.clemsix6.narrator2.memory.MemoryRejected
 import io.github.clemsix6.narrator2.memory.Ref
@@ -215,6 +216,12 @@ class ModuleEngine(
     private val scope = CoroutineScope(services.scope.coroutineContext + job)
 
     private var begun = false
+
+    /**
+     * The switch found set as the server started ([begin]), while deployments of the state wait: they end at the first
+     * second ([offAtStart]), once. Server thread.
+     */
+    private var haltAtStart: ForgeHalt? = null
 
     @Volatile
     private var stopped = false
@@ -434,6 +441,7 @@ class ModuleEngine(
         val deployments = state.modules.map { Deployment(it, restarted = true) }
         live = deployments
         begun = true
+        haltAtStart = state.forgeHalt?.takeIf { deployments.isNotEmpty() }
         for (d in deployments) if (state.forgeHalt == null && d.run.endsAt > now) build(d)
         if (server != null) {
             for (level in server.allLevels) for (entity in level.allEntities) {
@@ -597,7 +605,10 @@ class ModuleEngine(
     /** A second ([everySecond]). Server thread. */
     internal fun second(now: Long) {
         if (!running) return
-        store.get().forgeHalt?.let { halt -> if (live.isNotEmpty()) offAtStart(halt) }
+        haltAtStart?.let { halt ->
+            haltAtStart = null
+            offAtStart(halt)
+        }
         if (threads.lost.stuck) {
             for (d in live) if (d.phase == Phase.RUNNING) disable(d, Fault(Fault.Kind.STUCK, SECOND, STUCK_CAUSE, 0, disables = true))
         }
@@ -665,7 +676,10 @@ class ModuleEngine(
         after(d)
     }
 
-    /** The Forge is switched off as the server starts: no deployment of the state starts again. One `MODULE` line for them all. */
+    /**
+     * The Forge was switched off as the server started ([haltAtStart]): no deployment of the state starts again, each ends
+     * `forge_off`. One `MODULE` line for them all. Once, at the first second.
+     */
     private fun offAtStart(halt: ForgeHalt) {
         val ended = live.toList().mapNotNull { finish(it, ModuleEnding.FORGE_OFF, FORGE_OFF_NOTE, by = null, line = null) }
         ended.forEach { services.scope.launch { close(it) } }
@@ -703,7 +717,7 @@ class ModuleEngine(
     /** The creatures of deployment [id], while it is live. */
     private fun controlOf(id: Long): CreatureControl? = live.firstOrNull { it.id == id }?.creatures
 
-    /** A death near a module's creature: a bystander's is refused and they are rescued (M5 §4.5). */
+    /** A death by a module's creature, or a bystander's near one: refused, the player rescued (M5 §4.5, review D1). */
     override fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean = ModuleCreatures.allowDeath(player, source, services.guards)
 
     // ── Faults and notes ──
@@ -832,29 +846,20 @@ class ModuleEngine(
     }
 
     /**
-     * The end of [ended] once its deployment is out (M5 §6.6): its canon resolved by the engine, its decision
-     * `module_ended`, and its `MODULE` line when it has one. A note the memory refuses (the module's own words in the
-     * first or second person: `VoiceGuard`) closes the row all the same, with the engine's neutral words for its
-     * ending ([neutralNote]; M5-16, defect 2). Never on the server thread.
+     * The end of [ended] once its deployment is out (M5 §6.6): its canon resolved by the engine ([resolve]), its decision
+     * `module_ended`, and its `MODULE` line when it has one. Only a memory that cannot write leaves the row open: the
+     * reconciliation of the next start closes it. Never on the server thread.
      */
     internal suspend fun close(ended: Ended) {
         val run = ended.run
-        val status = if (run.kind == RuleKind.LAW) ended.ending.law else ended.ending.plan
-        val author = Author(Source.ENGINE, turnId = ended.by?.turnId, conversationId = ended.by?.conversationId)
         try {
-            try {
-                services.memory.store.resolveCanon(run.ref, status, ended.note, emptyList(), author)
-            } catch (e: MemoryRejected) {
-                val neutral = neutralNote(ended.ending)
-                log.warn("the canon row of ${run.ref} refused its note (${e.message}): resolved ${status.id} with « $neutral »")
-                services.memory.store.resolveCanon(run.ref, status, neutral, emptyList(), author)
-            }
+            resolve(ended)
         } catch (e: CancellationException) {
             throw e
         } catch (e: MemoryRejected) {
-            log.warn("the canon row of ${run.ref} was not resolved ${status.id}: ${e.message}")
+            log.warn("the canon row of ${run.ref} was not resolved: ${e.message}; the reconciliation of the next start closes it")
         } catch (e: Exception) {
-            log.error("the canon row of ${run.ref} could not be resolved ${status.id}; the reconciliation will close it", e)
+            log.error("the canon row of ${run.ref} could not be resolved; the reconciliation of the next start closes it", e)
         }
         decisions.record(
             log, DecisionRecord.Kind.MECHANIC, ENDED, run.ref.toString(), ended.reason,
@@ -862,6 +867,33 @@ class ModuleEngine(
             detail = buildJsonObject { put(ENDING, ended.ending.id) },
         )
         ended.line?.let { tell(it) }
+    }
+
+    /**
+     * Resolves [ended]'s canon row by the engine: the status of its ending for a law or a plan, with its note. When the
+     * memory refuses it, the row is read: closed already (an operator) or gone, nothing is left to do; still open, it is
+     * resolved again with the engine's neutral words for the ending ([neutralNote]: the module's own words in the first or
+     * second person, `VoiceGuard`; M5-16, defect 2) and the ending's status for the row's own kind (M5 review, finding 4),
+     * so that a row the engine ends never stays open. A second refusal is thrown.
+     */
+    private suspend fun resolve(ended: Ended) {
+        val run = ended.run
+        val store = services.memory.store
+        val author = Author(Source.ENGINE, turnId = ended.by?.turnId, conversationId = ended.by?.conversationId)
+        val status = if (run.kind == RuleKind.LAW) ended.ending.law else ended.ending.plan
+        try {
+            store.resolveCanon(run.ref, status, ended.note, emptyList(), author)
+        } catch (e: MemoryRejected) {
+            val row = store.canon(run.ref)
+            if (row == null || !row.status.open) {
+                log.info("the canon row of ${run.ref} refused its end (${e.message}): ${row?.let { "already ${it.status.id}" } ?: "gone"}, nothing to close")
+                return
+            }
+            val again = if (row.kind == CanonKind.LAW) ended.ending.law else ended.ending.plan
+            val neutral = neutralNote(ended.ending)
+            log.warn("the canon row of ${run.ref} refused its end (${e.message}): resolved ${again.id} with « $neutral »")
+            store.resolveCanon(run.ref, again, neutral, emptyList(), author)
+        }
     }
 
     /** The reconciliation took deployments [ids] out of the state (M5 §6.5): their retrait, without `stop` nor canon. Server thread. */

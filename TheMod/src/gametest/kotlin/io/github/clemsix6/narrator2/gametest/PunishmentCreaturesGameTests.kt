@@ -2,7 +2,6 @@ package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.gametest.GuardGameTests.Companion.count
-import io.github.clemsix6.narrator2.guard.CreatureShield
 import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
 import io.github.clemsix6.narrator2.guard.GuardsImpl
@@ -11,8 +10,6 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.mechanics.punish.Primitives
 import io.github.clemsix6.narrator2.mechanics.punish.PunishmentCatalog
-import io.github.clemsix6.narrator2.mechanics.rule.MarkOwner
-import io.github.clemsix6.narrator2.mechanics.rule.RuleMarks
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
@@ -43,7 +40,8 @@ import java.time.Instant
  *   counted against the Narrator's quota of deaths;
  * - they go at the end of the punishment, at their player's death and at his departure.
  *
- * So are the hostile creatures the Director summons with `spawn` (M4-LEFTOVERS), but a module's (M5 §4.5).
+ * So are the hostile creatures the Director summons with `spawn` (M4-LEFTOVERS). A module's creatures are its module's,
+ * not their player's, and never kill either: `ModuleActsGameTests` (M5 review, D1).
  *
  * Each test has its own guards on a test clock ([Rig], as `PunishGameTests`); what the game's hooks do (targeting,
  * damage, deaths, departures) goes through the server's guards, which read the creatures' own mark.
@@ -177,25 +175,6 @@ class PunishmentCreaturesGameTests {
         helper.assertTrue(zombie.isRemoved, "the zombie is sent away")
     }
 
-    /**
-     * A module's creature, summoned by its act through `spawn` and then the module's (M5 §4.5), is bound to nobody: its
-     * module aims it, and its target's death is the death guard's, as M5 decided. It stays when that player leaves.
-     */
-    @GameTest
-    fun aModulesCreatureIsBoundToNobody(helper: GameTestHelper) = rig(helper) { rig ->
-        rig.floor(7)
-        val pistache = rig.player(BlockPos(2, 1, 2))
-        val result = rig.spawn(SpawnArgs(entity = "zombie", near = pistache.name, distance = 2, lifetimeMinutes = 1), act = 1)
-        helper.assertEquals(ToolStatus.OK, result.status, result.text)
-        val zombie = rig.creaturesOf(pistache).single()
-        helper.assertTrue(CreatureShield.boundTo(zombie) != null, "summoned, the zombie is Pistache's")
-        RuleMarks.mark(zombie, MarkOwner.module(MODULE)) // what the module's act does with the creatures it summoned
-        helper.assertEquals(null, CreatureShield.boundTo(zombie), "a module's, bound to nobody")
-        pistache.close()
-        helper.assertFalse(zombie.isRemoved, "nor sent away with Pistache")
-        zombie.discard()
-    }
-
     /** The guests go at the end of the punishment, at their player's death and at his departure. */
     @GameTest
     fun theGuestsGoWithThePunishmentAndWithTheirPlayer(helper: GameTestHelper) = rig(helper) { rig ->
@@ -274,9 +253,6 @@ class PunishmentCreaturesGameTests {
     private companion object {
         const val FIELD = "narrator2-gametest:oracle_field"
         const val REASON = "a traité le Narrateur de dieu de pacotille"
-
-        /** The deployment of a module that holds no creature anywhere else. */
-        const val MODULE = 990_801L
 
         /** 30 seconds of game: in the acceptance, the guests killed three players in 29 s. */
         const val SCENE_TICKS = 600
