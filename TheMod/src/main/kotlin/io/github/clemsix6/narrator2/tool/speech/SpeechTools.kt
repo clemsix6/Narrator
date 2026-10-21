@@ -1,11 +1,13 @@
 package io.github.clemsix6.narrator2.tool.speech
 
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.guard.ItemLedger
 import io.github.clemsix6.narrator2.guard.Verdict
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.observer.ref
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.tool.Doc
@@ -18,8 +20,14 @@ import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolText
 import io.github.clemsix6.narrator2.tool.notOnline
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.minecraft.core.Holder
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.network.chat.Component
@@ -49,6 +57,9 @@ import net.minecraft.world.item.ItemStack
  * The tools a rule of the mechanics engine may use (`say`, `show_title`, `actionbar`, `play_sound`, M4 §8.4)
  * keep the checks that need neither the players online nor the world in `check` (an empty text, an unknown
  * sound), which `run` starts with: the engine refuses a rule's effect at its creation with the same answer.
+ *
+ * In a turn of the Director, `say` refuses once a line that opens like too many of its latest (the watch of the style,
+ * M6 §3.5); titles, lines above the hotbar and books are never checked.
  */
 fun speechTools(services: NarratorServices): List<NarratorTool<*>> {
     val limiter = services.toolLimits.speech
@@ -77,6 +88,10 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
     args = SayArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
+    /** The Director's turn whose line this tool refused for its opener: its next lines are not checked (M6 §3.5). */
+    @Volatile
+    private var refusedTurn: Long? = null
+
     override suspend fun check(ctx: ToolContext, args: SayArgs): ToolResult? =
         if (Speech.clean(args.text, Speech.CHAT_LINES).isEmpty()) ToolResult.invalid(nothingLeft("text")) else null
 
@@ -85,6 +100,7 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
         val text = Speech.clean(args.text, Speech.CHAT_LINES)
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
+        restingOpener(ctx, text)?.let { return it }
         limiter.line(ctx.caller).let { if (it is Verdict.Denied) return ToolResult.denied(it) }
         val heard = ctx.onServer { server ->
             val named = audience.named?.let { refs -> refs.mapNotNull { server.playerList.getPlayer(it.uuid) } }
@@ -98,6 +114,47 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
         } else {
             ToolResult.ok("ok: whispered to ${names(heard)}$note", heard)
         }
+    }
+
+    /**
+     * The refusal of a line of the Director that opens like too many of its latest (M6 §3.5): it says which lines and every
+     * opener at rest, so that the line is written again in the same turn. Only in a turn of the Director (neither the
+     * engine's acts, a rule's or a module's lines, nor `/narrator say`), at most once a turn (the next line of the turn
+     * is not checked: a formula the Director wants passes at the second try), and not with `style.refuseRestingOpeners`
+     * off. Nothing is said nor counted by the limits. A decision `style opener_refused`.
+     */
+    private fun restingOpener(ctx: ToolContext, text: String): ToolResult? {
+        val caller = ctx.caller
+        val turn = caller.turnId ?: return null
+        if (caller.role != Role.DIRECTOR || caller.firingId != null || turn == refusedTurn) return null
+        if (!ctx.settings.config.style.refuseRestingOpeners) return null
+        val opener = ctx.services.style.restingOpener(text) ?: return null
+        refusedTurn = turn
+        val others = ctx.services.style.atRest().openers.filterNot { it.opener.equals(opener.opener, ignoreCase = true) }.take(OPENERS_CITED - 1)
+        val forms = (listOf(opener.opener) + opener.examples).take(FORMS_CITED).joinToString(", ") { "« ${quoted(it)} »" }
+        val also = if (others.isEmpty()) "" else "; the other openers at rest: " + others.joinToString(", ") { "« ${quoted(it.opener)} » ×${it.count}" }
+        Decisions(ctx.services.trace, ctx.clock).record(
+            Log.style, DecisionRecord.Kind.STYLE, "opener_refused", subject = "« ${opener.opener} »",
+            reason = "the line opens like ${opener.count} of the latest", conversationId = caller.conversationId, turnId = turn,
+            detail = buildJsonObject {
+                put("opener", opener.opener)
+                put("count", opener.count)
+                put("text", text)
+                put("at_rest", JsonArray(others.map { JsonPrimitive(it.opener) }))
+            },
+        )
+        return ToolResult.invalid("this line opens like ${opener.count} of your latest lines ($forms): open another way$also")
+    }
+
+    private companion object {
+        /** The openers at rest a refusal cites, the one refused first. */
+        const val OPENERS_CITED = 5
+
+        /** The forms of the refused opener it cites. */
+        const val FORMS_CITED = 3
+
+        /** One of the Director's own lines in a refusal: escaped, its « » turned into ‹ ›. */
+        fun quoted(text: String): String = ModelText.escape(text).replace('«', '‹').replace('»', '›')
     }
 }
 

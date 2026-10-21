@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.memory.doubleOrNull
 import io.github.clemsix6.narrator2.memory.enumOfId
 import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.memory.stats.Reactions
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.memory.strings
 import io.github.clemsix6.narrator2.reflex.HeuristicWords
 import java.sql.Connection
@@ -29,8 +30,9 @@ import kotlin.math.roundToInt
  * review labels none of them. A label whose register is no longer known (a register replaced since) counts as
  * [ComicRegister.OTHER].
  *
- * The measures that need a line's normalized opener (openers distinct, tics) are the watch's (`Tics`, M6 §3.4): the
- * `<diversity>` block takes them from the watch's latest lines, and says so.
+ * The openers and the tics of a period are normalized as the watch's are ([Tics], M6 §3.4): its names, those of
+ * `player_names` and the canon's nicknames (`Tics.Names.of(Tics.names(connection))`), become `<nom>`, its numbers `<n>`.
+ * The watch measures its latest lines with the same [measures] ([StyleWatch.diversity]).
  */
 object StyleReport {
     /** A flaw at this score or more flags a line (M6 §3.7): what the tone flags and their counts hold. */
@@ -100,13 +102,15 @@ object StyleReport {
     )
 
     /**
-     * The measures of a period that the labels make (M6 §3.7). The shares count the reviewed lines.
+     * The measures of a period (M6 §3.7). The shares count the reviewed lines.
      *
      * @property lines the Director's lines said.
      * @property reviewed those the review labeled.
      * @property registers the reviewed lines of each register.
      * @property crutches each crutch word (in lower case) and the reviewed lines that hold it, the most frequent first.
      * @property flagged the reviewed lines with a flaw at [FLAG] or more.
+     * @property openersDistinct distinct normalized openers over the lines that open ([openersDistinct]); 0 when none opens.
+     * @property tics the tics of the lines ([Tics.tics]: openers in 4 lines, phrases in 3, the ellipsis).
      */
     data class Measures(
         val lines: Int,
@@ -114,6 +118,8 @@ object StyleReport {
         val registers: Map<ComicRegister, Int>,
         val crutches: List<Pair<String, Int>>,
         val flagged: Int,
+        val openersDistinct: Double,
+        val tics: Int,
     ) {
         /** The register of the most reviewed lines (ties: the enum's order); null without a review. */
         val topRegister: ComicRegister? =
@@ -174,17 +180,17 @@ object StyleReport {
     /**
      * The Dreamer's three blocks (M6 §4.6) over [period], each within its budget: `<registers>` (each register's lines
      * and how players took them), `<tone_flags>` (the flagged lines, the most serious first) and `<diversity>` (the
-     * period's measures, compared with [before] when given; the openers from the watch's [latest] lines). Times in
-     * [zone]. Everything a model or a player wrote is escaped ([ModelText]).
+     * period's measures, its openers normalized with the names of the Journal, compared with [before] when given).
+     * Times in [zone]. Everything a model or a player wrote is escaped ([ModelText]).
      */
-    fun review(connection: Connection, period: Period, before: Period?, words: HeuristicWords, latest: Diversity, zone: ZoneId): String {
+    fun review(connection: Connection, period: Period, before: Period?, words: HeuristicWords, zone: ZoneId): String {
         val lines = lines(connection, period)
         val uses = registers(lines, reactions(connection, period, lines, words))
         val previous = before?.let { lines(connection, it) }
         return listOf(
             registersBlock(period, lines, uses, zone),
             flagsBlock(lines, zone),
-            diversityBlock(lines, previous, latest),
+            diversityBlock(lines, previous, Tics.Names.of(Tics.names(connection))),
         ).joinToString("\n")
     }
 
@@ -209,16 +215,28 @@ object StyleReport {
             .sortedWith(compareByDescending<RegisterUse> { it.lines }.thenBy { it.register.ordinal })
     }
 
-    /** The measures of [lines] (M6 §3.7). */
-    fun measures(lines: List<Line>): Measures {
+    /**
+     * The measures of [lines] (M6 §3.7), their openers and tics read with [names] (`Tics.Names.of(Tics.names(connection))`;
+     * without names, the numbers are still normalized).
+     */
+    fun measures(lines: List<Line>, names: Tics.Names = Tics.Names.NONE): Measures {
         val reviewed = lines.filter { it.reviewed }
+        val said = lines.map { Tics.said(it.text, it.ts, names) }
         return Measures(
             lines = lines.size,
             reviewed = reviewed.size,
             registers = reviewed.groupingBy { it.register!! }.eachCount(),
             crutches = ranked(reviewed.flatMap { line -> line.crutches.map { it.lowercase() }.distinct() }.groupingBy { it }.eachCount()),
             flagged = reviewed.count { it.flags.isNotEmpty() },
+            openersDistinct = openersDistinct(said),
+            tics = Tics.tics(said).size,
         )
+    }
+
+    /** Distinct normalized openers ([Tics.Said.opener]) over the lines of [said] that open; 0 when none opens. */
+    fun openersDistinct(said: List<Tics.Said>): Double {
+        val openers = said.mapNotNull { it.opener?.key }
+        return if (openers.isEmpty()) 0.0 else openers.toSet().size.toDouble() / openers.size
     }
 
     /**
@@ -283,15 +301,20 @@ object StyleReport {
     }
 
     /**
-     * `<diversity>openers distinct 0.84 in the latest 50 lines · top register divine_bureaucracy 38% (44% before) ·
-     * register entropy 0.71 (0.65 before) · crutch « céleste » 11% (18% before)</diversity>`: the measures of [lines],
-     * those of [before] in parentheses when given, and the openers of the watch's [latest] lines when it measured any.
+     * `<diversity>openers distinct 0.84 (0.80 before) · top register divine_bureaucracy 38% (44% before) · register
+     * entropy 0.71 (0.65 before) · crutch « céleste » 11% (18% before)</diversity>`: the measures of [lines], their
+     * openers read with [names], and those of [before] in parentheses when given. The openers are left out when no line
+     * opens (none said with `say` in 25 characters or more).
      */
-    fun diversityBlock(lines: List<Line>, before: List<Line>?, latest: Diversity): String {
-        val now = measures(lines)
-        val previous = before?.let(::measures)?.takeIf { it.reviewed > 0 }
+    fun diversityBlock(lines: List<Line>, before: List<Line>?, names: Tics.Names = Tics.Names.NONE): String {
+        val now = measures(lines, names)
+        val then = before?.let { measures(it, names) }
+        val previous = then?.takeIf { it.reviewed > 0 }
         val parts = buildList {
-            if (latest.lines > 0) add("openers distinct ${decimal(latest.openersDistinct)} in the latest ${latest.lines} ${plural(latest.lines, "line")}")
+            if (now.openersDistinct > 0) {
+                val earlier = then?.openersDistinct?.takeIf { it > 0 }?.let { " (${decimal(it)} before)" }.orEmpty()
+                add("openers distinct ${decimal(now.openersDistinct)}$earlier")
+            }
             if (now.reviewed == 0) {
                 add(if (lines.isEmpty()) "nothing said in this period" else "no line reviewed in this period")
             } else {
