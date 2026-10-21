@@ -199,7 +199,7 @@ class History(
  * @property lastRegisters the registers of the latest labeled lines, the latest first.
  * @property crutches the crutch words at rest.
  */
-class Table(
+data class Table(
     val now: Instant,
     val players: List<PlayerRef>,
     val named: Boolean,

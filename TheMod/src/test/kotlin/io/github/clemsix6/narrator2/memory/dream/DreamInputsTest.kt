@@ -13,8 +13,11 @@ import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.InteractionDraft
 import io.github.clemsix6.narrator2.memory.InteractionKind
+import io.github.clemsix6.narrator2.memory.Memory
+import io.github.clemsix6.narrator2.memory.MemoryDoc
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryKind
+import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.MergeCandidate
 import io.github.clemsix6.narrator2.memory.NoteDraft
 import io.github.clemsix6.narrator2.memory.NoteKind
@@ -29,7 +32,9 @@ import io.github.clemsix6.narrator2.memory.stats.StatsRefresher
 import io.github.clemsix6.narrator2.reflex.ChatIntent
 import io.github.clemsix6.narrator2.reflex.Tone
 import io.github.clemsix6.narrator2.style.ComicRegister
+import io.github.clemsix6.narrator2.memory.update
 import io.github.clemsix6.narrator2.style.StyleReport
+import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
 import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import kotlinx.coroutines.runBlocking
@@ -274,6 +279,57 @@ class DreamInputsTest {
         // The order of the blocks: the lines, the style, then the gags and the previous review.
         assertEquals(listOf("tics", "lines", "registers", "tone_flags", "diversity", "gags", "review"), Regex("(?m)^<([a-z_]+)").findAll(opening).map { it.groupValues[1] }.toList().drop(1))
         assertTrue(opening.length <= DreamInputs.STEP_MAX.getValue(2))
+    }
+
+    /**
+     * M6 review 2, finding 7: the period before is the one between the two latest reviews, read as two versions; the
+     * review's every version (about 730 a year, never purged) is never read.
+     */
+    @Test
+    fun `step 2 reads the two latest reviews only`() = runBlocking<Unit> {
+        val e = f.evening()
+        f.journal.journal.lineLabels(LineLabelsRecord(e.sanction, at("22:10"), "reflex:claude-haiku-5-5", ComicRegister.COURTROOM.id, 0.0, 0.0, 0.1, 0.0, 0.0, emptyList(), null, 900))
+        f.clock.now = at("19:50")
+        f.store.writeDoc(DocKey.Review, "La toute première revue.", emptyList(), dreamer)
+        f.clock.now = at("19:58")
+        f.store.writeDoc(DocKey.Review, "Une revue d'avant la soirée.", emptyList(), dreamer)
+        f.clock.now = at("22:10")
+        f.store.writeDoc(DocKey.Review, "La revue du soir.", emptyList(), dreamer)
+        val weather = f.narrator("22:20:00", "Bulletin météo : averse de poulets sur la base de Bartok cet après-midi.", listOf(f.bartok))
+        f.journal.sync()
+        f.journal.journal.lineLabels(LineLabelsRecord(weather, at("22:21"), "reflex:claude-haiku-5-5", ComicRegister.WEATHER_REPORT.id, 0.0, 0.0, 0.1, 0.0, 0.0, emptyList(), null, 900))
+        f.journal.sync()
+        val versions = object : MemoryStore by f.store {
+            override suspend fun docVersions(key: String): List<MemoryDoc> = throw IllegalStateException("every version of $key read")
+        }
+
+        val opening = inputs(versions).review(12, at("22:30"))!!
+
+        assertTrue("<registers from=\"10-01 22:10\" to=\"10-01 22:30\" lines=\"1\" reviewed=\"1\">" in opening, opening)
+        val diversity = blocks(opening).getValue("diversity")
+        assertTrue("top register weather_report 100% (before: courtroom 100%)" in diversity, "the evening's line, between the two latest reviews: $diversity")
+    }
+
+    /** M6 review 2, finding 7: the style of step 2 is read apart and never decisive; without it, the review has the rest. */
+    @Test
+    fun `step 2 goes without its style when the style cannot be read`() = runBlocking<Unit> {
+        f.evening()
+        f.journal.journal.write(5_000) { it.update("DROP VIEW narrator_lines") }
+
+        val opening = f.inputs.review(12, at("22:10"))!!
+
+        assertEquals(listOf("tics", "lines", "gags", "review"), Regex("(?m)^<([a-z_]+)").findAll(opening).map { it.groupValues[1] }.toList().drop(1))
+        assertTrue("<lines count=\"2\" order=\"latest first\"" in opening, opening)
+    }
+
+    /** [DreamInputs] on the fixture's Journal, with [store] for the memory's. */
+    private fun inputs(store: MemoryStore): DreamInputs {
+        val memory = object : Memory by f.memory {
+            override val store: MemoryStore get() = store
+        }
+        return DreamInputs(
+            TestServices(clock = f.clock, settings = f.services.settings.get(), journal = f.journal.journal, trace = f.journal.journal, players = f.players, memory = memory),
+        )
     }
 
     @Test

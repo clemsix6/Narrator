@@ -189,23 +189,32 @@ class Dreamer(
         return programmeDone(dream.runId, result)
     }
 
-    /** The programme's [result], its note saying what the storyteller wrote; decision `memory programme`. Never fails. */
+    /**
+     * The programme's [result], its note saying what the storyteller wrote: its ideas, those its writes closed, and the arcs
+     * it planned or abandoned when there are some; decision `memory programme`. Never fails.
+     */
     private suspend fun programmeDone(runId: Long, result: StepResult): StepResult = try {
         services.journal.barrier() // the storyteller's writes
-        val (written, closed) = services.journal.read(READ_TIMEOUT_MS) { connection ->
-            connection.query(IDEAS_SQL, runId) { getInt(1) to getInt(2) }.single()
+        val wrote = services.journal.read(READ_TIMEOUT_MS) { connection ->
+            connection.query(WROTE_SQL, runId) { Wrote(getInt(1), getInt(2), getInt(3), getInt(4)) }.single()
         }
-        val wrote = "$written idea${if (written == 1) "" else "s"} written, $closed closed"
+        val arcs = listOfNotNull(
+            wrote.planned.takeIf { it > 0 }?.let { "$it arc${if (it == 1) "" else "s"} planned" },
+            wrote.abandoned.takeIf { it > 0 }?.let { "$it arc${if (it == 1) "" else "s"} abandoned" },
+        )
+        val note = (listOf("${wrote.written} idea${if (wrote.written == 1) "" else "s"} written", "${wrote.closed} closed") + arcs).joinToString(", ")
         decisions.record(
-            log, DecisionRecord.Kind.MEMORY, "programme", "run $runId", "${result.status.id}: $wrote" + (result.note?.let { " ($it)" } ?: ""),
+            log, DecisionRecord.Kind.MEMORY, "programme", "run $runId", "${result.status.id}: $note" + (result.note?.let { " ($it)" } ?: ""),
             detail = buildJsonObject {
                 put("status", result.status.id)
-                put("written", written)
-                put("closed", closed)
+                put("written", wrote.written)
+                put("closed", wrote.closed)
+                put("arcs_planned", wrote.planned)
+                put("arcs_abandoned", wrote.abandoned)
             },
             level = if (result.status == Status.DONE) Log.Level.INFO else Log.Level.WARN,
         )
-        if (result.status == Status.DONE) result.copy(note = wrote) else result
+        if (result.status == Status.DONE) result.copy(note = note) else result
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -272,6 +281,9 @@ class Dreamer(
     }
 
     private data class StepResult(val status: Status, val note: String?)
+
+    /** What a run's storyteller wrote: ideas [written], ideas its writes [closed], arcs it [planned] and [abandoned]. */
+    private class Wrote(val written: Int, val closed: Int, val planned: Int, val abandoned: Int)
 
     /** What a dream run did so far: its conversations, the result of each step, and the gateway's budget if it stopped on it. */
     private inner class Dream(val runId: Long, val fromStep: Int) {
@@ -366,8 +378,14 @@ class Dreamer(
         private const val COUNTS_SQL = "SELECT (SELECT count(*) FROM memory_log WHERE run_id = ?)::INTEGER, " +
             "(SELECT count(*) FROM tool_calls WHERE list_contains(?, conversation_id) AND status = 'invalid')::INTEGER"
 
-        /** The ideas a run's storyteller wrote, and those its writes closed (dropped, replaced, over the cap). */
-        private const val IDEAS_SQL = "SELECT count(*) FILTER (WHERE op = 'insert')::INTEGER, count(*) FILTER (WHERE op = 'update')::INTEGER " +
-            "FROM memory_log WHERE run_id = ? AND table_name = 'ideas' AND actor = 'storyteller'"
+        /**
+         * What a run's storyteller wrote ([Wrote]): the ideas, those its writes closed (dropped, replaced, over the cap), the
+         * arcs it planned, and those it abandoned (the only canon it changes: a planned arc, to abandon it).
+         */
+        private const val WROTE_SQL = "SELECT count(*) FILTER (WHERE l.table_name = 'ideas' AND l.op = 'insert')::INTEGER, " +
+            "count(*) FILTER (WHERE l.table_name = 'ideas' AND l.op = 'update')::INTEGER, " +
+            "count(*) FILTER (WHERE c.kind = 'arc' AND l.op = 'insert')::INTEGER, count(*) FILTER (WHERE c.kind = 'arc' AND l.op = 'update')::INTEGER " +
+            "FROM memory_log l LEFT JOIN canon c ON l.table_name = 'canon' AND c.id = TRY_CAST(l.row_key AS BIGINT) " +
+            "WHERE l.run_id = ? AND l.actor = 'storyteller'"
     }
 }

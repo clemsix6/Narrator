@@ -501,6 +501,10 @@ class DuckMemoryStore(
             if (author.source == Source.DREAMER && old.kind != CanonKind.ARC) {
                 reject("the Dreamer settles arcs only; $ref is ${an(old.kind.id)}, settled by the Narrator from what happens in game")
             }
+            // One pen per subject (M6 review 2, D6): the storyteller plans an arc, the Narrator starts it, the Dreamer closes it.
+            if (author.source == Source.DREAMER && old.status == CanonStatus.PLANNED) {
+                reject("the Dreamer settles an active arc only; $ref is planned: a planned arc is the storyteller's, and the Narrator starts it")
+            }
             if (author.source == Source.STORYTELLER && (old.kind != CanonKind.ARC || old.status != CanonStatus.PLANNED || status != CanonStatus.ABANDONED)) {
                 reject("the storyteller only abandons a planned arc; the Narrator starts arcs and settles the rest from what happens in game")
             }
@@ -975,11 +979,12 @@ class DuckMemoryStore(
      * An idea (M6 §6.2), the storyteller's only: its texts pass [VoiceGuard], its notes, hours, players and refs are
      * checked, its lever ([lever]) and its arc ([Job.arcStep]); it must not repeat a recent idea ([Job.notRepeated]). It is
      * written `open`, due [IdeaDraft.playHours] of world play from now, indexed and audited; then it makes its room
-     * ([Job.makeRoom]: the season it replaces, the idea beyond the twelve it supersedes), in the same job.
+     * ([Job.makeRoom]: the season it replaces, the idea beyond the twelve it supersedes), and counts the open ideas, in
+     * the same job.
      */
-    override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> {
+    override suspend fun addIdea(draft: IdeaDraft, author: Author): IdeaAdded {
         val what = "idea ${draft.kind.id}"
-        val (idea, closed) = write(what, author) { job ->
+        val added = write(what, author) { job ->
             if (author.source != Source.STORYTELLER) reject("ideas are the storyteller's: the ${author.source.id} writes none")
             job.voice(draft.title, "title", MemoryLimits.IDEA_TITLE)
             job.voice(draft.pitch, "pitch", MemoryLimits.IDEA_PITCH)
@@ -1005,11 +1010,12 @@ class DuckMemoryStore(
             val row = job.row<Idea>(ref, RefKind.IDEA, "an idea")
             job.index(row)
             job.logRow(ref, LogOp.INSERT, null)
-            row to job.makeRoom(row)
+            val closed = job.makeRoom(row)
+            IdeaAdded(row, closed, job.connection.query("SELECT count(*)::INTEGER FROM ideas WHERE status = 'open'") { getInt(1) }.single())
         }
-        recordWrite("${idea.ref}", what, author, listOf(draft.title, draft.pitch, draft.fit))
-        closed.forEach { recordWrite("${it.ref}", "idea ${it.status.id} (${it.closeReason})", author) }
-        return Added.New(idea)
+        recordWrite("${added.row.ref}", what, author, listOf(draft.title, draft.pitch, draft.fit))
+        added.closed.forEach { recordWrite("${it.ref}", "idea ${it.status.id} (${it.closeReason})", author) }
+        return added
     }
 
     override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea {
@@ -1226,7 +1232,8 @@ class DuckMemoryStore(
 
         /**
          * What the Dreamer may add to the canon: lore. An arc to come is the storyteller's (M6 §6.5); the Dreamer still
-         * settles arcs ([resolveCanon]), and its running gags only change freshness ([setGag]).
+         * settles active arcs ([resolveCanon]: a planned one is the storyteller's), and its running gags only change
+         * freshness ([setGag]).
          */
         val DREAMER_CANON = setOf(CanonKind.LORE)
 
