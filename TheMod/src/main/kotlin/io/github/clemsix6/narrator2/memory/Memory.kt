@@ -316,7 +316,7 @@ class DisabledMemory(private val reason: String) : Memory {
 
         override suspend fun revertRun(runId: Long, author: Author): Int = refuse()
 
-        override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> = refuse()
+        override suspend fun addIdea(draft: IdeaDraft, author: Author): IdeaAdded = refuse()
 
         override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea = refuse()
 

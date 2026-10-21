@@ -3,13 +3,20 @@ package io.github.clemsix6.narrator2.tool.storyteller
 import io.github.clemsix6.narrator2.forge.ArsenalEntry
 import io.github.clemsix6.narrator2.forge.ModuleStatus
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaStatus
+import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.MemoryDraft
 import io.github.clemsix6.narrator2.memory.MemoryKind
+import io.github.clemsix6.narrator2.memory.MemoryStore
 import io.github.clemsix6.narrator2.memory.RunContext
 import io.github.clemsix6.narrator2.memory.RunKind
 import io.github.clemsix6.narrator2.testing.FakeForge
 import io.github.clemsix6.narrator2.testing.MemorySamples
+import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
+import io.github.clemsix6.narrator2.tool.ToolArgs
+import io.github.clemsix6.narrator2.tool.ToolContext
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.tool.memory.MemoryToolFixture
@@ -143,19 +150,30 @@ class StorytellerToolsTest {
         assertEquals(listOf("orbiting_chickens"), f.rows("SELECT module FROM ideas") { getString(1) })
     }
 
+    /**
+     * The answer says what the writing closed and how many ideas are open, as the store returns them: the open ideas are
+     * not read again around the write (M6 review 1, finding 10).
+     */
     @Test
-    fun `propose_idea tells the season it replaced`() = fixture { f ->
+    fun `propose_idea tells the season it replaced, without reading the open ideas`() = fixture { f ->
         val caller = f.programme(21)
         f.call(propose, idea("season", title = "Les Grandes Manoeuvres"), caller)
+        val blind = object : MemoryStore by f.store {
+            override suspend fun ideas(status: IdeaStatus?, limit: Int): List<Idea> = error("the open ideas read again")
+        }
+        val memory = object : Memory by f.memory {
+            override val store: MemoryStore get() = blind
+        }
+        val services = TestServices(clock = f.clock, journal = f.base.journal, players = f.players, memory = memory, mechanics = f.mechanics)
+        val args = ToolArgs.decode(
+            propose.args,
+            """{"kind":"season","title":"Le Siège du Moulin","pitch":"Un moulin assiégé par des moutons réclame justice.",""" +
+                """"fit":"Bartok et Mimosa en ligne.","players":["Bartok","Mimosa"],"novelty":4,"fun":4,"fairness":5}""",
+        ) as ToolArgs.Decoded.Ok<ProposeIdeaArgs>
         assertOk(
             "ok: P-1001 season « Le Siège du Moulin » for Bartok, Mimosa, open for 48h of world play; " +
                 "P-1000 season « Les Grandes Manoeuvres » dropped: replaced by the season P-1001; 1 idea open",
-            f.call(
-                propose,
-                """{"kind":"season","title":"Le Siège du Moulin","pitch":"Un moulin assiégé par des moutons réclame justice.",""" +
-                    """"fit":"Bartok et Mimosa en ligne.","players":["Bartok","Mimosa"],"novelty":4,"fun":4,"fairness":5}""",
-                caller,
-            ),
+            runBlocking { propose.run(ToolContext(services, caller, f.clock, propose.timeoutMs), args.args) },
         )
     }
 

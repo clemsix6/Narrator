@@ -935,7 +935,7 @@ class ModuleEngine(
         if (deployments.isNotEmpty()) {
             decisions.record(
                 log, DecisionRecord.Kind.MECHANIC, SKIPPED, null,
-                "the server stops: ${deployments.size} modules stopped until the restart (${deployments.joinToString { it.ref.toString() }}), $dropped acts in their queues dropped",
+                "the Narrator stops: ${deployments.size} modules stopped until it starts again (${deployments.joinToString { it.ref.toString() }}), $dropped acts in their queues dropped",
             )
         }
     }

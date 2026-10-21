@@ -19,6 +19,7 @@ import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.runtime.RestartReport
+import io.github.clemsix6.narrator2.runtime.RestartSequence
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolRunner
@@ -27,6 +28,7 @@ import io.github.clemsix6.narrator2.tool.mechanics.CreateRuleTool
 import io.github.clemsix6.narrator2.tool.mechanics.DeployModuleTool
 import io.github.clemsix6.narrator2.tool.mechanics.StartChallengeTool
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import io.netty.channel.ChannelFutureListener
@@ -46,12 +48,16 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.server.network.ServerLoginPacketListenerImpl
 import java.io.BufferedReader
 import java.io.File
+import java.lang.reflect.Field
+import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.jar.Attributes
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest
@@ -66,8 +72,12 @@ import java.util.jar.Manifest
  *   mechanics and the Director's reminder saved in the world; the decision `operator restarted` is in the new Journal.
  * - With the Journal's file held by a DuckDB client in another process at that moment, the new Narrator runs with a
  *   `DisabledJournal`, memory and mechanics off; once the file is free, a second `/narrator restart` gives them back.
+ * - With the old Journal's writer held past the close's time (M6-FIX-6), the restart fails and prepares nothing, never
+ *   two Journals on the file; `/narrator status` meanwhile says a restart runs; once the writer is free, the next restart
+ *   closes the old Narrator first and gives the Narrator back whole.
+ * - A real login listener is named by its player's name, never by its address, or is `a connection`.
  *
- * It replaces the server's Narrator three times: it runs alone, in a batch of its own ([RESTART_ENVIRONMENT]), and puts
+ * It replaces the server's Narrator four times: it runs alone, in a batch of its own ([RESTART_ENVIRONMENT]), and puts
  * back in its `finally` what it changed (the pace of the challenges, the world's reminders, what it deployed, the
  * configuration file, which it holds to the in-game runs' own while it restarts: no dashboard listens). The
  * batches after it run on the last Narrator it made.
@@ -120,6 +130,19 @@ class RestartGameTests {
                 saved.nextId
             }
 
+            // Who joins is named, never by their address (constat 5 of the M6 review, part 2): a real login, before and
+            // after it says its name.
+            server.onServerThread {
+                val connection = Connection(PacketFlow.SERVERBOUND)
+                val login = ServerLoginPacketListenerImpl(server, connection, false)
+                check(RestartSequence.joiningName(login) == "a connection") { "a login without its name: ${login.userName}" }
+                field(Connection::class.java, "address").set(connection, InetSocketAddress("203.0.113.7", 51234))
+                field(ServerLoginPacketListenerImpl::class.java, "requestedUsername").set(login, "Bartok")
+                check(login.userName.startsWith("Bartok (") && RestartSequence.joiningName(login) == "Bartok") {
+                    "named, without the address: ${login.userName} → ${RestartSequence.joiningName(login)}"
+                }
+            }
+
             // A player online: refused, nothing stops.
             val refused = server.onServerThread { command(helper, "narrator restart") }.awaitLines(1)
             check(refused == listOf("[Narrator] cannot restart: 1 player online (${bob.name}); restart when the server is empty, or restart the server.")) { "refused: $refused" }
@@ -169,7 +192,7 @@ class RestartGameTests {
                 val started = server.onServerThread {
                     NarratorRuntime.restart(server, "gametest", { report.complete(it) }) {
                         held.awaitHeld()
-                        NarratorRuntime.prepare(server)
+                        NarratorRuntime.create(server)
                     }
                 }
                 check(started) { "the second restart starts" }
@@ -191,6 +214,46 @@ class RestartGameTests {
             check(fourth.journal.available && fourth.memory.available && fourth.mechanics.available) { "whole again: ${fourth.summary()}" }
             noDashboard(fourth)
             check(decisions(fourth, "restarted", "Server", kind = "operator") == 2L) { "both restarts by the command recorded" }
+
+            // The old Journal still closing past its time (constat 4 of the M6 review, part 2): its writer held by a write
+            // job. The restart fails, nothing prepared: never two Journals on the file. Once the writer is free, the next
+            // restart closes the old Narrator first, then gives the Narrator back whole.
+            val writing = CountDownLatch(1)
+            val stuck = CountDownLatch(1)
+            val writer = Thread {
+                runCatching { runBlocking { fourth.journal.write(120_000) { writing.countDown(); stuck.await(120, TimeUnit.SECONDS) } } }
+            }.apply { start() }
+            try {
+                check(writing.await(10, TimeUnit.SECONDS)) { "the old Journal's writer is held" }
+                val report = CompletableFuture<RestartReport>()
+                val made = AtomicBoolean()
+                val (started, status) = server.onServerThread {
+                    val started = NarratorRuntime.restart(server, "gametest", { report.complete(it) }) {
+                        made.set(true)
+                        NarratorRuntime.create(server)
+                    }
+                    started to command(helper, "narrator status")
+                }
+                check(started) { "the restart starts" }
+                check(status.awaitLines(1) == listOf("[Narrator] a restart is running, try again once it is done.")) { "the status meanwhile: ${status.lines}" }
+                val failed = withTimeout(90_000) { report.await() }
+                check(failed.failure == "the old Narrator did not stop: $STILL_CLOSING") { "the restart fails: ${failed.text()}" }
+                check(failed.stopMs >= 10_000) { "the stop counts its wait for the Journal: ${failed.times()}" }
+                check(!made.get() && NarratorRuntime.current == null && fourth.journal.holdsDatabase) {
+                    "nothing prepared, the Narrator off, the old Journal open: ${made.get()} ${NarratorRuntime.current} ${fourth.journal.holdsDatabase}"
+                }
+            } finally {
+                stuck.countDown()
+                writer.join(30_000)
+            }
+            val fifthRestart = server.onServerThread { command(helper, "narrator restart") }.awaitLine(RESTARTED)
+            check(fifthRestart.endsWith(": $WHOLE")) { "restarted once the old Journal closed: $fifthRestart" }
+            val fifth = NarratorRuntime.current!!
+            check(!fourth.journal.holdsDatabase && fifth.journal.available && fifth.memory.available && fifth.mechanics.available) {
+                "whole again: ${fifth.summary()}"
+            }
+            noDashboard(fifth)
+            check(decisions(fifth, "restarted", "Server", kind = "operator") == 3L) { "the three restarts by the command recorded" }
         } finally {
             Files.writeString(NarratorRuntime.configFile, config)
             NarratorRuntime.current?.let { cleanUp(it, made) }
@@ -289,7 +352,7 @@ class RestartGameTests {
         /** The batch of this test alone (`test_environment/restart.json`): it replaces the server's Narrator. */
         const val RESTART_ENVIRONMENT = "narrator2-gametest:restart"
 
-        /** At least two minutes (see [runScript]): three restarts, one of them with the Journal held 6 s. */
+        /** At least two minutes (see [runScript]): five restarts, one with the Journal held 6 s, one with the old writer held 15 s or so. */
         const val MAX_TICKS = 120_000
 
         const val RESTARTED = "[Narrator] Narrator restarted in "
@@ -297,6 +360,9 @@ class RestartGameTests {
         const val GAMETEST_CONFIG = """{ "dashboard": { "enabled": false } }"""
 
         const val WHOLE = "Journal available · memory on · mechanics on · forge on"
+
+        /** Why a Narrator whose Journal outlived its close does not stop (`NarratorRuntime.stopAndClose`). */
+        const val STILL_CLOSING = "its Journal is still closing after 10 s, its database open until its writer ends"
         const val LAW = "Le Narrateur a décrété une loi d'essai sur un redémarrage."
         const val NOTE = "vérifier que le moulin a survécu au redémarrage"
 
@@ -310,6 +376,9 @@ class RestartGameTests {
 
         /** Who ends, in the test, what it deployed. */
         val CLEANUP = Author(Source.OPERATOR, operator = "gametest")
+
+        /** A private field of the game's, opened to the test: the names are Mojang's own since 26.1. */
+        fun field(owner: Class<*>, name: String): Field = owner.getDeclaredField(name).apply { isAccessible = true }
 
         /** Runs `/narrator …` as the server console. Server thread. */
         fun command(helper: GameTestHelper, command: String): Answer {

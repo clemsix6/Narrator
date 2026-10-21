@@ -394,6 +394,32 @@ class StyleReportTest {
         }
     }
 
+    /**
+     * M6 review 2, finding 8: a period holds the lines the review reads, as the coverage counts them. A title, a line
+     * above the hotbar, a book and a short aside are left out of its lines, so of the counts the Dreamer, the storyteller
+     * and the dashboard read (`<registers lines=…>`, `Measures.lines`).
+     */
+    @Test
+    fun `a period holds the lines the review reads only`() {
+        StyleDataset.journal().use { fixture ->
+            listOf(
+                "[title] DÉFI : LA COURSE AU PIC / Premier au sommet", "[actionbar] Il reste trente secondes, Bartok !",
+                "[book \"Prophétie\"] Le jour où la lave montera, Bartok rira moins.", "Bien joué, Bartok.", "Bravo, ${"🎉".repeat(15)}",
+                "Et Bartok repart à l'assaut du pic, sans corde ni dignité.",
+            ).forEachIndexed { i, text ->
+                fixture.clock.now = StyleDataset.at("22:10").plusSeconds(i.toLong())
+                fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, text, null, 500L + i, null))
+            }
+            fixture.sync()
+            val period = Period(StyleDataset.at("22:00"), StyleDataset.at("23:00"))
+            val lines = StyleDataset.read(fixture) { StyleReport.lines(it, period) }
+            assertEquals(listOf("Et Bartok repart à l'assaut du pic, sans corde ni dignité."), lines.map { it.text })
+            assertEquals(1, StyleReport.measures(lines).lines)
+            val review = StyleDataset.read(fixture) { StyleReport.review(it, period, null, words, utc) }
+            assertTrue(review.startsWith("<registers from=\"10-21 22:00\" to=\"10-21 23:00\" lines=\"1\" reviewed=\"0\">"), review)
+        }
+    }
+
     @Test
     fun `the reactions to any line are matched to the reviewed ones`() {
         val reviewed = line(1, "Bartok, tu plonges.", ComicRegister.NATURE_DOCUMENTARY)

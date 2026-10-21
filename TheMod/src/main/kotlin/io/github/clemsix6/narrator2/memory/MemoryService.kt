@@ -112,7 +112,7 @@ internal class OpenIdeas(private val store: MemoryStore) {
 
     /** [store], whose writes of ideas (and the reverts, which may remove some) [refresh] the cache once they are done. */
     fun watching(store: MemoryStore): MemoryStore = object : MemoryStore by store {
-        override suspend fun addIdea(draft: IdeaDraft, author: Author): Added<Idea> = store.addIdea(draft, author).also { refresh("${it.row.ref} written") }
+        override suspend fun addIdea(draft: IdeaDraft, author: Author): IdeaAdded = store.addIdea(draft, author).also { refresh("${it.row.ref} written") }
 
         override suspend fun dropIdea(ref: Ref, reason: String, author: Author): Idea = store.dropIdea(ref, reason, author).also { refresh("$ref dropped") }
 

@@ -262,8 +262,9 @@ class RememberTool : MemoryTool<RememberArgs>(
 
 /**
  * `resolve` (M3 §5.2): a canon entry kept, broken, won, lost, retired…, or a planned arc started. The
- * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge; the storyteller
- * only abandons a planned arc that no longer holds (M6 §6.5), the Director starting the others. A row
+ * Dreamer settles active arcs only (M3 review, finding 1; M6 review 2, D6): whether a promise was kept is not for it to
+ * judge, and a planned arc is the storyteller's; the storyteller only abandons a planned arc that no longer holds (M6
+ * §6.5), the Director starting the others. A row
  * the mechanics engine tracks is settled by the engine (the store names the tool that ends it, M4 §3.3); an
  * arc started is due within 7 days, and a third active arc is `DENIED (arc_limit)` (M4 §10).
  */
@@ -282,6 +283,9 @@ class ResolveTool : MemoryTool<ResolveArgs>(
             val entry = ctx.memory.store.row(ref) as? CanonEntry
             if (entry != null && entry.kind != CanonKind.ARC) {
                 return ToolResult.invalid("the Dreamer resolves only arcs, and $ref is ${an(entry.kind.id)}: the Narrator and the Chronicler settle the rest")
+            }
+            if (entry != null && entry.status == CanonStatus.PLANNED) {
+                return ToolResult.invalid("the Dreamer resolves only an active arc, and $ref is planned: a planned arc is the storyteller's, and the Narrator starts it")
             }
         }
         if (ctx.caller.role == Role.STORYTELLER) {
