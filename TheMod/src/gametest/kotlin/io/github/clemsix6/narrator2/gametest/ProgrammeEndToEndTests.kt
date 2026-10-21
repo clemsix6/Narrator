@@ -122,11 +122,9 @@ class ProgrammeEndToEndTests {
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
             check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
         } finally {
-            // As found: no player, no chapter open, no key, the Director asleep, the reflexes off.
+            // As found: no player, the Director asleep, the reflexes off.
             player?.let { left -> runCatching { server.onServerThread { left.close() } } }
-            runCatching { closeChapter(helper, runtime) }
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            putTheDirectorToSleep(helper, runtime)
             fake.close()
         }
         awaitCondition("the Director sleeps again") { runtime.director.status().state == DirectorState.DISABLED }

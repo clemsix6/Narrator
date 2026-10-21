@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.Director
+import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.WakeScheduler
 import io.github.clemsix6.narrator2.journal.Journal
@@ -143,9 +144,13 @@ class DirectorEndToEndTests {
             // break, so it wakes the Director at once).
             val lastBeforePause = journalRow(runtime, "SELECT max(turn_id) FROM turns WHERE conversation_id = ?", chapterSession)[0] as Long
             server.onServerThread { server.commands.performPrefixedCommand(speaker.player.createCommandSourceStack(), "pray Pitié, grand Narrateur ${model.prayer}") }
-            val beforeResume = fake.requests.size
+            // Only the Director's requests are counted (FLAKY-7): the memory's jobs (the Chronicler's batch of the open chapter
+            // every `memory.chronicleMinutes`, a nap, a dream) and the tasks already running go on while it is paused, on the
+            // same gateway.
+            val directorRequests = fake.requests.count(::isDirector)
             delay(3_000)
-            check(fake.requests.size == beforeResume) { "a paused Director sends nothing" }
+            val sent = fake.requests.filter(::isDirector).drop(directorRequests)
+            check(sent.isEmpty()) { "a paused Director sends nothing: ${sent.map { lastUser(it).wakeText().take(300) }}" }
             operatorCommands(helper, "narrator resume")
             val resumed = awaitRequest(fake, "the prayer after the resume") { isDirector(it) && model.prayer in lastUser(it).wakeText() }
             check("PRAY ${speaker.name}" in lastUser(resumed).wakeText()) { "the prayer: ${lastUser(resumed).wakeText()}" }
@@ -182,9 +187,7 @@ class DirectorEndToEndTests {
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
             check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
         } finally {
-            // As found: no key, the Director asleep.
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            putTheDirectorToSleep(helper, runtime)
             server.onServerThread { speaker.close() }
             fake.close()
         }
@@ -309,6 +312,35 @@ suspend fun awaitCondition(what: String, timeoutMs: Long = 15_000, condition: su
 suspend fun awaitQuiet(runtime: NarratorRuntime, timeoutMs: Long = 20_000) = awaitCondition("a quiet Director", timeoutMs) {
     val status = runtime.director.status()
     status.turnId == null && status.state == DirectorState.IDLE
+}
+
+/**
+ * The cleanup of a test that gave the server's Director a key (FLAKY-7): puts the Director back as the test found it,
+ * however the test ended, for the batches that come after it. First in the test's `finally`, while its key and its fake
+ * gateway are still in force; a step that fails does not stop the next ones. The test then waits for the Director to
+ * sleep (`DISABLED`).
+ *
+ * 1. **Not paused.** An operator's pause outlives the reload that disables the Director: it waits for the next key, and
+ *    the next batch that gives one finds the Director paused, every wait for a quiet Director timing out. The signal is
+ *    posted as `/narrator resume` posts it (the command refuses a Director that cannot hear); a Director that is not
+ *    paused ignores it.
+ * 2. **No chapter open.** A Director put to sleep keeps its chapter, and the next batch's Director would go on with it
+ *    (M3-19). It closes with its summary at its next quiet moment (20 s after its last turn): the fake gateway answers.
+ * 3. **No key.** The configuration file back to `{}`, reloaded.
+ */
+suspend fun putTheDirectorToSleep(helper: GameTestHelper, runtime: NarratorRuntime) {
+    runtime.director.post(DirectorSignal.Resume)
+    runCatching {
+        val open = runtime.director.status().takeIf { it.state != DirectorState.DISABLED }?.conversationId
+        if (open != null) {
+            operatorCommands(helper, "narrator chapter close")
+            awaitCondition("the chapter $open closed", 45_000) {
+                runCatchingJournal(runtime, "SELECT ended_at FROM conversations WHERE conversation_id = ?", open)?.single() != null
+            }
+        }
+    }.onFailure { scriptLog.warn("cleanup: the Director's chapter was not closed", it) }
+    Files.writeString(NarratorRuntime.configFile, "{}")
+    runCatching { runtime.reload() }.onFailure { scriptLog.warn("cleanup: the configuration was not reloaded", it) }
 }
 
 /** Runs [commands] as the server console, one after the other on the server thread; their answers go to the returned output. */
