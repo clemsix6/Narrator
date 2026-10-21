@@ -28,7 +28,10 @@ import io.github.clemsix6.narrator2.memory.stats.PairStats
 import io.github.clemsix6.narrator2.memory.stats.StatsRefresher
 import io.github.clemsix6.narrator2.reflex.ChatIntent
 import io.github.clemsix6.narrator2.reflex.Tone
+import io.github.clemsix6.narrator2.style.ComicRegister
+import io.github.clemsix6.narrator2.style.StyleReport
 import io.github.clemsix6.narrator2.trace.ChatSignalsRecord
+import io.github.clemsix6.narrator2.trace.LineLabelsRecord
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -39,7 +42,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** What each step of a dream reads (M3 §8.2): every block within its budget at its maximum, the players picked, the stats before and after, the sessions. */
+/** What each step of a dream reads (M3 §8.2, M6 §4.6): every block within its budget at its maximum, the players picked, the stats before and after, the sessions, the style. */
 class DreamInputsTest {
     private val f = DreamerFixture()
 
@@ -48,6 +51,7 @@ class DreamInputsTest {
 
     private val director = Author(Source.DIRECTOR, turnId = 1, conversationId = "director-c1")
     private val dreamer = Author(Source.DREAMER, runId = 1)
+    private val storyteller = Author(Source.STORYTELLER, runId = 1)
 
     /** French text of [length] characters exactly, factual and in the third person; [seed] makes it differ. */
     private fun text(length: Int, seed: Int = 0): String =
@@ -109,16 +113,23 @@ class DreamInputsTest {
         f.playClock.players[bartok] = 3_600_000 // 1 000 hours since the traits: they all faded
         f.state.setState(DreamInputs.reflectedKey(bartok), DreamInputs.Reflection(at("19:00").toEpochMilli(), mapOf("deaths" to 0.0, "playtime" to 60.0)).encode())
 
-        // Step 2: the most lines, gags, and the longest review.
+        // Step 2: the longest review, then the most lines, every one labeled in every register, one in ten flagged; the gags.
+        store.writeDoc(DocKey.Review, text(3_000), emptyList(), dreamer)
         f.clock.now = at("21:56")
-        repeat(160) { f.journal.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Bartok, " + text(1_990, it), null, 40, null)) }
+        val said = (0 until 160).map { f.journal.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Bartok, " + text(1_990, it), null, 40, null)).id }
+        f.journal.sync()
+        said.forEachIndexed { i, id ->
+            val flaw = if (i % 10 == 0) 0.9 else 0.1
+            f.journal.journal.lineLabels(
+                LineLabelsRecord(id, f.clock.instant(), "reflex:claude-haiku-5-5", ComicRegister.VOICE[i % ComicRegister.VOICE.size].id, flaw, flaw, flaw, flaw, flaw, listOf("céleste"), null, 900),
+            )
+        }
         f.journal.sync()
         f.clock.now = at("21:57")
         others.forEach { other ->
             store.addCanon(CanonDraft(CanonKind.RUNNING_GAG, text(300, 1), "q".repeat(200), listOf(other.uuid)), director)
             store.addCanon(CanonDraft(CanonKind.NICKNAME, text(300, 2), "n".repeat(200), listOf(other.uuid)), director)
         }
-        store.writeDoc(DocKey.Review, text(3_000), emptyList(), dreamer)
 
         // Step 3: twelve long chapters in the session over, a season and a saga at their budget, forty closed seasons.
         repeat(12) { i ->
@@ -136,14 +147,10 @@ class DreamInputsTest {
         store.addChronicle(ChronicleDraft(ChronicleLevel.SEASON, old + Duration.ofDays(40), old + Duration.ofDays(42), text(80), text(3_000), sessions.drop(40), open = true), dreamer)
         store.addChronicle(ChronicleDraft(ChronicleLevel.SAGA, old, old + Duration.ofDays(40), text(80), text(4_500), closed, open = true), dreamer)
 
-        // Step 4: the longest Grimoire, sixty open entries, ten arcs, thirty notes.
-        store.writeDoc(DocKey.Grimoire, GrimoireFormat.SECTIONS.joinToString("\n") { "## $it\n- ${text(1_400, it.length)}" }, emptyList(), dreamer)
+        // Step 4: the longest Grimoire, sixty open entries, ten arcs (the storyteller's), thirty notes.
+        store.writeDoc(DocKey.Grimoire, GrimoireFormat.SECTIONS.joinToString("\n") { "## $it\n- ${text(1_640, it.length)}" }, emptyList(), dreamer)
         others.take(10).forEachIndexed { i, other ->
-            store.addCanon(CanonDraft(CanonKind.ARC, text(300, 3), players = listOf(other.uuid), status = CanonStatus.PLANNED, theme = "arc_$i"), dreamer)
-        }
-        repeat(DreamInputs.RESTING_COUNT + 2) { i -> // more themes at rest than the block names, each of the longest
-            val closed = store.addCanon(CanonDraft(CanonKind.ARC, text(300, 4), status = CanonStatus.PLANNED, theme = "theme_au_repos_$i".padEnd(40, 'x')), dreamer).row.ref
-            store.resolveCanon(closed, CanonStatus.ABANDONED, text(100, i), emptyList(), director)
+            store.addCanon(CanonDraft(CanonKind.ARC, text(300, 3), players = listOf(other.uuid), status = CanonStatus.PLANNED, theme = "arc_$i"), storyteller)
         }
         repeat(30) { store.addNote(NoteDraft(NoteKind.COHERENCE, text(300, it), listOf(bartok)), director) }
 
@@ -166,9 +173,14 @@ class DreamInputsTest {
 
         val review = f.inputs.review(12, now)!!
         assertWithin(
-            review, 2, mapOf("tics" to DreamInputs.TICS_MAX, "lines" to DreamInputs.LINES_MAX, "gags" to DreamInputs.GAGS_MAX, "review" to DreamInputs.REVIEW_MAX),
-            small = setOf("tics"),
+            review, 2,
+            mapOf(
+                "tics" to DreamInputs.TICS_MAX, "lines" to DreamInputs.LINES_MAX, "registers" to StyleReport.REGISTERS_MAX, "tone_flags" to StyleReport.FLAGS_MAX,
+                "diversity" to StyleReport.DIVERSITY_MAX, "gags" to DreamInputs.GAGS_MAX, "review" to DreamInputs.REVIEW_MAX,
+            ),
+            small = setOf("tics", "diversity"),
         )
+        assertTrue("<registers from=\"10-01 21:55\" to=\"10-01 22:10\" lines=\"160\" reviewed=\"160\">" in review, review.take(500))
 
         val chronicle = f.inputs.chronicle(12, now)!!
         assertWithin(
@@ -185,68 +197,83 @@ class DreamInputsTest {
                 "canon" to DreamInputs.CANON_MAX, "arcs" to DreamInputs.ARCS_MAX, "notes" to DreamInputs.NOTES_MAX,
             ),
         )
-        val resting = grimoire.substringAfter("<arcs count=\"10\">\n").lines().first()
-        assertTrue(resting.startsWith("Themes at rest (20h of world play once their arc closed): theme_au_repos_"), resting)
-        assertEquals(DreamInputs.RESTING_COUNT, resting.split(" · ").size, resting)
-
         val pairs = memories.take(40).chunked(2).map { (a, b) -> MergeCandidate(a, b, 0.9) }
         val merges = f.inputs.merges(12, pairs)!!
-        assertWithin(merges, 5, mapOf("candidates" to DreamInputs.CANDIDATES_MAX))
+        assertWithin(merges, 6, mapOf("candidates" to DreamInputs.CANDIDATES_MAX))
         assertNull(f.inputs.merges(12, emptyList()))
-        println("Openings at their maximum, in characters: step 1 ${player.length}, step 2 ${review.length}, step 3 ${chronicle.length}, step 4 ${grimoire.length}, step 5 ${merges.length}")
+        println("Openings at their maximum, in characters: step 1 ${player.length}, step 2 ${review.length}, step 3 ${chronicle.length}, step 4 ${grimoire.length}, step 6 ${merges.length}")
     }
 
     /**
-     * M4 §10: step 4 shows each open arc's theme, which it holds, and the themes at rest (twenty hours of world
-     * play once their arc closed, counted as the store counts them), so that the Dreamer plans no arc the store
-     * refuses; the engine's rows of the canon are marked.
+     * M4 §10, M6 §6.3: step 4 shows each open arc with the theme it holds, and the engine's rows of the canon marked; the
+     * themes at rest are no longer there: the Dreamer plans no arc, the programme does (`ProgrammeInputsTest`).
      */
     @Test
-    fun `step 4 shows the themes the arcs hold and those at rest, and the engine's rows`() = runBlocking<Unit> {
+    fun `step 4 shows the open arcs with their themes and the engine's rows, and no theme at rest`() = runBlocking<Unit> {
         val store = f.store
-        /** A session of Bartok's, closed, from [from] to [to] (`yyyy-MM-dd HH:mm`, UTC). */
-        suspend fun session(id: Int, from: String, to: String) = f.journal.journal.write(5_000) { connection ->
-            val seconds = Duration.between(Instant.parse("${from.replace(' ', 'T')}:00Z"), Instant.parse("${to.replace(' ', 'T')}:00Z")).seconds
-            connection.createStatement().use {
-                it.execute(
-                    "INSERT INTO sessions (session_id, player_uuid, player, joined_at, left_at, duration_s, end_reason) VALUES " +
-                        "($id, '${f.bartok.uuid}', 'Bartok', TIMESTAMPTZ '$from:00+00', TIMESTAMPTZ '$to:00+00', $seconds, 'leave')",
-                )
-            }
-        }
-        session(1, "2026-10-01 10:00", "2026-10-02 08:00") // 22 hours of world play
-        suspend fun arc(theme: String, statement: String) = store.addCanon(CanonDraft(CanonKind.ARC, statement, status = CanonStatus.PLANNED, theme = theme), dreamer).row.ref
+        suspend fun arc(theme: String, statement: String) = store.addCanon(CanonDraft(CanonKind.ARC, statement, status = CanonStatus.PLANNED, theme = theme), storyteller).row.ref
 
-        f.clock.now = Instant.parse("2026-10-01T10:00:00Z")
-        val old = arc("vieille_rancune", "Le Narrateur prépare la vieille rancune de Bartok.")
-        store.resolveCanon(old, CanonStatus.RESOLVED, "Bartok a payé sa dette.", emptyList(), director) // 22 hours played since: it rests no more
         f.clock.now = Instant.parse("2026-10-02T03:00:00Z")
         val warden = arc("vengeance_du_warden", "Le Narrateur prépare la vengeance du Warden contre Bartok.")
-        store.resolveCanon(warden, CanonStatus.ABANDONED, "Bartok a quitté les cités antiques.", emptyList(), director) // 5 hours played since
-        val forgotten = arc("pont_maudit", "Le Narrateur prépare la chute du pont de Mimosa.")
-        store.resolveCanon(forgotten, CanonStatus.RESOLVED, "Le pont est tombé.", emptyList(), director)
-        store.archive(forgotten, true, "oublié par l'opérateur", Author(Source.OPERATOR, operator = "Clement"))
+        store.resolveCanon(warden, CanonStatus.ABANDONED, "Bartok a quitté les cités antiques.", emptyList(), director) // its theme rests
         f.clock.now = Instant.parse("2026-10-02T12:00:00Z")
         val trial = arc("proces_des_parieurs", "Le Narrateur prépare le procès des parieurs.")
         val law = store.addCanon(CanonDraft(CanonKind.LAW, "Quiconque casse la construction d'un autre est rapetissé.", mechanic = CanonMechanic.RULE), director).row.ref
         f.journal.sync()
 
         val opening = f.inputs.grimoire(12, Instant.parse("2026-10-02T12:00:00Z"))
+        assertTrue(opening.startsWith("<job kind=\"dream\" run=\"12\" step=\"4\" of=\"6\" task=\"grimoire\"/>"), opening.take(200))
         val arcs = opening.substringAfter("<arcs ").substringBefore("</arcs>")
         assertEquals(
-            listOf(
-                "count=\"1\">",
-                "Themes at rest (20h of world play once their arc closed): vengeance_du_warden until about 10-03 03:00 ($warden closed 10-02 03:00)",
-                "- $trial arc (planned, theme proces_des_parieurs, since 10-02): Le Narrateur prépare le procès des parieurs.",
-            ),
+            listOf("count=\"1\">", "- $trial arc (planned, theme proces_des_parieurs, since 10-02): Le Narrateur prépare le procès des parieurs."),
             arcs.trimEnd().lines(),
         )
+        assertTrue("Themes at rest" !in opening, opening)
         assertTrue("- $law law (enforced, since 10-02): Quiconque casse la construction d'un autre est rapetissé." in opening, opening)
+    }
 
-        // Nothing at rest any more once Bartok played fifteen hours more: the arcs' block says only what is open.
-        session(2, "2026-10-02 13:00", "2026-10-03 04:00")
-        val later = f.inputs.grimoire(12, Instant.parse("2026-10-03T05:00:00Z")).substringAfter("<arcs ").substringBefore("</arcs>")
-        assertEquals(listOf("count=\"1\">", "- $trial arc (planned, theme proces_des_parieurs, since 10-02): Le Narrateur prépare le procès des parieurs."), later.trimEnd().lines())
+    /**
+     * M6 §4.6: step 2 shows the style of the Director's lines since the previous review, compared with the period between
+     * the two reviews before it: the registers and how players took them, the flagged lines, the diversity.
+     */
+    @Test
+    fun `step 2 shows the registers, the tone flags and the diversity since the previous review`() = runBlocking<Unit> {
+        val e = f.evening()
+        fun label(id: Long, register: ComicRegister, flat: Double = 0.1) = f.journal.journal.lineLabels(
+            LineLabelsRecord(id, f.clock.instant(), "reflex:claude-haiku-5-5", register.id, 0.0, 0.0, flat, 0.0, 0.0, emptyList(), null, 900),
+        )
+        // The evening's two lines, between the two reviews: they are the period before.
+        label(e.sanction, ComicRegister.DIVINE_BUREAUCRACY)
+        label(e.granted, ComicRegister.PLAIN)
+        f.clock.now = at("19:58")
+        f.store.writeDoc(DocKey.Review, "Une première revue, sans répliques.", emptyList(), dreamer)
+        f.clock.now = at("22:10")
+        f.store.writeDoc(DocKey.Review, "La revue du soir : le guichet des insultes fait rire Bartok.", emptyList(), dreamer)
+        // After the latest review: three lines, one flat.
+        f.clock.now = at("22:20")
+        val weather = f.narrator("22:20:00", "Bulletin météo : averse de poulets sur la base de Bartok cet après-midi.", listOf(f.bartok))
+        val report = f.narrator("22:21:00", "Effet lenteur appliqué à Bartok.", listOf(f.bartok))
+        val court = f.narrator("22:22:00", "La cour du ciel déclare Bartok coupable de plongeon artistique.", listOf(f.bartok))
+        f.journal.sync()
+        label(weather, ComicRegister.WEATHER_REPORT)
+        label(report, ComicRegister.PLAIN, flat = 0.8)
+        label(court, ComicRegister.COURTROOM)
+        f.journal.sync()
+
+        val opening = f.inputs.review(12, at("22:30"))!!
+        val style = blocks(opening)
+        val registers = style.getValue("registers").lines()
+        assertEquals("<registers from=\"10-01 22:10\" to=\"10-01 22:30\" lines=\"3\" reviewed=\"3\">", registers.first())
+        assertEquals(listOf("- courtroom: 1 line · ", "- weather_report: 1 line · ", "- plain: 1 line · "), registers.drop(1).dropLast(1).map { it.substringBefore("laughed") })
+        assertEquals(
+            listOf("<tone_flags flagged=\"1\" of=\"3\">", "- 10-01 22:21 flat 0.80: \"Effet lenteur appliqué à Bartok.\"", "</tone_flags>"),
+            style.getValue("tone_flags").lines(),
+        )
+        val diversity = style.getValue("diversity")
+        assertTrue("register entropy " in diversity && "before" in diversity, diversity) // the evening's two lines, between the two reviews
+        // The order of the blocks: the lines, the style, then the gags and the previous review.
+        assertEquals(listOf("tics", "lines", "registers", "tone_flags", "diversity", "gags", "review"), Regex("(?m)^<([a-z_]+)").findAll(opening).map { it.groupValues[1] }.toList().drop(1))
+        assertTrue(opening.length <= DreamInputs.STEP_MAX.getValue(2))
     }
 
     @Test
@@ -302,7 +329,7 @@ class DreamInputsTest {
         assertEquals(6_600L - 2_100, candidate.playedSeconds)
         val input = f.inputs.player(12, candidate, now)
         val opening = input.text
-        assertTrue("<job kind=\"dream\" run=\"12\" step=\"1\" of=\"5\" task=\"players\" player=\"Bartok\" last_reflection=\"10-01 20:30\"/>" in opening, opening)
+        assertTrue("<job kind=\"dream\" run=\"12\" step=\"1\" of=\"6\" task=\"players\" player=\"Bartok\" last_reflection=\"10-01 20:30\"/>" in opening, opening)
         val stats = blocks(opening).getValue("stats_change")
         assertTrue(stats.startsWith("<stats_change since=\"10-01 20:30\">\n- playtime 1h00m → 1h50m (+50m)\n- deaths 0 → 1 (+1)\n"), stats)
         assertTrue("\n- unchanged: kills, luck" in stats, stats)
@@ -353,7 +380,7 @@ class DreamInputsTest {
             Author(Source.DIRECTOR),
         ).ref
         val opening = f.inputs.chronicle(12, at("23:50"))!!
-        assertTrue(opening.startsWith("<job kind=\"dream\" run=\"12\" step=\"3\" of=\"5\" task=\"chronicle\"/>\n<sessions count=\"1\">\n<session from=\"10-01 19:55\" to=\"10-01 21:45\" chapters=\"${e.chapterEntry}\">"), opening)
+        assertTrue(opening.startsWith("<job kind=\"dream\" run=\"12\" step=\"3\" of=\"6\" task=\"chronicle\"/>\n<sessions count=\"1\">\n<session from=\"10-01 19:55\" to=\"10-01 21:45\" chapters=\"${e.chapterEntry}\">"), opening)
         assertTrue(late.toString() !in opening, "its session is not over")
         assertTrue("<season>(none open: the sessions above start a new season)</season>" in opening, opening)
         assertTrue("<saga>(none yet: written when the first season closes)</saga>" in opening, opening)

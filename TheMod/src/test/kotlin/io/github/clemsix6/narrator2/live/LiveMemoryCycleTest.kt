@@ -346,7 +346,7 @@ class LiveMemoryCycleTest {
         check(grimoire != null, "a Grimoire")
         if (grimoire != null) {
             val problems = GrimoireFormat.problems(grimoire)
-            check(problems.isEmpty(), "the Grimoire has its seven sections: $problems")
+            check(problems.isEmpty(), "the Grimoire has its six sections: $problems")
             check(grimoire.length <= MemoryLimits.GRIMOIRE, "the Grimoire fits its budget (${grimoire.length} of ${MemoryLimits.GRIMOIRE})")
             val voice = VoiceGuard.check(grimoire, "text", MemoryLimits.GRIMOIRE, names.values)
             check(voice == null, "the Grimoire passes VoiceGuard: ${voice ?: "ok"}")

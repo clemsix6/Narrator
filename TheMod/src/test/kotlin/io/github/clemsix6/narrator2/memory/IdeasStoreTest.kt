@@ -68,9 +68,9 @@ class IdeasStoreTest {
 
     private suspend fun idea(ref: Ref): Idea = store.row(ref) as Idea
 
-    /** An arc the Dreamer planned, of [theme]; [resolved]: then closed. */
+    /** An arc the storyteller planned, of [theme]; [resolved]: then closed (by the Dreamer, who settles arcs). */
     private suspend fun arc(theme: String, resolved: Boolean = false): Ref {
-        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le procès des parieurs se prépare.", status = CanonStatus.PLANNED, theme = theme), f.dreamer).row
+        val arc = store.addCanon(CanonDraft(CanonKind.ARC, "Le procès des parieurs se prépare.", status = CanonStatus.PLANNED, theme = theme), storyteller).row
         if (resolved) store.resolveCanon(arc.ref, CanonStatus.RESOLVED, "Le procès a eu lieu.", emptyList(), f.dreamer)
         return arc.ref
     }
