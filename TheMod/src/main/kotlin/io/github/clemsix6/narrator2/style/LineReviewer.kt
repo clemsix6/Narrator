@@ -5,6 +5,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.GameEvent
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.reflex.ClaudeReflexes
 import io.github.clemsix6.narrator2.reflex.ReflexCall
 import io.github.clemsix6.narrator2.reflex.ReflexResult
@@ -27,9 +28,11 @@ import java.util.concurrent.TimeUnit
  * sent, never on the Director's path: an asynchronous subscriber of the bus, whose queue ([CAPACITY] lines) drops what
  * overflows (counted by the bus), and one coroutine that reviews the lines one at a time.
  *
- * Only the Director's lines are reviewed ([reviewed]): a turn's, of [MIN_CHARS] characters or more; neither an operator's
- * (`/narrator say`), nor a rule's or a module's, nor a title or a line above the hotbar. Each review is one call of
- * the reflexes' client (`settings.reflex`, read at each line), with its `llm_calls` row (purpose `line_review`).
+ * Only the Director's lines are reviewed ([reviewed]): a turn's, said with `say` in [Tics.OPENER_MIN_CHARS] characters or
+ * more ([Tics.opens], the openers' rule); neither an operator's (`/narrator say`), nor a rule's or a module's, nor a
+ * title, a line above the hotbar or a book (recorded with their kind first, `[title] …`), nor a short aside. Each review
+ * is one call of the reflexes' client (`settings.reflex`, read at each line), with its `llm_calls` row (purpose
+ * `line_review`).
  *
  * Bounded: [MAX_PER_HOUR] reviews in any hour at most. A failure costs nothing but the labels: a timeout, an error, an
  * invalid answer, an open circuit or `style.lineReview = false` give no labels, and the line goes unlabeled. The
@@ -183,9 +186,6 @@ class LineReviewer(private val services: NarratorServices) {
         /** Lines waiting for their review, at most: a burst of the Director never waits on the review. */
         const val CAPACITY = 64
 
-        /** A line shorter than this is a title or a line above the hotbar, as for the openers (M6 §3.4): not reviewed. */
-        const val MIN_CHARS = 25
-
         /** Reviews in any hour, at most: three times the busiest evening of M4's acceptance (40 lines an hour). */
         const val MAX_PER_HOUR = 120
 
@@ -202,9 +202,12 @@ class LineReviewer(private val services: NarratorServices) {
 
         private val HOUR_MS = TimeUnit.HOURS.toMillis(1)
 
-        /** The Director's lines: said in a turn, by the speech tools, of [MIN_CHARS] characters or more. The bus's filter. */
+        /**
+         * The Director's lines: said in a turn with `say`, [Tics.OPENER_MIN_CHARS] characters or more ([Tics.opens]: a
+         * title, a line above the hotbar or a book never is). The bus's filter.
+         */
         fun reviewed(event: GameEvent): Boolean =
             event is NarratorSpoke && event.channel == NarratorChannel.NARRATOR && event.turnId != null && event.operator == null &&
-                event.text.length >= MIN_CHARS
+                Tics.opens(event.text)
     }
 }

@@ -93,7 +93,7 @@ class ToneWatch(
          * [window] is the latest labeled lines, the latest first.
          */
         fun drifts(labels: LineLabels, window: List<LineLabels>): List<Pair<StyleNoteKind, String>> = buildList {
-            val line = "your line « ${quote(labels.text)} »"
+            val line = "your line ${ModelText.guillemets(labels.text, QUOTE_MAX)}"
             if (labels.dark >= DARK) add(StyleNoteKind.DARK to "$line reads dark; find its absurd version, or drop the idea")
             if (labels.cruel >= CRUEL) add(StyleNoteKind.CRUEL to "$line mocks the person, not the play; tease the choice made in the game")
             if (labels.outOfCharacter >= OUT_OF_CHARACTER) add(StyleNoteKind.OUT_OF_CHARACTER to "$line steps out of character")
@@ -107,8 +107,5 @@ class ToneWatch(
                 add(StyleNoteKind.REPEATS to "$repeated of your last ${window.size} lines reuse a recent construction")
             }
         }
-
-        /** [text] cut and escaped, its « » turned into ‹ › so that the quote around it cannot end early. */
-        private fun quote(text: String): String = ModelText.escape(ModelText.cut(text, QUOTE_MAX)).replace('«', '‹').replace('»', '›')
     }
 }

@@ -94,6 +94,25 @@ class StyleWatchTest {
         assertEquals(listOf("guichet", "céleste", "attend", "gagne", "patiente", "minutes", "silence", "pommes"), watch.crutchCandidates())
     }
 
+    /**
+     * M6 review 1, finding 5 and decision D4: the Narrator speaks of itself in the third person, and the review took
+     * « narrateur » for a crutch (M6-02); an elided player's name (finding 4) is a name.
+     */
+    @Test
+    fun `neither the Narrator's name nor an elided player's name is a candidate`() {
+        val watch = watch(
+            listOf(
+                "Le Narrateur contemple le cadeau d'Opaline avec dédain.",
+                "Le narrateur bâille devant le cadeau d'Opaline.",
+                "Les narrateurs ne se répètent jamais, affirme le Narrateur.",
+            ),
+            names = listOf("Opaline"),
+        )
+        val candidates = watch.crutchCandidates()
+        assertEquals("cadeau", candidates.first(), "$candidates")
+        assertTrue(candidates.none { it in setOf("narrateur", "narrateurs", "opaline", "d'opaline") }, "$candidates")
+    }
+
     @Test
     fun `« céleste » is a candidate of the M4 acceptance`() {
         val candidates = watch(StyleSamples.m4(), StyleSamples.M4_PLAYERS).crutchCandidates()
@@ -109,6 +128,19 @@ class StyleWatchTest {
         assertEquals(listOf("Deux.", "Trois."), watch.recentLines(4, 2))
         assertEquals(listOf("Un.", "Deux.", "Trois.", "Quatre."), watch.recentLines(99, 5))
         assertEquals(emptyList(), watch.recentLines(1, 5))
+    }
+
+    /** M6 review 1, finding 1: the review's context holds what the Director said with `say`, never a title, a line above the hotbar or a book. */
+    @Test
+    fun `the recent lines leave out the titles, the lines above the hotbar and the books`() {
+        val watch = watch(
+            listOf(
+                "Un.", "[title] DÉFI : LA COURSE AU PIC / Premier au sommet", "Deux.", "[actionbar] Il reste trente secondes !",
+                "[book \"Prophétie\"] Le jour où la lave montera, Bartok rira moins.", "Trois.",
+            ),
+        )
+        assertEquals(listOf("Un.", "Deux.", "Trois."), watch.recentLines(99, 5))
+        assertEquals(listOf("Deux."), watch.recentLines(6, 1))
     }
 
     @Test

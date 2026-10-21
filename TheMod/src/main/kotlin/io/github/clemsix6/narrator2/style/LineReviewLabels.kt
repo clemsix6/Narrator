@@ -4,6 +4,7 @@ import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.JsonOutputFormat
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.memory.enumOfId
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -123,12 +124,13 @@ object LineReviewLabels {
     }
 
     /**
-     * The first [CANDIDATES] of [candidates] that [text] holds: the only words it can use as crutches. The review asks
-     * about these alone, rather than about every frequent word of the latest lines (T1, M6-02).
+     * The first [CANDIDATES] of [candidates] that [text] holds as a word ([Tics.words]: « grand » is not in « grandiose »,
+     * « enquête » is in « l'enquête »), give or take case, accents and a plural `s`: the only words it can use as
+     * crutches. The review asks about these alone, rather than about every frequent word of the latest lines (T1, M6-02).
      */
     fun inLine(candidates: List<String>, text: String): List<String> {
-        val line = fold(text)
-        return candidates.take(CANDIDATES).filter { fold(it) in line }
+        val words = Tics.words(Tics.said(text, Instant.EPOCH, Tics.Names.NONE))
+        return candidates.take(CANDIDATES).filter { candidate -> words.any { same(candidate, it) } }
     }
 
     /**

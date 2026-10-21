@@ -1,12 +1,16 @@
 package io.github.clemsix6.narrator2.forge.host
 
+import io.github.clemsix6.narrator2.forge.Built
 import io.github.clemsix6.narrator2.forge.ForgeLimits
 import io.github.clemsix6.narrator2.forge.api.ModuleContext
+import io.github.clemsix6.narrator2.forge.rt.Meter
 import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import io.github.clemsix6.narrator2.mechanics.module.ModuleFixture
 import io.github.clemsix6.narrator2.testing.BusyMachine
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.lang.management.ManagementFactory
+import java.lang.management.ThreadMXBean
 import java.lang.reflect.Proxy
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -64,6 +68,60 @@ class HeldBackTest {
         assertNull(host.call("timer", BusyMachine.PATIENT_NANOS) { fake.timers[0].run() }!!.fault, "the module goes on")
         assertEquals(2, host.main.getField("n").getInt(null), "the call given up ran to its end, alone; the skipped one did not run")
         assertEquals(0, threads.lost.alive(), "no thread lost")
+    }
+
+    @Test
+    fun `a call given up after the caller was held serving it is resumed at the host's next check, never half done`() {
+        val fake = FakeContext()
+        // FLAKY-5's password_race: its act asked, the caller held back past the deadline, then its `then` refused and lost.
+        val held = Holding(fake.context)
+        val host = Hosts.host("Racer", Hosts.source("Racer", body = "m.timers().every(1, () -> { m.log(\"asked\"); m.log(\"then\"); });"), threads, faults = faults)
+        assertTrue(host.started(held.context), "${host.disabled}")
+        held.next = 60 // the caller serves `asked` 60 ms: past the call's 25 ms, the call is given up (FORGE-ABANDON)
+
+        val (called, late) = host.callRun { fake.timers[0].run() }
+        assertFalse(called.skipped, "started in $late tries")
+        assertNull(called.fault, "the machine's doing")
+        assertTrue(called.nanos / 1e6 >= 60, "given up once its request was served: ${called.nanos / 1e6} ms")
+        assertEquals(listOf("asked"), fake.logs.toList(), "what it asks after waits for its host")
+        assertTrue(Hosts.settled(host))
+
+        assertEquals(listOf("asked", "then"), fake.logs.toList(), "the rest of the call ran, its SDK call served (before: refused, lost)")
+        assertEquals(emptyList(), faults, "nobody's fault")
+        assertEquals(1, host.starved)
+        assertEquals(0, threads.lost.alive(), "no thread lost")
+        assertNull(host.call("timer", BusyMachine.PATIENT_NANOS) { fake.timers[0].run() }!!.fault, "the module goes on")
+        assertEquals(listOf("asked", "then", "asked", "then"), fake.logs.toList())
+    }
+
+    @Test
+    fun `a loop its meter stopped, whose thread's CPU clock reads past the evidence as it unwinds, is one limit fault`() {
+        val fake = FakeContext()
+        val host = Hosts.host("Looper", Hosts.source("Looper", body = "m.timers().every(1, () -> { while (true) { } });"), threads, faults = faults)
+        assertTrue(host.started(fake.context))
+        // FLAKY-5: under contention Windows' CPU clock read 40 ms or more since the arm for 20 ms of work as the loop
+        // unwound. Here its thread really computes up to the evidence since the arm (40 ms), after the stop (the host's
+        // side, no module code): judged from the arm, an abandon; from the stop (FORGE-ABANDON), its meter's fault. A
+        // budget of 30 ms: its loop reads one or two steps of the CPU clock (15.6 ms under Windows) before its stop, never
+        // three, so what follows the stop reads two at most, under the evidence (20 ms of loop read 0 to 2 steps).
+        val budget = 30_000_000L
+        val meter = Class.forName("Looper" + Built.METER_SUFFIX, true, host.main.classLoader).getField(Built.METER_FIELD).get(null) as Meter
+        val called = host.callRun(budget) {
+            try {
+                fake.timers[0].run()
+            } finally {
+                while (CPU.currentThreadCpuTime - meter.cpuAtArm() < Meter.cpuEvidence(budget)) continue
+                Thread.sleep(200)
+            }
+        }.first
+        assertFalse(called.skipped)
+        assertNull(called.fault, "given up: judged once its thread ended")
+        assertTrue(Hosts.settled(host))
+        val fault = faults.single()
+        assertTrue(fault.cause.startsWith("time budget at Looper.java:"), fault.cause)
+        assertFalse(fault.disables, "the first limit fault, not an abandon")
+        assertNull(host.disabled)
+        assertEquals(0, threads.lost.alive(), "its thread ended: none lost")
     }
 
     @Test
@@ -160,6 +218,23 @@ class HeldBackTest {
         assertNull(host.disabled)
     }
 
+    /** [context] behind a proxy whose next SDK call, once [next] is set, holds the caller that many milliseconds first (the machine, on the server thread). */
+    private class Holding(context: ModuleContext) {
+        @Volatile
+        var next = 0L
+
+        val context: ModuleContext = ModuleContext::class.java.cast(
+            Proxy.newProxyInstance(ModuleContext::class.java.classLoader, arrayOf(ModuleContext::class.java)) { _, method, arguments ->
+                val hold = next
+                if (hold > 0) {
+                    next = 0
+                    Thread.sleep(hold)
+                }
+                method.invoke(context, *(arguments ?: arrayOf()))
+            },
+        )
+    }
+
     /** [context] behind a proxy whose first SDK call runs [hold] first (on the caller, which serves the module's SDK calls). */
     private fun proxy(context: ModuleContext, hold: () -> Unit): ModuleContext {
         var first = true
@@ -175,14 +250,15 @@ class HeldBackTest {
     }
 
     /**
-     * One call of the module's code with the game's budget ([ForgeLimits.CALL_NANOS]), asked again while the module thread
-     * did not even start it within the caller's deadline (`LATE`: skipped, nothing of it ran, nobody's fault), as the
-     * engine replays a skipped call; [REPLAYS] times at most. The last call, and how many times it was skipped first.
+     * One call of the module's code with the game's budget ([ForgeLimits.CALL_NANOS]) or [budget], asked again while the
+     * module thread did not even start it within the caller's deadline (`LATE`: skipped, nothing of it ran, nobody's
+     * fault), as the engine replays a skipped call; [REPLAYS] times at most. The last call, and how many times it was
+     * skipped first.
      */
-    private fun ModuleHost.callRun(body: () -> Unit): Pair<ModuleHost.Called, Int> {
+    private fun ModuleHost.callRun(budget: Long = ForgeLimits.CALL_NANOS, body: () -> Unit): Pair<ModuleHost.Called, Int> {
         var late = 0
         while (true) {
-            val called = checkNotNull(call("timer", ForgeLimits.CALL_NANOS, body)) { "the host refused the call: $disabled" }
+            val called = checkNotNull(call("timer", budget, body)) { "the host refused the call: $disabled" }
             if (!called.skipped || late == REPLAYS) return called to late
             late++
         }
@@ -190,6 +266,9 @@ class HeldBackTest {
 
     private companion object {
         val BUDGET_MS = ForgeLimits.CALL_MILLIS + ModuleHost.ABANDON_MARGIN_NANOS / 1_000_000
+
+        /** This thread's CPU clock, as the host reads the module thread's. */
+        val CPU: ThreadMXBean = ManagementFactory.getThreadMXBean()
 
         /** Times a call the module thread did not start in time is asked again ([callRun]). */
         const val REPLAYS = 20

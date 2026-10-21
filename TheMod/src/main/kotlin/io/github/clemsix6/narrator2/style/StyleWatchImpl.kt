@@ -155,13 +155,16 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         return resting.toList().sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first })
     }
 
-    /** The [CANDIDATES] content words of [CANDIDATE_MIN_LETTERS] letters or more in the most of the latest [CANDIDATE_LINES] lines. */
+    /**
+     * The [CANDIDATES] content words of [CANDIDATE_MIN_LETTERS] letters or more in the most of the latest [CANDIDATE_LINES]
+     * lines, but the Narrator's own name ([NOT_CANDIDATES]).
+     */
     private fun candidates(said: List<Tics.Said>): List<String> {
         val counts = HashMap<String, Int>()
         val last = HashMap<String, Int>()
         said.takeLast(CANDIDATE_LINES).forEachIndexed { i, line ->
             for (word in Tics.words(line)) {
-                if (word.count { it.isLetter() } < CANDIDATE_MIN_LETTERS) continue
+                if (word.count { it.isLetter() } < CANDIDATE_MIN_LETTERS || word in NOT_CANDIDATES) continue
                 counts.merge(word, 1, Int::plus)
                 last[word] = i
             }
@@ -174,8 +177,9 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
 
     override fun crutchCandidates(): List<String> = view.candidates
 
+    /** Said with `say` only ([Tics.bySay]): a title, a line above the hotbar or a book is no context for the review. */
     override fun recentLines(beforeLineId: Long, count: Int): List<String> =
-        view.lines.filter { it.id < beforeLineId }.takeLast(count).map { it.said.text }
+        view.lines.filter { it.id < beforeLineId && Tics.bySay(it.said.text) }.takeLast(count).map { it.said.text }
 
     override fun restingOpener(text: String): RestingOpener? {
         val view = view
@@ -193,9 +197,9 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         val view = view
         val crutchLines = minOf(CRUTCH_LINES, view.labels.size)
         val sections = listOfNotNull(
-            Section("openers at rest", view.openers.map { "« ${quote(it.opener)} » ×${it.count}" }),
-            Section("phrases", view.phrases.map { "« ${quote(it.text)} » ×${it.count}" }),
-            Section("crutch words", view.crutches.map { (word, marks) -> "« ${quote(word)} » ×$marks" }, " (of your last $crutchLines lines)"),
+            Section("openers at rest", view.openers.map { "${ModelText.guillemets(it.opener)} ×${it.count}" }),
+            Section("phrases", view.phrases.map { "${ModelText.guillemets(it.text)} ×${it.count}" }),
+            Section("crutch words", view.crutches.map { (word, marks) -> "${ModelText.guillemets(word)} ×$marks" }, " (of your last $crutchLines lines)"),
             registers(view.labels)?.let { Section("your last ${minOf(REGISTER_LINES, view.labels.size)} lines:", listOf(it)) },
         ).filter { it.items.isNotEmpty() }
         return fit(sections)
@@ -268,9 +272,6 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         return ModelText.cut("Style: ${sections.first().label} ${sections.first().items.first()}", SITUATION_MAX)
     }
 
-    /** One of the Director's own words, escaped, its « » turned into ‹ › so that the quote around it cannot end early. */
-    private fun quote(text: String): String = ModelText.escape(text).replace('«', '‹').replace('»', '›')
-
     companion object {
         /** The Director's latest lines held. */
         const val WINDOW = Tics.LINES
@@ -290,6 +291,13 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         const val CANDIDATES = 8
         const val CANDIDATE_LINES = 50
         const val CANDIDATE_MIN_LETTERS = 5
+
+        /**
+         * The Narrator's own name, never a crutch candidate (M6 review 1, D4): it speaks of itself in the third person, and
+         * the review took it for a crutch (M6-02, T1). It is no player's name either: « Le Narrateur… » stays an opener.
+         * Search data, in French like [Tics]'s stop words.
+         */
+        private val NOT_CANDIDATES = setOf("narrateur", "narrateurs")
 
         /** The latest lines the diversity is measured on. */
         const val DIVERSITY_LINES = 50
