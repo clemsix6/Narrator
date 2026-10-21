@@ -102,6 +102,9 @@ class RestartGameTests {
         val config = Files.readString(NarratorRuntime.configFile)
         Files.writeString(NarratorRuntime.configFile, GAMETEST_CONFIG)
         try {
+            // The console's restarts recorded before this test, in the Journal every batch shares: a batch that ran before
+            // may have restarted the Narrator from the console too (FLAKY-7). This test counts its own from there.
+            val consoleRestarts = decisions(first, "restarted", "Server", kind = "operator")
             // What a restart must not lose: a challenge, a law, a module, a reminder.
             first.journal.barrier() // Bob's join row, which the law's players are checked against
             call(
@@ -178,7 +181,7 @@ class RestartGameTests {
             awaitCondition("$module restarted", 30_000) { decisions(second, ModuleEngine.RESTARTED, module.toString()) == 1L }
             for (ref in listOf(challenge, law, module)) check(second.memory.store.canon(ref)?.status == CanonStatus.ACTIVE) { "$ref in the canon of the new memory" }
             check(second.director.status().reminders.singleOrNull { it.id == reminder }?.note == NOTE) { "the reminder: ${second.director.status().reminders}" }
-            check(decisions(second, "restarted", "Server", kind = "operator") == 1L) { "the decision operator restarted" }
+            check(decisions(second, "restarted", "Server", kind = "operator") == consoleRestarts + 1) { "the decision operator restarted" }
 
             // Nothing left for what follows: ended through the new Narrator, the reminders as found.
             cleanUp(second, made)
@@ -213,7 +216,7 @@ class RestartGameTests {
             val fourth = NarratorRuntime.current!!
             check(fourth.journal.available && fourth.memory.available && fourth.mechanics.available) { "whole again: ${fourth.summary()}" }
             noDashboard(fourth)
-            check(decisions(fourth, "restarted", "Server", kind = "operator") == 2L) { "both restarts by the command recorded" }
+            check(decisions(fourth, "restarted", "Server", kind = "operator") == consoleRestarts + 2) { "both restarts by the command recorded" }
 
             // The old Journal still closing past its time (constat 4 of the M6 review, part 2): its writer held by a write
             // job. The restart fails, nothing prepared: never two Journals on the file. Once the writer is free, the next
@@ -253,7 +256,7 @@ class RestartGameTests {
                 "whole again: ${fifth.summary()}"
             }
             noDashboard(fifth)
-            check(decisions(fifth, "restarted", "Server", kind = "operator") == 3L) { "the three restarts by the command recorded" }
+            check(decisions(fifth, "restarted", "Server", kind = "operator") == consoleRestarts + 3) { "the three restarts by the command recorded" }
         } finally {
             Files.writeString(NarratorRuntime.configFile, config)
             NarratorRuntime.current?.let { cleanUp(it, made) }

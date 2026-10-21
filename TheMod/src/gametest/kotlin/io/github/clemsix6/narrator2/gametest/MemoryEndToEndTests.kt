@@ -107,12 +107,9 @@ class MemoryEndToEndTests {
 
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
         } finally {
-            // As found, even after a failed step: no player, no chapter left open (the next test that wakes the Director
-            // would read its briefing), no key, the Director asleep. Closing the chapter needs the fake gateway and the key.
+            // As found, even after a failed step: no player, the Director asleep.
             player?.let { left -> runCatching { server.onServerThread { left.close() } }.onFailure { cleanupLog.warn("could not remove ${left.name}", it) } }
-            runCatching { closeChapter(helper, runtime) }.onFailure { cleanupLog.warn("could not close the Director's chapter", it) }
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            putTheDirectorToSleep(helper, runtime)
             fake.close()
         }
         awaitCondition("the Director sleeps again") { runtime.director.status().state == DirectorState.DISABLED }

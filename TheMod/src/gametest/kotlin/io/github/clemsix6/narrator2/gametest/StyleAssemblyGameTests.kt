@@ -111,9 +111,8 @@ class StyleAssemblyGameTests {
             check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
             check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
         } finally {
-            // As found: no key, the Director asleep, the reflexes off.
-            Files.writeString(NarratorRuntime.configFile, "{}")
-            runCatching { runtime.reload() }
+            // As found: the Director asleep, the reflexes off.
+            putTheDirectorToSleep(helper, runtime)
             server.onServerThread { player.close() }
             fake.close()
         }

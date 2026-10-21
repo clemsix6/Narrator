@@ -200,17 +200,8 @@ class ForgeEndToEndTests {
                 check(fake.rejections.isEmpty()) { "requests the strict fake gateway rejected: ${fake.rejections}" }
                 check(fake.unscripted == 0) { "unscripted requests: ${fake.unscripted}" }
             } finally {
-                // A check that failed left the chapter open: a Director put to sleep keeps it, and the next batch's
-                // Director would go on with it (M3-19). It closes here, as it would have at the end of the story.
-                if (runtime.director.status().chapter != null && runtime.director.status().state != DirectorState.DISABLED) {
-                    runCatching {
-                        operatorCommands(helper, "narrator chapter close")
-                        awaitCondition("the chapter closed", 45_000) { runtime.director.status().chapter == null }
-                    }
-                }
-                // As found: no key, the Director asleep, nothing of this test running on the server's engine, the pace.
-                Files.writeString(NarratorRuntime.configFile, "{}")
-                runCatching { runtime.reload() }
+                // As found: the Director asleep, nothing of this test running on the server's engine, the pace.
+                putTheDirectorToSleep(helper, runtime)
                 for (view in runtime.mechanics.modules.list().filter { it.ref == deployed || it.module == MODULE }) {
                     runCatching { runtime.mechanics.modules.stop(view.ref, "Le test est fini.", CLEANUP) }
                 }
