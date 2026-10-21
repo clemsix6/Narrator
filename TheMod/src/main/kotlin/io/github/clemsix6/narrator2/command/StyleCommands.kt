@@ -87,13 +87,20 @@ object StyleCommands {
     }
 
     /**
-     * `Latest 50 lines: openers distinct 0.84 · top register divine_bureaucracy 38% · register entropy 0.71 · crutch
-     * « céleste » in 6 lines · 3 tics`: the watch's [Diversity].
+     * `Latest 50 lines: openers distinct 0.84 · top register divine_bureaucracy 38% · plain lines 20% · register entropy
+     * 0.71 · crutch « céleste » in 6 lines · 3 tics`: the watch's [Diversity]. The top register is the voice's (M6 §3.7):
+     * when every labeled line is `plain` or `other`, `no register of the voice · plain lines 100%`; `no line labeled`
+     * when none is.
      */
     internal fun diversityLine(diversity: Diversity): String {
         if (diversity.lines == 0) return "Latest lines: none measured yet"
-        val register = diversity.topRegister?.let { "top register ${it.id} ${percent(diversity.topRegisterShare)} · register entropy ${decimal(diversity.registerEntropy)}" }
-            ?: "no line labeled"
+        val top = diversity.topRegister
+        val plain = diversity.plainShare?.let { "plain lines ${percent(it)}" }
+        val register = when {
+            top != null -> listOfNotNull("top register ${top.id} ${percent(diversity.topRegisterShare)}", plain, "register entropy ${decimal(diversity.registerEntropy)}").joinToString(" · ")
+            plain != null -> "no register of the voice · $plain"
+            else -> "no line labeled"
+        }
         val crutch = diversity.crutches.firstOrNull()?.let { (word, lines) -> "crutch « $word » in $lines ${TraceText.plural(lines, "line")}" } ?: "no crutch word"
         return "Latest ${diversity.lines} ${TraceText.plural(diversity.lines, "line")}: openers distinct ${decimal(diversity.openersDistinct)} · " +
             "$register · $crutch · ${diversity.tics} ${TraceText.plural(diversity.tics, "tic")}"

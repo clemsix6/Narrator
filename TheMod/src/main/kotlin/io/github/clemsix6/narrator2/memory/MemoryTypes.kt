@@ -240,7 +240,10 @@ enum class CanonKind(val dueAllowed: Boolean) {
             else -> setOf(CanonStatus.RETIRED)
         }
 
-    /** The statuses it may start with: [CanonStatus.ACTIVE], or [CanonStatus.PLANNED] for an arc the Dreamer prepares. */
+    /**
+     * The statuses it may start with: [CanonStatus.ACTIVE], or [CanonStatus.PLANNED] for an arc the storyteller prepares
+     * (the dream's programme, M6 §6).
+     */
     val startsAs: Set<CanonStatus>
         get() = if (this == ARC) setOf(CanonStatus.PLANNED, CanonStatus.ACTIVE) else setOf(CanonStatus.ACTIVE)
 

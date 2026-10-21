@@ -1,22 +1,21 @@
 package io.github.clemsix6.narrator2.web.pages
 
 import io.github.clemsix6.narrator2.command.TraceText
+import io.github.clemsix6.narrator2.trace.Cost
+import io.github.clemsix6.narrator2.trace.ModelTokens
 import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.web.Bar
 import io.github.clemsix6.narrator2.web.BadRequest
-import io.github.clemsix6.narrator2.web.Cost
 import io.github.clemsix6.narrator2.web.DashboardQueries
 import io.github.clemsix6.narrator2.web.Filter
 import io.github.clemsix6.narrator2.web.HourCalls
 import io.github.clemsix6.narrator2.web.Html
 import io.github.clemsix6.narrator2.web.KindCalls
-import io.github.clemsix6.narrator2.web.ModelTokens
 import io.github.clemsix6.narrator2.web.Page
 import io.github.clemsix6.narrator2.web.PageContext
 import io.github.clemsix6.narrator2.web.WebPage
 import io.github.clemsix6.narrator2.web.WebRequest
 import io.github.clemsix6.narrator2.web.bars
-import io.github.clemsix6.narrator2.web.costOf
 import io.github.clemsix6.narrator2.web.curve
 import io.github.clemsix6.narrator2.web.filters
 import io.github.clemsix6.narrator2.web.link
