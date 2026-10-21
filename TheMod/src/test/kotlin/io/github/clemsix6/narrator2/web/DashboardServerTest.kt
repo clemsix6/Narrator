@@ -407,8 +407,23 @@ class DashboardServerTest {
                 runCatching { fixture.journal.read(5_000) { holds.hold(0) } }.also { first.await() }
             }
         }
-        assertIs<JournalTimeoutException>(second.exceptionOrNull(), "a second query of the turn, while the first runs, is refused")
+        val refused = assertIs<IllegalStateException>(second.exceptionOrNull(), "a second query of the turn, while the first runs, is refused")
+        assertEquals("a read of the dashboard is already running in this turn", refused.message, "its own message, not a timeout")
         assertEquals(1, holds.most.get())
+    }
+
+    @Test
+    fun `a turn runs its queries one after the other, every time`() = withDashboardJournal { fixture, context, holds ->
+        // A page or a service that reads a table, then another: the second read waited for nothing, yet was refused
+        // while the first one still ended its query on its read thread (review 3 of M6, finding 3: 497 times out of 500).
+        repeat(100) { turn ->
+            val reads = context.inTurn {
+                fixture.journal.read(5_000) { holds.hold(0); 1 } + fixture.journal.read(5_000) { holds.hold(0); 1 }
+            }
+            assertEquals(2, reads, "turn $turn: both reads ran")
+        }
+        assertEquals(1, holds.most.get(), "still one read of the dashboard at a time")
+        assertEquals("next", context.read { "next" }, "every turn was given back")
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────────

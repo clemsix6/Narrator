@@ -2,10 +2,13 @@ package io.github.clemsix6.narrator2.web
 
 import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.journal.DisabledJournal
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.trace.Decisions
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.BARTOK
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.PRIVATE_SECRET
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.TRAPPED
@@ -62,7 +65,7 @@ class DashboardPagesTest {
             "/memory/C-510", "/memory/c510", "/memory/C-512", "/memory/I-520", "/memory/N-530", "/memory/H-541", "/memory/P-550", "/memory/P-553",
             "/players", "/players?name=imo", "/players/Bartok", "/players/bartok?show=chat", "/players/Bartok?show=events", "/players/Mimosa",
             "/players/${encodeSegment(TRAPPED.name)}", "/players/${BARTOK.uuid}",
-            "/mechanics", "/mechanics?mechanic=module&status=open", "/mechanics/decisions", "/mechanics/decisions?decision=started&subject=c-511",
+            "/mechanics", "/mechanics?mechanic=module&status=open", "/decisions?kind=mechanic", "/decisions?kind=mechanic&decision=started&subject=c-511",
             "/forge", "/forge?page=2", "/forge/tag_game", "/forge/tag_game/1", "/forge/trap_module/v1",
             "/style", "/style?period=day", "/style?period=month&page=2", "/sql", "/sql?q=SELECT%201",
         )
@@ -72,7 +75,7 @@ class DashboardPagesTest {
         }
         val notFound = listOf(
             "/memory/C-999", "/memory/X-1", "/memory/nope", "/memory/canon/more", "/memory/docs/nope", "/memory/docs/grimoire/9",
-            "/memory/docs/grimoire/x", "/memory/docs/grimoire/1/2", "/players/Nobody", "/players/a/b", "/mechanics/nope", "/forge/nope",
+            "/memory/docs/grimoire/x", "/memory/docs/grimoire/1/2", "/players/Nobody", "/players/a/b", "/mechanics/nope", "/mechanics/decisions", "/forge/nope",
             "/forge/tag_game/9", "/forge/tag_game/x", "/forge/a/b/c", "/style/x", "/sql/x",
         )
         notFound.forEach { path -> pageOf(routes, token, path).let { assertEquals(404, it.status, path); assertSafePage(path, it) } }
@@ -170,7 +173,7 @@ class DashboardPagesTest {
     }
 
     @Test
-    fun `the mechanics page shows what runs from the snapshots, then its history in the canon or the engine's decisions`() {
+    fun `the mechanics page shows what runs from the snapshots, then its history in the canon, and links to the engine's decisions`() {
         val mechanics = page("/mechanics")
         assertContains(mechanics, "Mechanics: on · 1 challenge · 1 rule")
         assertContains(mechanics, "challenge obtain<small> « Œuf &quot;&gt;&lt;b onmouseover")
@@ -183,11 +186,13 @@ class DashboardPagesTest {
         assertFalse("C-510" in history, "a promise is not the engine's")
         assertContains(history, "removed by an operator")
 
-        val decisions = page("/mechanics/decisions")
-        assertContains(decisions, "<td>started</td><td>C-511</td><td>C-511 challenge started: obtain &lt;script&gt;")
-        assertContains(decisions, "<a href=\"/turns/42\">#42</a>")
+        // Its decisions are those of `/decisions`, a link away: no second list of them.
+        assertContains(mechanics, "<a href=\"/decisions?kind=mechanic\">decisions of the mechanics engine</a>")
+        val decisions = page("/decisions?kind=mechanic")
+        assertContains(decisions, "<td>mechanic</td><td>started</td><td>C-511</td><td>C-511 challenge started: obtain &lt;script&gt;")
+        assertContains(decisions, "<a href=\"/turns/42\">turn #42</a>")
         assertContains(decisions, "C-513 fired on Bartok")
-        assertFalse("C-513" in page("/mechanics/decisions?decision=started").substringAfter("The engine&#39;s decisions"))
+        assertFalse("C-513" in page("/decisions?kind=mechanic&decision=started"))
     }
 
     @Test
@@ -197,8 +202,20 @@ class DashboardPagesTest {
         assertContains(forge, "A trap &lt;script&gt;")
         assertContains(forge, "<td>tested</td><td>tag_game</td>")
         assertContains(forge, "<a href=\"/decisions?kind=forge\">decisions of the Forge</a>")
+        // One table of the decisions: the Forge's latest are the rows of `/decisions`.
+        val tested = "<td>forge</td><td>tested</td><td>tag_game</td><td>ok: compiled, guard clean, smoke run passed</td>"
+        assertContains(forge, tested)
+        assertContains(page("/decisions?kind=forge"), tested)
+        // A failure of the Forge is red on both, as a refusal is.
+        Decisions(dataset.fixture.journal, dataset.fixture.clock).record(Log.forge, DecisionRecord.Kind.FORGE, "broken", "tag_game v1", "no longer compiles")
+        dataset.fixture.sync()
+        val broken = "<tr class=\"failure\"><td>21:00:00</td><td>forge</td><td>broken</td><td>tag_game v1</td>"
+        assertContains(page("/forge"), broken)
+        assertContains(page("/decisions?kind=forge"), broken)
 
         val tag = page("/forge/tag_game")
+        assertContains(tag, "<td>tested</td><td>tag_game</td>")
+        assertContains(tag, "<td>broken</td><td>tag_game v1</td>")
         assertContains(tag, "<title>tag_game v1 · Narrator</title>")
         assertContains(tag, "<td>saved</td><td>tag_game v1</td>")
         assertContains(tag, "<a href=\"/memory/C-513\">C-513</a> v1 law: 3 acts, 0 faults")
@@ -207,6 +224,7 @@ class DashboardPagesTest {
         val trap = page("/forge/trap_module/1")
         assertContains(trap, "<pre>public class Trap { String s = &quot;&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;&quot;; }</pre>")
         assertContains(trap, "world/narrator2/forge/trap_module/v1.java", message = "relative to the world, never a path of the server")
+        assertContains(trap.substringAfter(">Decisions</h2>").substringBefore("</h2>"), "None yet.", message = "a module's page shows its own decisions only")
     }
 
     @Test

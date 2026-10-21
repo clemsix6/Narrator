@@ -41,6 +41,7 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -326,6 +327,37 @@ class DuckJournalTest {
         }
         release.countDown()
         assertEquals(2L, runBlocking { journal.journal.read(5_000) { 2L } }, "the pool still works after a timeout")
+    }
+
+    @Test
+    fun `a read's watch hears its end before the caller resumes, and may refuse it`() = JournalFixture().use { journal ->
+        // A slow end: a caller that resumed before it would find it not heard yet.
+        val watch = object : ReadWatch {
+            @Volatile
+            var ended = false
+
+            override fun start(): String? = null
+
+            override fun end() {
+                Thread.sleep(300)
+                ended = true
+            }
+        }
+        assertEquals(1, runBlocking(watch) { journal.journal.read(5_000) { 1 } })
+        assertTrue(watch.ended, "the connection is back and the end heard before the caller resumes")
+
+        val ran = AtomicBoolean()
+        val refusing = object : ReadWatch {
+            override fun start(): String = "another read of this work runs"
+
+            override fun end() {
+                error("a refused read never ends")
+            }
+        }
+        val refused = assertFailsWith<IllegalStateException> { runBlocking(refusing) { journal.journal.read(5_000) { ran.set(true) } } }
+        assertEquals("another read of this work runs", refused.message, "the watch's reason, not a timeout")
+        assertFalse(ran.get(), "a refused query never runs")
+        assertEquals(2L, runBlocking { journal.journal.read(5_000) { 2L } }, "its connection went back to the pool")
     }
 
     @Test

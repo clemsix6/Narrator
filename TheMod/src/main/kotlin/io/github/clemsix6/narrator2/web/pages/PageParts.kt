@@ -4,22 +4,17 @@ import io.github.clemsix6.narrator2.command.TraceText
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.memory.Ref
 import io.github.clemsix6.narrator2.memory.enumOfId
-import io.github.clemsix6.narrator2.memory.instant
-import io.github.clemsix6.narrator2.memory.longOrNull
-import io.github.clemsix6.narrator2.memory.query
 import io.github.clemsix6.narrator2.web.BadRequest
 import io.github.clemsix6.narrator2.web.Html
 import io.github.clemsix6.narrator2.web.Link
-import io.github.clemsix6.narrator2.web.PageContext
 import io.github.clemsix6.narrator2.web.READ_TIMEOUT_MS
 import io.github.clemsix6.narrator2.web.WebRequest
 import io.github.clemsix6.narrator2.web.link
-import java.sql.Connection
-import java.time.Instant
 
 /*
  * What the pages of the memory, the players, the mechanics, the Forge, the style and SQL share (M6-12): the time limit
- * of their statements, links to a memory row or a player, tabs, and the engine's decisions as a table.
+ * of their statements, links to a memory row or a player, tabs, filters and the conditions they build ([Where]). The
+ * engine's decisions as a table: `decisionTable`, with `/decisions`.
  */
 
 /** Seconds a statement of these pages may run: the dashboard's read limit ([READ_TIMEOUT_MS]). */
@@ -70,54 +65,23 @@ internal fun signed(value: Int): String = if (value > 0) "+$value" else value.to
 
 /**
  * The conditions of a list's `WHERE`, built from a request's filters: fixed SQL with `?` for each value, never a text of
- * the request in the SQL itself.
+ * the request in the SQL itself. The pages and [io.github.clemsix6.narrator2.web.DashboardQueries] build their lists
+ * with it: `"… WHERE $where ORDER BY …"`, then `*where.values`.
  */
 internal class Where {
     private val conditions = mutableListOf<String>()
-    private val bound = mutableListOf<Any?>()
+    private val bound = mutableListOf<Any>()
 
     /** The values of the `?`, in order. */
-    val values: Array<Any?> get() = bound.toTypedArray()
+    val values: Array<Any> get() = bound.toTypedArray()
 
-    fun add(condition: String, vararg values: Any?) {
+    fun add(condition: String, vararg values: Any) {
         conditions += condition
         bound.addAll(values)
     }
 
     override fun toString(): String = conditions.joinToString(" AND ").ifEmpty { "true" }
 }
-
-/** One row of `engine_decisions`, as the pages show it. */
-internal data class DecisionRow(val ts: Instant, val kind: String, val decision: String, val subject: String?, val reason: String?, val turnId: Long?)
-
-/**
- * The decisions matching [where] (fixed SQL, its values in [parameters]), the latest first, [limit] from [offset]. Reads
- * `engine_decisions` only.
- */
-internal fun Connection.decisions(where: String, vararg parameters: Any?, limit: Int, offset: Int = 0): List<DecisionRow> = query(
-    "SELECT ts, kind, decision, subject, reason, turn_id FROM engine_decisions WHERE $where ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
-    *parameters, limit, offset,
-    timeoutSeconds = QUERY_SECONDS,
-) { DecisionRow(instant(1), getString(2), getString(3), getString(4), getString(5), longOrNull(6)) }
-
-/** [rows] as a table: when, what was decided ([kind] too when asked), about what, why, and the Director's turn. */
-internal fun Html.decisionTable(rows: List<DecisionRow>, context: PageContext, kind: Boolean = false) {
-    table(listOfNotNull("When", "Kind".takeIf { kind }, "Decision", "Subject", "Reason", "#Turn")) {
-        rows.forEach { decision ->
-            row(if (decision.decision in FAILED_DECISIONS) "failure" else null) {
-                cell(context.time(decision.ts))
-                if (kind) cell(decision.kind)
-                cell(decision.decision)
-                cell(decision.subject)
-                cell(decision.reason)
-                cell("num") { decision.turnId?.let { a(link("turns", it), "#$it") } }
-            }
-        }
-    }
-}
-
-/** Decisions shown in red: something failed or was refused. */
-private val FAILED_DECISIONS = setOf("failed", "fault", "refused", "broken", "stuck", "leak", "unreadable", "denied")
 
 /** A line saying [what] is off, and why: the page shows what it can without it. */
 internal fun Html.off(what: String, reason: String?) = p("$what is off: ${reason ?: "no reason given"}.", "warning")

@@ -4,7 +4,9 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.FILE_SECRET
 import io.github.clemsix6.narrator2.web.DashboardDataset.Companion.PRIVATE_SECRET
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.nio.file.Files
@@ -26,15 +28,20 @@ import kotlin.test.assertTrue
  * pages run names `private_messages`; the SQL page, with the model's access, refuses every query out of its white list.
  */
 class DashboardPrivacyTest {
-    private val folder: Path = Files.createTempDirectory("m6-12-privacy")
-    private val dataset = DashboardDataset(folder.resolve("narrator.duckdb"))
-    private val token = DashboardToken()
-    private val journal = RecordingJournal(dataset.fixture.journal)
-    private val services = dataset.services(journal = journal)
-    private val routes = Routes(services, token, DATASET_PORT)
-    private val keyFile = folder.resolve("llmgw.key").also { Files.writeString(it, FILE_SECRET) }
+    /** The Journal's folder, a key file next to it; removed after each test, once the Journal is closed. */
+    @TempDir
+    lateinit var folder: Path
 
-    init {
+    private val dataset by lazy { DashboardDataset(folder.resolve("narrator.duckdb")) }
+    private val token = DashboardToken()
+    private val journal by lazy { RecordingJournal(dataset.fixture.journal) }
+    private val services by lazy { dataset.services(journal = journal) }
+    private val routes by lazy { Routes(services, token, DATASET_PORT) }
+    private val keyFile: Path get() = folder.resolve("llmgw.key")
+
+    @BeforeEach
+    fun writeKeys() {
+        Files.writeString(keyFile, FILE_SECRET)
         Files.writeString(services.dataDir.resolve("llmgw.key"), FILE_SECRET)
     }
 
@@ -42,7 +49,9 @@ class DashboardPrivacyTest {
     fun close() = dataset.close()
 
     /** What no answer may hold: the secrets, the token, and where the server keeps its files. */
-    private val secrets = listOf(PRIVATE_SECRET, FILE_SECRET, token.value, folder.toAbsolutePath().toString(), services.dataDir.toAbsolutePath().toString())
+    private val secrets by lazy {
+        listOf(PRIVATE_SECRET, FILE_SECRET, token.value, folder.toAbsolutePath().toString(), services.dataDir.toAbsolutePath().toString())
+    }
 
     private fun assertHidden(what: String, response: WebResponse) {
         val body = bodyText(response)
@@ -54,7 +63,7 @@ class DashboardPrivacyTest {
     fun `no page reachable by a link shows a private message, a file, a secret or a path of the server`() {
         val seeds = Routes.PAGES.map { "/${it.root}" } + listOf(
             "/memory/canon", "/memory/memories", "/memory/interactions", "/memory/notes", "/memory/ideas", "/memory/chronicle", "/memory/docs",
-            "/memory/jobs", "/players/Bartok?show=events", "/players/Mimosa?show=chat", "/mechanics/decisions", "/style?period=month",
+            "/memory/jobs", "/players/Bartok?show=events", "/players/Mimosa?show=chat", "/decisions?kind=mechanic", "/style?period=month",
             "/sql?q=SELECT+*+FROM+timeline+WHERE+id+%3D+${dataset.whisper}", "/sql?q=SELECT+*+FROM+chat_log",
         )
         val seen = LinkedHashSet<String>()
@@ -81,7 +90,7 @@ class DashboardPrivacyTest {
         val pages = Routes.PAGES.map { "/${it.root}" } + listOf(
             "/memory/canon", "/memory/memories", "/memory/interactions?player=Bartok", "/memory/notes", "/memory/ideas", "/memory/chronicle",
             "/memory/docs", "/memory/docs/grimoire", "/memory/jobs", "/memory/C-510", "/memory/P-550", "/players/Bartok", "/players/Bartok?show=chat",
-            "/players/Mimosa?show=events", "/mechanics/decisions", "/forge/tag_game", "/style?period=month", "/sql?q=SELECT+count%28*%29+FROM+chat",
+            "/players/Mimosa?show=events", "/decisions?kind=mechanic", "/forge/tag_game", "/style?period=month", "/sql?q=SELECT+count%28*%29+FROM+chat",
         )
         pages.forEach { path -> assertEquals(200, pageOf(routes, token, path).status, path) }
         val statements = journal.statements.toList()

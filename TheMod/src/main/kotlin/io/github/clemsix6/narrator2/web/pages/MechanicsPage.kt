@@ -34,27 +34,19 @@ import java.util.UUID
 /**
  * `/mechanics` (M6 §8.4): what the mechanics engine runs now, from its snapshot (challenges, duels, rules, the modules
  * of the Forge, its lines of the situation) and the guards' traps; then, from the Journal, their history in the canon
- * (`/mechanics`: the rows the engine tracks, open and closed) or the engine's `mechanic` decisions
- * (`/mechanics/decisions`). Nothing here touches the world: the snapshots are safe from any thread. Without the
- * Journal, what runs still shows, and the history says why it is missing.
+ * (the rows the engine tracks, open and closed), and a link to the engine's `mechanic` decisions on `/decisions`.
+ * Nothing here touches the world: the snapshots are safe from any thread. Without the Journal, what runs still shows,
+ * and the history says why it is missing.
  */
 object MechanicsPage : WebPage {
     override val root = "mechanics"
 
     override val label = "Mechanics"
 
-    private const val DECISIONS = "decisions"
-
-    override fun render(request: WebRequest, context: PageContext): Page? = when (request.path) {
-        emptyList<String>() -> page(showDecisions = false, request, context)
-        listOf(DECISIONS) -> page(showDecisions = true, request, context)
-        else -> null
-    }
-
-    private fun page(showDecisions: Boolean, request: WebRequest, context: PageContext): Page {
-        val paging = Paging.of(request)
+    override fun render(request: WebRequest, context: PageContext): Page? {
+        if (request.path.isNotEmpty()) return null
         val history: Html.() -> Unit = try {
-            if (showDecisions) decisions(request, context, paging) else history(request, context, paging)
+            history(request, context, Paging.of(request))
         } catch (e: JournalUnavailableException) {
             { p("Not shown: ${e.message}.", "failure") }
         } catch (e: JournalTimeoutException) {
@@ -62,9 +54,13 @@ object MechanicsPage : WebPage {
         }
         return Page("Mechanics") {
             live(context)
-            h2(if (showDecisions) "The engine's decisions" else "Their history in the canon")
-            tabs(if (showDecisions) DECISIONS_TAB else HISTORY_TAB, listOf(HISTORY_TAB to link(root), DECISIONS_TAB to link(root, DECISIONS)))
+            h2("Their history in the canon")
             history()
+            p("muted") {
+                text("Their decisions: ")
+                a(link("decisions", query = mapOf("kind" to DecisionRecord.Kind.MECHANIC.id)), "decisions of the mechanics engine")
+                text(".")
+            }
         }
     }
 
@@ -231,21 +227,6 @@ object MechanicsPage : WebPage {
         cell(short(entry.resolution))
     }
 
-    private fun decisions(request: WebRequest, context: PageContext, paging: Paging): Html.() -> Unit {
-        val where = Where()
-        where.add("kind = ?", DecisionRecord.Kind.MECHANIC.id)
-        request.param("decision")?.let { where.add("decision = ?", it) }
-        request.param("subject")?.let { where.add("contains(lower(subject), lower(?))", it) }
-        val (rows, more) = paging.rows(context.read { c -> c.decisions(where.toString(), *where.values, limit = paging.limit, offset = paging.offset) })
-        return {
-            filters(link(root, DECISIONS), request, listOf(Filter.Field("decision", "Decision", "started"), Filter.Field("subject", "Subject", "C-50")))
-            if (rows.isEmpty()) p("No decision of the engine.", "muted") else decisionTable(rows, context)
-            pager(request, paging, more)
-        }
-    }
-
-    private const val HISTORY_TAB = "History"
-    private const val DECISIONS_TAB = "Decisions"
     private const val OPEN = "open"
     private const val CLOSED = "closed"
     private const val MAX_TRAPPED = 15

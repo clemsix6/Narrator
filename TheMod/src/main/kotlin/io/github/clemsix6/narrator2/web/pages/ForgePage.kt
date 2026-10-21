@@ -7,6 +7,9 @@ import io.github.clemsix6.narrator2.forge.arsenal.ArsenalStore
 import io.github.clemsix6.narrator2.journal.JournalTimeoutException
 import io.github.clemsix6.narrator2.journal.JournalUnavailableException
 import io.github.clemsix6.narrator2.trace.DecisionRecord
+import io.github.clemsix6.narrator2.web.DashboardQueries
+import io.github.clemsix6.narrator2.web.DecisionFilter
+import io.github.clemsix6.narrator2.web.DecisionRow
 import io.github.clemsix6.narrator2.web.Html
 import io.github.clemsix6.narrator2.web.Page
 import io.github.clemsix6.narrator2.web.PageContext
@@ -45,7 +48,7 @@ object ForgePage : WebPage {
         val forge = services.forge
         val paging = Paging.of(request)
         val (entries, more) = paging.rows(forge.arsenal.list().drop(paging.offset).take(paging.limit))
-        val history = readDecisions(context) { c -> c.decisions("kind = ?", FORGE, limit = LATEST) }
+        val history = readDecisions(context, DecisionFilter(kind = FORGE))
         return Page("Forge") {
             p(ForgeCommands.statusLine(services))
             dl {
@@ -97,9 +100,7 @@ object ForgePage : WebPage {
         } ?: return null
         val source = runBlocking { arsenal.source(entry.name, entry.version) }
         val running = services.mechanics.modules.list().filter { it.module == entry.name }
-        val history = readDecisions(context) { c ->
-            c.decisions("kind = ? AND (subject = ? OR starts_with(subject, ?))", FORGE, entry.name, "${entry.name} v", limit = LATEST)
-        }
+        val history = readDecisions(context, DecisionFilter(kind = FORGE, module = entry.name))
         return Page("${entry.name} v${entry.version}") {
             dl {
                 item("Status", entry.status.id)
@@ -167,8 +168,9 @@ object ForgePage : WebPage {
         class Unread(val why: String) : Latest
     }
 
-    private fun readDecisions(context: PageContext, read: (java.sql.Connection) -> List<DecisionRow>): Latest = try {
-        Latest.Read(context.read(read))
+    /** The latest decisions matching [filter] ([LATEST]), with the table and the query of `/decisions`. */
+    private fun readDecisions(context: PageContext, filter: DecisionFilter): Latest = try {
+        Latest.Read(LATEST.rows(context.read { DashboardQueries(it).decisions(filter, LATEST) }).first)
     } catch (e: JournalUnavailableException) {
         Latest.Unread("${e.message}")
     } catch (e: JournalTimeoutException) {
@@ -189,6 +191,6 @@ object ForgePage : WebPage {
 
     private val FORGE = DecisionRecord.Kind.FORGE.id
 
-    /** Decisions listed: the latest ones, the rest on `/decisions`. */
-    private const val LATEST = 20
+    /** Decisions listed: the latest 20, the rest on `/decisions`. */
+    private val LATEST = Paging(1, size = 20)
 }
