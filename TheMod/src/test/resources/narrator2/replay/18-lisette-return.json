@@ -1,0 +1,15 @@
+{
+  "id": "lisette_return",
+  "title": "Lisette comes back after nine days",
+  "source": "m6-18 run 2 chapter 3 (director-e7c43bb0), turn 7003000012, after the chapter's first two turns",
+  "context": "JOIN of Lisette after nine days away (her SHEET: generous, a joker never played); Gaspard, Firmin and Opaline online for four minutes; target Lisette",
+  "transcript": "transcripts/m6-18-run2-director-e7c43bb0.jsonl",
+  "turn": "7003000012",
+  "prompt_sha": "0ec6854dd53e",
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    }
+  ]
+}
