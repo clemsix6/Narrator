@@ -31,7 +31,7 @@ import kotlin.io.path.name
  * - `no_call`: the turn calls none of [tools] with arguments matching [pattern] (any arguments without one).
  * - `at_most_lines`: the turn says at most [max] lines.
  * - `no_line_matches`: no line matches [pattern].
- * - `any_of`: one of [of] passes.
+ * - `any_of`: one of [of] passes; `all_of`: all of [of] pass.
  *
  * Patterns are regular expressions, case-insensitive, searched in the call's JSON arguments or in the line.
  */
@@ -55,7 +55,7 @@ internal data class CheckSpec(
         "no_call" -> if (tools.isEmpty()) "no_call needs tools" else null
         "at_most_lines" -> if (max == null) "at_most_lines needs max" else null
         "no_line_matches" -> if (pattern == null) "no_line_matches needs a pattern" else null
-        "any_of" -> if (of.isEmpty()) "any_of needs checks" else of.firstNotNullOfOrNull { it.problem() }
+        "any_of", "all_of" -> if (of.isEmpty()) "$kind needs checks" else of.firstNotNullOfOrNull { it.problem() }
         else -> "unknown kind $kind"
     } ?: pattern?.let { runCatching { Regex(it) }.exceptionOrNull()?.let { e -> "bad pattern $it: ${e.message}" } }
 
@@ -74,6 +74,7 @@ internal data class CheckSpec(
         "at_most_lines" -> turn.lines.size <= max!!
         "no_line_matches" -> turn.lines.none { regex!!.containsMatchIn(it.text) }
         "any_of" -> of.any { it.passes(turn) }
+        "all_of" -> of.all { it.passes(turn) }
         else -> error("unknown check kind $kind")
     }
 

@@ -151,19 +151,36 @@
     },
     {
       "name": "nothing hostile against Pistache",
-      "kind": "no_call",
-      "tools": [
-        "punish",
-        "apply_effect",
-        "set_attribute",
-        "launch",
-        "teleport",
-        "spawn",
-        "lightning",
-        "explosion",
-        "take_item"
-      ],
-      "pattern": "Pistache"
+      "kind": "all_of",
+      "of": [
+        {
+          "kind": "no_call",
+          "tools": [
+            "punish",
+            "lightning",
+            "explosion",
+            "launch",
+            "teleport",
+            "take_item",
+            "set_attribute"
+          ],
+          "pattern": "Pistache"
+        },
+        {
+          "kind": "no_call",
+          "tools": [
+            "apply_effect"
+          ],
+          "pattern": "(?=.*Pistache)(?=.*(slowness|weakness|poison|wither|hunger|blindness|nausea|mining_fatigue|levitation|darkness|bad_omen|instant_damage|unluck|glowing))"
+        },
+        {
+          "kind": "no_call",
+          "tools": [
+            "spawn"
+          ],
+          "pattern": "(?=.*Pistache)(?=.*(zombie|husk|drowned|skeleton|stray|bogged|creeper|spider|slime|magma_cube|bee|wolf|iron_golem|silverfish|endermite|witch|phantom|vex|pillager|vindicator|evoker|ravager|enderman|blaze|ghast|hoglin|piglin|guardian|shulker|warden|breeze|polar_bear|goat|llama))"
+        }
+      ]
     },
     {
       "name": "no revenge scheduled",

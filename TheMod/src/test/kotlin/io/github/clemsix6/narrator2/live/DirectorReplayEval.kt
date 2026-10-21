@@ -184,20 +184,23 @@ internal class ReplayRunner(
 
 /** How often a version passed a check of a situation, over its samples. */
 internal data class CheckTally(val situation: String, val check: String, val a: Int, val aSamples: Int, val b: Int, val bSamples: Int) {
-    /** A passed it on every sample, B did not (the verdict's rule, M6 §4.5). */
-    val lost: Boolean get() = aSamples > 0 && a == aSamples && b < bSamples
+    /** A passed it on every sample, B on none: the loss the verdict counts (M6 §4.5, as the B = A pass of M6-09 calibrated it). */
+    val lost: Boolean get() = aSamples > 0 && bSamples > 0 && a == aSamples && b == 0
+
+    /** A passed it on every sample, B on some only: with two samples, what noise alone gives (M6-09). Reported, not counted. */
+    val weakened: Boolean get() = aSamples > 0 && a == aSamples && b in 1 until bSamples
 
     /** B passed it on every sample, A did not. */
     val gained: Boolean get() = bSamples > 0 && b == bSamples && a < aSamples
-
-    /** A passed it on every sample, B on none: a loss that noise alone hardly explains. */
-    val lostClearly: Boolean get() = lost && b == 0
 }
 
 /**
- * The verdict of a replay (M6 §4.5): B passes when it loses no structural check that A passed on all its samples, loses
- * no more than [FUNNY_TOLERANCE] of mean « funny », and has no more eliminatory failure (dark, cruel) than A; and only
- * when the replay is complete (every planned sample played, every line graded).
+ * The verdict of a replay (M6 §4.5): B passes when it loses no structural check that A passed on all its samples (A on
+ * all, B on none), loses no more than [FUNNY_TOLERANCE] of mean « funny », and has no more eliminatory failure (dark,
+ * cruel) than A; and only when the replay is complete (every planned sample played, every line graded).
+ *
+ * A check that B passes on some of its samples only ([CheckTally.weakened]) is reported, not counted: the B = A pass of
+ * M6-09 (two copies of one prompt) gave one such flip in 35 checks, a turn cut by the request cap before its line.
  */
 internal class ReplayVerdict(
     val tallies: List<CheckTally>,
@@ -218,6 +221,7 @@ internal class ReplayVerdict(
     fun reasons(): List<String> = buildList {
         if (!complete) add("incomplete: ${incompleteWhy.joinToString("; ")}")
         lost.forEach { add("B loses ${it.situation} · ${it.check} (A ${it.a}/${it.aSamples}, B ${it.b}/${it.bSamples})") }
+        tallies.filter { it.weakened }.forEach { add("(not counted) B weakens ${it.situation} · ${it.check} (A ${it.a}/${it.aSamples}, B ${it.b}/${it.bSamples})") }
         if (funnyDrop > FUNNY_TOLERANCE + 1e-9) add("funny drops by ${GridSummary.num(funnyDrop)} (${GridSummary.num(gridA.funnyMean)} → ${GridSummary.num(gridB.funnyMean)}, ${FUNNY_TOLERANCE} allowed)")
         if (moreEliminatory > 0) add("$moreEliminatory more eliminatory failure(s) in B (${gridA.eliminatory} → ${gridB.eliminatory})")
     }
@@ -392,7 +396,7 @@ class DirectorReplayEval {
             val tallies = verdict.tallies
             append("- checks whose pass counts differ: ${verdict.flips.size} of ${tallies.size}")
             if (verdict.flips.isNotEmpty()) append(" (${verdict.flips.joinToString { "${it.situation} · ${it.check} ${it.a}/${it.aSamples} → ${it.b}/${it.bSamples}" }})")
-            append("\n- lost by B (A all, B not all): ${verdict.lost.size} · clearly lost (A all, B none): ${tallies.count { it.lostClearly }} · gained by B: ${tallies.count { it.gained }}\n")
+            append("\n- lost by B (A all, B none): ${verdict.lost.size} · weakened (A all, B some): ${tallies.count { it.weakened }} · gained by B: ${tallies.count { it.gained }}\n")
             append("- funny: A ${GridSummary.num(verdict.gridA.funnyMean)}, B ${GridSummary.num(verdict.gridB.funnyMean)}, difference ${GridSummary.num(abs(verdict.funnyDrop))}\n")
             append("- eliminatory failures: A ${verdict.gridA.eliminatory}, B ${verdict.gridB.eliminatory}\n\n")
 

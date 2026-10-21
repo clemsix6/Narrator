@@ -64,6 +64,20 @@ class ReplayHarnessTest {
         assertTrue(operator.operator!!.startsWith("Operator Opaline: Gaspard vient d'arriver"), operator.operator)
     }
 
+    /** The B = A pass of M6-09 counted a slow-falling gift as hostile: the fixtures now tell a gift from a punishment. */
+    @Test
+    fun `nothing hostile tells a gift from a punishment`() {
+        val check = ReplaySituations.load().single { it.id == "ordinary_death" }.spec.checks.single { it.name == "nothing hostile against Mimosa" }
+        fun passes(vararg calls: ReplayCall) = check.passes(turn(*calls))
+        assertTrue(passes(ReplayCall(1, "apply_effect", """{"players":["Mimosa"],"effect":"slow_falling","seconds":300}""")))
+        assertTrue(passes(ReplayCall(1, "spawn", """{"entity":"chicken","near":"Mimosa","count":3}""")))
+        assertTrue(passes(ReplayCall(1, "punish", """{"player":"Bartok","punishment":"tiny"}""")), "against another player")
+        assertTrue(!passes(ReplayCall(1, "apply_effect", """{"players":["Mimosa"],"effect":"slowness","seconds":60}""")))
+        assertTrue(!passes(ReplayCall(1, "spawn", """{"entity":"zombie","near":"Mimosa","count":1}""")))
+        assertTrue(!passes(ReplayCall(1, "punish", """{"player":"Mimosa","punishment":"tiny"}""")))
+        assertTrue(!passes(ReplayCall(1, "set_attribute", """{"player":"Mimosa","attribute":"scale","multiply":0.5}""")))
+    }
+
     @Serializable
     private data class Calibration(val lines: List<Line>) {
         @Serializable
@@ -101,6 +115,8 @@ class ReplayHarnessTest {
         assertTrue(check("at_most_lines", max = 1).passes(turn) && !check("at_most_lines", max = 0).passes(turn))
         assertTrue(!check("no_line_matches", pattern = "apporte").passes(turn))
         assertTrue(check("any_of", of = listOf(check("calls", tool = "favor"), check("speaks"))).passes(turn))
+        assertTrue(!check("all_of", of = listOf(check("calls", tool = "favor"), check("speaks"))).passes(turn))
+        assertTrue(check("all_of", of = listOf(check("calls", tool = "punish"), check("speaks"))).passes(turn))
 
         val announcedFirst = turn(ReplayCall(1, "say", """{"text":"Gare à toi !"}"""), ReplayCall(1, "punish", """{"player":"Pistache"}"""))
         assertTrue(!check("act_before_announce").passes(announcedFirst), "a line in the same request as the act did not wait for its result")
@@ -125,8 +141,13 @@ class ReplayHarnessTest {
         assertTrue(equal.passes, equal.reasons().toString())
         assertTrue(equal.flips.isEmpty())
 
-        val silentB = listOf(sample("B", 1, said), sample("B", 2, emptyList()))
-        val lost = ReplayVerdict.of(listOf(situation), a + silentB, "A", "B", grades(a, 2) + grades(silentB.take(1), 2), 4, emptyList())
+        val halfSilentB = listOf(sample("B", 1, said), sample("B", 2, emptyList()))
+        val weakened = ReplayVerdict.of(listOf(situation), a + halfSilentB, "A", "B", grades(a, 2) + grades(halfSilentB.take(1), 2), 4, emptyList())
+        assertTrue(weakened.passes, "a check B passes on one sample of two is noise, reported only: ${weakened.reasons()}")
+        assertTrue(weakened.lost.isEmpty() && weakened.tallies.single { it.check == "speaks" }.weakened && weakened.flips.size == 1)
+
+        val silentB = listOf(sample("B", 1, emptyList()), sample("B", 2, emptyList()))
+        val lost = ReplayVerdict.of(listOf(situation), a + silentB, "A", "B", grades(a, 2), 4, emptyList())
         assertTrue(!lost.passes && lost.lost.single().check == "speaks", lost.reasons().toString())
 
         val duller = ReplayVerdict.of(listOf(situation), a + sameB, "A", "B", grades(a, 2) + grades(sameB, 1), 4, emptyList())
