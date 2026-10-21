@@ -6,15 +6,17 @@ import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.StyleNoteKind
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Clock
 import java.util.EnumMap
 
 /**
- * The tone's monitor (M6 §4.3): from the labels of the line review, it tells the Director a drift of tone as a note of
- * the engine ([DirectorSignal.StyleNote], urgency `NEXT`: it never wakes), which the Director renders as
- * `Engine: tone check: …` with its next request. The prompt already says what to do with it (`director.md`, since M2).
+ * The tone's monitor (M6 §4.3): from the labels of the line review, and from the length of each line ([said]), it tells
+ * the Director a drift of tone as a note of the engine ([DirectorSignal.StyleNote], urgency `NEXT`: it never wakes), which
+ * the Director renders as `Engine: tone check: …` with its next request. The prompt already says what to do with it
+ * (`director.md`, since M2).
  *
  * | Drift | When |
  * |---|---|
@@ -23,10 +25,12 @@ import java.util.EnumMap
  * | out of character | a line `out_of_character` ≥ [OUT_OF_CHARACTER] |
  * | flat | the line, and [RUN] of the latest [WINDOW] labeled lines in all, `flat` ≥ [FLAT] |
  * | repeats | the line, and [RUN] of the latest [WINDOW] labeled lines in all, `repeats` ≥ [REPEATS] |
+ * | long | a line of more than three sentences, or of two paragraphs or more ([LineLength], M6-18 finding 2): measured when it is said, labeled or not |
  *
- * One note a labeled line at most, the gravest ([StyleNoteKind] is in order of gravity); the same drift at most every
+ * One note a line at most, the gravest ([StyleNoteKind] is in order of gravity); the same drift at most every
  * [CADENCE_MS]. The Director tells one note a request, the gravest, and drops them at a silence. `style.toneNotes =
- * false` ([enabled]) stops them. Each note is a decision `style tone_noted` with the labels. Any thread.
+ * false` ([enabled]) stops them. Each note is a decision `style tone_noted` with the labels, or the length. Never a
+ * refusal: the line is said, and the note shapes the next ones. Any thread.
  *
  * @param post where a note goes: the Director's inbox (read when a note is posted: the Director is created after the
  *   watch).
@@ -48,24 +52,42 @@ class ToneWatch(
      */
     fun labeled(labels: LineLabels, latest: List<LineLabels>) {
         if (!enabled()) return
+        tell(drifts(labels, latest.take(WINDOW)), labels.eventId) {
+            put("line", labels.text)
+            put("register", labels.register.id)
+            put("dark", labels.dark)
+            put("cruel", labels.cruel)
+            put("flat", labels.flat)
+            put("out_of_character", labels.outOfCharacter)
+            put("repeats", labels.repeats)
+        }
+    }
+
+    /**
+     * The Director said [text], a line the review reads (its `chat` row [eventId]): one longer than a message allows
+     * ([LineLength.long]) is a drift of its own, measured here without a call, whether the review labels it or not.
+     */
+    fun said(eventId: Long, text: String) {
+        if (!enabled()) return
+        val length = LineLength.of(text)
+        if (!length.long) return
+        tell(listOf(StyleNoteKind.LONG to long(text, length)), eventId) {
+            put("line", text)
+            put("sentences", length.sentences)
+            put("paragraphs", length.paragraphs)
+        }
+    }
+
+    /** Tells the first of [drifts] (the gravest first) not told within [CADENCE_MS]: a note to the Director and a decision. */
+    private fun tell(drifts: List<Pair<StyleNoteKind, String>>, eventId: Long, detail: JsonObjectBuilder.() -> Unit) {
         val now = clock.millis()
         val (kind, text) = synchronized(noted) {
-            drifts(labels, latest.take(WINDOW))
-                .firstOrNull { (kind, _) -> noted[kind]?.let { now - it >= CADENCE_MS } ?: true }
-                ?.also { noted[it.first] = now }
+            drifts.firstOrNull { (kind, _) -> noted[kind]?.let { now - it >= CADENCE_MS } ?: true }?.also { noted[it.first] = now }
         } ?: return
         post(DirectorSignal.StyleNote(kind, text, now))
         decisions.record(
-            log, DecisionRecord.Kind.STYLE, "tone_noted", subject = kind.name.lowercase(), reason = text, eventId = labels.eventId,
-            detail = buildJsonObject {
-                put("line", labels.text)
-                put("register", labels.register.id)
-                put("dark", labels.dark)
-                put("cruel", labels.cruel)
-                put("flat", labels.flat)
-                put("out_of_character", labels.outOfCharacter)
-                put("repeats", labels.repeats)
-            },
+            log, DecisionRecord.Kind.STYLE, "tone_noted", subject = kind.name.lowercase(), reason = text, eventId = eventId,
+            detail = buildJsonObject(detail),
         )
     }
 
@@ -107,5 +129,13 @@ class ToneWatch(
                 add(StyleNoteKind.REPEATS to "$repeated of your last ${window.size} lines reuse a recent construction")
             }
         }
+
+        /**
+         * The note of a [text] too long ([length]): `your line « … » has 5 sentences in 2 paragraphs: …`, with the rule of
+         * `director.md` ([LineLength.MAX_SENTENCES]).
+         */
+        fun long(text: String, length: LineLength): String =
+            "your line ${ModelText.guillemets(text, QUOTE_MAX)} has ${length.describe()}: a message is one paragraph of one to " +
+                "three sentences, often one; keep the punchline"
     }
 }

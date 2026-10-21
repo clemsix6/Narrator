@@ -61,10 +61,16 @@ object StyleReport {
     }
 
     /**
-     * A flaw the line review scores from 0 to 1 (M6 §3.3): the drifts the notes of tone tell, the most serious first. Its
-     * `id` (`out_of_character`) is the column of `narrator_lines`, and the word shown.
+     * A flaw the line review scores from 0 to 1 (M6 §3.3): one of [FLAWS], drifts the notes of tone tell, the most serious
+     * first. Its `id` (`out_of_character`) is the column of `narrator_lines`, and the word shown.
      */
     typealias Flaw = StyleNoteKind
+
+    /**
+     * The flaws the line review scores, in the order of `narrator_lines`' columns: every drift of tone but the length,
+     * which is measured, never scored ([LineLength], M6-FIX-11).
+     */
+    val FLAWS: List<Flaw> = listOf(Flaw.DARK, Flaw.CRUEL, Flaw.OUT_OF_CHARACTER, Flaw.FLAT, Flaw.REPEATS)
 
     /**
      * A line of the Director and its latest labels: [register] is null when the line was not reviewed, and [flaws] and
@@ -169,7 +175,7 @@ object StyleReport {
     /** The [count] latest lines flagged for their tone, at any time, the latest first. */
     fun latestFlags(connection: Connection, count: Int): List<Line> =
         connection.query(
-            "$LINE_COLUMNS FROM narrator_lines n WHERE greatest(${Flaw.entries.joinToString { "n.${it.id}" }}) >= ? " +
+            "$LINE_COLUMNS FROM narrator_lines n WHERE greatest(${FLAWS.joinToString { "n.${it.id}" }}) >= ? " +
                 "ORDER BY n.ts DESC, n.id DESC LIMIT ?",
             FLAG, count,
             timeoutSeconds = QUERY_TIMEOUT_SECONDS,
@@ -306,7 +312,7 @@ object StyleReport {
         val flagged = lines.filter { it.flags.isNotEmpty() }
             .sortedWith(compareBy<Line> { it.flags.first().first.ordinal }.thenByDescending { line -> line.flags.maxOf { it.second } }.thenBy { it.ts })
         if (flagged.isEmpty()) {
-            return "<tone_flags flagged=\"0\" of=\"$reviewed\">(none: no line reached $THRESHOLD in ${Flaw.entries.joinToString { it.id }})</tone_flags>"
+            return "<tone_flags flagged=\"0\" of=\"$reviewed\">(none: no line reached $THRESHOLD in ${FLAWS.joinToString { it.id }})</tone_flags>"
         }
         val items = flagged.take(FLAGS_SHOWN).map { line ->
             "- ${dayTime(line.ts, zone)} ${flagList(line)}: ${ModelText.quote(line.text, QUOTE_MAX)}"
@@ -357,7 +363,7 @@ object StyleReport {
     /** A row of [LINE_COLUMNS]. */
     private fun ResultSet.line(): Line {
         val register = getString(4)?.let { enumOfId<ComicRegister>(it) ?: ComicRegister.OTHER }
-        val flaws = if (register == null) emptyMap() else Flaw.entries.mapIndexedNotNull { i, flaw -> doubleOrNull(5 + i)?.let { flaw to it } }.toMap()
+        val flaws = if (register == null) emptyMap() else FLAWS.mapIndexedNotNull { i, flaw -> doubleOrNull(5 + i)?.let { flaw to it } }.toMap()
         return Line(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), register, flaws, if (register == null) emptyList() else strings(10))
     }
 
