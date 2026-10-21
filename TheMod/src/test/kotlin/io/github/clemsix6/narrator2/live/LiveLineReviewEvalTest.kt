@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.reflex.ReflexClient
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.style.LineLabels
@@ -208,7 +209,8 @@ class LiveLineReviewEvalTest {
             else -> {
                 val lines = evenings[evening] ?: error("$id: no evening $evening")
                 val index = lines.indexOf(text).also { check(it >= 0) { "$id: the line is not in the evening $evening" } }
-                lines.take(index).filter { it.length >= LineReviewer.MIN_CHARS }.takeLast(CONTEXT)
+                // The evenings' short lines are titles recorded without their kind: the lines the review reads.
+                lines.take(index).filter { Tics.opens(it) }.takeLast(CONTEXT)
             }
         }
         return Case(

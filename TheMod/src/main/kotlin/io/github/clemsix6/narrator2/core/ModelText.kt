@@ -15,7 +15,7 @@ package io.github.clemsix6.narrator2.core
  *   that is made of lines, such as a report or a summary).
  *
  * Every formatter that puts such text in front of a model goes through [escape] or one of its forms:
- * [name], [quote], [lines], [attribute]. Pure, any thread.
+ * [name], [quote], [guillemets], [lines], [attribute]. Pure, any thread.
  */
 object ModelText {
     /** [text] on one line: `<` `>` replaced by `‹` `›`, control characters and line breaks by spaces. */
@@ -43,6 +43,13 @@ object ModelText {
      */
     fun quote(text: String, max: Int): String =
         "\"" + escape(cut(text, max)).replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /**
+     * [text] between « », as the engine quotes the Narrator's own words to the Director (`your line « … »`): cut to [max]
+     * characters (code points, `…` included), escaped, its own « » turned into ‹ › so that the quote cannot end early.
+     */
+    fun guillemets(text: String, max: Int = Int.MAX_VALUE): String =
+        "« " + escape(cut(text, max)).replace('«', '‹').replace('»', '›') + " »"
 
     /** [text] inside an attribute of an engine tag (`players_online="…"`): escaped, `&` and `"` as entities. */
     fun attribute(text: String): String = escape(text).replace("&", "&amp;").replace("\"", "&quot;")

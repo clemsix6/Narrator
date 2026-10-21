@@ -131,8 +131,8 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
         val opener = ctx.services.style.restingOpener(text) ?: return null
         refusedTurn = turn
         val others = ctx.services.style.atRest().openers.filterNot { it.opener.equals(opener.opener, ignoreCase = true) }.take(OPENERS_CITED - 1)
-        val forms = (listOf(opener.opener) + opener.examples).take(FORMS_CITED).joinToString(", ") { "« ${quoted(it)} »" }
-        val also = if (others.isEmpty()) "" else "; the other openers at rest: " + others.joinToString(", ") { "« ${quoted(it.opener)} » ×${it.count}" }
+        val forms = (listOf(opener.opener) + opener.examples).take(FORMS_CITED).joinToString(", ") { ModelText.guillemets(it) }
+        val also = if (others.isEmpty()) "" else "; the other openers at rest: " + others.joinToString(", ") { "${ModelText.guillemets(it.opener)} ×${it.count}" }
         Decisions(ctx.services.trace, ctx.clock).record(
             Log.style, DecisionRecord.Kind.STYLE, "opener_refused", subject = "« ${opener.opener} »",
             reason = "the line opens like ${opener.count} of the latest", conversationId = caller.conversationId, turnId = turn,
@@ -152,9 +152,6 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
 
         /** The forms of the refused opener it cites. */
         const val FORMS_CITED = 3
-
-        /** One of the Director's own lines in a refusal: escaped, its « » turned into ‹ ›. */
-        fun quoted(text: String): String = ModelText.escape(text).replace('«', '‹').replace('»', '›')
     }
 }
 
