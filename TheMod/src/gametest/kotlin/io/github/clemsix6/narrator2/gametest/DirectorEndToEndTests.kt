@@ -3,7 +3,9 @@ package io.github.clemsix6.narrator2.gametest
 import com.fasterxml.jackson.databind.JsonNode
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.director.Director
 import io.github.clemsix6.narrator2.director.DirectorState
+import io.github.clemsix6.narrator2.director.WakeScheduler
 import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.testing.FakeAnthropic
 import io.github.clemsix6.narrator2.testing.FakeResponse
@@ -122,7 +124,7 @@ class DirectorEndToEndTests {
                 val player = speaker.player
                 server.playerList.broadcastChatMessage(PlayerChatMessage.unsigned(player.uuid, "Narrateur, où suis-je ? ${model.where}"), player, ChatType.bind(ChatType.CHAT, player))
             }
-            val report = awaitRequest(fake, "the Director reads the Analyst's report") { isDirector(it) && "TASK T-" in lastUser(it).wakeText() }
+            val report = awaitRequest(fake, "the Director reads the Analyst's report", timeoutMs = REPORT_WAKE_MS) { isDirector(it) && "TASK T-" in lastUser(it).wakeText() }
             val analyst = fake.requests.filter { isAnalyst(it) }.drop(tasksBefore)
             check(analyst.size == 2) { "two requests of the Analyst: ${analyst.size}" }
             val analystTools = analyst[0].json.path("tools").map { it.path("name").asText() }
@@ -246,6 +248,17 @@ const val DIRECTOR_ENVIRONMENT = "narrator2-gametest:director"
 
 /** Budget of a script test: at least two minutes of wall-clock time (see [runScript]). */
 private const val SCRIPT_MAX_TICKS = 120_000
+
+/**
+ * How long the question may take to come back as the Director's `TASK` wake-up (FLAKY-6): a guard against a hang, not a
+ * bound on time. Before the report, the Director's turn (a wake-up whose memory may take [Director.ATTACH_TIMEOUT_MS],
+ * two requests, `delegate` and `say`), then the Analyst's two requests and its read of the live player; the report is a
+ * salient item, which wakes the Director [WakeScheduler.SOON_QUIET_MS] after the last salient item, at most
+ * [WakeScheduler.SOON_MAX_MS] after the first; then that wake-up's memory again. In a whole run, the news of the batches
+ * before (their challenges, offerings, players) wake turns of their own in between. The 15 s this wait had (3.3 s
+ * measured on a calm machine, and under 32 spinning threads) ran out once under the load of other builds (M6-10).
+ */
+private const val REPORT_WAKE_MS = 45_000L
 
 private val ANALYST_TOOLS = listOf("area_info", "inspect_player", "list_players", "locate", "player_profile", "player_stats", "recall", "scan_area", "sql")
 
