@@ -90,9 +90,9 @@ internal class DreamInputs(private val services: NarratorServices) {
     private val memory get() = services.memory
     private val journal get() = services.journal
 
-    /** The zone of the times shown: the Journal's (`journal.timeZone`), else the engine's clock. */
+    /** The zone of the times shown: the Journal's, else the engine's clock ([JournalConfig.zone][io.github.clemsix6.narrator2.config.JournalConfig.zone]). */
     val zone: ZoneId
-        get() = services.settings.get().config.journal.timeZone.takeIf { it.isNotBlank() }?.let(ZoneId::of) ?: services.clock.zone
+        get() = services.settings.get().config.journal.zone(services.clock.zone)
 
     // ── Step 1: the players ─────────────────────────────────────────────────────────────────────────
 

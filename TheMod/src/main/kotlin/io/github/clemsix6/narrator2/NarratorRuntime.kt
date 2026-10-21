@@ -356,7 +356,9 @@ class NarratorRuntime private constructor(
         /**
          * Starts the Narrator for [server] (M1_M2 §2.2): [prepare] then [wire], on the server thread before the first
          * tick. A configuration that cannot be loaded is logged and replaced by the defaults: facts are still recorded,
-         * and the Director sleeps until a `/narrator reload` succeeds. Server thread.
+         * and the Director sleeps until a `/narrator reload` succeeds. A Journal of an earlier Narrator of this process
+         * still closing (its writer outlived its close) keeps the new one from opening its file (`DuckDatabase.open`):
+         * tried again for 10 s at most, the new Journal is otherwise unavailable, and says why. Server thread.
          */
         fun start(server: MinecraftServer) {
             current?.let { stale ->

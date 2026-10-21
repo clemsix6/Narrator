@@ -1,0 +1,15 @@
+{
+  "id": "firmin_nether",
+  "title": "Firmin enters the Nether for the first time",
+  "source": "m6-18 run 2 chapter 3 (director-e7c43bb0), turn 7003000017, after the chapter's first seven turns",
+  "context": "DIMENSION and ADVANCEMENT: Firmin, who had never been to the Nether (his sheet's hook), enters it in the basalt deltas; target Firmin",
+  "transcript": "transcripts/m6-18-run2-director-e7c43bb0.jsonl",
+  "turn": "7003000017",
+  "prompt_sha": "0ec6854dd53e",
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    }
+  ]
+}

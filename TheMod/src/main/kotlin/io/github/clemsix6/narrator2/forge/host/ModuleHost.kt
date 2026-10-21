@@ -204,11 +204,14 @@ class ModuleHost(
      * skips it, and a stop held back while its caller serves it no longer stays half done. A call given up before is
      * waited for first, within the same patience: the stop comes after it, never instead. A stop that computes past its
      * budget is abandoned, a fault; one held back past that patience is lost with a warning, nobody's fault.
+     *
+     * [until] ends that patience (`System.nanoTime()`): a burst of stops (the server's stop, `forge off`) shares one, so
+     * that its caller waits for them all [STARTUP_PATIENCE_NANOS] at most, not as much for each (M6-POLISH). Past it, a
+     * stop still has its budget, as any call.
      */
-    fun stop(why: StopReason): Called? {
+    fun stop(why: StopReason, until: Long = System.nanoTime() + STARTUP_PATIENCE_NANOS * timeScale): Called? {
         val module = instance ?: return null
         val seen = context ?: return null
-        val until = System.nanoTime() + STARTUP_PATIENCE_NANOS * timeScale
         resume(until)
         val left = maxOf(patienceNanos, until - System.nanoTime())
         return call(STOP, ForgeLimits.CALL_NANOS, ForgeLimits.CALL_NANOS * timeScale, startup = false, waits = left) { module.stop(seen, why) }

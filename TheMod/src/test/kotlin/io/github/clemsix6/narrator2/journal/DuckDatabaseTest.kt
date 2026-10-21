@@ -121,6 +121,26 @@ class DuckDatabaseTest {
         val error = assertFailsWith<SQLException> { DuckDatabase.open(file, options) }
         assertContains(error.message.orEmpty(), "schema version 99")
         assertContains(error.message.orEmpty(), "use a newer version of the mod")
+        // The failed opening let go of the file: the next one fails the same way, not as a file still open.
+        assertContains(assertFailsWith<SQLException> { DuckDatabase.open(file, options) }.message.orEmpty(), "schema version 99")
+    }
+
+    @Test
+    fun `a file still open in this process is refused before DuckDB sees it, until it is closed`() {
+        // DuckDB would hand this second opening the database already open (its instance cache), shared, and refuse it
+        // only by luck, for good: "Cannot change configuration option "TimeZone" - the configuration has been locked".
+        val first = DuckDatabase.open(file, options)
+        val refused = assertFailsWith<FileStillOpenException> { DuckDatabase.open(dir.resolve(".").resolve(DuckDatabase.FILE_NAME), options) }
+        assertEquals("${file.toAbsolutePath().normalize()} is still open in this process: an earlier Journal has not closed it yet", refused.message)
+        assertTrue(isTransientOpenFailure(refused), "tried again at the Journal's opening: the earlier Journal's writer ends")
+        first.close()
+        DuckDatabase.open(file, options).use { second ->
+            first.close() // a second close of the first never lets go of the file the second holds
+            assertFailsWith<FileStillOpenException> { DuckDatabase.open(file, options) }
+            assertEquals(listOf("1"), second.writer.strings("SELECT 1"))
+        }
+        DuckDatabase.open(file, options).close()
+        DuckDatabase.openInMemory(options).use { DuckDatabase.openInMemory(options).close() } // in memory: one each, no file
     }
 
     @Test

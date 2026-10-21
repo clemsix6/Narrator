@@ -39,17 +39,33 @@ fun testSettings(config: NarratorConfig = NarratorConfig(), claude: ClaudeClient
     Settings(config, Prompts.bundled(), UiTexts.load(config.language), claude, reflex)
 
 /**
+ * The data folders of the [TestServices] that get none: each its own, all in one folder of this JVM, deleted with what
+ * they hold when the JVM exits (unit tests and in-game tests alike). Never sooner: a test may keep its services, or
+ * hand their folder to another part, for as long as it runs.
+ */
+internal object TestDataDirs {
+    private val root: Path by lazy {
+        Files.createTempDirectory("narrator2-services-").also { root ->
+            Runtime.getRuntime().addShutdownHook(Thread({ root.toFile().deleteRecursively() }, "narrator2-test-data-cleanup"))
+        }
+    }
+
+    /** A new, empty data folder. */
+    fun next(): Path = Files.createTempDirectory(root, "services")
+}
+
+/**
  * The services of a runtime, for unit tests: every part is a constructor parameter, with a harmless
  * default (a real bus, a disabled Journal, traces in memory, fakes for the guards, the reflexes, the
  * Director, the workers, the memory, the style watch, the Forge and the mechanics engine). There is no Minecraft
- * server: [server] fails unless one is given.
+ * server: [server] fails unless one is given. Without a [dataDir], it gets one of [TestDataDirs], deleted at the JVM's exit.
  * [phase] can be changed to test the stopping server.
  */
 class TestServices(
     private val minecraft: MinecraftServer? = null,
     override val clock: Clock = TestClock(),
     override val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    override val dataDir: Path = Files.createTempDirectory("narrator2-test"),
+    override val dataDir: Path = TestDataDirs.next(),
     settings: Settings = testSettings(),
     override val bus: EventBus = EventBus(clock, { 0L }, 1),
     override val journal: Journal = DisabledJournal("unit test", clock),

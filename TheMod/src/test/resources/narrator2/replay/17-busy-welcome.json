@@ -1,0 +1,14 @@
+{
+  "id": "busy_welcome",
+  "title": "Three regulars open the evening",
+  "source": "exact opening of m6-18 run 2 chapter 3 (director-e7c43bb0, turn 7003000010)",
+  "context": "JOIN of Gaspard, Firmin and the operator Opaline, back after two days; the programme suggests letting Opaline pick the evening's game; target everyone",
+  "transcript": "transcripts/m6-18-run2-director-e7c43bb0.jsonl",
+  "prompt_sha": "0ec6854dd53e",
+  "checks": [
+    {
+      "name": "speaks",
+      "kind": "speaks"
+    }
+  ]
+}

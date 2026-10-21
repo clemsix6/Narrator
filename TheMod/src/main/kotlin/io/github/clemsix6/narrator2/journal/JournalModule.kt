@@ -14,7 +14,11 @@ import java.util.Locale
  * Called once when the server starts, on the server thread: opening DuckDB takes a few hundred
  * milliseconds, at startup only.
  *
- * A failure that can pass (the file held for an instant by another program, an I/O error) is tried
+ * Never two Journals on one file: a file an earlier Journal of this process still holds (its writer outlived its
+ * close, at an earlier stop of the server or a restart) is refused before DuckDB opens it ([DuckDatabase.open]), at the
+ * server's start as at a restart.
+ *
+ * A failure that can pass (the file held for an instant by another program or by that earlier Journal, an I/O error) is tried
  * again: three attempts in at most 10 seconds, at about 0 s, 2 s and 6 s ([OpenRetry]). A failure that
  * would repeat (corrupt file, failing migration, invalid configuration) is not. Throws a
  * [JournalOpenException] when it does not open; the runtime then runs with a [DisabledJournal] and
