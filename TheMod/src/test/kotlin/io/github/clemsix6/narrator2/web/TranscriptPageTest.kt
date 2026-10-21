@@ -148,7 +148,7 @@ class TranscriptPageTest {
 
         // The fallback: its reply committed, in yellow, as /narrator trace writes it; its block said.
         assertContains(page, "CLAUDE · claude-opus-4-8</h3><p class=\"warning\">")
-        assertContains(page, "end_turn · fallback (cyber) → claude-opus-4-8 · \$ ? · committed</p>", message = "no price for the fallback model")
+        assertContains(page, "end_turn · fallback (cyber) → claude-opus-4-8 · \$0.0030 · committed</p>", message = "the fallback model at its own price")
         assertContains(page, "<p class=\"warning\">server-side fallback: claude-opus-5-5 → claude-opus-4-8 (refusal, cyber)</p>")
         assertContains(page, "<pre>Je ne lirai pas les fichiers du serveur.</pre>")
         // The refusal: red, not committed, its pending message marked.
@@ -163,8 +163,8 @@ class TranscriptPageTest {
         // The first reply was committed: no mark on the messages before it.
         assertEquals(2, Regex("Not committed:").findAll(page).count(), "only the two messages of the requests not kept")
 
-        // The header: requests from the Journal, one priced and one not.
-        assertContains(page, "<dt>Requests</dt><dd>2 · \$4.00 + 1 call at \$ ?</dd>")
+        // The header: requests from the Journal, a million tokens in each, of Opus 5.5 (4 $) and of the fallback model (5 $).
+        assertContains(page, "<dt>Requests</dt><dd>2 · \$9.00</dd>")
         assertContains(page, "href=\"/turns?chapter=9\"")
         assertFalse("next part" in page, "a small transcript fits one page")
     }

@@ -32,8 +32,18 @@ class PricesTest {
     }
 
     @Test
+    fun `the fallback model has its price by default`() {
+        // Opus 4.8 at 5 / 25 $ per million, cache reads at 0.1x and 1 h cache writes at 2x the input.
+        assertEquals(ModelPrice(5.0, 25.0, 0.50, 10.0), prices.of("claude-opus-4-8"))
+        assertEquals(10.0, prices.cost("claude-opus-4-8", 0, 0, 0, 1_000_000)!!, 1e-9)
+        val turn = prices.cost("claude-opus-4-8", input = 1_234, output = 300, cacheRead = 60_000, cacheWrite = 0)
+        assertEquals((1_234 * 5.0 + 60_000 * 0.50 + 300 * 25.0) / 1_000_000, turn!!, 1e-12)
+        assertEquals("\$0.044", Prices.dollars(turn))
+    }
+
+    @Test
     fun `a model without a price has no cost, nothing guessed from its name`() {
-        assertNull(prices.cost("claude-opus-4-8", 1_000, 1_000, 0, 0), "a fallback model the configuration does not price")
+        assertNull(prices.cost("claude-opus-4-7", 1_000, 1_000, 0, 0), "a model the configuration does not price")
         assertNull(prices.cost("claude-opus-5-5-20261001", 1_000, 1_000, 0, 0))
         assertNull(prices.of("claude-haiku"))
         assertEquals("$ ?", Prices.dollars(null))
@@ -48,6 +58,14 @@ class PricesTest {
         assertEquals("$0.042", Prices.dollars(0.0421))
         assertEquals("$0.0042", Prices.dollars(0.00421))
         assertEquals("$0.000040", Prices.dollars(0.00004))
+    }
+
+    @Test
+    fun `a cost rounded up to a dollar shows its cents`() {
+        assertEquals(listOf("$1.00", "$0.99", "$0.042", "$1.00"), listOf(0.996, 0.9949, 0.042, 1.0).map(Prices::dollars))
+        assertEquals("$1.00", Prices.dollars(0.995_000_1))
+        assertEquals("$10.00", Prices.dollars(9.996))
+        assertEquals("$0.10", Prices.dollars(0.0996), "two significant digits below a dollar")
     }
 
     @Test
