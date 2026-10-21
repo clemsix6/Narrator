@@ -172,6 +172,15 @@ class RestartSequence(private val wireWaitMs: Long = WIRE_WAIT_MS, private val n
         private var gapMs = 0L
 
         fun go() {
+            try {
+                restart()
+            } finally {
+                held.complete(Unit)
+                gate.compareAndSet(held, null)
+            }
+        }
+
+        private fun restart() {
             var fresh: Restartable? = null
             var failure: String? = null
             var stage = "the old Narrator did not stop"
@@ -210,7 +219,6 @@ class RestartSequence(private val wireWaitMs: Long = WIRE_WAIT_MS, private val n
                 done(report)
             }
             if (!told) log.info("restart: the server has stopped, the answer is not sent")
-            gate.compareAndSet(held, null)
         }
 
         /**
