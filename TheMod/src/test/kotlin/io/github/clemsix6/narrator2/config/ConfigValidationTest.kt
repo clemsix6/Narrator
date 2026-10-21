@@ -52,9 +52,13 @@ class ConfigValidationTest {
         assertEquals(StyleConfig(lineReview = true, toneNotes = true, refuseRestingOpeners = true), defaults.style, "M6 §12.5")
         assertEquals(DashboardConfig(enabled = true, port = 8770), defaults.dashboard, "M6 §12.5")
         assertEquals(
-            mapOf("claude-opus-5-5" to ModelPrice(4.0, 20.0, 0.20, 8.0), "claude-haiku-5-5" to ModelPrice(0.10, 0.50, 0.01, 0.20)),
+            mapOf(
+                "claude-opus-5-5" to ModelPrice(4.0, 20.0, 0.20, 8.0),
+                "claude-haiku-5-5" to ModelPrice(0.10, 0.50, 0.01, 0.20),
+                "claude-opus-4-8" to ModelPrice(5.0, 25.0, 0.50, 10.0),
+            ),
             defaults.prices,
-            "M6 §8.7: the prices of the API, cache writes at the 1 h rate",
+            "M6 §8.7: the prices of the API, cache writes at the 1 h rate; the fallback model's too (M6-FIX-3, D2)",
         )
     }
 
@@ -291,6 +295,7 @@ class ConfigValidationTest {
             mapOf(
                 "claude-opus-5-5" to ModelPrice(4.0, 25.0, 0.20, 8.0),
                 "claude-haiku-5-5" to ModelPrice(0.10, 0.50, 0.01, 0.20),
+                "claude-opus-4-8" to ModelPrice(5.0, 25.0, 0.50, 10.0),
                 "claude-sonnet-5-5" to ModelPrice(2.0, 10.0, 0.1, 4.0),
             ),
             config.prices,
