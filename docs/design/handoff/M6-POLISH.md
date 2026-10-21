@@ -250,3 +250,14 @@ Aucun appel réel à Claude, pas de `runServer`.
 3. **`"environment": "*"`** dans `fabric.mod.json` : le mod se charge sur un client, donc sur un serveur intégré, et
    c'est ce qui rend réel le trou du §1. Le §1 le ferme. Si le mod ne vise que les serveurs dédiés (« côté serveur
    uniquement »), `"environment": "server"` serait plus juste, mais c'est une décision de produit : je ne l'ai pas prise.
+
+## Décisions du superviseur (22/10/2026)
+
+Fusionnée (`5cecdae`).
+
+1. **Arrêt des modules en parallèle : non.** Le principe 3 de la Forge (un seul fil des modules à la fois) prime, et
+   l'échéance commune donne la borne voulue.
+2. **Les anciens dossiers `narrator2-test*`** : le superviseur les efface à la fin de la vague, quand aucun build ne
+   tourne plus.
+3. **`"environment": "*"` : on le garde.** Il permet de jouer avec le Narrateur en solo et en LAN, sur un serveur
+   intégré. Le trou qu'il ouvrait est fermé par `FileStillOpenException` et les nouvelles tentatives d'ouverture.
