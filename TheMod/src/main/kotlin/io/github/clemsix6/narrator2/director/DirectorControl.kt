@@ -148,6 +148,9 @@ enum class StyleNoteKind {
 
     /** Lines that reuse a recent construction. */
     REPEATS,
+
+    /** A line longer than `director.md` allows: more than three sentences, or a line break (M6-18, finding 2). Measured, never labeled. */
+    LONG,
     ;
 
     val id: String get() = name.lowercase()

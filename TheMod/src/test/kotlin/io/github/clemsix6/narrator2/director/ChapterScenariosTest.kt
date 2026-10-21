@@ -2,11 +2,19 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.agent.AgentLoop
 import io.github.clemsix6.narrator2.config.Prompts
+import io.github.clemsix6.narrator2.event.LeaveReason
+import io.github.clemsix6.narrator2.event.PlayerDied
+import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.PlayerLeft
+import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.runtime.Settings
 import io.github.clemsix6.narrator2.testing.Hold
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.reply
 import io.github.clemsix6.narrator2.testing.testSettings
+import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.ConversationRecord.EndReason
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.LlmCallRecord
@@ -422,7 +430,149 @@ class ChapterScenariosTest {
         h.assertInvariants()
     }
 
+    // ── An empty server (M6-FIX-11) ─────────────────────────────────────────────────────────────────
+
+    /** [player] leaves: off the player states first, as their synchronous subscriber does before the salience hears of it. */
+    private fun DirectorHarness.leave(player: PlayerRef) {
+        players.remove(player.uuid)
+        publish(PlayerLeft(player, HERE, 1, 1_500, LeaveReason.LEAVE))
+    }
+
+    /** [name] joins: online first, then the event. */
+    private fun DirectorHarness.join(name: String): PlayerRef = online(name).also { publish(PlayerJoined(it, HERE, 2, firstTime = false, isOp = false)) }
+
+    @Test
+    fun `departures after a chapter closed by an operator open none, and the players who come back get an opening with its briefing`() =
+        harness().use { h ->
+            val bartok = h.online("Bartok")
+            val mimosa = h.online("Mimosa")
+            h.fake.enqueue(reply { text("…") })
+            h.fake.enqueue(reply { text(SUMMARY) })
+            h.fake.enqueue(reply { text("Revoilà les fuyards.") })
+
+            h.chat("Bartok", "narrateur ?")
+            h.advance(1_500)
+            h.awaitTurns(1)
+            h.director.post(DirectorSignal.CloseChapter(EndReason.OPERATOR))
+            h.advance(20_000)
+            h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+            assertEquals(2, h.fake.requests.size)
+
+            // M6-18, finding 4: everyone leaves after the close; their departures open nothing on the empty server.
+            h.leave(bartok)
+            h.leave(mimosa)
+            h.advance(30_000)
+            assertEquals(2, h.fake.requests.size, "no chapter opened by the departures")
+            assertNull(h.director.status().chapter)
+            assertEquals(DirectorState.IDLE, h.director.status().state)
+            assertEquals(1, h.traces.conversations.map { it.conversationId }.distinct().size, "the closed chapter only")
+
+            // They come back: their arrival opens chapter 2, which starts with its briefing.
+            h.join("Bartok")
+            h.join("Mimosa")
+            h.advance(3_000)
+            h.awaitTurns(2)
+            assertEquals(3, h.fake.requests.size)
+            assertNotEquals(h.sessionOf(0), h.sessionOf(2), "a new chapter")
+            assertTrue(h.firstBlock(2).startsWith("<briefing chapter=\"2\""), h.firstBlock(2))
+            val wake = h.wakeText(2)
+            assertContains(wake, "JOIN Bartok")
+            assertContains(wake, "JOIN Mimosa")
+            assertFalse("LEAVE" in wake, "the departures were not kept for the opening: $wake")
+            assertEquals(TurnRecord.Trigger.SALIENT, h.endedTurns().last().trigger)
+            h.assertInvariants()
+        }
+
+    @Test
+    fun `on an empty server nothing opens a chapter, what happened is dropped, and a reminder waits for the next arrival`() = harness().use { h ->
+        // A lone player dies and quits at once; a reminder comes due an hour later, while nobody is online.
+        val bartok = h.online("Bartok")
+        h.publish(PlayerDied(bartok, HERE, "minecraft:lava", killer = null, weapon = null, message = null, xpLevel = 3, keptInventory = false, narrator = false))
+        h.leave(bartok)
+        h.director.scheduleReminder(3_600, "revenir sur la mort de Bartok", Caller(Role.DIRECTOR, "director-earlier", 7, null)).getOrThrow()
+        h.advance(2 * 3_600_000L)
+        assertEquals(0, h.fake.requests.size, "nothing opens on an empty server")
+        assertNull(h.director.status().chapter)
+        assertEquals(DirectorState.IDLE, h.director.status().state)
+        assertEquals("nobody online", h.director.status().reason)
+
+        // Mimosa arrives: her arrival opens chapter 1, with the reminder that waited.
+        h.fake.enqueue(reply { text("…") })
+        h.join("Mimosa")
+        h.advance(3_000)
+        h.awaitTurns(1)
+        assertTrue(h.firstBlock(0).startsWith("<briefing chapter=\"1\""), h.firstBlock(0))
+        val wake = h.wakeText(0)
+        assertContains(wake, "REMINDER R-1")
+        assertContains(wake, "JOIN Mimosa")
+        assertFalse("DEATH" in wake || "LEAVE" in wake, "what happened on the empty server went as in a silence: $wake")
+        assertEquals(TurnRecord.Trigger.REMINDER, h.endedTurns().single().trigger)
+        h.assertInvariants()
+    }
+
+    @Test
+    fun `in an open chapter the departures that empty the server wake nobody, and it closes after 10 minutes`() = harness().use { h ->
+        val bartok = h.online("Bartok")
+        h.fake.enqueue(reply { text("…") })
+        h.fake.enqueue(reply { text(SUMMARY) })
+
+        h.chat("Bartok", "bonne nuit narrateur")
+        h.advance(1_500)
+        h.awaitTurns(1)
+        h.leave(bartok)
+        h.advance(60_000)
+        assertEquals(1, h.fake.requests.size, "the last departure wakes nobody: nobody would hear the Narrator")
+        h.advance(10 * 60_000L)
+        h.awaitUntil("the chapter is closed") { h.director.status().chapter == null }
+
+        assertEquals(2, h.fake.requests.size)
+        assertContains(h.wakeText(1), "<chapter_end chapter=\"1\"")
+        assertEquals(EndReason.SERVER_EMPTY, assertNotNull(h.traces.latestConversation(h.sessionOf(0)!!)).endReason)
+        h.advance(3_600_000L)
+        assertEquals(2, h.fake.requests.size, "nothing more while the server stays empty")
+        assertEquals(1, h.endedTurns().size)
+        h.assertInvariants()
+    }
+
+    @Test
+    fun `a player back before the empty chapter closes wakes it, with the departure that waited`() = harness().use { h ->
+        val bartok = h.online("Bartok")
+        h.fake.enqueue(reply { text("…") })
+        h.fake.enqueue(reply { text("Déjà de retour ?") })
+
+        h.chat("Bartok", "bonne nuit narrateur")
+        h.advance(1_500)
+        h.awaitTurns(1)
+        h.leave(bartok)
+        h.advance(2 * 60_000L)
+        assertEquals(1, h.fake.requests.size)
+
+        h.join("Bartok")
+        h.advance(3_000)
+        h.awaitTurns(2)
+        assertEquals(h.sessionOf(0), h.sessionOf(1), "the same chapter: it was still open")
+        val wake = h.wakeText(1)
+        assertContains(wake, "LEAVE Bartok")
+        assertContains(wake, "JOIN Bartok")
+        h.assertInvariants()
+    }
+
+    @Test
+    fun `a lone player's death opens the chapter as usual`() = harness().use { h ->
+        val bartok = h.online("Bartok")
+        h.fake.enqueue(reply { text("…") })
+        h.publish(PlayerDied(bartok, HERE, "minecraft:lava", killer = null, weapon = null, message = null, xpLevel = 3, keptInventory = false, narrator = false))
+        h.advance(3_000)
+        h.awaitTurns(1)
+
+        assertTrue(h.firstBlock(0).startsWith("<briefing chapter=\"1\""), h.firstBlock(0))
+        assertContains(h.wakeText(0), "DEATH Bartok")
+        h.assertInvariants()
+    }
+
     private companion object {
+        val HERE = Pos("minecraft:overworld", 12, -58, 40)
+
         val SUMMARY = """
             Joueurs vus : Bartok.
             Faits marquants :

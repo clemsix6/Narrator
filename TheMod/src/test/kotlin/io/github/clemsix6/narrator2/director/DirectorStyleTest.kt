@@ -24,12 +24,13 @@ class DirectorStyleTest {
     @Test
     fun `notes of tone wake nobody, and only the gravest reaches the next request, as a note of the engine`() = DirectorHarness(dir).use { h ->
         val dark = "your line « Tu finiras seul dans le noir. » reads dark; find its absurd version, or drop the idea"
+        // Someone online: on an empty server, with no chapter open, a note of tone goes as in a silence (M6-FIX-11).
+        h.online("Bartok")
         h.director.post(DirectorSignal.StyleNote(StyleNoteKind.FLAT, "3 of your last 8 lines are reports without a punchline", h.clock.millis()))
         h.director.post(DirectorSignal.StyleNote(StyleNoteKind.DARK, dark, h.clock.millis()))
         h.advance(600_000)
         assertEquals(0, h.fake.requests.size, "a note of tone never wakes the Director")
 
-        h.online("Bartok")
         h.fake.enqueue(reply { text("…") })
         h.chat("Bartok", "narrateur ?")
         h.advance(1_500)

@@ -104,6 +104,56 @@ class ToneWatchTest {
         assertEquals("""{"line":"« Nul » <b>, dit le juge\nau perdant.","register":"courtroom","dark":0.0,"cruel":0.8,"flat":0.0,"out_of_character":0.0,"repeats":0.0}""", decision.detail.toString())
     }
 
+    /** M6-18, finding 2: two lines of five and six sentences in two paragraphs, and no flag; the length is now measured. */
+    @Test
+    fun `a line longer than a message allows is told as long, measured without a call, with a decision`() {
+        val text = "Ce que j'ai trouvé ? Deux fers et deux charbons dans tes poches, Gaspard. Huit minutes que vous ne bougez plus.\n" +
+            "Les bédouins appellent ça une sieste. Moi, j'appelle ça le calme avant que je m'ennuie."
+        tone.said(12, text)
+
+        val note = notes.single()
+        assertEquals(StyleNoteKind.LONG, note.kind)
+        assertEquals(
+            "your line « Ce que j'ai trouvé ? Deux fers et deux charbons dans tes poches, Gaspard. Huit minutes que vous ne bougez plus. " +
+                "Les bédouins appellent ça une sieste. Moi, j'ap… » has 5 sentences in 2 paragraphs: a message is one paragraph " +
+                "of one to three sentences, often one; keep the punchline",
+            note.text,
+        )
+        val decision = trace.decisions.single()
+        assertEquals(listOf("tone_noted", "long", "12"), listOf(decision.decision, decision.subject, decision.eventId.toString()))
+        assertEquals(note.text, decision.reason)
+        assertEquals("""{"line":${kotlinx.serialization.json.JsonPrimitive(text)},"sentences":5,"paragraphs":2}""", decision.detail.toString())
+    }
+
+    @Test
+    fun `three sentences in one paragraph are no long line, and long is told every thirty minutes at most`() {
+        tone.said(1, "Un défi ! Seize bambous en cinq minutes. Le perdant porte des mains en coton.")
+        assertEquals(emptyList(), notes)
+        tone.said(2, "Un. Deux. Trois. Quatre.")
+        tone.said(3, "Cinq.\nSix.")
+        assertEquals(listOf(StyleNoteKind.LONG), notes.map { it.kind }, "the second waits thirty minutes")
+        clock.advance(Duration.ofMinutes(30))
+        tone.said(4, "Cinq.\nSix.")
+        assertEquals("your line « Cinq. Six. » has 2 sentences in 2 paragraphs: a message is one paragraph of one to three sentences, often one; keep the punchline", notes.last().text)
+        enabled = false
+        clock.advance(Duration.ofMinutes(30))
+        tone.said(5, "Un. Deux. Trois. Quatre.")
+        assertEquals(2, notes.size, "style toneNotes off tells nothing")
+    }
+
+    @Test
+    fun `the watch measures the lines the review reads, never a title nor a line it held already`() {
+        val watch = StyleWatchImpl(tone)
+        watch.said(1, StyleSamples.START, "[title] Premier pas en enfer. Visa offert. Deux minutes. Sans brûler. Bienvenue.")
+        watch.said(2, StyleSamples.START, "Court.\nTrès court.")
+        assertEquals(emptyList(), notes, "a title, and a line too short for the review")
+        watch.said(3, StyleSamples.START, "Une Pomme de l'Obéissance chacun. Firmin, je note que tu as obéi. Sans un seul « trop facile ». Inquiétant.")
+        assertEquals(listOf(StyleNoteKind.LONG), notes.map { it.kind })
+        clock.advance(Duration.ofMinutes(30))
+        watch.said(3, StyleSamples.START, "Une Pomme de l'Obéissance chacun. Firmin, je note que tu as obéi. Sans un seul « trop facile ». Inquiétant.")
+        assertEquals(1, notes.size, "a line held already is not measured again")
+    }
+
     @Test
     fun `the watch tells the tone each label with the latest ones`() {
         val watch = StyleWatchImpl(tone)

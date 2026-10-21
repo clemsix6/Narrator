@@ -115,8 +115,11 @@ class StorytellerToolsTest {
         assertEquals(0L, f.base.count("ideas"))
 
         f.call(propose, idea(), caller)
-        val again = f.call(propose, idea(title = "La course au pic", extra = ""","hours":12"""), caller)
+        val again = f.call(propose, idea(title = "Course au pic", extra = ""","hours":12"""), caller)
         assertInvalid("too close to P-1000 « La course au pic » (open, never dealt): find something else", again)
+        // The title of an open idea, give or take case and punctuation (M6-18, finding 7).
+        val sameTitle = f.call(propose, idea(kind = "twist", title = "la Course au pic !").replace("Une course au sommet du pic enneigé", "Un pic qui fond"), caller)
+        assertInvalid("same title as P-1000 « La course au pic » (open, never dealt): find another idea, or another title", sameTitle)
     }
 
     @Test

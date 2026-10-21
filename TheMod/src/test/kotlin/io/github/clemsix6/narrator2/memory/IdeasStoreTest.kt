@@ -158,7 +158,8 @@ class IdeasStoreTest {
     @Test
     fun `an idea too close to one of the last 14 days is refused, whatever became of it`() = runBlocking<Unit> {
         val first = add(race)
-        val again = race.copy(pitch = "Une course au sommet du pic enneigé au nord de la base ; le premier arrivé gagne une tarte.")
+        // Not the same title (the next test): the BM25 weighs the title with the pitch.
+        val again = race.copy(title = "Course au pic", pitch = "Une course au sommet du pic enneigé au nord de la base ; le premier arrivé gagne une tarte.")
         val refusal = rejected("too close to ${first.ref} « La course au pic » (open, never dealt): find something else") { store.addIdea(again, storyteller) }
         assertEquals("too close to ${first.ref} « La course au pic » (open, never dealt): find something else", refusal.message)
 
@@ -171,6 +172,53 @@ class IdeasStoreTest {
         add(distinct(4)) // another idea is not a repeat
         f.clock.now = f.clock.now.plus(Duration.ofDays(14))
         assertEquals(IdeaStatus.OPEN, add(again).status, "14 days later, the same idea is new again")
+    }
+
+    /**
+     * M6-18, finding 7: a command's P-41 « Le procès du Fer Suspect » took the exact title of P-28 of the programme, over
+     * another kind and another pitch, and the BM25 of the title and the pitch missed it.
+     */
+    @Test
+    fun `an idea that takes the title of an open idea is refused, give or take case, accents, punctuation and spaces`() = runBlocking<Unit> {
+        val trial = add(
+            race.copy(
+                title = "Le procès du Fer Suspect", players = emptyList(),
+                pitch = "Gaspard comparaît pour son fer trouvé trop vite ; Firmin plaide contre lui, le jury vote à main levée.",
+            ),
+        )
+        val twist = race.copy(
+            kind = IdeaKind.TWIST, title = "  le PROCES du « fer   suspect » !", players = emptyList(),
+            pitch = "Un tribunal de poules siège à minuit et condamne le premier qui ment sur ses diamants à porter une citrouille.",
+        )
+        val refusal = rejected("same title") { store.addIdea(twist, storyteller) }
+        assertEquals("same title as ${trial.ref} « Le procès du Fer Suspect » (open, never dealt): find another idea, or another title", refusal.message)
+
+        assertEquals(IdeaStatus.OPEN, add(twist.copy(title = "Le tribunal des poules")).status, "another title is free")
+        store.dropIdea(trial.ref, "Le procès a eu lieu.", storyteller)
+        val reopened = twist.copy(
+            kind = IdeaKind.SPEECH,
+            pitch = "Une affiche placardée au spawn annonce la réouverture d'un dossier classé, avec un témoin surprise caché dans un coffre " +
+                "de la mine, une plaidoirie en alexandrins et un verdict rendu par tirage au sort.",
+        )
+        assertEquals(IdeaStatus.OPEN, add(reopened).status, "the title of an idea no longer open is free again")
+    }
+
+    @Test
+    fun `a new season may keep the title of the season it replaces, and nothing else may take it`() = runBlocking<Unit> {
+        val season = add(race.copy(kind = IdeaKind.SEASON, title = "Saison 1 : le désert des vantards", players = emptyList(), pitch = "Les vantards du désert minent et se défient."))
+        val next = store.addIdea(
+            race.copy(
+                kind = IdeaKind.SEASON, title = "Saison 1 — Le Désert des vantards", players = emptyList(),
+                pitch = "Lisette revient après neuf jours d'absence, Firmin découvre enfin le Nether avec un visa de résistance au feu, " +
+                    "Opaline présente la météo du soir et Gaspard doit prouver devant témoins ses diamants imaginaires.",
+            ),
+            storyteller,
+        )
+        assertEquals(listOf(season.ref), next.closed.map { it.ref }, "the old season is replaced")
+        val refusal = rejected("same title") {
+            store.addIdea(race.copy(kind = IdeaKind.SPEECH, title = "Saison 1 : le désert des vantards", players = emptyList(), pitch = "Une prophétie en forme de bulletin météo."), storyteller)
+        }
+        assertEquals("same title as ${next.row.ref} « Saison 1 — Le Désert des vantards » (open, never dealt): find another idea, or another title", refusal.message)
     }
 
     // ── One season, twelve open ideas ───────────────────────────────────────────────────────────────

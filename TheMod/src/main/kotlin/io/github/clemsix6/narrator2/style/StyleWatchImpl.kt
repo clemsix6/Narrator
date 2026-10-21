@@ -26,7 +26,8 @@ import java.time.Instant
  *   while it is in [CRUTCH_STAY].
  * - **Registers**: those of the latest labeled lines, and the least used of the latest [LABELS].
  *
- * @param tone told of each label, with the latest ones (null: no note of tone).
+ * @param tone told of each label, with the latest ones, and of each new line the review reads, for its length (null: no
+ *   note of tone).
  */
 class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
     private val lock = Any()
@@ -79,11 +80,15 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         }
     }
 
-    /** A line of the Director (its `chat` row [id], said at [ts]); one already held is ignored. */
+    /**
+     * A line of the Director (its `chat` row [id], said at [ts]); one already held is ignored. A line the review reads
+     * ([Tics.opens]: said with `say`, never a title) has its length measured by the tone's monitor ([ToneWatch.said]).
+     */
     fun said(id: Long, ts: Instant, text: String) {
-        synchronized(lock) {
-            if (add(id, ts, text)) publish()
+        val added = synchronized(lock) {
+            add(id, ts, text).also { if (it) publish() }
         }
+        if (added && Tics.opens(text)) tone?.said(id, text)
     }
 
     /** Names a line may hold (players, nicknames): the lines held are read again when one is new. */

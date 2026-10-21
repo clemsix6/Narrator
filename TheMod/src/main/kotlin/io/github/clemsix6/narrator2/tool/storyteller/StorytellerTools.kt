@@ -97,7 +97,7 @@ class ProposeIdeaTool : MemoryTool<ProposeIdeaArgs>(
     name = "propose_idea",
     description = "Writes one idea of your programme (P-…): something the Narrator may do with the players, fitted to " +
         "their real progress; he takes it, bends it or ignores it, and nobody else ever reads it. Never an order nor a " +
-        "promise. Refused when it is too close to a recent idea, cites what does not exist, or asks what the world does " +
+        "promise. Refused when it is too close to a recent idea or takes the title of an open one, cites what does not exist, or asks what the world does " +
         "not allow. Returns its id.",
     args = ProposeIdeaArgs.serializer(),
     effect = ToolEffect.ENGINE,

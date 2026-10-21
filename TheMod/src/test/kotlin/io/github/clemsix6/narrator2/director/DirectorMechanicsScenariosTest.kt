@@ -1,5 +1,7 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.event.PlayerJoined
+import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.Confiscation
 import io.github.clemsix6.narrator2.guard.LedgerPurpose
 import io.github.clemsix6.narrator2.guard.PlayerPacing
@@ -205,21 +207,26 @@ class DirectorMechanicsScenariosTest {
     }
 
     @Test
-    fun `a reminder that came due while the server was down wakes the Director at once, marked late`() {
+    fun `a reminder that came due while the server was down wakes the Director at the first arrival, marked late`() {
         val start = DirectorHarness.START.toEpochMilli()
         val world = InMemoryReminderStore(
             ReminderState(4, listOf(SavedReminder(3, "revenir sur la statue de Mimosa", start - 12_600_000, start - 10_800_000, 42))),
         )
         DirectorHarness(dir, reminders = world).use { h ->
-            h.online("Bartok")
+            // Nobody online: the reminder waits for an arrival, which wakes the Director (nothing opens on an empty server, M6-FIX-11).
+            h.advance(30_000)
+            assertEquals(0, h.fake.requests.size, "no chapter on an empty server")
             h.fake.enqueue(reply { text("…") })
-            h.advance(3_000)
+            val bartok = h.online("Bartok")
+            h.publish(PlayerJoined(bartok, Pos("minecraft:overworld", 0, 64, 0), 1, firstTime = false, isOp = false))
             h.awaitTurns(1)
 
+            // The reminder has waited long enough: the arrival wakes the Director at once.
             assertContains(
                 h.wakeText(0),
-                "\n[-3s] REMINDER R-3 set 3h30m ago, due 3h00m ago (late: the server was down): \"revenir sur la statue de Mimosa\"\n",
+                "\n[-30s] REMINDER R-3 set 3h30m ago, due 3h00m ago (late: the server was down): \"revenir sur la statue de Mimosa\"\n",
             )
+            assertContains(h.wakeText(0), "\n[-0s] JOIN Bartok")
             assertEquals(TurnRecord.Trigger.REMINDER, h.endedTurns().single().trigger)
             assertEquals(ReminderState(4, emptyList()), world.state)
             h.assertInvariants()

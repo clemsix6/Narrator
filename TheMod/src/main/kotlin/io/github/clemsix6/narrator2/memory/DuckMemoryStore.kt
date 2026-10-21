@@ -33,7 +33,8 @@ import java.util.UUID
  *
  * Ideas (M6 §6.2): the storyteller's `P-` rows, indexed like the facts but never recalled, never evidence, never
  * archived: they close (`dropped`, `expired`); [dealt] counts each time one is put before the Director. The store keeps
- * the programme's rules ([addIdea]): one season, twelve open ideas, no repeat of a recent one, an end in world play.
+ * the programme's rules ([addIdea]): one season, twelve open ideas, no title of an open one, no repeat of a recent one,
+ * an end in world play.
  *
  * Each [Source] has its explicit rules, none passes unchecked: the storyteller (M6 §6.5) writes ideas, planned arcs and
  * lore, no memory, no interaction.
@@ -317,6 +318,18 @@ class DuckMemoryStore(
             val close = indexer.similarity(connection, text, recent).filterValues { it >= IDEA_REPEAT_SIMILARITY }.maxByOrNull { it.value }?.key ?: return
             val idea = row<Idea>(close, RefKind.IDEA, "an idea")
             reject("too close to $close « ${ModelText.escape(idea.title)} » (${fate(idea)}): find something else")
+        }
+
+        /**
+         * No title taken again (M6-18, finding 7): an open idea whose title is [title], give or take case, accents,
+         * punctuation and spaces ([titleKey]), refuses the new one. [notRepeated] weighs the pitch with the title, and a
+         * title reused over another pitch slipped through it. A season is not held against the season it replaces.
+         */
+        fun newTitle(title: String, kind: IdeaKind) {
+            val key = titleKey(title)
+            val taken = connection.ideas("SELECT $IDEA_COLUMNS FROM ideas WHERE status = 'open' ORDER BY id DESC")
+                .firstOrNull { (kind != IdeaKind.SEASON || it.kind != IdeaKind.SEASON) && titleKey(it.title) == key } ?: return
+            reject("same title as ${taken.ref} « ${ModelText.escape(taken.title)} » (${fate(taken)}): find another idea, or another title")
         }
 
         /** `open, never dealt`, `dropped 1d2h ago, dealt 2 times, last 2d4h ago`: what became of [idea]. */
@@ -977,7 +990,8 @@ class DuckMemoryStore(
 
     /**
      * An idea (M6 §6.2), the storyteller's only: its texts pass [VoiceGuard], its notes, hours, players and refs are
-     * checked, its lever ([lever]) and its arc ([Job.arcStep]); it must not repeat a recent idea ([Job.notRepeated]). It is
+     * checked, its lever ([lever]) and its arc ([Job.arcStep]); it must not take the title of an open idea ([Job.newTitle]) nor
+     * repeat a recent idea ([Job.notRepeated]). It is
      * written `open`, due [IdeaDraft.playHours] of world play from now, indexed and audited; then it makes its room
      * ([Job.makeRoom]: the season it replaces, the idea beyond the twelve it supersedes), and counts the open ideas, in
      * the same job.
@@ -997,6 +1011,7 @@ class DuckMemoryStore(
             val players = job.players(draft.players, "players")
             val refs = job.refs(draft.refs, "refs", RefKind.facts, MemoryLimits.IDEA_REFS)
             if (draft.kind == IdeaKind.ARC_STEP) job.arcStep(refs)
+            job.newTitle(draft.title, draft.kind)
             job.notRepeated(ideaText(draft.title, draft.pitch))
             val ref = job.next(RefKind.IDEA)
             val expires = playClock.worldPlaySeconds(job.now.toEpochMilli()) + draft.playHours * SECONDS_PER_HOUR

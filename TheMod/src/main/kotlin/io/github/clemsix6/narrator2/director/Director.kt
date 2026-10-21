@@ -12,6 +12,7 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.event.ChatChannel
+import io.github.clemsix6.narrator2.event.PlayerLeft
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.ChapterMemory
@@ -137,6 +138,10 @@ interface GameView {
  *   again with a backoff (30 s, doubling up to 15 min) or when the block ends, the chapter staying open
  *   and closing meanwhile: its promises must reach the next chapters. The next chapter's first message
  *   starts with a [Briefing].
+ * - **An empty server** (M6-18, finding 4): nothing opens a chapter while nobody is online ([awaitArrival]): the game's
+ *   events are dropped as in a silence, the rest waits for the next arrival, whose `JOIN` opens the chapter. A departure
+ *   never opens one ([dropDepartures]). In an open chapter, the game's events wake nobody while the server is empty: the
+ *   chapter closes `server_empty` after `director.emptyServerCloseMinutes`, and an arrival before wakes it as usual.
  * - **The programme** (M6 §5.6): a heartbeat that wakes the Director may carry one idea of the storyteller's programme
  *   that fits the players online ([heartbeatIdea]), as the `Idea:` line of `<heartbeat>`: never a wake-up more, one
  *   every [IDEA_REST_MS] at most, and an idea dealt in that time is not carried. It is dealt (`recalls`, channel
@@ -220,6 +225,9 @@ class Director(
 
     /** When a heartbeat last carried an idea that reached the model (epoch milliseconds); null since the start. */
     private var lastBeatIdeaAt: Long? = null
+
+    /** The Director waits for an arrival ([awaitArrival]): logged once a wait. */
+    private var arrivalAwaited = false
 
     /** Subscribes to the bus and starts the Director's coroutine in `services.scope`. */
     fun start(): Job {
@@ -368,11 +376,22 @@ class Director(
             inbox.await(listOfNotNull(at, nextReminderAt()).min() - now)
             return
         }
+        val nobody = services.players.online.isEmpty()
+        if (chapters.current == null) {
+            if (nobody) {
+                awaitArrival(now)
+                return
+            }
+            dropDepartures()
+        }
+        arrivalAwaited = false
         val config = services.settings.get().config.director
+        // On an empty server the game's events wake nobody: they go with the next wake-up, or leave with the chapter.
+        val waking = if (nobody) inbox.items().filterNot { it.signal is DirectorSignal.Event } else inbox.items()
         val wakeAt = if (resumeWake) {
             now
         } else {
-            WakeScheduler.wakeAt(inbox.items(), config.chatDebounceMs, notBefore, budget.spent(now), budget.playerNewsSpent(now), budget.moduleNewsSpent(now))
+            WakeScheduler.wakeAt(waking, config.chatDebounceMs, notBefore, budget.spent(now), budget.playerNewsSpent(now), budget.moduleNewsSpent(now))
         }
         if (wakeAt != null && wakeAt <= now) {
             wake(scope, null)
@@ -442,12 +461,36 @@ class Director(
      * whispers, and the memory's due commitments and notes. Its cues go with the events: a place return
      * or an anniversary is stale once the silence ends; so is a note of tone on a line said before it.
      */
-    private fun mute() {
+    private fun mute(why: String = "while silent") {
         val gone = inbox.discard {
             (it.signal is DirectorSignal.Event && it.urgency != Urgency.IMMEDIATE) || it.signal is DirectorSignal.MemoryCue ||
                 it.signal is DirectorSignal.StyleNote
         }
-        if (gone.isNotEmpty()) log.debug { "${gone.size} events left to the activity digest while silent" }
+        if (gone.isNotEmpty()) log.debug { "${gone.size} events left to the activity digest $why" }
+    }
+
+    /**
+     * Nobody online and no chapter open: nothing opens on an empty server (M6-18, finding 4), where a first turn would
+     * write the whole briefing in the cache to answer « Fin. ». What happened goes as in a silence ([mute]); the rest
+     * (tasks, reminders, due commitments, whispers, the engine's news) waits for the next arrival, whose `JOIN` opens the
+     * chapter and gets its briefing. A pause, a block or a backoff come first ([step]).
+     */
+    private suspend fun awaitArrival(now: Long) {
+        if (!arrivalAwaited) log.info("nobody online and no chapter open: no chapter opens before an arrival")
+        arrivalAwaited = true
+        mute("while nobody is online")
+        resumeWake = false
+        publish(DirectorState.IDLE, null, "nobody online")
+        inbox.await(listOfNotNull(nextReminderAt(), now + RECHECK_MS).min() - now)
+    }
+
+    /**
+     * A departure never opens a chapter (M6-18, finding 4): with no chapter open, the `LEAVE` events waiting are dropped,
+     * and the next chapter's briefing says who is online.
+     */
+    private fun dropDepartures() {
+        val gone = inbox.discard { (it.signal as? DirectorSignal.Event)?.envelope?.event is PlayerLeft }
+        if (gone.isNotEmpty()) log.debug { "${gone.size} departures not told: no chapter is open, and a departure opens none" }
     }
 
     private suspend fun closeAtQuietMoment() {

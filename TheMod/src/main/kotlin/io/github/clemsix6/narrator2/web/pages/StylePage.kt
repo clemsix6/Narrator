@@ -296,7 +296,7 @@ object StylePage : WebPage {
         val flagged = lines.filter { it.flags.isNotEmpty() }
             .sortedWith(compareBy<Line> { it.flags.first().first.ordinal }.thenByDescending { line -> line.flags.maxOf { it.second } }.thenBy { it.ts })
         if (flagged.isEmpty()) {
-            p("None: no line reached ${StyleReport.FLAG} in ${StyleReport.Flaw.entries.joinToString { it.id }}.", "muted")
+            p("None: no line reached ${StyleReport.FLAG} in ${StyleReport.FLAWS.joinToString { it.id }}.", "muted")
             return
         }
         table(listOf("When", "Flags", "Register", "Line")) {
