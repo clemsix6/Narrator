@@ -61,7 +61,8 @@
       "io.github.clemsix6.narrator2.gametest.ForgeAssemblyGameTests",
       "io.github.clemsix6.narrator2.gametest.ForgeEndToEndTests",
       "io.github.clemsix6.narrator2.gametest.LeakWatchGameTests",
-      "io.github.clemsix6.narrator2.gametest.LiveForgeGameTests"
+      "io.github.clemsix6.narrator2.gametest.LiveForgeGameTests",
+      "io.github.clemsix6.narrator2.gametest.StyleGameTests"
     ]
   },
   "depends": {

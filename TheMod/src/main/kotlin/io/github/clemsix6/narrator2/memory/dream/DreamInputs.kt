@@ -311,7 +311,7 @@ internal class DreamInputs(private val services: NarratorServices) {
         val language = services.settings.get().config.language
         val words = HeuristicWords.bundled(language) ?: HeuristicWords.bundled(DEFAULT_LANGUAGE)
         val read = journal.read(READ_TIMEOUT_MS) { connection ->
-            val tics = Tics.render(Tics.find(Tics.lines(connection)), now)
+            val tics = Tics.render(Tics.read(connection), now)
             val lines = connection.query(
                 "SELECT id, ts, text, recipients FROM chat WHERE channel = 'narrator' ORDER BY ts DESC, id DESC LIMIT ?", LINES_COUNT,
             ) { Said(getLong(1), instant(2), "narrator", getString(3)) }
