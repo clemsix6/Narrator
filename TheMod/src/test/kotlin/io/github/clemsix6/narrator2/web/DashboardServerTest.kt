@@ -1,19 +1,27 @@
 package io.github.clemsix6.narrator2.web
 
 import io.github.clemsix6.narrator2.config.DashboardConfig
+import io.github.clemsix6.narrator2.config.JournalConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.journal.DuckDatabase
 import io.github.clemsix6.narrator2.journal.JournalFixture
+import io.github.clemsix6.narrator2.journal.JournalTimeoutException
+import io.github.clemsix6.narrator2.journal.OpenRetry
+import io.github.clemsix6.narrator2.journal.openJournalOrDisable
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.testing.LogCapture
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.apache.logging.log4j.Level
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -21,8 +29,10 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -39,7 +49,8 @@ import kotlin.test.assertTrue
 
 /**
  * The dashboard's server over real sockets (M6 §8.2, §8.3): bound to `127.0.0.1` only, the token (constant time, cookie,
- * reset), the `Host`, the methods, the security headers on every answer, the token out of the log, a port taken.
+ * reset), the login codes (once, 10 minutes), the `Host`, the methods, the security headers on every answer, the secrets
+ * out of the log, a port taken, off by default; and its reads of the Journal, one at a time even after a timeout.
  */
 class DashboardServerTest {
     private val clock = TestClock()
@@ -72,12 +83,12 @@ class DashboardServerTest {
         }
     }
 
-    // ── The token ───────────────────────────────────────────────────────────────────────────────────
+    // ── The token and the login codes ───────────────────────────────────────────────────────────────
 
     @Test
     fun `without the token, or with a wrong one, nothing is served`() {
         val server = start()
-        val token = server.loginUrl().substringAfter("key=")
+        val token = token(server)
         listOf("/", "/turns", "/players/Bartok", "/sql?q=SELECT%201").forEach { path ->
             val answers = listOf(
                 get(server, path),
@@ -92,20 +103,28 @@ class DashboardServerTest {
                 assertFalse("Bartok" in answer.body || "Players online" in answer.body, "$path served data: ${answer.body}")
             }
         }
-        val wrong = get(server, "/login?key=${token.dropLast(1)}")
+        val code = server.newLoginUrl().substringAfter("key=")
+        val wrong = get(server, "/login?key=${code.dropLast(1)}")
         assertEquals(403, wrong.status)
         assertNull(wrong.header("set-cookie"), "no cookie for a wrong key")
         assertEquals(403, get(server, "/login").status, "no key")
+        assertEquals(403, get(server, "/login?key=$token").status, "the session token is no login code")
+        assertEquals(303, get(server, "/login?key=$code").status, "the code still serves after the wrong ones")
     }
 
     @Test
     fun `the login sets the cookie and goes to the overview, the token out of the address bar`() {
         val server = start()
-        val login = get(server, "/" + server.loginUrl().substringAfter(server.url))
+        val link = server.newLoginUrl()
+        val code = link.substringAfter("key=")
+        assertTrue(Regex("[0-9a-f]{32}").matches(code), "a login code of 128 bits: $link")
+        assertFalse(token(server) in link, "no link holds the session token")
+        val login = get(server, "/" + link.substringAfter(server.url))
         assertEquals(303, login.status)
         assertEquals("/", login.header("location"))
         val cookie = login.header("set-cookie")!!
         assertEquals("narrator2=${token(server)}; HttpOnly; SameSite=Strict; Path=/", cookie)
+        assertFalse(code in cookie, "the cookie holds the session token, not the code")
         assertEquals("", login.body)
 
         val overview = get(server, "/", cookie = cookie.substringBefore(';'))
@@ -133,16 +152,51 @@ class DashboardServerTest {
     }
 
     @Test
+    fun `login codes are drawn at random, and only the latest unused ones are kept`() {
+        val token = DashboardToken(clock)
+        val codes = (1..DashboardToken.MAX_CODES + 1).map { token.newCode() }
+        codes.forEach { code -> assertTrue(Regex("[0-9a-f]{32}").matches(code), code) }
+        assertEquals(codes.size, codes.toSet().size)
+        assertFalse(token.redeem(codes.first()), "past ${DashboardToken.MAX_CODES} unused codes, the oldest is voided")
+        listOf(null, "", codes[1].dropLast(1), codes[1] + "0", token.value).forEach { candidate ->
+            assertFalse(token.redeem(candidate), "redeemed $candidate")
+        }
+        assertTrue(token.redeem(codes[1]))
+        assertFalse(token.redeem(codes[1]), "used up")
+        assertFalse(token.matches(codes[2]), "a code is no session token")
+    }
+
+    @Test
+    fun `a login link signs in once, within 10 minutes`() {
+        val server = start()
+        val link = loginPath(server)
+        val first = get(server, link)
+        assertEquals(303, first.status)
+        val again = get(server, link)
+        assertEquals(403, again.status, "the same link a second time (logs/latest.log, the browser's history)")
+        assertNull(again.header("set-cookie"))
+        assertEquals(200, get(server, "/", cookie = first.header("set-cookie")!!.substringBefore(';')).status, "the browser stays signed in")
+
+        val late = loginPath(server)
+        val inTime = loginPath(server)
+        clock.advance(Duration.ofMinutes(10).minusSeconds(1))
+        assertEquals(303, get(server, inTime).status, "good for 9 min 59 s")
+        clock.advance(Duration.ofSeconds(1))
+        assertEquals(403, get(server, late).status, "dead after 10 minutes")
+    }
+
+    @Test
     fun `a reset signs every browser out and voids the links given before`() {
         val server = start()
-        val oldLink = "/" + server.loginUrl().substringAfter(server.url)
-        val oldCookie = get(server, oldLink).header("set-cookie")!!.substringBefore(';')
+        val oldCookie = signIn(server)
+        val unused = loginPath(server)
         assertEquals(200, get(server, "/", cookie = oldCookie).status)
 
         server.resetToken()
         assertEquals(403, get(server, "/", cookie = oldCookie).status, "the old cookie")
-        assertEquals(403, get(server, oldLink).status, "the old link")
-        val newCookie = get(server, "/" + server.loginUrl().substringAfter(server.url)).header("set-cookie")!!.substringBefore(';')
+        assertEquals(403, get(server, unused).status, "a link given before, not used yet")
+        val newCookie = signIn(server)
+        assertNotEquals(oldCookie, newCookie)
         assertEquals(200, get(server, "/", cookie = newCookie).status)
     }
 
@@ -157,7 +211,7 @@ class DashboardServerTest {
         assertEquals(421, get(server, "/", cookie = cookie, host = "evil.example").status)
         assertEquals(421, get(server, "/", cookie = cookie, host = "127.0.0.1:${port + 1}").status, "another port")
         assertEquals(421, get(server, "/", cookie = cookie, host = null, version = "HTTP/1.0").status, "no host")
-        assertEquals(421, get(server, "/login?key=${token(server)}", host = "evil.example:$port").status, "not even the login")
+        assertEquals(421, get(server, loginPath(server), host = "evil.example:$port").status, "not even the login")
         assertFalse("Bartok" in get(server, "/", cookie = cookie, host = "evil.example:$port").body)
         assertEquals(200, get(server, "/", cookie = cookie, host = "localhost:$port").status)
         assertEquals(200, get(server, "/", cookie = cookie, host = "LOCALHOST:$port").status)
@@ -174,7 +228,7 @@ class DashboardServerTest {
             assertEquals("GET, HEAD", answer.header("allow"), method)
             assertFalse("Bartok" in answer.body, method)
         }
-        assertEquals(405, get(server, "/login?key=${token(server)}", method = "POST").status)
+        assertEquals(405, get(server, loginPath(server), method = "POST").status)
         val head = get(server, "/", cookie = cookie, method = "HEAD")
         assertEquals(200, head.status)
         assertEquals("", head.body)
@@ -189,7 +243,7 @@ class DashboardServerTest {
             "stylesheet" to get(server, "/style.css"),
             "not signed in" to get(server, "/"),
             "wrong key" to get(server, "/login?key=x"),
-            "login" to get(server, "/login?key=${token(server)}"),
+            "login" to get(server, loginPath(server)),
             "not found" to get(server, "/nope", cookie = cookie),
             "method" to get(server, "/", cookie = cookie, method = "POST"),
             "host" to get(server, "/", cookie = cookie, host = "evil.example"),
@@ -211,13 +265,16 @@ class DashboardServerTest {
     // ── The log ─────────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the token never reaches the log`() {
+    fun `the token and the login codes never reach the log`() {
         LogCapture().use { logs ->
             val server = start()
             val first = token(server)
+            val code = server.newLoginUrl().substringAfter("key=")
             val cookie = signIn(server)
             get(server, "/", cookie = cookie)
-            get(server, "/login?key=${first.dropLast(2)}")
+            get(server, "/login?key=${code.dropLast(2)}")
+            get(server, "/login?key=$code")
+            get(server, "/login?key=$code")
             server.resetToken()
             val second = token(server)
             signIn(server)
@@ -226,7 +283,7 @@ class DashboardServerTest {
             assertContains(logs.text, "dashboard on ${server.url}")
             assertContains(logs.text, "a browser signed in to the dashboard")
             assertContains(logs.text, "refused GET /login (403): wrong login key")
-            listOf(first, second, first.dropLast(2), "key=").forEach { secret -> assertFalse(secret in logs.text, "the log shows $secret") }
+            listOf(first, second, code, code.dropLast(2), "key=").forEach { secret -> assertFalse(secret in logs.text, "the log shows $secret") }
         }
     }
 
@@ -256,7 +313,7 @@ class DashboardServerTest {
                 val dashboard = createDashboard(busy)
                 assertIs<DisabledDashboard>(dashboard)
                 assertNull(dashboard.url)
-                assertNull(dashboard.loginUrl())
+                assertNull(dashboard.newLoginUrl())
                 assertContains(dashboard.unavailableReason!!, "port $port of 127.0.0.1 is taken")
                 assertContains(dashboardState(dashboard), "off (port $port of 127.0.0.1 is taken")
                 assertTrue(logs.at(Level.WARN).any { "no dashboard: port $port of 127.0.0.1 is taken" in it }, logs.text)
@@ -265,12 +322,17 @@ class DashboardServerTest {
     }
 
     @Test
-    fun `dashboard enabled false starts nothing`() {
-        val off = createDashboard(TestServices(settings = testSettings(NarratorConfig(dashboard = DashboardConfig(enabled = false, port = 0)))))
-        assertIs<DisabledDashboard>(off)
-        assertEquals("off (dashboard.enabled is false)", dashboardState(off))
-        off.resetToken()
-        off.stop()
+    fun `the dashboard is off by default, and then starts nothing`() {
+        assertEquals(DashboardConfig(enabled = false, port = 8770), NarratorConfig().dashboard, "optional: off by default")
+        listOf(NarratorConfig(), NarratorConfig(dashboard = DashboardConfig(enabled = false, port = 0))).forEach { config ->
+            val off = createDashboard(TestServices(settings = testSettings(config)))
+            assertIs<DisabledDashboard>(off)
+            assertEquals(DisabledDashboard.SWITCHED_OFF, off.unavailableReason)
+            assertEquals("off (dashboard.enabled is false)", dashboardState(off))
+            assertNull(off.newLoginUrl())
+            off.resetToken()
+            off.stop()
+        }
     }
 
     @Test
@@ -290,31 +352,91 @@ class DashboardServerTest {
     // ── The Journal ─────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `the Journal has a third read connection, and the dashboard reads one query at a time`() {
-        assertEquals(3, DuckDatabase.Options().readers)
-        JournalFixture().use { fixture ->
-            assertEquals(3, fixture.db.readers.size)
-            val context = PageContext(TestServices(journal = fixture.journal), Semaphore(1, true))
-            val active = AtomicInteger()
-            val most = AtomicInteger()
-            val ready = CountDownLatch(1)
-            val readers = (1..3).map {
-                thread {
-                    ready.await()
-                    context.read {
-                        most.accumulateAndGet(active.incrementAndGet()) { a, b -> maxOf(a, b) }
-                        Thread.sleep(150)
-                        active.decrementAndGet()
-                    }
-                }
+    fun `the Journal opens a third read connection only for the dashboard`(@TempDir dir: Path) {
+        assertEquals(2, DuckDatabase.Options().readers)
+        assertEquals(2, DuckDatabase.Options.of(JournalConfig()).readers, "no dashboard: the Director, the memory and the rest")
+        assertEquals(3, DuckDatabase.Options.of(JournalConfig(), dashboard = true).readers, "one more for the dashboard")
+        // What the runtime opens, with `dashboard.enabled` (NarratorRuntime.prepare).
+        listOf(false to 2, true to 3).forEach { (dashboard, readers) ->
+            LogCapture().use { logs ->
+                openJournalOrDisable(dir.resolve("dashboard-$dashboard"), JournalConfig(), clock, OpenRetry(), { null }, dashboard).close()
+                assertContains(logs.text, "· $readers read connections ·", message = "dashboard $dashboard")
             }
-            ready.countDown()
-            readers.forEach { it.join(10_000) }
-            assertEquals(1, most.get(), "one read of the dashboard at a time")
         }
     }
 
+    @Test
+    fun `the dashboard reads one query at a time`() = withDashboardJournal { _, context, holds ->
+        val ready = CountDownLatch(1)
+        val readers = (1..3).map {
+            thread {
+                ready.await()
+                context.read { holds.hold(150) }
+            }
+        }
+        ready.countDown()
+        readers.forEach { it.join(10_000) }
+        assertEquals(1, holds.most.get(), "one read of the dashboard at a time")
+    }
+
+    @Test
+    fun `a read that timed out keeps the dashboard's turn until its query really ends`() = withDashboardJournal { _, context, holds ->
+        // The query holds its connection 6 s: the page gives up at 5 s, the query runs on.
+        val first = CompletableFuture.supplyAsync { runCatching { context.read { holds.hold(6_000) } }.exceptionOrNull() }
+        assertIs<JournalTimeoutException>(first.get(15, TimeUnit.SECONDS), "the first page gave up")
+        // The next page, reloaded at once, waits for that query to end rather than take a second connection.
+        assertEquals("second", context.read { holds.hold(0); "second" })
+        assertEquals(1, holds.most.get(), "never two reads of the dashboard at once, even after a timeout")
+    }
+
+    @Test
+    fun `a service's read that timed out in the dashboard's turn keeps the turn too`() = withDashboardJournal { fixture, context, holds ->
+        // The player sheets and SqlRunner read in the dashboard's turn, with their own limit.
+        val failure = runCatching { context.inTurn { fixture.journal.read(500) { holds.hold(2_500) } } }.exceptionOrNull()
+        assertIs<JournalTimeoutException>(failure, "the service gave up")
+        assertEquals("second", context.read { holds.hold(0); "second" })
+        assertEquals(1, holds.most.get(), "never two reads of the dashboard at once, even after a timeout")
+    }
+
+    @Test
+    fun `a turn runs one query at a time`() = withDashboardJournal { fixture, context, holds ->
+        val second = context.inTurn {
+            coroutineScope {
+                val first = async(Dispatchers.IO) { fixture.journal.read(5_000) { holds.hold(1_000) } }
+                holds.started.await()
+                runCatching { fixture.journal.read(5_000) { holds.hold(0) } }.also { first.await() }
+            }
+        }
+        assertIs<JournalTimeoutException>(second.exceptionOrNull(), "a second query of the turn, while the first runs, is refused")
+        assertEquals(1, holds.most.get())
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────────
+
+    /** Counts the queries that hold a connection at once, and the most at any time. Read threads. */
+    private class Holds {
+        private val holding = AtomicInteger()
+        val most = AtomicInteger()
+        val started = CountDownLatch(1)
+
+        /** A query that holds its connection [ms]. */
+        fun hold(ms: Long) {
+            most.accumulateAndGet(holding.incrementAndGet()) { a, b -> maxOf(a, b) }
+            started.countDown()
+            try {
+                Thread.sleep(ms)
+            } finally {
+                holding.decrementAndGet()
+            }
+        }
+    }
+
+    /** A real Journal with the dashboard's three read connections, and a page's context on it. */
+    private fun withDashboardJournal(test: (JournalFixture, PageContext, Holds) -> Unit) {
+        JournalFixture(options = JournalFixture.OPTIONS.copy(readers = 3)).use { fixture ->
+            test(fixture, PageContext(TestServices(journal = fixture.journal), Semaphore(1, true)), Holds())
+        }
+    }
 
     private class Answer(val status: Int, private val headers: Map<String, String>, val body: String) {
         fun header(name: String): String? = headers[name.lowercase()]
@@ -345,11 +467,14 @@ class DashboardServerTest {
         Answer(lines.first().split(' ')[1].toInt(), headers, text.substringAfter("\r\n\r\n", ""))
     }
 
-    private fun token(server: DashboardServer): String = server.loginUrl().substringAfter("key=")
+    /** The session token, which the cookie holds. */
+    private fun token(server: DashboardServer): String = server.token.value
 
-    /** Signs in through the login link; the cookie to send back. */
-    private fun signIn(server: DashboardServer): String =
-        get(server, "/login?key=${token(server)}").header("set-cookie")!!.substringBefore(';')
+    /** A new login link, as a path: `/login?key=<code>`. */
+    private fun loginPath(server: DashboardServer): String = "/" + server.newLoginUrl().substringAfter(server.url)
+
+    /** Signs in through a new login link; the cookie to send back. */
+    private fun signIn(server: DashboardServer): String = get(server, loginPath(server)).header("set-cookie")!!.substringBefore(';')
 
     private fun player(name: String) = LivePlayer(
         ref = PlayerRef(UUID.nameUUIDFromBytes(name.toByteArray()), name), sessionId = 1, joinedAt = 0, isOp = false, gameMode = "survival",

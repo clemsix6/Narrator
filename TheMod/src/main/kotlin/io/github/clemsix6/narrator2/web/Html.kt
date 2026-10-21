@@ -82,10 +82,28 @@ class Html internal constructor(private val out: StringBuilder) {
     /**
      * An element [name] with [attributes] (a null value leaves the attribute out) and [body]; without a body, a void
      * element (`<br>`, `<input>`) or an empty one. [name] must be one of the known elements; an attribute name must not
-     * start with `on` nor be `style`, and `href`, `action` and `src` must point inside the dashboard.
+     * start with `on` nor be `style`, and a URL ([URL_ATTRIBUTES]) must point inside the dashboard ([insideUrl]).
      */
     internal fun element(name: String, vararg attributes: Pair<String, Any?>, body: (Html.() -> Unit)? = null) {
         require(name in ELEMENTS) { "unknown element <$name>" }
+        tag(name, attributes, body)
+    }
+
+    /**
+     * The `<head>` of [document]. `<meta>` is no element of [ELEMENTS]: its `http-equiv` could send the browser to
+     * another site (`refresh` with a URL). Here it only says the charset, the viewport and the referrer policy, and
+     * [refresh] reloads the same page after a number of seconds, an integer.
+     */
+    internal fun head(title: String, refresh: Int?) = tag("head", emptyArray()) {
+        tag("meta", arrayOf("charset" to "utf-8"))
+        tag("meta", arrayOf("name" to "viewport", "content" to "width=device-width, initial-scale=1"))
+        tag("meta", arrayOf("name" to "referrer", "content" to "no-referrer"))
+        if (refresh != null) tag("meta", arrayOf("http-equiv" to "refresh", "content" to refresh))
+        element("title") { text("$title · Narrator") }
+        element("link", "rel" to "stylesheet", "href" to "/style.css")
+    }
+
+    private fun tag(name: String, attributes: Array<out Pair<String, Any?>>, body: (Html.() -> Unit)? = null) {
         out.append('<').append(name)
         for ((attribute, value) in attributes) {
             if (value == null) continue
@@ -93,9 +111,7 @@ class Html internal constructor(private val out: StringBuilder) {
                 "attribute $attribute is not allowed"
             }
             val text = value.toString()
-            require(attribute !in URL_ATTRIBUTES || (text.startsWith("/") && !text.startsWith("//")) || text.startsWith("#")) {
-                "$attribute must point inside the dashboard: $text"
-            }
+            require(attribute.lowercase() !in URL_ATTRIBUTES || insideUrl(text)) { "$attribute must point inside the dashboard: $text" }
             out.append(' ').append(attribute).append("=\"").append(escape(text)).append('"')
         }
         when {
@@ -206,17 +222,26 @@ class Html internal constructor(private val out: StringBuilder) {
         /** The elements of the inline charts ([bars], [curve]): those without content close themselves. */
         val SVG = setOf("svg", "g", "rect", "line", "polyline", "text", "title")
 
-        val ELEMENTS = VOID + SVG + setOf(
+        /** What a page may write; `<meta>` only comes from [head]. */
+        val ELEMENTS = VOID - "meta" + SVG + setOf(
             "html", "head", "body", "nav", "main", "header", "footer", "section", "div", "span", "p", "h1", "h2", "h3",
             "a", "table", "thead", "tbody", "tr", "th", "td", "details", "summary", "pre", "code", "ul", "li", "dl", "dt", "dd",
             "form", "label", "select", "option", "button", "textarea", "strong", "em", "small",
         )
 
-        /** An attribute name: letters, digits and dashes (`viewBox`, `http-equiv`, `text-anchor`). */
+        /** An attribute name: letters, digits and dashes (`viewBox`, `text-anchor`). */
         val ATTRIBUTE = Regex("[a-zA-Z][a-zA-Z0-9-]*")
 
-        /** Attributes holding a URL: they must point inside the dashboard. */
-        val URL_ATTRIBUTES = setOf("href", "action", "src")
+        /** Attributes holding a URL, in lower case: they must point inside the dashboard ([insideUrl]). */
+        val URL_ATTRIBUTES = setOf("href", "action", "formaction", "src")
+
+        /**
+         * Whether [url] points inside the dashboard: a path from its root (`/turns`, never `//other.site`) or a fragment
+         * (`#top`). Browsers read `\` as `/` and drop tabs and line breaks, so `/\other.site` or `/<tab>/other.site`
+         * would leave it: no backslash, no control character and no space either ([link] encodes them all).
+         */
+        fun insideUrl(url: String): Boolean =
+            ((url.startsWith("/") && !url.startsWith("//")) || url.startsWith("#")) && url.none { it == '\\' || it <= ' ' || it == '\u007F' }
     }
 }
 
@@ -231,14 +256,7 @@ data class NavEntry(val label: String, val link: Link)
 fun document(title: String, nav: List<NavEntry>, current: Link?, refresh: Int? = null, body: Html.() -> Unit): String {
     val out = StringBuilder(8_192).append("<!doctype html>")
     Html(out).element("html", "lang" to "en") {
-        element("head") {
-            element("meta", "charset" to "utf-8")
-            element("meta", "name" to "viewport", "content" to "width=device-width, initial-scale=1")
-            element("meta", "name" to "referrer", "content" to "no-referrer")
-            if (refresh != null) element("meta", "http-equiv" to "refresh", "content" to refresh)
-            element("title") { text("$title · Narrator") }
-            element("link", "rel" to "stylesheet", "href" to "/style.css")
-        }
+        head(title, refresh)
         element("body") {
             element("nav") {
                 element("span", "class" to "brand") { text("Narrator") }

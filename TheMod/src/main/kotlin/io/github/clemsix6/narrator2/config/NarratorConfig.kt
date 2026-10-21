@@ -361,11 +361,14 @@ data class StyleConfig(
     val refuseRestingOpeners: Boolean = true,
 )
 
-/** The web dashboard (design M6 §8): read only, on `127.0.0.1`, behind a token. Read at startup only. */
+/**
+ * The web dashboard (design M6 §8): read only, on `127.0.0.1`, behind a token. Optional, off by default. Read when the
+ * Narrator starts only: a change takes a `/narrator restart` or a restart of the server.
+ */
 @Serializable
 data class DashboardConfig(
-    /** False: no dashboard. */
-    val enabled: Boolean = true,
+    /** False (the default): no dashboard, no port, and the Journal opens no read connection for it. */
+    val enabled: Boolean = false,
     /** Its port on `127.0.0.1`; 0 takes any free port (tests). */
     val port: Int = 8770,
 )

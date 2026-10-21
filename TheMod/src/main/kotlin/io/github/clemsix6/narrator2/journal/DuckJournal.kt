@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.trace.ToolCallRecord
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
@@ -134,15 +135,23 @@ internal class DuckJournal private constructor(
 
     override suspend fun barrier() = writer.barrier()
 
+    /** [query] runs on a read thread; a [ReadWatch] in the caller's context is told when it starts and when it ends. */
     override suspend fun <T> read(timeoutMs: Long, query: (Connection) -> T): T {
         if (!available) throw JournalUnavailableException(unavailableReason())
         val result = CompletableFuture<T>()
+        val watch = currentCoroutineContext()[ReadWatch]
         try {
             readThreads.execute {
                 if (result.isDone) return@execute // timed out or cancelled while waiting for a thread
                 // None while the database is down after a failure.
                 val connection = readers.poll(timeoutMs, TimeUnit.MILLISECONDS)
                 if (connection == null) {
+                    result.completeExceptionally(JournalTimeoutException(timeoutMs))
+                    return@execute
+                }
+                // Its caller may have given up while it waited for the connection: then nobody wants its result.
+                if (result.isDone || watch?.start() == false) {
+                    giveBack(connection)
                     result.completeExceptionally(JournalTimeoutException(timeoutMs))
                     return@execute
                 }
@@ -153,6 +162,7 @@ internal class DuckJournal private constructor(
                 } finally {
                     endQuery(connection)
                     giveBack(connection)
+                    watch?.end()
                 }
             }
         } catch (_: RejectedExecutionException) {

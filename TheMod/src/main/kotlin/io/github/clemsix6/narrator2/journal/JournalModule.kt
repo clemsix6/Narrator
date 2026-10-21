@@ -24,9 +24,18 @@ import java.util.Locale
  */
 fun openJournal(dir: Path, config: JournalConfig, clock: Clock): Journal = openJournal(dir, config, clock, OpenRetry())
 
-/** [hookNanos]: unit tests cannot start the runtime that [observerHookNanos] reads, so they pass their own. */
-internal fun openJournal(dir: Path, config: JournalConfig, clock: Clock, retry: OpenRetry, hookNanos: () -> Long? = ::observerHookNanos): Journal =
-    retry.run { openJournalOnce(dir, config, clock, hookNanos) }
+/**
+ * [hookNanos]: unit tests cannot start the runtime that [observerHookNanos] reads, so they pass their own. [dashboard]:
+ * the web dashboard is on, and gets a read connection of its own ([DuckDatabase.Options.of]).
+ */
+internal fun openJournal(
+    dir: Path,
+    config: JournalConfig,
+    clock: Clock,
+    retry: OpenRetry,
+    hookNanos: () -> Long? = ::observerHookNanos,
+    dashboard: Boolean = false,
+): Journal = retry.run { openJournalOnce(dir, config, clock, hookNanos, dashboard) }
 
 /**
  * [openJournal], or, when it fails for good, a [DisabledJournal] whose reason says why: facts and traces
@@ -34,7 +43,8 @@ internal fun openJournal(dir: Path, config: JournalConfig, clock: Clock, retry: 
  * the unavailable Journal at WARN. `/narrator status` and the commands that need the Journal show it as
  * unavailable. No operator is online yet at startup, so none is told.
  */
-fun openJournalOrDisable(dir: Path, config: JournalConfig, clock: Clock): Journal = openJournalOrDisable(dir, config, clock, OpenRetry())
+fun openJournalOrDisable(dir: Path, config: JournalConfig, clock: Clock, dashboard: Boolean = false): Journal =
+    openJournalOrDisable(dir, config, clock, OpenRetry(), dashboard = dashboard)
 
 internal fun openJournalOrDisable(
     dir: Path,
@@ -42,10 +52,11 @@ internal fun openJournalOrDisable(
     clock: Clock,
     retry: OpenRetry,
     hookNanos: () -> Long? = ::observerHookNanos,
+    dashboard: Boolean = false,
 ): Journal {
     val log = Log.journal
     val journal = try {
-        openJournal(dir, config, clock, retry, hookNanos)
+        openJournal(dir, config, clock, retry, hookNanos, dashboard)
     } catch (e: Exception) {
         log.error("the Journal cannot open, facts will not be recorded: ${e.message}", e)
         DisabledJournal(e.message ?: e.javaClass.simpleName, clock)
@@ -55,12 +66,12 @@ internal fun openJournalOrDisable(
 }
 
 /** One attempt to open the Journal; throws what failed, closing what it opened. */
-private fun openJournalOnce(dir: Path, config: JournalConfig, clock: Clock, hookNanos: () -> Long?): Journal {
+private fun openJournalOnce(dir: Path, config: JournalConfig, clock: Clock, hookNanos: () -> Long?, dashboard: Boolean): Journal {
     val log = Log.journal
     val start = System.nanoTime()
     Files.createDirectories(dir)
     val file = dir.resolve(DuckDatabase.FILE_NAME)
-    val db = DuckDatabase.open(file, DuckDatabase.Options.of(config))
+    val db = DuckDatabase.open(file, DuckDatabase.Options.of(config, dashboard))
     val journal = try {
         DuckJournal.open(db, config, clock, hookNanos = hookNanos)
     } catch (e: Exception) {
@@ -69,7 +80,7 @@ private fun openJournalOnce(dir: Path, config: JournalConfig, clock: Clock, hook
     }
     val bytes = db.fileBytes() + db.walBytes()
     log.info(
-        "opened $file · schema version ${db.schemaVersion} · %.1f MB · time zone ${db.timeZone} · %d ms"
+        "opened $file · schema version ${db.schemaVersion} · %.1f MB · time zone ${db.timeZone} · ${db.readers.size} read connections · %d ms"
             .format(Locale.ROOT, bytes / 1e6, (System.nanoTime() - start) / 1_000_000),
     )
     if (bytes > config.warnSizeMb * 1_000_000) {
