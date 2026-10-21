@@ -81,7 +81,7 @@ class ToolCatalogTest {
         assertEquals(listOf("list_players", "player_profile", "recall", "sql"), names(Role.ANALYST))
         assertEquals(listOf("list_players", "recall", "sql", "survey"), names(Role.SCOUT))
         assertEquals(emptyList(), names(Role.FORGER))
-        assertEquals(listOf("player_profile", "recall", "remember", "resolve", "sql"), names(Role.STORYTELLER), "the tools the storyteller shares")
+        assertEquals(listOf("player_profile", "recall", "remember", "resolve"), names(Role.STORYTELLER), "the tools the storyteller shares, never sql (M6-16)")
     }
 
     @Test
@@ -264,14 +264,15 @@ class ToolCatalogTest {
     }
 
     /**
-     * The storyteller (M6 §6.5, §12.6): its own two tools and the six it shares, nothing that acts on the world, speaks
-     * to players or delegates (its writes, effect `ENGINE`, are the memory's); its own are never another role's.
+     * The storyteller (M6 §6.5, §12.6): its own two tools and the five it shares, nothing that acts on the world, speaks
+     * to players or delegates (its writes, effect `ENGINE`, are the memory's); its own are never another role's. No `sql`
+     * (M6-16): its openings and reads hold what it needs, and the Journal's schema would weigh on each of its requests.
      */
     @Test
-    fun `the storyteller gets its eight tools, none that acts, speaks or delegates, and its own are nobody else's`() {
+    fun `the storyteller gets its seven tools, none that acts, speaks or delegates, and its own are nobody else's`() {
         val wired = everythingWired.copy(mechanicsAvailable = true, forgeAvailable = true, storytellerAvailable = true)
         val set = ToolCatalog.toolSetFor(Role.STORYTELLER, wired, services)
-        assertEquals(listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"), set.names)
+        assertEquals(listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve"), set.names)
         assertEquals(emptyList(), set.tools.filter { it.effect in setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK) }.map { it.name })
         assertEquals(listOf("drop_idea", "propose_idea", "remember", "resolve"), set.tools.filter { it.effect == ToolEffect.ENGINE }.map { it.name })
         for (role in Role.entries - Role.STORYTELLER) {
@@ -280,11 +281,11 @@ class ToolCatalogTest {
         }
 
         assertEquals(
-            listOf("drop_idea", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"),
+            listOf("drop_idea", "player_profile", "propose_idea", "recall", "remember", "resolve"),
             ToolCatalog.toolSetFor(Role.STORYTELLER, everythingWired, services).names,
             "inspire needs the storyteller",
         )
-        assertEquals(listOf("inspire", "sql"), ToolCatalog.toolSetFor(Role.STORYTELLER, memoryOff.copy(storytellerAvailable = true), services).names)
+        assertEquals(listOf("inspire"), ToolCatalog.toolSetFor(Role.STORYTELLER, memoryOff.copy(storytellerAvailable = true), services).names)
     }
 
     /**

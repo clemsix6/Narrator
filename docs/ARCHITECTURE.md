@@ -217,7 +217,7 @@ Le Directeur lance un assistant avec `delegate(rôle, consigne)` : l'appel rend 
 | **Analyste** | Questions sur l'historique : « où mine Bartok ? », « profil de Mimosa sur ses trois dernières sessions » | SQL, Oracle, mémoire |
 | **Éclaireur** | Explorer le monde : trouver une arène pour un duel, la structure la plus proche de chaque joueur, un lieu pour un piège | Oracle, `locate`, `survey` (terrains plats et dégagés), SQL (positions), `recall` |
 | **Forgeron** | Écrire, tester et sauver un module de la Forge, commandé par `forge_module` | `module_list`, `module_read`, `game_ids`, `forge_test`, `forge_save` (§10.2) |
-| **Scénariste** | Préparer la suite sans jamais agir : pendant le rêve, le programme (des **idées** `P-…` notées sur la nouveauté, le fun et l'équité, adaptées à la progression réelle, une saison, les récits prévus) ; à la demande (`delegate`), trois idées pour un grand moment ([design M6](design/M6.md) §6) | `inspire`, `propose_idea`, `drop_idea`, `remember` (récits prévus, lore), `recall`, `player_profile`, `sql` |
+| **Scénariste** | Préparer la suite sans jamais agir : pendant le rêve, le programme (des **idées** `P-…` notées sur la nouveauté, le fun et l'équité, adaptées à la progression réelle, une saison, les récits prévus) ; à la demande (`delegate`), trois idées pour un grand moment ([design M6](design/M6.md) §6) | `inspire`, `propose_idea`, `drop_idea`, `remember` (récits prévus, lore), `recall`, `player_profile` (sans `sql` depuis M6-16) |
 | **Chroniqueur** | Consolider la mémoire : extraction continue, sieste de fin de chapitre | Journal, mémoire (écriture) |
 | **Rêveur** | Le rêve profond pendant les temps morts (voir MEMOIRE.md §5) | Journal, mémoire (écriture), Forge, Éclaireur |
 
@@ -441,7 +441,7 @@ Des lignes courtes, en anglais, préfixées par sous-système (`[Director]`, `[T
 ```
 Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde au plus) puis lisent la base. Tout est aussi requêtable en SQL (`llm_calls`, `tool_calls`, `engine_decisions`, `turns`…).
 
-**Le tableau de bord web** (M6, [design M6](design/M6.md) §8) : un serveur HTTP du mod, lié à `127.0.0.1` (port 8770 ; à distance, par un tunnel SSH), en lecture seule, protégé par un jeton que donne `/narrator dashboard`. Rendu côté serveur en HTML et CSS, **sans JavaScript** : une politique de sécurité (`Content-Security-Policy: default-src 'none'`) interdit tout script au navigateur. Il montre les tours, les conversations (transcriptions rendues), les tâches, les décisions, les coûts en dollars, la mémoire (canon, idées du Scénariste, documents), les fiches, les mécaniques, l'arsenal de la Forge, le style (diversité, registres, drapeaux de ton) et une page SQL en accès « modèle » : les messages privés y sont inaccessibles par construction.
+**Le tableau de bord web** (M6, [design M6](design/M6.md) §8) : **optionnel et désactivé par défaut** (`dashboard.enabled = false` ; pour l'activer, `"dashboard": { "enabled": true }` dans `config/narrator2/narrator2.json`, puis `/narrator restart` ou un redémarrage ; désactivé, il n'ouvre aucun port, aucun fil, et le Journal garde ses deux connexions de lecture). Activé, c'est un serveur HTTP du mod, lié à `127.0.0.1` (port 8770 ; à distance, par un tunnel SSH), en lecture seule, où l'on entre par un lien à usage unique (valable 10 minutes) que donne `/narrator dashboard`, et qui pose un cookie de session. Rendu côté serveur en HTML et CSS, **sans JavaScript** : une politique de sécurité (`Content-Security-Policy: default-src 'none'`) interdit tout script au navigateur. Il montre les tours, les conversations (transcriptions rendues), les tâches, les décisions, les coûts en dollars, la mémoire (canon, idées du Scénariste, documents), les fiches, les mécaniques, l'arsenal de la Forge, le style (diversité, registres, drapeaux de ton) et une page SQL en accès « modèle » : les messages privés y sont inaccessibles par construction.
 
 ## 13. Sécurité et administration
 
@@ -469,7 +469,7 @@ Ces commandes attendent que le Journal ait écrit ce qui précède (une seconde 
 /narrator memory …               # voir MEMOIRE.md §12
 /narrator trace …                # voir §12.4
 /narrator usage                  # consommation de tokens (et en dollars, M6) par rôle
-/narrator dashboard [reset]      # le lien du tableau de bord web ; reset : un nouveau jeton (M6)
+/narrator dashboard [reset]      # un lien de connexion au tableau de bord web (usage unique), ou comment l'activer ; reset : un nouveau jeton (M6)
 /narrator style                  # tics, béquilles, registres, diversité, drapeaux de ton (M6)
 /narrator memory ideas [all]     # les idées du Scénariste (M6)
 /narrator restart                # reconstruit le Narrateur sans arrêter Minecraft, serveur vide (M6)
@@ -586,8 +586,9 @@ relecture ; le propriétaire pourra rouvrir plus tard le cas joueurs en ligne (�
 - **Le Scénariste prépare, le Directeur décide** : des idées `P-…` (une table de la mémoire), une étape du rêve et un
   rôle de `delegate` ; aucun outil d'action ; il ne commande pas de module (Q8 de M5 maintenue). `Plans` quitte le
   Grimoire, et les récits prévus passent du Rêveur au Scénariste (une seule plume par sujet).
-- **Le tableau de bord** : lié à `127.0.0.1`, jeton, lecture seule, HTML et CSS rendus côté serveur, CSP sans script ;
-  la règle « pas de JavaScript » est appliquée aussi au tableau de bord, et vérifiée par le navigateur.
+- **Le tableau de bord** : optionnel, désactivé par défaut (décision du propriétaire, 21/10/2026, M6-FIX-2) ; lié à
+  `127.0.0.1`, lien de connexion à usage unique puis cookie de session, lecture seule, HTML et CSS rendus côté serveur,
+  CSP sans script ; la règle « pas de JavaScript » est appliquée aussi au tableau de bord, et vérifiée par le navigateur.
 - **`/narrator restart`** reconstruit le runtime **serveur vide** (les connexions attendent la fin de l'échange), ce
   qui attend étant fait hors du thread serveur : avec des joueurs en ligne, les garde-fous du §17 ne les protégeraient
   plus pendant l'échange.

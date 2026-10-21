@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.guard.DeathReport
 import io.github.clemsix6.narrator2.reflex.ClaudeReflexes
+import io.github.clemsix6.narrator2.trace.Cost
 import io.github.clemsix6.narrator2.trace.DeathLine
 import io.github.clemsix6.narrator2.trace.DecisionLine
 import io.github.clemsix6.narrator2.trace.MessageFate
@@ -24,9 +25,6 @@ import io.github.clemsix6.narrator2.trace.TurnDetail
 import io.github.clemsix6.narrator2.trace.TurnRecord
 import io.github.clemsix6.narrator2.trace.TurnSummary
 import io.github.clemsix6.narrator2.trace.Usage
-import io.github.clemsix6.narrator2.web.Cost
-import io.github.clemsix6.narrator2.web.DashboardQueries
-import io.github.clemsix6.narrator2.web.costOf
 import kotlinx.coroutines.withTimeoutOrNull
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
@@ -120,11 +118,9 @@ object TraceCommands {
         }
     }
 
-    /** The calls of each role over [hours], and their cost in dollars at the configuration's prices (M6 §8.7). */
+    /** The calls of each role over [hours], and their cost in dollars at the configuration's prices (M6 §8.7): one statement. */
     private fun usage(source: CommandSourceStack, hours: Int): Int = readJournal(source, "usage $hours") { connection, text, prices ->
-        val since = text.now - hours * HOUR_MS
-        val costs = DashboardQueries(connection).tokensByRole(since).mapValues { (_, tokens) -> prices.costOf(tokens) }
-        text.page(text.usage(TraceQueries(connection).usage(since), hours, costs), 1, null)
+        text.page(text.usage(TraceQueries(connection).usage(text.now - hours * HOUR_MS), hours, prices), 1, null)
     }
 
     /** [readJournal] through [TraceQueries]. */
@@ -324,17 +320,17 @@ internal class TraceText(private val zone: ZoneId, val now: Long) {
     }
 
     /**
-     * `/narrator usage [hours]`: model calls per role, the reflexes (`reflex`) included, with what each role cost at the
-     * configuration's prices ([costs], by role: `$ ?` for a model without a price, M6 §8.7), then the total.
+     * `/narrator usage [hours]`: model calls per role, the reflexes (`reflex`) included, with what each role cost at
+     * [prices], by the model that answered ([Usage.models]: `$ ?` for a model without a price, M6 §8.7), then the total.
      */
-    fun usage(rows: List<Usage>, hours: Int, costs: Map<String, Cost>): Report {
+    fun usage(rows: List<Usage>, hours: Int, prices: Prices): Report {
         if (rows.isEmpty()) return Report("usage over the last $hours h", listOf(Out("no model call")))
-        val lines = rows.map { row ->
+        val costs = rows.map { prices.costOf(it.models) }
+        val lines = rows.zip(costs) { row, cost ->
             val failed = if (row.failed > 0) " · ${row.failed} failed" else ""
-            val cost = costs[row.role]?.let { " · ${it.text}" }.orEmpty()
-            Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg$cost$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
+            Out("${row.role}: ${row.calls} ${plural(row.calls, "call")} · ${tokensIn(row)} · ${tokens(row.outputTokens)} out · ${seconds(row.averageLatencyMs)} avg · ${cost.text}$failed", if (row.failed > 0) Look.FAILURE else Look.DETAIL)
         }
-        val total = costs.values.fold(Cost.NONE, Cost::plus)
+        val total = costs.fold(Cost.NONE, Cost::plus)
         return Report("usage over the last $hours h", lines + Out("Total ${total.text} · at the API's prices: behind a subscription, an order of magnitude."))
     }
 

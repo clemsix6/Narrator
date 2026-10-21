@@ -207,7 +207,7 @@ class DreamReplayTest {
         val programme = f.fake.requests.first { it.conversation.orEmpty().startsWith("storyteller-") }.json
         assertEquals(Prompts.bundled().get("storyteller"), programme.path("system").first().path("text").asText())
         assertEquals(
-            listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve", "sql"),
+            listOf("drop_idea", "inspire", "player_profile", "propose_idea", "recall", "remember", "resolve"),
             programme.path("tools").map { it.path("name").asText() },
         )
         val brief = text(programme.path("messages").first())

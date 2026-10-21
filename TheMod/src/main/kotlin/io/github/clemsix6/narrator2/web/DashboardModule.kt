@@ -8,15 +8,15 @@ private val log = Log.web
 
 /**
  * Creates the server's dashboard (M6 §8.2), the last piece of the runtime's wiring, on the server thread at
- * `SERVER_STARTED`: a [DashboardServer] on `127.0.0.1:<dashboard.port>` when `dashboard.enabled`. A dashboard that
- * cannot start (the port is taken, the Java runtime has no `jdk.httpserver`) is a `WARN` and a [DisabledDashboard]
- * saying why: it never fails the start of the Narrator.
+ * `SERVER_STARTED`: a [DashboardServer] on `127.0.0.1:<dashboard.port>` when `dashboard.enabled` (false by default:
+ * then no port, no thread). A dashboard that cannot start (the port is taken, the Java runtime has no `jdk.httpserver`)
+ * is a `WARN` and a [DisabledDashboard] saying why: it never fails the start of the Narrator.
  */
 fun createDashboard(services: NarratorServices): Dashboard {
     val config = services.settings.get().config.dashboard
     if (!config.enabled) {
-        log.info("no dashboard: dashboard.enabled is false")
-        return DisabledDashboard("dashboard.enabled is false")
+        log.info("no dashboard: ${DisabledDashboard.SWITCHED_OFF}")
+        return DisabledDashboard(DisabledDashboard.SWITCHED_OFF)
     }
     val reason = try {
         val dashboard = DashboardServer.start(services, config.port)

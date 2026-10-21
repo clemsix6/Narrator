@@ -159,7 +159,7 @@ class DirectorStorytellerScenariosTest {
                 val requests = h.fake.requests.filter { it.conversation == session }
                 assertEquals(3, requests.size)
                 assertEquals(
-                    setOf("propose_idea", "drop_idea", "inspire", "remember", "resolve", "recall", "player_profile", "sql"),
+                    setOf("propose_idea", "drop_idea", "inspire", "remember", "resolve", "recall", "player_profile"),
                     requests[0].json.path("tools").map { it.path("name").asText() }.toSet(),
                 )
                 assertContains(requests[0].json.path("system")[0].path("text").asText(), "Tu es la salle d'écriture du Narrateur")
