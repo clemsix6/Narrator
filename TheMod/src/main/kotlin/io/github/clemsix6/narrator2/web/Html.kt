@@ -209,7 +209,7 @@ class Html internal constructor(private val out: StringBuilder) {
         val ELEMENTS = VOID + SVG + setOf(
             "html", "head", "body", "nav", "main", "header", "footer", "section", "div", "span", "p", "h1", "h2", "h3",
             "a", "table", "thead", "tbody", "tr", "th", "td", "details", "summary", "pre", "code", "ul", "li", "dl", "dt", "dd",
-            "form", "label", "select", "option", "button", "strong", "em", "small",
+            "form", "label", "select", "option", "button", "textarea", "strong", "em", "small",
         )
 
         /** An attribute name: letters, digits and dashes (`viewBox`, `http-equiv`, `text-anchor`). */
