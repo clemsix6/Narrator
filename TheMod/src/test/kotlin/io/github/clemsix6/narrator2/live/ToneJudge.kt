@@ -35,25 +35,28 @@ import java.util.Locale
  * @property text what the players read (a title: `TITLE / subtitle`).
  * @property context one line: the event that provoked it, and its target.
  * @property previous the Narrator's lines just before it, oldest first ([ToneJudge.PREVIOUS] at most are sent).
+ * @property acts the Narrator's acts of the same turn up to this line, each with the game's answer
+ *   (`punish → ok: Bartok punished, … (in 4m)`, [ReplaySituations.actLine]): what the line announces really happened, and
+ *   for how long (M6-18).
  */
-internal data class JudgedLine(val id: String, val text: String, val context: String, val previous: List<String> = emptyList())
+data class JudgedLine(val id: String, val text: String, val context: String, val previous: List<String> = emptyList(), val acts: List<String> = emptyList())
 
 /** Does the severity fit the situation (M6 §4.2)? */
-internal enum class Fairness(val id: String) {
+enum class Fairness(val id: String) {
     OK("ok"),
     TOO_HARSH("too_harsh"),
     TOO_SOFT("too_soft"),
 }
 
 /** Does the player know what happens to them, why and for how long (a punishment, a challenge, a law)? */
-internal enum class Legibility(val id: String) {
+enum class Legibility(val id: String) {
     YES("yes"),
     NO("no"),
     NOT_APPLICABLE("n_a"),
 }
 
 /** The six defects the grid finds in a line (M6 §4.2); fairness is reported apart. */
-internal enum class Defect(val id: String) {
+enum class Defect(val id: String) {
     DARK("dark"),
     CRUEL("cruel"),
     OUT_OF_CHARACTER("out_of_character"),
@@ -68,7 +71,7 @@ internal enum class Defect(val id: String) {
 }
 
 /** The judge's grade of one line, on the grid of M6 §4.2. [reason] comes first: the judge writes it before deciding. */
-internal data class Grade(
+data class Grade(
     val reason: String,
     val funny: Int,
     val fair: Fairness,
@@ -102,8 +105,8 @@ internal data class Grade(
     }
 }
 
-/** One request of the judge, measured; [error] when it brought no grades. */
-internal data class JudgeCall(
+/** One request of the judge, measured; [error] when it brought no grades; [model] is the one that answered. */
+data class JudgeCall(
     val lines: Int,
     val input: Long,
     val read: Long,
@@ -112,12 +115,13 @@ internal data class JudgeCall(
     val latencyMs: Long,
     val stop: String?,
     val error: String? = null,
+    val model: String = ToneJudge.MODEL,
 ) {
-    val dollars: Double get() = LivePrices.dollars(input, read, write, output)
+    val dollars: Double get() = LivePrices.dollars(model, input, read, write, output)
 }
 
 /** What a grading gave: a grade per line id, the calls, and what went wrong (lines left ungraded, bad values). */
-internal class Judged(val grades: Map<String, Grade>, val calls: List<JudgeCall>, val problems: List<String>) {
+class Judged(val grades: Map<String, Grade>, val calls: List<JudgeCall>, val problems: List<String>) {
     val dollars: Double get() = calls.sumOf { it.dollars }
 }
 
@@ -125,7 +129,7 @@ internal class Judged(val grades: Map<String, Grade>, val calls: List<JudgeCall>
  * A hard cap on what one live run spends, in dollars: every call is charged, and a call that could cross the cap
  * is not sent. Not thread-safe: the live runs are sequential.
  */
-internal class LiveBudget(val capDollars: Double) {
+class LiveBudget(val capDollars: Double) {
     var spent: Double = 0.0
         private set
 
@@ -141,7 +145,7 @@ internal class LiveBudget(val capDollars: Double) {
  * The grid's numbers over [grades] (M6 §4.2), and the thresholds of an evening: dark 0, cruel 0, voice ≥ 95 %,
  * repeats ≤ 15 %, funny ≥ 1.5 on average, legible ≥ 90 % of the lines concerned, fair `ok` ≥ 85 %.
  */
-internal data class GridSummary(
+data class GridSummary(
     val lines: Int,
     val funnyMean: Double,
     val dark: Int,
@@ -199,7 +203,7 @@ internal data class GridSummary(
  * cross it is not sent (its lines are left ungraded, with the reason in [Judged.problems]). The key stays in the SDK's
  * header: it is in no log line, report or exception message of this class.
  */
-internal class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget? = null) : AutoCloseable {
+class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget? = null) : AutoCloseable {
     private val client: AnthropicClient = AnthropicOkHttpClient.builder().baseUrl(baseUrl).apiKey(apiKey).maxRetries(2).build()
 
     /** Grades [lines], [BATCH] per request, in the given order. */
@@ -254,7 +258,7 @@ internal class ToneJudge(baseUrl: String, apiKey: String, private val budget: Li
         }
         val call = JudgeCall(
             batch.size, usage.inputTokens(), usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L),
-            usage.outputTokens(), elapsed(), stop, error,
+            usage.outputTokens(), elapsed(), stop, error, message.model().asString(),
         )
         return call to text.takeIf { error == null }
     }
@@ -300,7 +304,9 @@ internal class ToneJudge(baseUrl: String, apiKey: String, private val budget: Li
             titles (« TITLE / subtitle ») or action-bar asides, in French.
 
             Each line comes with the situation that provoked it (the event, and its target) and with the Narrator's previous lines,
-            oldest first. Grade each line on this grid, judging the line as the players read it:
+            oldest first. A line may also come with the Narrator's acts of the same turn before it, each with the game's answer
+            (what was really done to whom, for how long or until when): the players saw them happen, they did not read them.
+            Grade each line on this grid, judging the line as the players read it:
 
             - reason: one short English sentence on what decides your grade. Write it first.
             - funny: 0 = flat (a report, a greeting or a statement with no punchline: « Effet lenteur appliqué à Bernard pendant
@@ -322,7 +328,9 @@ internal class ToneJudge(baseUrl: String, apiKey: String, private val budget: Li
               (« Onze secondes. ONZE. » then « Douze secondes. DOUZE. »; « Le Narrateur n'est pas impressionné » again). A running
               gag that evolves, a recurring nickname or a player's name is not a repetition. With no previous line, false.
             - legible: for a line that announces a punishment, a challenge, a law or a duel: yes when the player can tell what
-              happens to them (or what to do), why, and for how long or until when; no otherwise. n_a for any other line.
+              happens to them (or what to do), why, and for how long or until when; no otherwise. n_a for any other line. The acts
+              tell what the line announces: a law the acts just made is a new law, even when an older one was disabled; a
+              duration only the acts give, and the line leaves out, is not legible.
 
             Judge each line independently: there is no quota of good or bad lines.
         """.trimIndent()
@@ -362,6 +370,11 @@ internal class ToneJudge(baseUrl: String, apiKey: String, private val budget: Li
                     append("<previous>\n")
                     previous.forEach { append("- ").append(ModelText.escape(it)).append('\n') }
                     append("</previous>\n")
+                }
+                if (line.acts.isNotEmpty()) {
+                    append("<acts>\n")
+                    line.acts.forEach { append("- ").append(ModelText.escape(it)).append('\n') }
+                    append("</acts>\n")
                 }
                 append("<text>${ModelText.escape(line.text)}</text>\n</line>\n")
             }

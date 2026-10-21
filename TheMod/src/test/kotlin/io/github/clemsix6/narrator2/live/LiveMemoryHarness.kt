@@ -59,8 +59,11 @@ import io.github.clemsix6.narrator2.tool.memory.memoryTools
 import io.github.clemsix6.narrator2.tool.pacing.pacingTools
 import io.github.clemsix6.narrator2.tool.speech.SayArgs
 import io.github.clemsix6.narrator2.tool.sql.sqlTools
+import io.github.clemsix6.narrator2.trace.CallStats
 import io.github.clemsix6.narrator2.trace.ConversationRecord
 import io.github.clemsix6.narrator2.trace.Decisions
+import io.github.clemsix6.narrator2.trace.LlmCallRecord
+import io.github.clemsix6.narrator2.trace.Prices
 import io.github.clemsix6.narrator2.trace.Transcripts
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
@@ -147,23 +150,38 @@ internal object LiveGateway {
     }.onFailure { println("[live] count_tokens failed: ${it.javaClass.simpleName}: ${it.message?.take(200)}") }.getOrNull()
 }
 
-/** Prices of Opus 5.5 per million tokens; cache writes at the 1 h rate (LLMGW places `ttl=1h` markers, T22). */
-internal object LivePrices {
-    const val INPUT = 4.0
-    const val OUTPUT = 20.0
-    const val CACHE_READ = 0.20
-    const val CACHE_WRITE = 8.0
+/**
+ * What the live tests' calls cost: the production prices (`NarratorConfig.DEFAULT_PRICES`, read through `trace/Prices`,
+ * M6 §8.7), by the model that answered (a fallback model has its own); cache writes at the 1 h rate (LLMGW places
+ * `ttl=1h` markers, T22). No live test copies a price. A model without a price costs 0 here; [line] shows the table.
+ */
+object LivePrices {
+    val prices = Prices(NarratorConfig.DEFAULT_PRICES)
 
-    fun dollars(input: Long, read: Long, write: Long, output: Long): Double =
-        (input * INPUT + read * CACHE_READ + write * CACHE_WRITE + output * OUTPUT) / 1_000_000.0
+    /** The model of the Narrator's roles and of the judges. */
+    const val OPUS = "claude-opus-5-5"
+
+    fun dollars(model: String, input: Long, read: Long, write: Long, output: Long): Double = prices.cost(model, input, output, read, write) ?: 0.0
+
+    fun dollars(stats: CallStats): Double = dollars(stats.model, stats.inputTokens, stats.cacheReadTokens, stats.cacheWriteTokens, stats.outputTokens)
+
+    fun dollars(call: LlmCallRecord): Double = dollars(
+        call.model, (call.inputTokens ?: 0).toLong(), (call.cacheReadTokens ?: 0).toLong(), (call.cacheWriteTokens ?: 0).toLong(), (call.outputTokens ?: 0).toLong(),
+    )
+
+    /** `claude-opus-5-5 4.0 / 20.0 / 0.2 / 8.0 $ · …`: input, output, cache read and cache write, dollars per million tokens. */
+    fun line(): String = NarratorConfig.DEFAULT_PRICES.entries.joinToString(" · ") { (model, p) ->
+        "$model ${p.input} / ${p.output} / ${p.cacheRead} / ${p.cacheWrite} \$"
+    } + " per million tokens (input / output / cache read / cache write at the 1 h rate)"
 }
 
-/** One `llm_calls` row of Anthropic. */
+/** One `llm_calls` row of Anthropic; [model] is the one that answered. */
 internal data class LiveCall(
     val id: Long, val purpose: String, val conversation: String?, val role: String, val effort: String?, val started: Instant,
     val latencyMs: Int, val input: Long, val read: Long, val write: Long, val output: Long, val stop: String?, val error: String?,
+    val model: String = LivePrices.OPUS,
 ) {
-    val dollars: Double get() = LivePrices.dollars(input, read, write, output)
+    val dollars: Double get() = LivePrices.dollars(model, input, read, write, output)
     val context: Long get() = input + read + write
 
     companion object {
@@ -171,11 +189,11 @@ internal data class LiveCall(
         fun read(journal: Journal, where: String = "true"): List<LiveCall> = rows(
             journal,
             "SELECT id, purpose, conversation_id, role, effort, started_at, latency_ms, coalesce(input_tokens, 0), coalesce(cache_read_tokens, 0), " +
-                "coalesce(cache_write_tokens, 0), coalesce(output_tokens, 0), stop_reason, error FROM llm_calls WHERE provider = 'anthropic' AND ($where) ORDER BY id",
+                "coalesce(cache_write_tokens, 0), coalesce(output_tokens, 0), stop_reason, error, model FROM llm_calls WHERE provider = 'anthropic' AND ($where) ORDER BY id",
         ) {
             LiveCall(
                 getLong(1), getString(2), getString(3), getString(4), getString(5), getObject(6, java.time.OffsetDateTime::class.java).toInstant(),
-                getInt(7), getLong(8), getLong(9), getLong(10), getLong(11), getString(12), getString(13),
+                getInt(7), getLong(8), getLong(9), getLong(10), getLong(11), getString(12), getString(13), getString(14),
             )
         }
 

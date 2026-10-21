@@ -159,7 +159,7 @@ class ReplayHarnessTest {
     }
 
     @Test
-    fun `a replayed turn serves the frozen reads, answers ok to the acts, and stops at the fourth request`() {
+    fun `a replayed turn serves the frozen reads, answers the acts as the game does, and stops at the fourth request`() {
         val situation = situation(
             CheckSpec("speaks", "speaks"),
             reads = mapOf("inspect_player" to listOf("Pistache · survival · hp 20/20", "inventory: 1x diamond")),
@@ -182,8 +182,9 @@ class ReplayHarnessTest {
             assertEquals(listOf(3, 4), sample.lines.map { it.request })
             fun results(request: Int) = fake.requests[request].json.path("messages").last().path("content").map { it.path("content").asText() }
             assertEquals(listOf("Pistache · survival · hp 20/20\ninventory: 1x diamond", ReplayRunner.NOTHING_MORE), results(1), "a read gets its frozen result once")
-            assertEquals(listOf(ReplayRunner.NOTHING_MORE, "ok: Pistache punished, tiny (severity 1)"), results(2))
-            assertEquals(listOf("ok"), results(3))
+            assertEquals(listOf(ReplayRunner.NOTHING_MORE, "ok: Pistache punished, tiny (severity 1)"), results(2), "the fixture's answer first")
+            assertEquals(listOf("ok: said to everyone (0 online)"), results(3), "a line answers as the real say")
+            assertEquals(listOf("ok: Pistache punished, tiny (severity 1)", "ok: said to everyone (0 online)", null), sample.calls.drop(3).map { it.result })
             assertEquals("narrator2-director", fake.requests[0].session)
             assertEquals(47, fake.requests[0].json.path("tools").size())
             assertTrue(budget.spent > 0.0 && sample.dollars == budget.spent)
@@ -249,6 +250,56 @@ class ReplayHarnessTest {
             assertTrue("<text>Bonsoir, mortels !</text>" in request.json.path("messages")[0].path("content").asText())
             assertTrue(budget.spent > 0.0)
         }
+    }
+
+    @Test
+    fun `the acts of a replayed turn answer as the real tools, durations and ends included`() {
+        val world = ReplayActs.Situation.of(
+            listOf("<briefing chapter=\"3\" now=\"2026-10-19 22:15:00\">\n</briefing>", "<situation now=\"22:15:30\">\nBartok: overworld y=12 desert\nPistache: overworld y=64 desert\n</situation>"),
+        )
+        fun answer(tool: String, input: String) = ReplayActs.answer(tools[tool]!!, input, world)
+
+        val punished = answer("punish", """{"player":"Pistache","punishment":"moon_gravity","severity":2,"reason":"usurpation"}""")
+        assertTrue(punished.startsWith("ok: Pistache punished, moon_gravity (severity 2) for « usurpation »: "), punished)
+        assertTrue(punished.endsWith(", until 22:17:30 (in 2m)"), "the catalogue's real duration at chaos 3: $punished")
+        val law = answer(
+            "create_rule",
+            """{"kind":"law","statement":"Tout cochon tué revient avec quatre cousins.","trigger":"kill","when":{"entity":"pig"},""" +
+                """"effects":[{"tool":"spawn","at":"subject","args":{"entity":"pig","count":4}}],"minutes":60}""",
+        )
+        assertTrue(law.startsWith("ok: rule C-901 (law) active until 23:15 (in 1h00m): kill where pig → spawn 4x pig on the subject"), law)
+        assertTrue(law.endsWith("; announce it if you like"), law)
+        assertEquals("ok: said to everyone (2 online)", answer("say", """{"text":"Bonsoir."}"""))
+        assertEquals("ok: whispered to Bartok", answer("say", """{"text":"Psst.","to":["Bartok"]}"""))
+        assertTrue(answer("take_item", """{"player":"Bartok","item":"diamond","count":8,"minutes":5}""").startsWith("ok: took 8 diamond from Bartok until 22:20:30 (in 5m)"))
+        assertTrue(answer("punish", """{"player":"Pistache","punishment":"tiny","severity":2}""").startsWith("Invalid arguments: "), "the real decoding refuses")
+    }
+
+    @Test
+    fun `the judge sees the acts of the turn before a line`() {
+        val text = ToneJudge.request(listOf(JudgedLine("a", "Décret porcin !", "RULE C-23 disabled", acts = listOf("create_rule → ok: rule C-901 (law) active until 00:15 (in 2h)"))))
+        assertTrue("<acts>\n- create_rule → ok: rule C-901 (law) active until 00:15 (in 2h)\n</acts>\n<text>Décret porcin !</text>" in text, text)
+        assertTrue("<acts>" !in ToneJudge.request(listOf(JudgedLine("b", "Bonsoir.", "JOIN"))), "no acts, no block")
+    }
+
+    @Test
+    fun `the lines of an evening come with the acts of their turn and the game's answers`() {
+        val dir = Files.createTempDirectory("m6-18-transcripts")
+        val lines = listOf(
+            """{"ts":"2026-10-21T21:00:00+02:00","kind":"note","data":{"text":"turn 4 · trigger chat · chat Pistache"}}""",
+            """{"ts":"2026-10-21T21:00:01+02:00","kind":"response","data":{"content":[{"type":"tool_use","id":"p1","name":"punish","input":{"player":"Pistache"}},{"type":"tool_use","id":"s1","name":"say","input":{"text":"Gare !"}}]}}""",
+            """{"ts":"2026-10-21T21:00:02+02:00","kind":"sent","data":{"role":"user","content":[{"type":"tool_result","tool_use_id":"p1","content":"ok: Pistache punished, tiny (severity 2) for « x »: scale ×0.5, until 21:02:02 (in 2m)\nmore"},{"type":"tool_result","tool_use_id":"s1","content":"ok: said to everyone (2 online)"}]}}""",
+            """{"ts":"2026-10-21T21:00:05+02:00","kind":"response","data":{"content":[{"type":"tool_use","id":"s2","name":"say","input":{"text":"Pistache rétrécit deux minutes."}}]}}""",
+            """{"ts":"2026-10-21T21:01:00+02:00","kind":"note","data":{"text":"turn 5 · trigger heartbeat · heartbeat"}}""",
+            """{"ts":"2026-10-21T21:01:01+02:00","kind":"response","data":{"content":[{"type":"tool_use","id":"s3","name":"say","input":{"text":"Calme plat."}}]}}""",
+        )
+        Files.writeString(dir.resolve("director-m618.jsonl"), lines.joinToString("\n"))
+        val spoken = ReplaySituations.spokenLines(dir)
+        assertEquals(listOf("Gare !", "Pistache rétrécit deux minutes.", "Calme plat."), spoken.map { it.text })
+        assertEquals(listOf("punish → (answer not read yet)"), spoken[0].acts, "an act of the same reply: its answer comes after")
+        assertEquals(listOf("punish → ok: Pistache punished, tiny (severity 2) for « x »: scale ×0.5, until 21:02:02 (in 2m)"), spoken[1].acts)
+        assertEquals(emptyList(), spoken[2].acts, "a new turn starts without acts")
+        assertEquals(spoken[1].acts, ReplaySituations.judged(spoken)[1].acts)
     }
 
     @Test

@@ -94,9 +94,7 @@ class LiveLineReviewEvalTest {
             val crutchMisses = cases.sumOf { case -> case.crutches.count { it !in results[case.id]?.crutches.orEmpty() } }
             val crutchFalse = cases.flatMap { case -> results[case.id]?.crutches.orEmpty().filter { it !in case.crutches && it !in case.crutchesOk }.map { "${case.id} $it" } }
             val calls = services.traces.llmCalls
-            val dollars = calls.sumOf {
-                ((it.inputTokens ?: 0) * INPUT + (it.cacheReadTokens ?: 0) * CACHE_READ + (it.cacheWriteTokens ?: 0) * CACHE_WRITE + (it.outputTokens ?: 0) * OUTPUT) / 1_000_000.0
-            }
+            val dollars = calls.sumOf { LivePrices.dollars(it) }
             val latencies = results.values.mapNotNull { it?.latencyMs?.toLong() }.sorted()
             val n = cases.size
 
@@ -261,11 +259,5 @@ class LiveLineReviewEvalTest {
             DARK to ToneWatch.DARK, CRUEL to ToneWatch.CRUEL, OUT_OF_CHARACTER to ToneWatch.OUT_OF_CHARACTER, FLAT to ToneWatch.FLAT,
             REPEATS to ToneWatch.REPEATS,
         )
-
-        // Haiku 5.5, dollars per million tokens: cache writes at the 1 h rate (LLMGW places `ttl=1h` markers).
-        const val INPUT = 0.10
-        const val OUTPUT = 0.50
-        const val CACHE_READ = 0.01
-        const val CACHE_WRITE = 0.20
     }
 }

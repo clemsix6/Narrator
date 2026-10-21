@@ -55,9 +55,9 @@ import kotlin.test.fail
 
 /**
  * The live checks of the M2 acceptance (M1_M2 §17.4, T22), against the owner's LLMGW server through the
- * SSH tunnel. Run by `gradlew liveTest` only. Each test prints its tokens and its cost at the owner's
- * prices (input 4 $, output 20 $, cache read 0.20 $ per million tokens; cache writes counted at the 1-hour
- * rate, 8 $). The key comes from `NARRATOR_LLMGW_KEY` or the file of `narrator2.live.keyFile`, never
+ * SSH tunnel. Run by `gradlew liveTest` only. Each test prints its tokens and its cost at the production
+ * prices ([LivePrices]: the configuration's `prices`; cache writes counted at the 1-hour rate). The key
+ * comes from `NARRATOR_LLMGW_KEY` or the file of `narrator2.live.keyFile`, never
  * printed; without a key or a gateway, every test is skipped.
  */
 @Tag("live")
@@ -227,15 +227,16 @@ class LiveDirectorTest {
         }
     }
 
-    /** The tokens of a request, and what they cost at the owner's prices (cache writes at the 1-hour rate). */
-    data class Tokens(val input: Long, val cacheRead: Long, val cacheWrite: Long, val output: Long) {
-        val cost: Double get() = (input * 4.0 + cacheRead * 0.20 + cacheWrite * 8.0 + output * 20.0) / 1_000_000.0
+    /** The tokens of a request of [model], and what they cost at the production prices ([LivePrices], cache writes at the 1-hour rate). */
+    data class Tokens(val input: Long, val cacheRead: Long, val cacheWrite: Long, val output: Long, val model: String = LivePrices.OPUS) {
+        val cost: Double get() = LivePrices.dollars(model, input, cacheRead, cacheWrite, output)
 
         override fun toString() = "input $input · cache read $cacheRead · cache write $cacheWrite · output $output"
 
         companion object {
             fun of(call: LlmCallRecord) = Tokens(
                 (call.inputTokens ?: 0).toLong(), (call.cacheReadTokens ?: 0).toLong(), (call.cacheWriteTokens ?: 0).toLong(), (call.outputTokens ?: 0).toLong(),
+                call.model,
             )
         }
     }
@@ -300,8 +301,8 @@ class LiveDirectorTest {
             </situation>
         """.trimIndent()
 
-        /** Dollars at the owner's prices; cache writes at the 1-hour rate. */
-        fun cost(stats: CallStats): Double = Tokens(stats.inputTokens, stats.cacheReadTokens, stats.cacheWriteTokens, stats.outputTokens).cost
+        /** Dollars at the production prices; cache writes at the 1-hour rate. */
+        fun cost(stats: CallStats): Double = LivePrices.dollars(stats)
 
         fun dollars(value: Double) = "%.4f $".format(java.util.Locale.ROOT, value)
 

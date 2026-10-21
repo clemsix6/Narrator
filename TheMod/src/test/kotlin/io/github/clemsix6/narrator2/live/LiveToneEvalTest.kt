@@ -87,7 +87,7 @@ class LiveToneEvalTest {
         val key = LiveGateway.key()
         val spoken = ReplaySituations.spokenLines(Path.of(folder!!))
         assumeTrue(spoken.isNotEmpty()) { "no line of the Narrator under $folder" }
-        val lines = spoken.mapIndexed { i, line -> JudgedLine("L${i + 1}", line.text, line.context, spoken.take(i).takeLast(ToneJudge.PREVIOUS).map { it.text }) }
+        val lines = ReplaySituations.judged(spoken)
         val budget = LiveBudget((System.getenv("NARRATOR2_TONE_BUDGET")?.toDoubleOrNull() ?: 1.0).coerceAtMost(EVENING_CAP))
         val judged = ToneJudge(LiveGateway.BASE_URL, key, budget).use { it.grade(lines) }
         val graded = lines.mapNotNull { line -> judged.grades[line.id]?.let { line to it } }

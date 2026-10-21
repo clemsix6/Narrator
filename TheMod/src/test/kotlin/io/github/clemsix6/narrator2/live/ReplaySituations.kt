@@ -125,8 +125,11 @@ internal class ReplaySituation(val spec: SituationSpec, val blocks: List<String>
     fun read(tool: String): String? = spec.reads[tool]?.joinToString("\n")
 }
 
-/** One tool call of a replayed turn: in which request (from 1), its tool and its JSON arguments. */
-internal data class ReplayCall(val request: Int, val name: String, val input: String)
+/**
+ * One tool call of a replayed turn: in which request (from 1), its tool, its JSON arguments, and what the replay answered
+ * (null for the calls of the last request, which are recorded, not answered).
+ */
+internal data class ReplayCall(val request: Int, val name: String, val input: String, val result: String? = null)
 
 /** One line a replayed turn said: in which request, through which tool, its text (a title: `TITLE / subtitle`). */
 internal data class ReplayLine(val request: Int, val tool: String, val text: String)
@@ -137,17 +140,20 @@ internal interface ReplayTurn {
     val lines: List<ReplayLine>
 }
 
-/** A line of a real evening, read from its transcripts: what was said, through which tool, and the turn's situation. */
-internal data class SpokenLine(val conversation: String, val turn: String, val tool: String, val text: String, val context: String)
+/**
+ * A line of a real evening, read from its transcripts: what was said, through which tool, the turn's situation, and the
+ * acts of the turn before it with the game's answer ([ReplaySituations.actLine]).
+ */
+data class SpokenLine(val conversation: String, val turn: String, val tool: String, val text: String, val context: String, val acts: List<String> = emptyList())
 
-internal object ReplaySituations {
+object ReplaySituations {
     /** Where the fixtures are, among the test resources. */
     const val DIR = "/narrator2/replay"
 
     private val JSON = Json { ignoreUnknownKeys = false }
 
     /** Every situation of [DIR], in the order of their file names. */
-    fun load(): List<ReplaySituation> {
+    internal fun load(): List<ReplaySituation> {
         val dir = Paths.get(ReplaySituations::class.java.getResource(DIR)!!.toURI())
         val files = Files.list(dir).use { stream -> stream.filter { it.extension == "json" }.sorted().toList() }
         return files.map { file -> resolve(JSON.decodeFromString(SituationSpec.serializer(), Files.readString(file)), dir) }
@@ -186,8 +192,9 @@ internal object ReplaySituations {
     /**
      * The lines the Narrator said in the Director's transcripts under [dir] (`director-*.jsonl`, searched at any depth),
      * in the order of the conversations' first records then of the replies: `say`, `show_title` and `actionbar`. Each
-     * comes with its turn (the transcript's `turn N · trigger …` note) and the situation that provoked it: the turn's
-     * operator message, else the last line of its `<events>` block, else its heartbeat.
+     * comes with its turn (the transcript's `turn N · trigger …` note), the situation that provoked it (the turn's
+     * operator message, else the last line of its `<events>` block, else its heartbeat), and the acts of the turn before
+     * it (those of [CheckSpec.DEFAULT_ACTS]) with the game's answer, for the judge (M6-18).
      */
     fun spokenLines(dir: Path): List<SpokenLine> {
         val files = Files.walk(dir).use { stream -> stream.filter { it.name.startsWith("director-") && it.extension == "jsonl" }.toList() }
@@ -199,24 +206,60 @@ internal object ReplaySituations {
         val out = mutableListOf<SpokenLine>()
         var turn = ""
         var context = ""
+        val acts = linkedMapOf<String, Pair<String, String?>>() // tool_use id → its tool and the game's answer
         for (record in records) {
             when (record.kind) {
                 "note" -> record.data.text("text")?.takeIf { it.startsWith("turn ") }?.let {
                     turn = it
                     context = ""
+                    acts.clear()
                 }
-                "sent" -> situationOf(record.data)?.let { context = it }
+                "sent" -> {
+                    situationOf(record.data)?.let { context = it }
+                    answers(record.data).forEach { (id, text) -> acts[id]?.let { (tool, _) -> acts[id] = tool to text } }
+                }
                 "response" -> (record.data["content"] as? JsonArray)?.forEach { block ->
                     val use = block as? JsonObject ?: return@forEach
                     if (use.text("type") != "tool_use") return@forEach
                     val name = use.text("name") ?: return@forEach
+                    if (name in CheckSpec.DEFAULT_ACTS) {
+                        use.text("id")?.let { acts[it] = name to null }
+                        return@forEach
+                    }
                     val text = lineOf(name, use["input"] as? JsonObject ?: return@forEach) ?: return@forEach
-                    out += SpokenLine(conversation, turn, name, text, context.ifEmpty { turn })
+                    out += SpokenLine(conversation, turn, name, text, context.ifEmpty { turn }, acts.values.map { (tool, answer) -> actLine(tool, answer) })
                 }
             }
         }
         return out
     }
+
+    /**
+     * [spoken] as the judge reads them (`L1`, `L2`…, in order): each line with its situation, the [ToneJudge.PREVIOUS] lines
+     * said before it, and the acts of its turn.
+     */
+    fun judged(spoken: List<SpokenLine>): List<JudgedLine> = spoken.mapIndexed { i, line ->
+        JudgedLine("L${i + 1}", line.text, line.context, spoken.take(i).takeLast(ToneJudge.PREVIOUS).map { it.text }, line.acts)
+    }
+
+    /** The tool results of a sent message: the tool_use id, and the text the game answered. */
+    private fun answers(data: JsonObject): List<Pair<String, String>> = (data["content"] as? JsonArray).orEmpty().mapNotNull { block ->
+        val result = block as? JsonObject ?: return@mapNotNull null
+        if (result.text("type") != "tool_result") return@mapNotNull null
+        val id = result.text("tool_use_id") ?: return@mapNotNull null
+        val text = when (val content = result["content"]) {
+            is JsonPrimitive -> content.contentOrNull
+            is JsonArray -> content.mapNotNull { (it as? JsonObject)?.text("text") }.joinToString("\n")
+            else -> null
+        } ?: return@mapNotNull null
+        id to text
+    }
+
+    /** An act as the judge reads it: `punish → ok: Bartok punished, tiny (severity 2) … (in 2m)`, the first line of the game's answer. */
+    fun actLine(tool: String, answer: String?): String = "$tool → " + (answer?.lineSequence()?.firstOrNull()?.take(ACT_MAX) ?: "(answer not read yet)")
+
+    /** The longest answer of an act shown to the judge. */
+    private const val ACT_MAX = 400
 
     /** What a sent message tells of the turn's situation: an operator's message, the last event, or the heartbeat. */
     private fun situationOf(data: JsonObject): String? {

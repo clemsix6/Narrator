@@ -85,15 +85,16 @@ internal class ReplaySample(
     fun toolLine(): String = (1..requests).joinToString(" | ") { r -> calls.filter { it.request == r }.joinToString(", ") { it.name }.ifEmpty { "(end)" } }
 
     companion object {
-        fun cost(stats: CallStats): Double = LivePrices.dollars(stats.inputTokens, stats.cacheReadTokens, stats.cacheWriteTokens, stats.outputTokens)
+        fun cost(stats: CallStats): Double = LivePrices.dollars(stats)
     }
 }
 
 /**
  * Replays one situation with one version of the prompt: the chapter's first message, then up to [MAX_REQUESTS] requests
  * (M6 review, finding 6). Nothing is executed: a read gets the situation's frozen result at its first call in the turn
- * ([ReplaySituation.read]), then [NOTHING_MORE]; an act gets `ok` (or the fixture's answer). Every request is charged to
- * [budget], and none is sent that could cross it.
+ * ([ReplaySituation.read]), then [NOTHING_MORE]; an act gets the fixture's answer, else the answer the real tool gives
+ * ([ReplayActs], M6-18: a punishment's duration, a law's end). Every request is charged to [budget], and none is sent that
+ * could cross it.
  */
 internal class ReplayRunner(
     private val client: ClaudeClient,
@@ -114,6 +115,7 @@ internal class ReplayRunner(
         val lines = mutableListOf<ReplayLine>()
         val stats = mutableListOf<CallStats>()
         val served = mutableSetOf<String>()
+        val world = ReplayActs.Situation.of(situation.blocks)
         var pending = opening(situation)
         fun done(requests: Int, end: TurnEnd, detail: String? = null) = ReplaySample(situation.id, version.label, sample, calls, lines, requests, end, detail, stats)
         try {
@@ -136,9 +138,19 @@ internal class ReplayRunner(
                 }
                 val uses = reply.toolUses
                 if (uses.isEmpty()) return@runBlocking done(request, TurnEnd.ENDED)
-                uses.forEach { use -> record(use, request, calls, lines) }
-                if (request == MAX_REQUESTS) return@runBlocking done(request, TurnEnd.REQUEST_CAP)
-                pending = listOf(MessageParam.builder().role(MessageParam.Role.USER).contentOfBlockParams(uses.map { result(it, situation, served) }).build())
+                if (request == MAX_REQUESTS) {
+                    uses.forEach { use -> record(use, request, null, calls, lines) }
+                    return@runBlocking done(request, TurnEnd.REQUEST_CAP)
+                }
+                val answers = uses.map { use -> use to answer(use, situation, served, world) }
+                answers.forEach { (use, text) -> record(use, request, text, calls, lines) }
+                pending = listOf(
+                    MessageParam.builder().role(MessageParam.Role.USER).contentOfBlockParams(
+                        answers.map { (use, text) ->
+                            ContentBlockParam.ofToolResult(ToolResultBlockParam.builder().toolUseId(use.id()).content(text).isError(tools[use.name()] == null).build())
+                        },
+                    ).build(),
+                )
             }
             error("unreachable")
         } finally {
@@ -146,22 +158,21 @@ internal class ReplayRunner(
         }
     }
 
-    private fun record(use: ToolUseBlock, request: Int, calls: MutableList<ReplayCall>, lines: MutableList<ReplayLine>) {
+    private fun record(use: ToolUseBlock, request: Int, result: String?, calls: MutableList<ReplayCall>, lines: MutableList<ReplayLine>) {
         val input = mapper.writeValueAsString(use._input())
-        calls += ReplayCall(request, use.name(), input)
+        calls += ReplayCall(request, use.name(), input, result)
         val arguments = runCatching { Json.parseToJsonElement(input) as? JsonObject }.getOrNull() ?: return
         ReplaySituations.lineOf(use.name(), arguments)?.let { lines += ReplayLine(request, use.name(), it) }
     }
 
-    private fun result(use: ToolUseBlock, situation: ReplaySituation, served: MutableSet<String>): ContentBlockParam {
+    /** What the turn reads for [use]: a frozen read, the fixture's answer of an act, or the game's ([ReplayActs]). */
+    private fun answer(use: ToolUseBlock, situation: ReplaySituation, served: MutableSet<String>, world: ReplayActs.Situation): String {
         val name = use.name()
-        val effect = tools[name]?.effect
-        val text = when {
-            effect == null -> "FAILED: unknown tool $name"
-            effect == ToolEffect.READ -> situation.read(name)?.takeIf { served.add(name) } ?: NOTHING_MORE
-            else -> situation.spec.acts[name] ?: "ok"
+        val tool = tools[name] ?: return "FAILED: unknown tool $name"
+        return when (tool.effect) {
+            ToolEffect.READ -> situation.read(name)?.takeIf { served.add(name) } ?: NOTHING_MORE
+            else -> situation.spec.acts[name] ?: ReplayActs.answer(tool, mapper.writeValueAsString(use._input()), world)
         }
-        return ContentBlockParam.ofToolResult(ToolResultBlockParam.builder().toolUseId(use.id()).content(text).isError(effect == null).build())
     }
 
     private fun opening(situation: ReplaySituation): List<MessageParam> = listOfNotNull(
@@ -302,11 +313,12 @@ class DirectorReplayEval {
         val samples = mutableListOf<ReplaySample>()
         val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL, maxRetries = 2))
         ClaudeClient(config, key).use { client ->
-            val runner = ReplayRunner(client, tools, transcripts, budget, JUDGE_RESERVE_DOLLARS)
+            val reserve = judgeReserve(planned)
+            val runner = ReplayRunner(client, tools, transcripts, budget, reserve)
             var played = 0
             for (situation in situations) {
                 val perSituation = if (played == 0) samplesPer * 2 * ReplayRunner.REQUEST_ESTIMATE_DOLLARS else samples.sumOf { it.dollars } / played
-                if (!budget.allows(perSituation + JUDGE_RESERVE_DOLLARS)) {
+                if (!budget.allows(perSituation + reserve)) {
                     println("[replay] ${situation.id}: not started, the budget could be crossed (${ToneJudge.dollars(budget.spent)} spent, ${ToneJudge.dollars(perSituation)} per situation)")
                     continue
                 }
@@ -327,7 +339,8 @@ class DirectorReplayEval {
         val lines = samples.flatMap { sample ->
             val situation = situations.first { it.id == sample.situation }
             sample.lines.mapIndexed { i, line ->
-                JudgedLine(ReplayVerdict.lineId(sample, i), line.text, situation.spec.context, situation.spec.previous + sample.lines.take(i).map { it.text })
+                val acts = sample.calls.filter { it.request <= line.request && it.name in CheckSpec.DEFAULT_ACTS }.map { ReplaySituations.actLine(it.name, it.result) }
+                JudgedLine(ReplayVerdict.lineId(sample, i), line.text, situation.spec.context, situation.spec.previous + sample.lines.take(i).map { it.text }, acts)
             }
         }.shuffled(Random(JUDGE_SEED))
         val judged = ToneJudge(LiveGateway.BASE_URL, key, budget).use { it.grade(lines) }
@@ -347,8 +360,15 @@ class DirectorReplayEval {
         const val DEFAULT_BUDGET = 7.0
         const val HARD_CAP = 8.0
 
-        /** What the budget keeps for the judge while the turns are played. */
+        /** What the budget keeps for the judge while the turns are played: [JUDGE_RESERVE_PER_TURN] a planned turn, within these bounds. */
         const val JUDGE_RESERVE_DOLLARS = 0.8
+        const val JUDGE_RESERVE_MIN_DOLLARS = 0.1
+
+        /** About two lines a turn, a batch of twenty lines costing 0.20 $ at most (M6-09): 64 turns keep the whole 0.80 $. */
+        const val JUDGE_RESERVE_PER_TURN = 0.0125
+
+        /** The judge's reserve of a replay of [planned] turns (M6-18: a small replay of four turns keeps 0.10 $, not 0.80 $). */
+        fun judgeReserve(planned: Int): Double = (planned * JUDGE_RESERVE_PER_TURN).coerceIn(JUDGE_RESERVE_MIN_DOLLARS, JUDGE_RESERVE_DOLLARS)
 
         /** The lines go to the judge shuffled, A and B mixed in every batch, always in the same order for the same lines. */
         const val JUDGE_SEED = 6009
@@ -407,7 +427,7 @@ class DirectorReplayEval {
             val firsts = samples.mapNotNull { it.stats.firstOrNull() }
             append("- first request of a turn: cache read ${firsts.map { it.cacheReadTokens }.average().toLong()} · cache write ${firsts.map { it.cacheWriteTokens }.average().toLong()} tokens on average\n")
             append("- judge: ${judged.calls.size} requests for ${lines.size} lines · ${ToneJudge.dollars(judged.dollars)} · input ${judged.calls.sumOf { it.input }}, cache read ${judged.calls.sumOf { it.read }}, cache write ${judged.calls.sumOf { it.write }}, output ${judged.calls.sumOf { it.output }}\n")
-            append("- total: ${ToneJudge.dollars(budget.spent)} (budget ${ToneJudge.dollars(budget.capDollars)}); prices of Opus 5.5 (4 / 20 / 0.20 / 8 $ per million, cache writes at the 1 h rate)\n")
+            append("- total: ${ToneJudge.dollars(budget.spent)} (budget ${ToneJudge.dollars(budget.capDollars)}); prices: ${LivePrices.line()}\n")
             if (judged.problems.isNotEmpty()) append("- judge problems: ${judged.problems.joinToString("; ")}\n")
             append("\n## Situations\n\n")
             for (situation in situations) {
@@ -424,7 +444,7 @@ class DirectorReplayEval {
                 for (sample in ofSituation) {
                     append("- **${sample.version}#${sample.sample}** · ${sample.end.id}${sample.detail?.let { " ($it)" }.orEmpty()} · ${sample.toolLine()} · ${ToneJudge.dollars(sample.dollars)}\n")
                     sample.calls.filter { it.name !in SPEECH }.forEach { call ->
-                        append("  - `${call.name}` ${call.input.take(300)}\n")
+                        append("  - `${call.name}` ${call.input.take(300)}${call.result?.let { " → ${it.lineSequence().first().take(300)}" }.orEmpty()}\n")
                     }
                     sample.lines.forEachIndexed { i, line ->
                         val grade = judged.grades[ReplayVerdict.lineId(sample, i)]
@@ -449,7 +469,14 @@ class DirectorReplayEval {
                         sample.detail?.let { put("detail", it) }
                         put("requests", sample.requests)
                         put("dollars", sample.dollars)
-                        putJsonArray("calls") { sample.calls.forEach { call -> addJsonObject { put("request", call.request); put("tool", call.name); put("input", call.input) } } }
+                        putJsonArray("calls") {
+                            sample.calls.forEach { call ->
+                                addJsonObject {
+                                    put("request", call.request); put("tool", call.name); put("input", call.input)
+                                    call.result?.let { put("result", it) }
+                                }
+                            }
+                        }
                         putJsonArray("lines") {
                             sample.lines.forEachIndexed { i, line ->
                                 addJsonObject {
