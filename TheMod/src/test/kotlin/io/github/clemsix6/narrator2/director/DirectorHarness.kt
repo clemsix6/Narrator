@@ -4,6 +4,7 @@ package io.github.clemsix6.narrator2.director
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.github.clemsix6.narrator2.agent.Workers
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.OperatorChannelMode
 import io.github.clemsix6.narrator2.event.ChatChannel
@@ -15,6 +16,8 @@ import io.github.clemsix6.narrator2.event.NarratorChannel
 import io.github.clemsix6.narrator2.event.NarratorSpoke
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
+import io.github.clemsix6.narrator2.journal.DisabledJournal
+import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.DisabledMechanics
@@ -97,6 +100,10 @@ class DirectorHarness(
     tools: List<NarratorTool<*>> = emptyList(),
     /** The worker roles that take tasks ([workers]): the forger's too, for the Forge's scenarios (M5-12). */
     workerRoles: Set<Role> = setOf(Role.ANALYST),
+    /** The Journal of the services, for the real tools that read it (`inspire`, the storyteller's, M6-08); a disabled one by default. */
+    journal: Journal? = null,
+    /** Real `Workers` take the tasks ([taskWorkers]: each role with its real prompt and tools), instead of the fake [workers]. */
+    realWorkers: Boolean = false,
 ) : AutoCloseable {
     val scheduler = TestCoroutineScheduler()
     val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
@@ -140,6 +147,9 @@ class DirectorHarness(
     val services: NarratorServices
     val director: Director
 
+    /** The real workers when the harness is made with `realWorkers`: their conversations go to the same [fake] server. */
+    val taskWorkers: Workers?
+
     init {
         val defaults = testConfig(fake.baseUrl)
         val config: NarratorConfig = defaults.copy(
@@ -152,6 +162,7 @@ class DirectorHarness(
             dataDir = dir,
             settings = testSettings(config, client),
             bus = bus,
+            journal = journal ?: DisabledJournal("unit test", clock),
             trace = traces,
             transcripts = Transcripts(dir.resolve("transcripts"), enabled = true),
             players = players,
@@ -164,7 +175,9 @@ class DirectorHarness(
         )
         services = object : NarratorServices by base {
             override val director get() = this@DirectorHarness.director
+            override val workers get() = taskWorkers ?: base.workers
         }
+        taskWorkers = if (realWorkers) Workers(services) else null
         director = Director(services, game, { env -> toolEnvs += env; ToolSet.of(listOf(SayTool(), SqlTool(), SlowProbeTool()) + tools) }, Random(7))
         director.start()
         runCurrent()

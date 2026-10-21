@@ -15,6 +15,12 @@ import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.memory.ChapterMemory
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaKind
+import io.github.clemsix6.narrator2.memory.IdeaStatus
+import io.github.clemsix6.narrator2.memory.RecallChannel
+import io.github.clemsix6.narrator2.memory.RecallContext
+import io.github.clemsix6.narrator2.memory.Shown
 import io.github.clemsix6.narrator2.memory.WakeAttachments
 import io.github.clemsix6.narrator2.oracle.WorldSnapshot
 import io.github.clemsix6.narrator2.reflex.HeuristicReflexes
@@ -131,6 +137,10 @@ interface GameView {
  *   again with a backoff (30 s, doubling up to 15 min) or when the block ends, the chapter staying open
  *   and closing meanwhile: its promises must reach the next chapters. The next chapter's first message
  *   starts with a [Briefing].
+ * - **The programme** (M6 §5.6): a heartbeat that wakes the Director may carry one idea of the storyteller's programme
+ *   that fits the players online ([heartbeatIdea]), as the `Idea:` line of `<heartbeat>`: never a wake-up more, one
+ *   every [IDEA_REST_MS] at most, and an idea dealt in that time is not carried. It is dealt (`recalls`, channel
+ *   `heartbeat`) once the request that carried it is accepted, like what the memory shows.
  *
  * @param toolSet the tools of a new chapter, given what is wired: `ToolCatalog.toolSetFor` in production.
  */
@@ -207,6 +217,9 @@ class Director(
     private var lastTurnEnd = clock.millis()
     private var heartbeatFrom = clock.millis()
     private var nextHeartbeat: Long? = null
+
+    /** When a heartbeat last carried an idea that reached the model (epoch milliseconds); null since the start. */
+    private var lastBeatIdeaAt: Long? = null
 
     /** Subscribes to the bus and starts the Director's coroutine in `services.scope`. */
     fun start(): Job {
@@ -587,8 +600,23 @@ class Director(
             decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "skipped", HEARTBEAT, "${worth.why} < ${p(ReflexThresholds.HEARTBEAT_WORTH)}")
             return
         }
-        decisions.record(log, DecisionRecord.Kind.HEARTBEAT, "woke", HEARTBEAT, "${worth.why}, hook ${verdict?.hook ?: "none"}")
-        wake(scope, Beat(summary, window, verdict?.hook))
+        val idea = heartbeatIdea(now)
+        decisions.record(
+            log, DecisionRecord.Kind.HEARTBEAT, "woke", HEARTBEAT,
+            "${worth.why}, hook ${verdict?.hook ?: "none"}" + (idea?.let { ", idea ${it.ref} ${it.kind.id}" } ?: ""),
+        )
+        wake(scope, Beat(summary, window, verdict?.hook, idea))
+    }
+
+    /**
+     * The idea of the storyteller's programme a heartbeat that woke the Director carries (M6 §5.6): none while the memory
+     * is off or within [IDEA_REST_MS] of the last one a heartbeat carried; else [beatIdea] among the open ideas of the
+     * memory's cache.
+     */
+    private fun heartbeatIdea(now: Long): Idea? {
+        val memory = services.memory
+        if (!memory.available || lastBeatIdeaAt?.let { now - it < IDEA_REST_MS } == true) return null
+        return beatIdea(memory.openIdeas(), services.players.online.map { it.ref.uuid }.toSet(), memory.clock.worldPlaySeconds(now), now)
     }
 
     // ── Wake-ups and turns ──────────────────────────────────────────────────────────────────────────
@@ -620,7 +648,7 @@ class Director(
         val text = buildString {
             if (events.isNotEmpty() || skipped.isNotEmpty()) append(formatter.events(events, now, skipped)).append('\n')
             remembered?.let { append(it).append('\n') }
-            shown?.let { append(formatter.heartbeat(it.summary, it.windowMs, it.hint, now)).append('\n') }
+            shown?.let { append(formatter.heartbeat(it.summary, it.windowMs, it.hint, now, it.idea)).append('\n') }
             append(situation.render(now, worldTime(), pendingReminders(), recentActions()))
         }
         val notes = notes(items) + listOfNotNull(silence?.let { OperatorNote.engine(it.note(now)) }, retryNote?.let(OperatorNote::engine))
@@ -729,6 +757,8 @@ class Director(
             )
             services.transcripts.note(chapter.conversation, "turn $id · trigger ${trigger.id} · $what")
             indicator.show(openingItems.mapNotNull { it.waitingPlayer }, scope)
+            // The heartbeat's idea is dealt once the request that carries it is accepted, with what the memory showed in it.
+            beat?.idea?.let { chapter.memory.unrecorded += Shown(listOf(it.ref), RecallChannel.HEARTBEAT, RecallContext(chapter.conversation.id, id, null)) }
             var outcome = TurnRecord.Outcome.CANCELLED
             try {
                 outcome = requests(opening)
@@ -852,6 +882,7 @@ class Director(
             recordShown()
             if (openingCommitted) return
             openingCommitted = true
+            if (beat?.idea != null) lastBeatIdeaAt = clock.millis()
             silence = null
             retryNote = null
             notBefore = null
@@ -1190,8 +1221,8 @@ class Director(
                 "answer what still matters now, do not try to catch up on everything."
     }
 
-    /** A heartbeat: what the players did during [windowMs], and the reflexes' [hint]. */
-    private data class Beat(val summary: List<String>, val windowMs: Long, val hint: String?)
+    /** A heartbeat: what the players did during [windowMs], the reflexes' [hint], and the [idea] of the programme it carries. */
+    private data class Beat(val summary: List<String>, val windowMs: Long, val hint: String?, val idea: Idea? = null)
 
     /** A chapter to close with its summary once the turn is over; [carry] are the tool results its history waits for. */
     private class Closing(val reason: ConversationRecord.EndReason, val why: String, val carry: List<ContentBlockParam>)
@@ -1237,6 +1268,31 @@ class Director(
 
         /** A reminder given back more than this long after it came due (the server was down) is dropped (M4 §15.1). */
         const val LATE_REMINDER_MAX_MS = 24 * 3_600_000L
+
+        /**
+         * How long an idea of the programme rests once dealt before a heartbeat carries it (M6 §5.6, the 2 h of
+         * `inspire`, here in time of the clock: a heartbeat only comes with players online), and how long after a
+         * heartbeat carried one the next one may.
+         */
+        const val IDEA_REST_MS = 2 * 3_600_000L
+
+        /**
+         * The idea a heartbeat carries among [ideas] (M6 §5.6): open, not a season, before its deadline ([worldPlaySeconds]),
+         * for players all [online] (or for everyone), not dealt in the last [IDEA_REST_MS] before [now]; those for some
+         * players before those for everyone, then the best noted, the least dealt, the newest. Null when none fits.
+         */
+        internal fun beatIdea(ideas: List<Idea>, online: Set<UUID>, worldPlaySeconds: Long, now: Long): Idea? =
+            ideas.asSequence()
+                .filter { it.status == IdeaStatus.OPEN && it.kind != IdeaKind.SEASON && it.expiresPlaySeconds > worldPlaySeconds }
+                .filter { idea -> idea.players.all { it.uuid in online } }
+                .filter { idea -> idea.lastDealtAt?.let { now - it.toEpochMilli() >= IDEA_REST_MS } ?: true }
+                .sortedWith(
+                    compareByDescending<Idea> { it.players.isNotEmpty() }
+                        .thenByDescending { it.novelty + it.funScore + it.fairness }
+                        .thenBy { it.dealt }
+                        .thenByDescending { it.ref.id },
+                )
+                .firstOrNull()
 
         private val ACTING = setOf(ToolEffect.SPEECH, ToolEffect.WORLD, ToolEffect.TASK)
         private const val HEARTBEAT = "heartbeat"

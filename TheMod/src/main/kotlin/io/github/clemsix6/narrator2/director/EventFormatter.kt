@@ -25,6 +25,7 @@ import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.event.StructureEntered
 import io.github.clemsix6.narrator2.event.Teleported
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
+import io.github.clemsix6.narrator2.memory.Idea
 import io.github.clemsix6.narrator2.tool.ToolText.dimension
 import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.trace.TaskRecord
@@ -72,12 +73,24 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
     /**
      * The `<heartbeat now=… window=… hint=…>` block: what the players did during [windowMs], one line per
      * player (escaped: it holds their names); [hint] is what the reflexes found worth a word, left out
-     * when they found nothing.
+     * when they found nothing; then the [idea] of the storyteller's programme the heartbeat carries, if any (M6 §5.6,
+     * [idea]).
      */
-    fun heartbeat(summary: List<String>, windowMs: Long, hint: String?, now: Long): String {
+    fun heartbeat(summary: List<String>, windowMs: Long, hint: String?, now: Long, idea: Idea? = null): String {
         val minutes = ((windowMs + 30_000) / 60_000).coerceAtLeast(1)
         val attributes = "heartbeat now=\"${time(now)}\" window=\"${minutes}m\"" + (hint?.let { " hint=\"${plain(it)}\"" } ?: "")
-        return block(attributes, "heartbeat", summary.map(ModelText::escape))
+        return block(attributes, "heartbeat", summary.map(ModelText::escape) + listOfNotNull(idea?.let(::idea)))
+    }
+
+    /**
+     * `Idea: P-41 challenge (Bartok, Mimosa) « La course au pic »: <fit> — <pitch>`, at most [IDEA_LINE_MAX] characters:
+     * the fit cut to [IDEA_FIT_MAX], the pitch to what is left (`everyone` for an idea without players).
+     */
+    fun idea(idea: Idea): String {
+        val players = idea.players.joinToString { who(it) }.ifEmpty { "everyone" }
+        val head = "Idea: ${idea.ref} ${idea.kind.id} ($players) « ${plain(idea.title)} »: ${ModelText.escape(ModelText.cut(idea.fit, IDEA_FIT_MAX))}"
+        val room = IDEA_LINE_MAX - head.length - IDEA_PITCH_SEPARATOR.length
+        return if (room < IDEA_PITCH_MIN) ModelText.cut(head, IDEA_LINE_MAX) else head + IDEA_PITCH_SEPARATOR + ModelText.escape(ModelText.cut(idea.pitch, room))
     }
 
     /** The lines of [items] that are events (whispers are notes, not lines), oldest first. */
@@ -240,6 +253,16 @@ class EventFormatter(zone: ZoneId, private val taskStartedAt: (Long) -> Long? = 
 
         /** Longest task result given to the Director (a worker's report is at most 3 000 characters). */
         const val TASK_RESULT_MAX = 3_000
+
+        /** Longest `Idea:` line of a heartbeat (M6 §5.6): short, the card is one `inspire` away. */
+        const val IDEA_LINE_MAX = 300
+
+        /** Longest fit in an `Idea:` line (an idea's holds 200). */
+        const val IDEA_FIT_MAX = 100
+
+        /** Shortest pitch worth adding to an `Idea:` line. */
+        private const val IDEA_PITCH_MIN = 30
+        private const val IDEA_PITCH_SEPARATOR = " — "
 
         private const val INDENT = "    "
 

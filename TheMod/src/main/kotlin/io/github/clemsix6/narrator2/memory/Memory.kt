@@ -53,8 +53,10 @@ interface Memory {
     fun situationLines(now: Long): List<String>
 
     /**
-     * The storyteller's open ideas (M6 §6.2), for the briefing's `<programme>` and the heartbeat's `Idea:` line: from
-     * the memory's cache, never the database. Any thread; never waits.
+     * The storyteller's open ideas (M6 §6.2), for the heartbeat's `Idea:` line and `inspire`: from the memory's cache,
+     * never the database (the briefing's `<programme>` reads the store, like its other sections). An idea past its
+     * deadline may stay in it until the hygiene closes it: a reader checks [Idea.expiresPlaySeconds]. Any thread; never
+     * waits.
      */
     fun openIdeas(): List<Idea>
 
@@ -137,8 +139,8 @@ class ChapterMemory(val conversationId: String, val number: Int) {
 
 /**
  * What one source showed the Director in a request (M3 §10.6): [refs] through [channel], in [context]
- * (`recalls` rows), and the [notes] it showed (marked `shown`). Kept in [ChapterMemory.unrecorded] until the
- * model accepts the request; dropped with it otherwise.
+ * (`recalls` rows), and the [notes] it showed (marked `shown`). An idea among [refs] (`P-…`, the heartbeat's, M6 §5.6)
+ * is dealt. Kept in [ChapterMemory.unrecorded] until the model accepts the request; dropped with it otherwise.
  */
 data class Shown(val refs: List<Ref>, val channel: RecallChannel, val context: RecallContext, val notes: List<Ref> = emptyList()) {
     companion object {
@@ -148,14 +150,22 @@ data class Shown(val refs: List<Ref>, val channel: RecallChannel, val context: R
         private val ENGINE = Author(Source.ENGINE)
 
         /**
-         * [shown] reached the model: a `recalls` row for each of its refs, each note marked `shown` once. Each
-         * write is tried on its own; one that fails is logged (`WARN`), the others go on.
+         * [shown] reached the model: a `recalls` row for each of its refs, each idea dealt ([MemoryStore.dealt]: its
+         * count and `last_dealt_at` too), each note marked `shown` once. Each write is tried on its own; one that fails
+         * is logged (`WARN`), the others go on.
          */
         suspend fun record(store: MemoryStore, shown: List<Shown>) {
             for (one in shown) {
-                if (one.refs.isEmpty()) continue
-                safely("the ${one.channel.id} refs ${one.refs.joinToString()} were shown but could not be recorded (no recalls row, no reinforcement)") {
-                    store.recorded(one.refs, one.channel, one.context)
+                val (ideas, rows) = one.refs.partition { it.kind == RefKind.IDEA }
+                if (rows.isNotEmpty()) {
+                    safely("the ${one.channel.id} refs ${rows.joinToString()} were shown but could not be recorded (no recalls row, no reinforcement)") {
+                        store.recorded(rows, one.channel, one.context)
+                    }
+                }
+                if (ideas.isNotEmpty()) {
+                    safely("the ${one.channel.id} ideas ${ideas.joinToString()} were dealt but could not be recorded (they may be dealt again soon)") {
+                        store.dealt(ideas, one.channel, one.context)
+                    }
                 }
             }
             for (note in shown.flatMap { it.notes }.distinct()) {
@@ -189,8 +199,8 @@ data class BriefingSection(val tag: String, val attributes: String, val lines: L
     }
 
     companion object {
-        /** The memory sections of the briefing, in order (M3 §11.1). */
-        val TAGS: List<String> = listOf("grimoire", "chronicle", "canon", "sheets", "memories", "notes")
+        /** The memory sections of the briefing, in order (M3 §11.1; `programme`, the storyteller's ideas, M6 §7). */
+        val TAGS: List<String> = listOf("grimoire", "programme", "chronicle", "canon", "sheets", "memories", "notes")
 
         /** The sections that stay whole in a reduced briefing. */
         val NEVER_REDUCED: Set<String> = setOf("grimoire", "canon")
