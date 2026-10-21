@@ -55,8 +55,16 @@ class ActQueueTest {
         var armed = false
         val calls = CopyOnWriteArrayList<String>()
 
+        /** Set, the next call is skipped (a call given up before still runs, M5-LOAD): nothing of it runs, the queue is told so, as the engine tells it. */
+        var skipping: (() -> Unit)? = null
+
         override fun run(what: String, body: () -> Unit) {
             calls += what
+            skipping?.let { skipped ->
+                skipping = null
+                skipped()
+                return
+            }
             armed = true
             try {
                 body()
@@ -314,6 +322,27 @@ class ActQueueTest {
         runCurrent()
         assertEquals(4, runner.ran.size, "what the rest asked when its deployment ended is dropped")
         assertEquals(1, queue.dropped)
+    }
+
+    @Test
+    fun `the rest of a call given up keeps the call's four acts across a call its host skipped`() = runTest {
+        val (queue, acts) = setup().let { it.queue to it.acts }
+        val fifth = Callback()
+        // Four acts, then the call is given up (FORGE-ABANDON); a fact of the same tick is skipped by the host, nothing of
+        // it runs; resumed between invocations, the rest of the first call asks a fifth act (FORGE-ABANDON review, finding 3).
+        queue.invocation("fact") { repeat(ForgeLimits.ACTS_PER_CALL) { acts.hud(null, "x$it") } }
+        host.skipping = queue::skipped
+        queue.invocation("fact") { acts.hud(null, "never") }
+        acts.hud(null, "y").then(fifth)
+        queue.invocation("timer") { acts.hud(null, "next call") }
+        runCurrent()
+        queue.deliver()
+
+        assertEquals(List(ForgeLimits.ACTS_PER_CALL + 1) { "hud" }, runner.ran.map { it.second }, "four acts of the call, one of the next")
+        assertEquals("DENIED (module_acts): 4 acts in one call already, the most: act on the next call", fifth.got.single().first.text())
+        assertEquals(listOf("fact", "fact", "timer", "callback"), host.calls.toList())
+        assertFailsWith<IllegalStateException> { queue.skipped() }
+        queue.close()
     }
 
     @Test

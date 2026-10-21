@@ -88,7 +88,10 @@ public final class Meter {
     private long workedAtDisarm = -1;
     private long cpuAtDisarm = -1;
 
-    /** The thread's CPU clock at {@link #arm}: read by the host's thread while the call runs (has its thread computed?). */
+    /**
+     * The thread's CPU clock at {@link #arm}, moved past each wait for the caller ({@link #waited}): read by the host's
+     * thread while the call runs (has its thread computed?). Written by the call's own thread only.
+     */
     private volatile long cpuAtArm = UNARMED;
 
     /** The thread's CPU clock when the running call tripped (it unwinds since): read by the host's thread, as {@link #cpuAtArm}. */
@@ -161,16 +164,18 @@ public final class Meter {
     }
 
     /**
-     * The thread's CPU time in the last call, once disarmed; -1 before, or without a CPU clock. Under Windows it moves by
-     * steps of 15.6 ms (a call of 1 ms reads 0, or 15.6 ms once in fifteen): true on average, coarse for one call.
+     * The thread's CPU time in the last call, once disarmed, its waits for the caller excluded ({@link #waited}); -1
+     * before, or without a CPU clock. Under Windows it moves by steps of 15.6 ms (a call of 1 ms reads 0, or 15.6 ms
+     * once in fifteen): true on average, coarse for one call.
      */
     public long cpu() {
         return cpuAtDisarm;
     }
 
     /**
-     * The thread's CPU clock when the running call was armed, for another thread to tell whether it computes
-     * ({@code ThreadMXBean.getThreadCpuTime}): {@link #UNARMED} between calls, -1 without a CPU clock. Any thread.
+     * The thread's CPU clock when the running call was armed, moved past its waits for the caller ({@link #waited}), for
+     * another thread to tell whether it computes ({@code ThreadMXBean.getThreadCpuTime}): {@link #UNARMED} between
+     * calls, -1 without a CPU clock. Any thread.
      */
     public long cpuAtArm() {
         return cpuAtArm;
@@ -203,6 +208,32 @@ public final class Meter {
     public static void sample() {
         Meter current = CURRENT.get();
         if (current != null) current.checkpoint();
+    }
+
+    /**
+     * This thread's CPU clock as the call metered on it starts to wait for its caller (an SDK request), for
+     * {@link #waited}; {@link #UNARMED} outside a metered call or without a CPU clock (nothing to give back then).
+     */
+    public static long waitStarts() {
+        Meter current = CURRENT.get();
+        return current == null || current.cpuAtArm < 0 ? UNARMED : cpuNow();
+    }
+
+    /**
+     * The call metered on this thread waited for its caller since {@code started} ({@link #waitStarts}): an SDK request,
+     * served by the caller while this thread spins, then parks. That CPU time is the wait's, never the module's
+     * computing (FORGE-ABANDON-FIX): the call's CPU clock moves past it ({@link #cpuAtArm()} and {@link #cpuAtTrip()}
+     * forward by as much), so that no evidence of computing — the meter's, its host's — counts it, however many requests
+     * a call held for ticks waits for. Under Windows the CPU clock moves by steps of 15.6 ms: a step that fell in the
+     * wait is the wait's. This thread only; a no-op for {@link #UNARMED}.
+     */
+    public static void waited(long started) {
+        if (started == UNARMED) return;
+        Meter current = CURRENT.get();
+        if (current == null || current.cpuAtArm < 0) return;
+        long spent = cpuNow() - started;
+        current.cpuAtArm += spent;
+        if (current.cpuAtTrip != UNARMED) current.cpuAtTrip += spent;
     }
 
     /**

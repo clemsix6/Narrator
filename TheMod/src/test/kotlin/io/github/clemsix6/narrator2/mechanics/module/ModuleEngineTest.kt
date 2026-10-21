@@ -293,6 +293,87 @@ class ModuleEngineTest {
     }
 
     @Test
+    fun `a call held and resumed at each tick counts at each tick - the tick's budget, its milliseconds a second, its slowness`() {
+        // The FORGE-ABANDON review's probe A: thirty reads a call, each holding the server thread 30 ms (a busy machine).
+        // Each call is given up at its first read, then resumed at each tick, one read a tick. Counted only once a call
+        // ended, its resumes held the server thread 155 ticks in 160 without a fault, shown as 0 to 32 ms a second.
+        f.module("drip", ModuleFixture.source("drip", body = """m.timers().every(1, () -> { for (int i = 0; i < 30; i++) m.world().dayTime(); });"""))
+        f.start()
+        LogCapture().use { logs ->
+            val view = f.deploy(f.spec("drip"))
+            f.server.heldMillis = 30
+            val shown = mutableListOf<Double>()
+            var seconds = 0
+            while (f.faults.isEmpty() && seconds < 8) {
+                repeat(TICKS_A_SECOND) { tick ->
+                    // A minute after the tick's first warning, the next one counts the slow ticks since.
+                    if (seconds == 2 && tick == TICKS_A_SECOND / 2) f.clock.advance(Duration.ofMinutes(1))
+                    heldTick()
+                }
+                f.engine.second(f.clock.millis())
+                seconds++
+                f.engine.views(f.clock.millis()).singleOrNull()?.let { shown += it.msPerSecond }
+            }
+            f.server.heldMillis = 0
+
+            val fault = f.faults.map { it.second }.single()
+            assertEquals(Fault.Kind.SLOWNESS, fault.kind, fault.text)
+            assertTrue(fault.cause.startsWith("over 50 ms of its code a second, 5 seconds in a row"), fault.cause)
+            assertEquals(ForgeLimits.SLOW_SECONDS, seconds, "disabled at its fifth slow second: what its caller served counts as it is served")
+            // 30 ms a tick held, 20 ticks a second: about 600 ms a second; a busy machine may delay a few resumes.
+            assertTrue(shown.size == ForgeLimits.SLOW_SECONDS - 1 && shown.all { it >= 5.0 * ForgeLimits.DEPLOYMENT_MS_PER_SECOND }, "its milliseconds a second: $shown")
+            val slowTicks = logs.at(Level.WARN).filter { "the modules took" in it }.map { it.substringAfterLast("; ").substringBefore(" slow ticks").toIntOrNull() }
+            assertEquals(2, slowTicks.size, "the first slow tick, then the first a minute later: $slowTicks")
+            assertTrue(
+                (slowTicks[1] ?: 0) >= TICKS_A_SECOND,
+                "each tick that resumed the call is slow for the tick's budget: ${slowTicks[1]} slow ticks in ${TICKS_A_SECOND * 2 + TICKS_A_SECOND / 2}",
+            )
+            f.await("its end") { ending().isNotEmpty() }
+            assertEquals(listOf("disabled"), ending())
+            assertTrue(resolved(view.ref).second!!.startsWith("disabled: slowness in second: "))
+        }
+    }
+
+    @Test
+    fun `the rest of a call given up keeps the call's four acts, though a fact came meanwhile`() {
+        // The FORGE-ABANDON review's probe F: four acts, a read held back past the call's deadline (given up and held),
+        // then four more once resumed. The fact that came in the same tick was skipped by the host: nothing of it ran, so
+        // the count of acts stays the call's (before: reset by that skipped call, the last four acts went, eight a call).
+        f.module(
+            "eight",
+            ModuleFixture.source(
+                "eight",
+                body = """
+                    m.events().on(GameFact.Chat.class, c -> {
+                        if (!c.text().equals("a")) return;
+                        for (int i = 0; i < 4; i++) m.acts().hud(null, "x" + i);
+                        m.world().dayTime();
+                        for (int i = 0; i < 4; i++) m.acts().hud(null, "y" + i).then(o -> m.log("late " + o.status()));
+                    });
+                """,
+            ),
+        )
+        f.start()
+        LogCapture().use { logs ->
+            f.deploy(f.spec("eight"))
+            f.server.heldOnce = 60
+            chat("a")
+            chat("b")
+            f.await("the callbacks of its last four acts") { logs.messages.count { "late " in it } >= 4 }
+
+            assertEquals(4, f.runner.ran.count { it.second == "hud" }, "four acts a call: ${f.runner.ran.map { it.second }}")
+            assertEquals(List(4) { "late denied" }, logs.messages.filter { "late " in it }.map { "late " + it.substringAfter("late ").substringBefore(' ') })
+        }
+    }
+
+    /** A tick of the server, 5 ms after the last one returned: the module thread asks again meanwhile (a real server's ticks are 50 ms apart). */
+    private fun heldTick() {
+        Thread.sleep(5)
+        f.clock.advance(Duration.ofMillis(ModuleFixture.TICK_MS))
+        f.engine.tick(f.clock.millis())
+    }
+
+    @Test
     fun `a module whose time ran out is stopped with EXPIRED, a law retired, the Director told`() {
         f.module("waiter", ModuleFixture.source("waiter", members = """public void stop(ModuleContext m, StopReason why) { m.log("stop " + why); }"""))
         f.start()
@@ -605,5 +686,10 @@ class ModuleEngineTest {
         assertEquals(1, f.book.leaks)
         f.engine.second(f.clock.millis())
         assertEquals(1, f.decisions(ModuleEngine.LEAK, DecisionRecord.Kind.FORGE).size, "told once")
+    }
+
+    private companion object {
+        /** The ticks of a second of the game. */
+        const val TICKS_A_SECOND = 20
     }
 }

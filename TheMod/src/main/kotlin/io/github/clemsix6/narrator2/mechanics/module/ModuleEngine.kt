@@ -331,8 +331,17 @@ class ModuleEngine(
             return true
         }
 
-        /** Whether a call of its module given up still runs: its tick waits (its host settles it, which may disable it). */
-        fun busy(): Boolean = host?.busy() == true
+        /**
+         * Whether a call of its module given up still runs: its tick waits (its host settles it, which may disable it).
+         * The time its host spent resuming that call counts as its calls' does (the tick's budget, its milliseconds a
+         * second): FORGE-ABANDON-FIX.
+         */
+        fun busy(): Boolean {
+            val host = host ?: return false
+            val busy = host.busy()
+            spent += host.resumedNanos
+            return busy
+        }
 
         /** One call of the module, for its act queue: the host's operation if one waits, else [body] through the host. */
         private fun call(what: String, body: () -> Unit) {
@@ -343,7 +352,10 @@ class ModuleEngine(
             if (called != null) {
                 spent += called.nanos
                 if (called.allocated >= 0) metered = true
-                if (called.skipped) skipped.addLast(Skipped(what, body, operation))
+                if (called.skipped) {
+                    skipped.addLast(Skipped(what, body, operation))
+                    queue.skipped()
+                }
             }
         }
 

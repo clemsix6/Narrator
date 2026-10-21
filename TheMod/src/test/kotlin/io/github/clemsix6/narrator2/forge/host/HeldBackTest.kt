@@ -7,6 +7,8 @@ import io.github.clemsix6.narrator2.forge.rt.Meter
 import io.github.clemsix6.narrator2.forge.sandbox.FakeContext
 import io.github.clemsix6.narrator2.mechanics.module.ModuleFixture
 import io.github.clemsix6.narrator2.testing.BusyMachine
+import io.github.clemsix6.narrator2.testing.LogCapture
+import org.apache.logging.log4j.Level
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.lang.management.ManagementFactory
@@ -218,6 +220,123 @@ class HeldBackTest {
         assertNull(host.disabled)
     }
 
+    @Test
+    fun `a module unloaded while its held call waits for the server loses no thread, and three at once leave the Forge running`() {
+        // The FORGE-ABANDON review, finding 2: `forge off`, the server's stop and a restart end every deployment at once,
+        // and a call held waits for its next SDK request most of the time. Refused, its thread unwinds at once, running no
+        // code of the module (its meter revoked first) and computing nothing: no thread is lost. Counted lost, three such
+        // threads at once made the Forge stuck.
+        val parked = ModuleThreads(PARKED)
+        try {
+            LogCapture().use { logs ->
+                val modules = (1..3).map { i ->
+                    val fake = FakeContext()
+                    val held = Holding(fake.context)
+                    val name = "Parked$i"
+                    val source = Hosts.source(name, "public static boolean asking;", "m.timers().every(1, () -> { m.log(\"first\"); asking = true; m.log(\"second\"); });")
+                    val host = Hosts.host(name, source, parked, faults = faults)
+                    assertTrue(host.started(held.context), "${host.disabled}")
+                    held.next = 60 // its first request served 60 ms: given up and held, its second request waits for its host
+                    val (called, late) = host.callRun { fake.timers[0].run() }
+                    assertFalse(called.skipped, "started in $late tries")
+                    assertNull(called.fault, "the machine's doing")
+                    host to fake
+                }
+                val waiting = awaitParked(modules.map { it.first })
+                modules.forEach { (host, _) -> host.unload() }
+                waiting.forEach { it.join(60_000) }
+
+                assertEquals(emptyList(), logs.at(Level.WARN).filter { "abandoned past its budget" in it }, "no thread lost")
+                assertFalse(parked.lost.stuck, "the Forge runs on")
+                assertEquals(0, parked.lost.alive())
+                modules.forEach { (_, fake) -> assertEquals(listOf("first"), fake.logs.toList(), "its waiting request refused, nothing after") }
+                assertEquals(emptyList(), faults)
+            }
+        } finally {
+            parked.close()
+        }
+    }
+
+    @Test
+    fun `a held call that waits for a thousand slow SDK requests never computed, however long its thread spun waiting`() {
+        // The FORGE-ABANDON review, finding 4 (probe E): a module thread waiting for its SDK request spins a little first
+        // (a request is served in a microsecond). A call held over ticks may wait for hundreds of slow ones: counted as
+        // its computing, that wait read past the evidence (40 ms) and an honest module was abandoned. Here each request
+        // holds its caller 300 µs: the module thread spins its whole spin each time, about 200 ms of CPU in all.
+        val fake = FakeContext()
+        val slow = Serving(fake.context, REQUEST_NANOS)
+        val host = Hosts.host("Waiter", Hosts.source("Waiter", body = "m.timers().every(1, () -> { for (int i = 0; i < 1_000; i++) m.log(\"x\"); });"), threads, faults = faults)
+        assertTrue(host.started(slow.context), "${host.disabled}")
+        slow.on = true
+        val (called, late) = host.callRun { fake.timers[0].run() }
+        assertFalse(called.skipped, "started in $late tries")
+        assertNull(called.fault)
+        assertTrue(host.busy(), "given up: 300 ms of requests")
+        assertTrue(Hosts.settled(host), "resumed until it ended")
+
+        assertEquals(emptyList(), faults, "it waited, it never computed")
+        assertEquals(1_000, fake.logs.size, "every request served")
+        assertEquals(1, host.starved)
+        assertEquals(0, threads.lost.alive())
+    }
+
+    @Test
+    fun `a held call that computes once resumed is abandoned at its host's next check`() {
+        // Its waits are never computing; its own computing still is, during a resume as anywhere: one arm a call, the
+        // evidence (40 ms of its thread's CPU time) over its whole life.
+        val fake = FakeContext()
+        val held = Holding(fake.context)
+        val source = Hosts.source(
+            "Resumed", "",
+            "String text = \"a\".repeat(65_535) + \"b\"; String pattern = \"a\".repeat(32_767) + \"b\"; " +
+                "m.timers().every(1, () -> { m.log(\"first\"); m.log(\"second\"); while (true) { if (text.indexOf(pattern) < 0) m.log(\"never\"); } });",
+        )
+        val host = Hosts.host("Resumed", source, threads, faults = faults)
+        assertTrue(host.started(held.context), "${host.disabled}")
+        held.next = 60
+        val (called, late) = host.callRun { fake.timers[0].run() }
+        assertFalse(called.skipped, "started in $late tries")
+        assertNull(called.fault, "given up after its first request: the machine's doing")
+        assertTrue(Hosts.settled(host))
+
+        val fault = faults.single()
+        assertEquals(Fault.Kind.LIMIT, fault.kind)
+        assertTrue(fault.cause.startsWith("time budget: one call ran past 25 ms and was abandoned"), fault.cause)
+        assertTrue(fault.disables)
+        assertEquals(listOf("first", "second"), fake.logs.toList(), "resumed: its second request served, then it computed")
+    }
+
+    /**
+     * The threads of [hosts]' held calls, once each waits for its SDK request: its module set its `asking` before it asked,
+     * and its thread is parked (a held call's request waits for its host). Threads of [PARKED].
+     */
+    private fun awaitParked(hosts: List<ModuleHost>): List<Thread> {
+        val deadline = System.nanoTime() + 60_000_000_000L
+        while (true) {
+            val asked = hosts.all { it.main.getField("asking").getBoolean(null) }
+            val given = Thread.getAllStackTraces().keys.filter { it.name.startsWith(PARKED) && it.name.endsWith("(given up)") }
+            if (asked && given.size == hosts.size && given.all { it.state == Thread.State.WAITING }) return given
+            check(System.nanoTime() < deadline) { "the held calls never waited for their host: ${given.map { "${it.name} ${it.state}" }}" }
+            Thread.sleep(5)
+        }
+    }
+
+    /** [context] behind a proxy whose SDK calls, once [on], each hold the caller [nanos] first, busy (the server serving a costly request). */
+    private class Serving(context: ModuleContext, private val nanos: Long) {
+        @Volatile
+        var on = false
+
+        val context: ModuleContext = ModuleContext::class.java.cast(
+            Proxy.newProxyInstance(ModuleContext::class.java.classLoader, arrayOf(ModuleContext::class.java)) { _, method, arguments ->
+                if (on) {
+                    val until = System.nanoTime() + nanos
+                    while (System.nanoTime() - until < 0) Thread.onSpinWait()
+                }
+                method.invoke(context, *(arguments ?: arrayOf()))
+            },
+        )
+    }
+
     /** [context] behind a proxy whose next SDK call, once [next] is set, holds the caller that many milliseconds first (the machine, on the server thread). */
     private class Holding(context: ModuleContext) {
         @Volatile
@@ -272,5 +391,11 @@ class HeldBackTest {
 
         /** Times a call the module thread did not start in time is asked again ([callRun]). */
         const val REPLAYS = 20
+
+        /** The module threads of the test of held calls unloaded together, by name. */
+        const val PARKED = "parked-module"
+
+        /** How long a costly SDK request holds its caller: past the module thread's spin as it waits (200 µs). */
+        const val REQUEST_NANOS = 300_000L
     }
 }

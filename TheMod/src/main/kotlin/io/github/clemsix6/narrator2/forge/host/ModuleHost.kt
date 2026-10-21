@@ -134,8 +134,19 @@ class ModuleHost(
     var skipped = 0
         private set
 
-    /** The milliseconds its calls held their caller in the last whole second (`ModuleView.msPerSecond`). */
+    /**
+     * The milliseconds its calls, and the resumes of a call given up, held their caller in the last whole second (the
+     * wall clock). The game shows the engine's own count of the same time (`ModuleView.msPerSecond`, [resumedNanos]).
+     */
     var msPerSecond = 0L
+        private set
+
+    /**
+     * The wall time the last [busy] spent resuming a call given up (0 when it resumed none): the caller's time, as a
+     * call's is ([Called.nanos]), which its caller counts where it counts its calls (the engine: the tick's budget,
+     * `ModuleView.msPerSecond`). FORGE-ABANDON-FIX: a call resumed at each tick held the server thread unseen.
+     */
+    var resumedNanos = 0L
         private set
 
     /** The last measure of [gauge]; null before the first. */
@@ -217,8 +228,10 @@ class ModuleHost(
      * runs meanwhile ([call] skips). Settles that call first, which may count a fault and disable the module; when its
      * thread waits for an SDK request, resumes it first ([resume]), and then answers true even if it ended: the turn of a
      * resume is the call's, the module's next calls wait for the next one (its caller first sees what it asked, an end).
+     * The time of that resume is [resumedNanos].
      */
     fun busy(): Boolean {
+        resumedNanos = 0
         settle()
         val resumed = resume()
         return resumed || (given != null && disabled == null && stalled == null)
@@ -285,7 +298,11 @@ class ModuleHost(
                 fault?.let(::fault)
                 Called(nanos, outcome.allocated, fault, work)
             }
-            ModuleThreads.Ran.ABANDONED -> givenUp(Given(what, checkNotNull(held), budget, outcome, served), startup, nanos)
+            ModuleThreads.Ran.ABANDONED -> {
+                // What the caller served is the second's work now, as a resume's is: the module's own, once it ended.
+                workThisSecond += served
+                givenUp(Given(what, checkNotNull(held), budget, outcome), startup, nanos, served)
+            }
             ModuleThreads.Ran.LATE -> {
                 skipped++
                 log.debug { "$label: its $what call was skipped: the module thread did not start it within ${(budget + abandonMarginNanos) / NANOS_PER_MS} ms (an overloaded machine), nobody's fault" }
@@ -366,8 +383,11 @@ class ModuleHost(
 
     /**
      * Lets everything go — instance, context, meter, classes, loader — and returns a weak reference to the loader,
-     * for the [LeakWatch]. No code of the module runs after this: a call given up that still runs is cut and revoked,
-     * its thread counted among the lost ones until it ends.
+     * for the [LeakWatch]. No code of the module runs after this: a call given up that still runs is revoked, then cut.
+     * Its thread is counted among the lost ones until it ends — but when it waited for an SDK request
+     * ([ModuleThreads.Held.asking]): refused, it unwinds at once without running any code of the module (its meter
+     * revoked first), and it computed nothing. Counted lost, three modules ended together with their calls held (the
+     * server stops, `forge off`) made the Forge stuck (FORGE-ABANDON-FIX).
      *
      * The module thread goes too ([ModuleThreads.renew]: a new one, started now, takes the next call of any module):
      * once the code of a call is compiled, the JVM keeps on its thread the last exception thrown there — the module's
@@ -377,11 +397,10 @@ class ModuleHost(
      */
     fun unload(): WeakReference<ClassLoader> {
         given?.let { call ->
+            val asking = call.held.asking
+            meter?.revoke()
             threads.cut(call.held)
-            if (call.held.thread.isAlive) {
-                meter?.revoke()
-                threads.lose(call.held.thread)
-            }
+            if (!asking && call.held.thread.isAlive) threads.lose(call.held.thread)
         }
         given = null
         val reference = WeakReference<ClassLoader>(loader)
@@ -403,22 +422,22 @@ class ModuleHost(
      * A start (the constructor or `start`) given up past its patience without computing never ends well: it is cut, the
      * module does not start ([stalled]), nobody's fault.
      */
-    private fun givenUp(call: Given, startup: Boolean, nanos: Long): Called {
+    private fun givenUp(call: Given, startup: Boolean, nanos: Long, served: Long): Called {
         if (computing(call.held.thread, call.budget)) {
             val fault = abandoned(call, alive = true)
             fault(fault)
-            return Called(nanos, -1, fault, call.served)
+            return Called(nanos, -1, fault, served)
         }
         given = call
         if (startup) {
             stalled = "its ${call.what} did not end within ${nanos / NANOS_PER_MS} ms, its thread held back by an overloaded machine"
-            threads.cut(call.held)
             meter?.revoke()
+            threads.cut(call.held)
             log.warn("$label: $stalled; it does not start (nobody's fault)")
         } else {
             log.info("$label: its ${call.what} call was given up at ${nanos / NANOS_PER_MS} ms, its thread held back; it runs on, resumed when it asks the server, the module waiting for it")
         }
-        return Called(nanos, -1, null, call.served)
+        return Called(nanos, -1, null, served)
     }
 
     /**
@@ -427,14 +446,19 @@ class ModuleHost(
      * half of them. Given up again (the machine still holds its thread back), it stays held for the next [busy]. Never
      * while the call computes or is held back between two requests: the caller does not wait for that. Whether it
      * resumed the call.
+     *
+     * A resume counts when it happens (FORGE-ABANDON-FIX), as a call does: its wall time in [msPerSecond] and
+     * [resumedNanos], what it served in the second's work (the slowness). Counted only once the call ended, a call
+     * resumed at each tick held the server thread, tick after tick, without a fault.
      */
     private fun resume(): Boolean {
         val call = given ?: return false
         if (disabled != null || stalled != null || unloaded || !call.held.asking) return false
         val started = System.nanoTime()
         val ran = threads.resume(call.held, call.budget + abandonMarginNanos)
-        spentThisSecond += System.nanoTime() - started
-        call.served += threads.served
+        resumedNanos = System.nanoTime() - started
+        spentThisSecond += resumedNanos
+        workThisSecond += threads.served
         if (ran == ModuleThreads.Ran.ABANDONED) log.debug { "$label: its ${call.what} call, resumed, was given up again: its thread still held back" }
         settle()
         return true
@@ -444,7 +468,8 @@ class ModuleHost(
      * Settles the call given up, if any: once it ended, the fault of its meter (its own work past its budget,
      * allocation, depth), an abandon when its thread's CPU clock shows it computed past its budget in a long step of the
      * JDK, or nobody's fault ([starved]); while it runs, an abandon once it computed past its budget ([computing]), else
-     * nothing yet. A given-up gauge's verdict comes then.
+     * nothing yet. A given-up gauge's verdict comes then. Its own work counts in the second then (what its caller served
+     * counted as it was served).
      */
     private fun settle() {
         val call = given ?: return
@@ -460,7 +485,7 @@ class ModuleHost(
             tripped.startsWith(TIME_BUDGET) && outcome.worked < call.budget -> abandoned(call, alive = false)
             else -> limit(call.what, false, tripped, lineOf(tripped))
         }
-        workThisSecond += maxOf(outcome.worked, outcome.cpu, 0) + call.served
+        workThisSecond += maxOf(outcome.worked, outcome.cpu, 0)
         if (fault != null) {
             fault(fault)
             return
@@ -504,8 +529,8 @@ class ModuleHost(
      * waits; the place goes to the log when read).
      */
     private fun abandoned(call: Given, alive: Boolean): Fault {
-        threads.cut(call.held)
         meter?.revoke()
+        threads.cut(call.held)
         val cause = "time budget: one call ran past ${(call.budget + abandonMarginNanos) / NANOS_PER_MS} ms and was abandoned"
         if (!alive) return Fault(Fault.Kind.LIMIT, call.what, cause, 0, disables = true)
         val thread = call.held.thread
@@ -610,8 +635,8 @@ class ModuleHost(
         fun work(wall: Long): Long = if (cpu < 0) wall else maxOf(worked, minOf(cpu, wall))
     }
 
-    /** A call given up: what it was, the call held, its budget, what it leaves, the time the caller spent serving its SDK calls (resumes included). */
-    private class Given(val what: String, val held: ModuleThreads.Held, val budget: Long, val outcome: Outcome, var served: Long)
+    /** A call given up: what it was, the call held, its budget, what it leaves. */
+    private class Given(val what: String, val held: ModuleThreads.Held, val budget: Long, val outcome: Outcome)
 
     /**
      * [thrown] as text, on the module thread, while the call is still armed (a module's exception may compute its own

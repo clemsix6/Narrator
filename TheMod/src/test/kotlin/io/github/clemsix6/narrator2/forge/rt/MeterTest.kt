@@ -113,6 +113,23 @@ class MeterTest {
     }
 
     @Test
+    fun `the CPU time a call waits for its caller is never its computing`() {
+        // FORGE-ABANDON-FIX: an SDK request's wait, the module thread spinning while its caller serves it. A call held for
+        // ticks may wait for hundreds of requests: its CPU clock moves past each wait, for the meter as for its host.
+        meter.arm(1_000_000, Long.MAX_VALUE)
+        assumeTrue(meter.cpuAtArm() >= 0, "a CPU clock")
+        val armed = meter.cpuAtArm()
+        val waiting = Meter.waitStarts()
+        burn(2 * Meter.MIN_CPU_EVIDENCE_NANOS)
+        Meter.waited(waiting)
+        assertTrue(meter.cpuAtArm() - armed >= 2 * Meter.MIN_CPU_EVIDENCE_NANOS, "moved past the wait: ${meter.cpuAtArm() - armed} ns")
+        meter.disarm()
+        assertNull(meter.tripped(), "80 ms of its thread's CPU time waiting, none computing")
+        assertTrue(meter.cpu() < Meter.MIN_CPU_EVIDENCE_NANOS, "its CPU time, the wait taken out: ${meter.cpu()} ns")
+        assertEquals(Meter.UNARMED, Meter.waitStarts(), "outside a metered call, nothing to give back")
+    }
+
+    @Test
     fun `a call the machine holds back is not past its time, however long the wall clock says`() {
         // A sleep stands for the machine holding the thread back (another thread on its core, a pause of the GC): no
         // work of the module, no CPU (M5-LOAD; FLAKY-4 saw a call of a few µs take 4 ms, one of 75 ms of work 2 s).
