@@ -7,11 +7,8 @@ import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.memory.chroniclerTools
 import io.github.clemsix6.narrator2.tool.memory.dreamerTools
 import io.github.clemsix6.narrator2.tool.memory.memoryTools
-import io.github.clemsix6.narrator2.tool.storyteller.InspireArgs
-import io.github.clemsix6.narrator2.tool.storyteller.InspireTool
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
@@ -309,16 +306,6 @@ class ToolCatalogTest {
         val noJournal = wired.copy(journalAvailable = false, storytellerAvailable = true)
         assertTrue("inspire" !in ToolCatalog.toolSetFor(Role.DIRECTOR, noJournal, services).names, "inspire needs the Journal")
         assertEquals(false, ToolEnv(journalAvailable = true, workerRoles = emptySet()).storytellerAvailable, "off unless said otherwise")
-    }
-
-    /** M6 §12.6: the three tools of M6 are declared whole, and answer `FAILED` until their runs are wired. */
-    @Test
-    fun `the tools of M6 answer FAILED until they are wired`() = runBlocking<Unit> {
-        val ctx = ToolContext(services, Caller(Role.STORYTELLER, "storyteller-1", turnId = null, taskId = null), services.clock, 5_000)
-        val results = listOf(
-            InspireTool().run(ctx, InspireArgs()), // propose_idea and drop_idea are wired (M6-06, StorytellerToolsTest)
-        )
-        results.forEach { assertEquals(ToolResult.failed("not wired yet"), it) }
     }
 
     private companion object {
