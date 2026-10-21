@@ -51,7 +51,7 @@ import java.util.UUID
 import kotlin.math.roundToInt
 
 /**
- * The memory tools the Director shares with the Chronicler, the Dreamer and the Analyst (M3 §5): the writes
+ * The memory tools the Director shares with the Chronicler, the Dreamer, the storyteller and the Analyst (M3 §5): the writes
  * `remember`, `resolve` and `note_interaction` (effect `ENGINE`: a turn that only remembers stays idle) and
  * the reads `recall` and `player_profile`. `ToolCatalog` gives each role its own set of them.
  */
@@ -104,11 +104,12 @@ abstract class MemoryTool<A : Any>(name: String, description: String, args: KSer
  * `remember` (M3 §5.1): a commitment or decision of the Narrator in the canon (`C-`), or a fact about a
  * player in the memories (`M-`). A nickname or title replaces the player's active one; a place is where
  * [RememberArgs.atPlayer] stands now; a due time posts a `DUE` event to the Director then. An arc the
- * Dreamer remembers starts `planned` (M3 §8.2, step 4): the Director starts it with `resolve … active`.
+ * Dreamer or the storyteller remembers starts `planned` (M3 §8.2, step 4; M6 §6.5): the Director starts it with
+ * `resolve … active`.
  *
  * Who may remember what (M3 review, finding 1), checked before the store: the Director anything; the
  * Chronicler what was told to the players ([RememberKind.told]) only with the Narrator's words in `quote`;
- * the Dreamer only [DREAMER_KINDS], never with a quote.
+ * the Dreamer only [DREAMER_KINDS], the storyteller only [STORYTELLER_KINDS], never with a quote.
  *
  * Mechanics (M4 §12.3, §10): while the engine runs, the Director starts a challenge with `start_challenge`,
  * which tracks it, never with `remember`; a plan exists only through `create_rule` (no kind here); an arc
@@ -138,7 +139,7 @@ class RememberTool : MemoryTool<RememberArgs>(
     private suspend fun addCanon(ctx: ToolContext, args: RememberArgs, kind: CanonKind, players: List<PlayerRef>, evidence: Evidence): ToolResult {
         val place = args.atPlayer?.let { name -> ctx.players.byName(name)?.pos ?: refuse(ctx.notOnline(name)) }
         val due = args.dueInMinutes?.let { ctx.clock.instant().plusSeconds(it * 60L) }
-        val planned = kind == CanonKind.ARC && ctx.caller.role == Role.DREAMER
+        val planned = kind == CanonKind.ARC && ctx.caller.role in PLANNERS
         val room = (EVIDENCE_MAX - evidence.events.size - evidence.tools.size).coerceAtLeast(0)
         val said = ctx.linesHolding(args.quote).filter { it !in evidence.events }.take(room)
         val draft = CanonDraft(
@@ -194,6 +195,14 @@ class RememberTool : MemoryTool<RememberArgs>(
                 ),
             )
         }
+        if (role == Role.STORYTELLER && kind !in STORYTELLER_KINDS) {
+            refuse(
+                ToolResult.invalid(
+                    "the storyteller remembers only an arc (planned) or lore, not ${an(kind.id)}: an idea goes in propose_idea, " +
+                        "and what the Narrator tells the players is recorded from its own words",
+                ),
+            )
+        }
         if (role == Role.DIRECTOR && kind == RememberKind.CHALLENGE && ctx.services.mechanics.available) {
             refuse(ToolResult.invalid("a challenge is started with start_challenge: it tracks it, shows its bar and pays its stakes"))
         }
@@ -203,6 +212,7 @@ class RememberTool : MemoryTool<RememberArgs>(
             if (args.stakes != null && kind != RememberKind.CHALLENGE) add("stakes only go with a challenge: leave stakes out")
             if (args.quote != null && kind.canon == null) add("quote does not apply to ${an(kind.id)}: put the player's own words in what, between « »")
             if (args.quote != null && kind.canon != null && role == Role.DREAMER) add("quote does not apply to the Dreamer, who never heard the Narrator: leave it out")
+            if (args.quote != null && kind.canon != null && role == Role.STORYTELLER) add("quote does not apply to the storyteller, who never heard the Narrator: leave it out")
             if (args.quote == null && kind.told && role == Role.CHRONICLER) {
                 add("${an(kind.id)} needs quote: copy 3 words or more exactly from the Narrator's NARRATOR line, and cite that line in evidence")
             }
@@ -239,6 +249,12 @@ class RememberTool : MemoryTool<RememberArgs>(
         /** What the Dreamer remembers: it plans arcs, keeps lore and observes players; it never commits the Narrator. */
         val DREAMER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE, RememberKind.OBSERVATION)
 
+        /** What the storyteller remembers (M6 §6.5): it plans arcs and keeps lore; no fact about a player, no commitment. */
+        val STORYTELLER_KINDS = setOf(RememberKind.ARC, RememberKind.LORE)
+
+        /** The roles whose arcs start planned: they prepare them, the Director starts them. */
+        val PLANNERS = setOf(Role.DREAMER, Role.STORYTELLER)
+
         /** The Narrator's lines said in a turn, and its or an operator's lines among the events that woke the turn. */
         const val TURN_LINES_SQL = "SELECT id, text FROM chat WHERE channel IN ('narrator', 'operator') " +
             "AND (turn_id = ? OR id IN (SELECT unnest(trigger_events) FROM turns WHERE turn_id = ?)) ORDER BY id"
@@ -249,7 +265,8 @@ class RememberTool : MemoryTool<RememberArgs>(
 
 /**
  * `resolve` (M3 §5.2): a canon entry kept, broken, won, lost, retired…, or a planned arc started. The
- * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge. A row
+ * Dreamer settles arcs only (M3 review, finding 1): whether a promise was kept is not for it to judge; the storyteller
+ * only abandons a planned arc that no longer holds (M6 §6.5), the Director starting the others. A row
  * the mechanics engine tracks is settled by the engine (the store names the tool that ends it, M4 §3.3); an
  * arc started is due within 7 days, and a third active arc is `DENIED (arc_limit)` (M4 §10).
  */
@@ -268,6 +285,15 @@ class ResolveTool : MemoryTool<ResolveArgs>(
             val entry = ctx.memory.store.row(ref) as? CanonEntry
             if (entry != null && entry.kind != CanonKind.ARC) {
                 return ToolResult.invalid("the Dreamer resolves only arcs, and $ref is ${an(entry.kind.id)}: the Narrator and the Chronicler settle the rest")
+            }
+        }
+        if (ctx.caller.role == Role.STORYTELLER) {
+            val entry = ctx.memory.store.row(ref) as? CanonEntry
+            if (entry != null && (entry.kind != CanonKind.ARC || entry.status != CanonStatus.PLANNED)) {
+                return ToolResult.invalid("the storyteller resolves only a planned arc, and $ref is ${an(entry.kind.id)}, ${entry.status.id}: the Narrator settles the rest")
+            }
+            if (entry != null && args.outcome != Outcome.ABANDONED) {
+                return ToolResult.invalid("the storyteller only abandons a planned arc that no longer holds (outcome abandoned): the Narrator starts it")
             }
         }
         val winners = ctx.knownPlayers(args.winners.orEmpty(), "winners")
@@ -460,8 +486,8 @@ private const val DAY_MS = 86_400_000L
 internal val ToolContext.memory: Memory get() = services.memory
 
 /**
- * Who writes for the caller: the job of a Chronicler or Dreamer conversation (its run, for the audit and
- * the quote checks), else the Director's turn.
+ * Who writes for the caller: the job of a Chronicler, Dreamer or storyteller conversation (its run, for the audit
+ * and the quote checks), else the Director's turn, or the storyteller's task (`delegate`, M6 §6.4), which has no run.
  */
 internal fun ToolContext.author(): Author {
     services.memory.runContext(caller.conversationId)?.let { return it.author(caller.conversationId) }
@@ -469,6 +495,7 @@ internal fun ToolContext.author(): Author {
         Role.DIRECTOR -> Source.DIRECTOR
         Role.CHRONICLER -> Source.CHRONICLER
         Role.DREAMER -> Source.DREAMER
+        Role.STORYTELLER -> Source.STORYTELLER
         else -> error("the ${caller.role.id} does not write in the memory")
     }
     return Author(source, turnId = caller.turnId, conversationId = caller.conversationId)
@@ -500,14 +527,16 @@ private const val PLAYER_SQL = "SELECT player_uuid::VARCHAR, name FROM players W
 
 /**
  * [refs] were put before the caller through [channel] (M3 §9.2, §10.6): a `recalls` row each, and the
- * memories are reinforced. Only the Narrator's own reads count; the Dreamer's leave a `dream` row, which
- * reinforces nothing; the Chronicler's and the Analyst's leave nothing (they are not the Narrator, and the
- * Chronicler reads `recalls` as what the Narrator was shown). A failure to record is logged: the reading stands.
+ * memories are reinforced. Only the Narrator's own reads count; the Dreamer's leave a `dream` row and the
+ * storyteller's a `programme` row (M6 §6.3), which reinforce nothing; the Chronicler's and the Analyst's leave nothing
+ * (they are not the Narrator, and the Chronicler reads `recalls` as what the Narrator was shown). A failure to record
+ * is logged: the reading stands.
  */
 private suspend fun ToolContext.shown(refs: List<Ref>, channel: RecallChannel) {
     val counted = when (caller.role) {
         Role.DIRECTOR -> channel
         Role.DREAMER -> RecallChannel.DREAM
+        Role.STORYTELLER -> RecallChannel.PROGRAMME
         else -> return
     }
     if (refs.isEmpty()) return
