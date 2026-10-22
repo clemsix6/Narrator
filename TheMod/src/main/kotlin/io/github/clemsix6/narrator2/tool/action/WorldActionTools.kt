@@ -71,8 +71,11 @@ import net.minecraft.world.entity.projectile.FireworkRocketEntity
 import net.minecraft.world.item.DyeColor
 import net.minecraft.world.item.HoneycombItem
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items as GameItems
+import net.minecraft.world.item.component.DyedItemColor
 import net.minecraft.world.item.component.FireworkExplosion
 import net.minecraft.world.item.component.Fireworks
+import net.minecraft.world.item.component.ResolvableProfile
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.LightningRodBlock
 import net.minecraft.world.level.block.WeatheringCopper
@@ -84,6 +87,7 @@ import java.util.UUID
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -115,18 +119,36 @@ private const val DIMENSION_DOC = "Dimension of x, y and z: overworld (the defau
 
 // ── spawn ───────────────────────────────────────────────────────────────────────────────────────
 
-/** What a summoned creature wears and holds, as item ids (`golden_helmet`, `minecraft:bow`). */
+/**
+ * Something a summoned creature wears or holds, with what makes a costume that every vanilla client shows
+ * (M7-CREATURES): dyed leather, a player's face on a head, the enchanted shimmer. A bare item id stands for
+ * `{"item": …}` (`ToolArgs`), as the equipment was written before.
+ */
+@Serializable
+data class WornItem(
+    @Doc("Item id.") @MaxLen(64) val item: String,
+    @Doc("Leather pieces only: their dye, #RRGGBB.") @MaxLen(7) val color: String? = null,
+    @Doc("player_head only: the account whose face it shows.") @MaxLen(16) val skin: String? = null,
+    @Doc("Seen only if it drops.") @MaxLen(50) val name: String? = null,
+    @Doc("Enchanted shimmer, for show.") val glint: Boolean = false,
+) {
+    /** `player_head of Bob`, `leather_chestplate #F9D71C "Toge"`, for the answer. */
+    fun shown(): String =
+        item + (skin?.let { " of $it" } ?: "") + (color?.let { " $it" } ?: "") + (name?.let { " \"${Speech.clean(it)}\"" } ?: "") + (if (glint) " shimmering" else "")
+}
+
+/** What a summoned creature wears and holds. */
 @Serializable
 data class EquipmentSpec(
-    @Doc("Item worn on the head, e.g. golden_helmet or carved_pumpkin.") @MaxLen(64) val head: String? = null,
-    @Doc("Item worn on the chest.") @MaxLen(64) val chest: String? = null,
-    @Doc("Item worn on the legs.") @MaxLen(64) val legs: String? = null,
-    @Doc("Item worn on the feet.") @MaxLen(64) val feet: String? = null,
-    @Doc("Item held in the main hand, e.g. diamond_sword or bow.") @MaxLen(64) val mainhand: String? = null,
-    @Doc("Item held in the other hand, e.g. shield or totem_of_undying.") @MaxLen(64) val offhand: String? = null,
+    @Doc("Any head item keeps zombies and skeletons from burning by day.") val head: WornItem? = null,
+    val chest: WornItem? = null,
+    val legs: WornItem? = null,
+    val feet: WornItem? = null,
+    val mainhand: WornItem? = null,
+    val offhand: WornItem? = null,
 ) {
-    /** The slots given, with their item id. */
-    fun slots(): List<Pair<EquipmentSlot, String>> = listOfNotNull(
+    /** The slots given, with what goes there. */
+    fun slots(): List<Pair<EquipmentSlot, WornItem>> = listOfNotNull(
         head?.let { EquipmentSlot.HEAD to it },
         chest?.let { EquipmentSlot.CHEST to it },
         legs?.let { EquipmentSlot.LEGS to it },
@@ -194,8 +216,17 @@ data class SpawnArgs(
     val name: String? = null,
     @Doc("true: the creatures go straight for the player.")
     val target: Boolean = false,
-    @Doc("What they wear and hold. They never drop it.")
+    @Doc("Their costume: what they wear and hold.")
     val equipment: EquipmentSpec? = null,
+    @Doc(
+        "Chance that each piece of their costume drops when a player kills one; 0 by default, for a costume is not a gift " +
+            "(give_item is). Precious items (diamond, netherite, totem…) never drop.",
+    )
+    @SerialName("drop_chance")
+    @Range(0.0, 1.0)
+    val dropChance: Double = 0.0,
+    @Doc("They glow, seen through walls by everyone.")
+    val glowing: Boolean = false,
     @Doc("Minutes before they vanish.")
     @SerialName("lifetime_minutes")
     @Range(1.0, 10.0)
@@ -222,11 +253,19 @@ data class SpawnArgs(
 
 class SpawnTool : NarratorTool<SpawnArgs>(
     name = "spawn",
-    description = "Summons creatures around a player: named, equipped, faster, bigger, targeting the player, raining from the " +
-        "sky, thrown into the air, or set to explode. They vanish at the end of their lifetime and never break a block. " +
+    description = "Summons creatures around a player: named, in costume, faster, bigger, glowing, targeting the player, raining " +
+        "from the sky, thrown into the air, or set to explode. They vanish at the end of their lifetime and never break a block. " +
         "Every creature that can hurt (monsters, but also wolves, bees, bears, golems, goats, llamas, pufferfish…), and any " +
         "creature sent at the player, is a punishment of that player; only harmless animals are not. Those go for that " +
-        "player alone, and their blows never kill. Caps on how many, per call and alive at once, depend on the chaos level.",
+        "player alone, and their blows never kill. Caps on how many, per call and alive at once, depend on the chaos level.\n" +
+        "Your creatures are characters, almost never bare mobs: a name and a costume drawn from what is happening, so that " +
+        "players see the joke. For a torch thief: {\"entity\": \"zombie\", \"count\": 3, \"near\": \"Bob\", \"name\": " +
+        "\"Contrôleur des Torches\", \"target\": true, \"lifetime_minutes\": 2, \"equipment\": {\"head\": {\"item\": " +
+        "\"leather_helmet\", \"color\": \"#F9D71C\"}, \"chest\": {\"item\": \"leather_chestplate\", \"color\": \"#1D1D21\"}, " +
+        "\"mainhand\": \"torch\"}}. For a boaster, small fans wearing his face: {\"entity\": \"zombie\", \"count\": 4, " +
+        "\"near\": \"Bob\", \"name\": \"Fan de Bob\", \"baby\": true, \"glowing\": true, \"equipment\": {\"head\": {\"item\": " +
+        "\"player_head\", \"skin\": \"Bob\"}, \"offhand\": \"poppy\"}}. Armor shows on zombies, skeletons, piglins and their " +
+        "kin; a head item also on illagers and wandering traders.",
     args = SpawnArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -382,8 +421,13 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         root.snapTo(spot.x, spot.y, spot.z, mob.yRot, 0f)
         root.indirectPassengers.forEach { it.vehicle?.positionRider(it) }
         for ((slot, stack) in equipment) mob.setItemSlot(slot, stack.copy())
-        // What it starts with never drops (no diamond sword farm); what a player gives it later keeps the game's chances.
+        // What it starts with never drops (no diamond sword farm), but its costume at the chance asked, never a precious
+        // piece (gifts are rationed); what a player gives it later keeps the game's chances.
         EquipmentSlot.entries.filterNot { mob.getItemBySlot(it).isEmpty }.forEach { mob.setDropChance(it, 0f) }
+        if (args.dropChance > 0) {
+            equipment.filter { (_, stack) -> ItemSpecs.preciousness(stack.typeHolder()) == 0 }.forEach { (slot, _) -> mob.setDropChance(slot, args.dropChance.toFloat()) }
+        }
+        if (args.glowing) mob.setGlowingTag(true)
         mob.health = mob.maxHealth
         if (name != null) {
             mob.customName = Component.literal(name)
@@ -449,7 +493,13 @@ class SpawnTool : NarratorTool<SpawnArgs>(
             if (name != null) add("named \"$name\"")
             if (args.baby) add(if (mobs.all { it.isBaby }) "baby" else "no baby form for $id")
             args.attributes?.forEach { add("${it.attribute.id} x${number(it.multiply)}") }
-            args.equipment?.slots()?.let { slots -> if (slots.isNotEmpty()) add("equipped (${slots.joinToString { (slot, item) -> "${slot.serializedName} $item" }})") }
+            val slots = args.equipment?.slots().orEmpty()
+            if (slots.isNotEmpty()) add("equipped (${slots.joinToString { (slot, worn) -> "${slot.serializedName} ${worn.shown()}" }})")
+            if (args.glowing) add("glowing")
+            if (args.dropChance > 0 && slots.isNotEmpty()) {
+                val precious = slots.mapNotNull { (_, worn) -> ItemSpecs.item(worn.item)?.takeIf { ItemSpecs.preciousness(it) > 0 }?.let(::shortId) }
+                add("each piece drops at ${(args.dropChance * 100).roundToInt()}% when a player kills one" + if (precious.isEmpty()) "" else " (never ${precious.joinToString()}: precious)")
+            }
             if (args.target) add("going for ${player.shownName}")
             if (args.height > 0) add("up to ${args.height} blocks in the air")
             if (args.launch > 0) add("thrown up at ${number(args.launch)}")
@@ -490,11 +540,45 @@ class SpawnTool : NarratorTool<SpawnArgs>(
                     ),
                 )
 
-        /** An item a creature wears or holds; refused like a gift ([ItemSpecs.forbidden]): a creature can drop or spit what it holds. */
-        private fun equipmentItem(raw: String): ItemStack {
-            val item = ItemSpecs.item(raw) ?: refuse(ToolResult.invalid(ItemSpecs.unknownItem(raw)))
-            ItemSpecs.forbidden(item)?.let { refuse(ToolResult.denied(ItemSpecs.FORBIDDEN_ITEM, "${shortId(item)} is never given: $it.")) }
-            return ItemStack(item)
+        /** The leather pieces, the only items a creature wears dyed ([WornItem.color]). */
+        private val DYEABLE = setOf("minecraft:leather_helmet", "minecraft:leather_chestplate", "minecraft:leather_leggings", "minecraft:leather_boots")
+
+        private val COLOR = Regex("#?([0-9a-fA-F]{6})")
+
+        /** A Minecraft account name, for a player_head's [WornItem.skin]. */
+        private val ACCOUNT = Regex("[A-Za-z0-9_]{1,16}")
+
+        /**
+         * What a creature wears or holds, as [worn] describes it: the item, refused like a gift ([ItemSpecs.forbidden]: a
+         * creature can drop or spit what it holds), with its dye, face, name and shimmer. A face is the account's name alone:
+         * each client looks its skin up (26.3 resolves a player head's profile on the client, `PlayerSkinRenderCache`).
+         * Any thread.
+         */
+        private fun equipmentItem(worn: WornItem): ItemStack {
+            val item = ItemSpecs.item(worn.item) ?: refuse(ToolResult.invalid(ItemSpecs.unknownItem(worn.item)))
+            val id = shortId(item)
+            ItemSpecs.forbidden(item)?.let { refuse(ToolResult.denied(ItemSpecs.FORBIDDEN_ITEM, "$id is never given: $it.")) }
+            val stack = ItemStack(item)
+            worn.color?.let { raw ->
+                if (item.registeredName !in DYEABLE) {
+                    refuse(ToolResult.invalid("color dyes leather only (leather_helmet, leather_chestplate, leather_leggings, leather_boots), not $id"))
+                }
+                val rgb = COLOR.matchEntire(raw.trim())?.groupValues?.get(1)?.toInt(16)
+                    ?: refuse(ToolResult.invalid("color is written #RRGGBB, e.g. #F9D71C for yellow (got \"$raw\")"))
+                stack.set(DataComponents.DYED_COLOR, DyedItemColor(rgb))
+            }
+            worn.skin?.let { skin ->
+                if (item.value() !== GameItems.PLAYER_HEAD) refuse(ToolResult.invalid("skin is for a player_head, not $id"))
+                if (!ACCOUNT.matches(skin)) refuse(ToolResult.invalid("skin is a Minecraft account name: letters, digits and _ (got \"$skin\")"))
+                stack.set(DataComponents.PROFILE, ResolvableProfile.createUnresolved(skin))
+            }
+            worn.name?.let { raw ->
+                val name = Speech.clean(raw)
+                if (name.isEmpty()) refuse(ToolResult.invalid("the name of the $id has nothing to show once formatting codes are removed; write plain text"))
+                stack.set(DataComponents.CUSTOM_NAME, Component.literal(name).withStyle { it.withItalic(false) })
+            }
+            if (worn.glint) stack.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, true)
+            return stack
         }
 
         private fun attributeHolder(path: String) =

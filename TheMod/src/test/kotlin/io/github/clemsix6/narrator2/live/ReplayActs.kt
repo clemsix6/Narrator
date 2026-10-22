@@ -136,7 +136,9 @@ internal object ReplayActs {
                     "${args.challenge?.let { "; it referees $it" }.orEmpty()}; $after"
             }
             is SpawnArgs -> "ok: ${args.count} ${item(args.entity)}${if (args.count > 1) "s" else ""}${args.name?.let { " named « ${ModelText.escape(it)} »" }.orEmpty()} " +
-                "around ${ModelText.name(args.near)}"
+                "around ${ModelText.name(args.near)}" + args.equipment?.slots().orEmpty().let { slots ->
+                    if (slots.isEmpty()) "" else ", equipped (${slots.joinToString { (slot, worn) -> "${slot.serializedName} ${worn.shown()}" }})"
+                }
             is LaunchArgs -> "ok: ${ModelText.name(args.player)} launched ${args.direction.name.lowercase()} at strength ${ToolText.number(args.strength)}; " +
                 "no fall damage until ${situation.at(15)}"
             else -> "ok"

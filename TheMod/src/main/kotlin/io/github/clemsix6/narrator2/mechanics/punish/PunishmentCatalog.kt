@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.tool.action.ParticleKey
 import io.github.clemsix6.narrator2.tool.action.ParticlesArgs
 import io.github.clemsix6.narrator2.tool.action.SetAttributeArgs
 import io.github.clemsix6.narrator2.tool.action.SpawnArgs
+import io.github.clemsix6.narrator2.tool.action.WornItem
 
 /**
  * One step of a punishment: a call of a real tool (M4 §6.3), with the arguments the catalogue chose. The tool
@@ -226,7 +227,7 @@ object PunishmentCatalog {
                 val count = creatures("zombies", severity + 1)
                 val guests = SpawnArgs(
                     entity = "zombie", count = count, near = player, name = name, target = true,
-                    equipment = EquipmentSpec(head = GUESTS_HAT), lifetimeMinutes = GUESTS_MINUTES, baby = severity <= 2,
+                    equipment = EquipmentSpec(head = WornItem(GUESTS_HAT)), lifetimeMinutes = GUESTS_MINUTES, baby = severity <= 2,
                 )
                 Draft(GUESTS_MINUTES * 60, true, Peril.ANY, null, listOf(Step.Spawn(guests)))
             }
