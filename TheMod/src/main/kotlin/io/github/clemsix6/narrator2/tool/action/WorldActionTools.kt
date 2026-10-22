@@ -259,10 +259,10 @@ class SpawnTool : NarratorTool<SpawnArgs>(
         "creature sent at the player, is a punishment of that player; only harmless animals are not. Those go for that " +
         "player alone, and their blows never kill. Caps on how many, per call and alive at once, depend on the chaos level.\n" +
         "Your creatures are characters, almost never bare mobs: a name and a costume drawn from what is happening, so that " +
-        "players see the joke. For a torch thief: {\"entity\": \"zombie\", \"count\": 3, \"near\": \"Bob\", \"name\": " +
-        "\"Contrôleur des Torches\", \"target\": true, \"lifetime_minutes\": 2, \"equipment\": {\"head\": {\"item\": " +
-        "\"leather_helmet\", \"color\": \"#F9D71C\"}, \"chest\": {\"item\": \"leather_chestplate\", \"color\": \"#1D1D21\"}, " +
-        "\"mainhand\": \"torch\"}}. For a boaster, small fans wearing his face: {\"entity\": \"zombie\", \"count\": 4, " +
+        "players see the joke, each time a new one. For a rude player: {\"entity\": \"zombie\", \"count\": 3, \"near\": \"Bob\", " +
+        "\"name\": \"Comité de Politesse\", \"target\": true, \"lifetime_minutes\": 2, \"equipment\": {\"head\": {\"item\": " +
+        "\"leather_helmet\", \"color\": \"#FFFFFF\"}, \"chest\": {\"item\": \"leather_chestplate\", \"color\": \"#B02E26\"}, " +
+        "\"mainhand\": \"bell\"}}. For a boaster, small fans wearing his face: {\"entity\": \"zombie\", \"count\": 4, " +
         "\"near\": \"Bob\", \"name\": \"Fan de Bob\", \"baby\": true, \"glowing\": true, \"equipment\": {\"head\": {\"item\": " +
         "\"player_head\", \"skin\": \"Bob\"}, \"offhand\": \"poppy\"}}. Armor shows on zombies, skeletons, piglins and their " +
         "kin; a head item also on illagers and wandering traders.",

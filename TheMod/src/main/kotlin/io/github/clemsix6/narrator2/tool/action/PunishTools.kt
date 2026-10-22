@@ -80,7 +80,7 @@ class PunishTool : MechanicsTool<PunishArgs>(
     name = "punish",
     description = "Punishes a player with a ready-made, composed punishment of the catalogue, at a severity from 1 to 5 " +
         "(capped by the chaos level): tiny, moon_gravity, slow_hands, heavy_feet, hunger, butterfingers (inventory shuffled, " +
-        "nothing lost), guests (named zombies) and slime_rain (creatures after that player alone, who never kill), skyward, " +
+        "nothing lost), guests (named zombies in pumpkins; spawn dresses them up) and slime_rain (creatures after that player alone, who never kill), skyward, " +
         "tree_top, smite, cage (a glass cage) and web (cobwebs): " +
         "traps of a few seconds, set in thin air only, taken away by themselves. Refused like any punishment: protected, " +
         "recently dead, already punished, too many this hour, or the same kind of punishment too recently. The reason goes " +
