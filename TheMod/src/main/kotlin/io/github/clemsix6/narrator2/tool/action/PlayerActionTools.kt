@@ -989,8 +989,9 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
     name = "take_item",
     description = "Confiscates items from a player's inventory (armor and off hand included). Temporary by default: they " +
         "come back by themselves. permanent takes them for good: only for a real fault or an item far too strong for them, " +
-        "and always tell the player clearly. Always a punishment: refused like any other when the player may not be " +
-        "punished; the number of items is capped by the chaos level.",
+        "and always tell the player clearly. Making permanent what you already hold for them (a running confiscation, " +
+        "even another turn's) takes nothing more: it is no new punishment. Otherwise always a punishment: refused like " +
+        "any other when the player may not be punished; the number of items is capped by the chaos level.",
     args = TakeItemArgs.serializer(),
     effect = ToolEffect.WORLD,
 ) {
@@ -1016,10 +1017,16 @@ class TakeItemTool : NarratorTool<TakeItemArgs>(
             val has = (0 until inventory.containerSize).map { inventory.getItem(it) }.filter { !it.isEmpty && match(it) }.sumOf { it.count } + held
             if (has == 0) refuse(ToolResult.invalid("${ref.shownName} has no $raw"))
             val returnAt = ctx.clock.millis() + args.minutes * 60_000L
-            ctx.punish(player, returnAt, PunishmentCategory.INVENTORY)
-            // Taking the elytra of a gliding player, the blocks of one bridging over lava, the armor of one
-            // at war with a horde, can kill in any way.
-            ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS, Peril.ANY)
+            // A seizure that takes nothing from the inventory only makes permanent what the Narrator already holds
+            // (another turn's confiscation, a stake): no new punishment, so no category rest, no hourly cap (M7-SEIZE).
+            // Not at chaos 0, where nothing hostile happens: the guards refuse it there as before.
+            val onlyHeld = args.permanent && caps.hostileAllowed && minOf(args.count, has) <= held
+            if (!onlyHeld) {
+                ctx.punish(player, returnAt, PunishmentCategory.INVENTORY)
+                // Taking the elytra of a gliding player, the blocks of one bridging over lava, the armor of one
+                // at war with a horde, can kill in any way.
+                ctx.guards.armDeathGuard(player.uuid, TAKE_GUARD_SECONDS, Peril.ANY)
+            }
             val all = if (has <= args.count) " (all they had)" else ""
             if (args.permanent) {
                 val seized = ctx.guards.items.seize(player, match, args.count, reason ?: "no reason given", ctx.caller.turnId)
