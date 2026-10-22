@@ -19,6 +19,7 @@ import io.github.clemsix6.narrator2.tool.memory.memoryTools
 import io.github.clemsix6.narrator2.tool.oracle.oracleTools
 import io.github.clemsix6.narrator2.tool.oracle.surveyTools
 import io.github.clemsix6.narrator2.tool.pacing.pacingTools
+import io.github.clemsix6.narrator2.tool.relics.relicTools
 import io.github.clemsix6.narrator2.tool.speech.speechTools
 import io.github.clemsix6.narrator2.tool.sql.sqlTools
 import io.github.clemsix6.narrator2.tool.storyteller.inspireTools
@@ -37,11 +38,12 @@ import kotlinx.serialization.json.putJsonArray
  * which role has which tool:
  *
  * - the Director has every tool but the memory jobs' own families (the Chronicler's, the Dreamer's), the
- *   scout's own ([SCOUT_OWN]), the forger's ([FORGER_TOOLS]) and the storyteller's own ([STORYTELLER_OWN]);
+ *   scout's own ([SCOUT_OWN]), the forger's ([FORGER_TOOLS]), the storyteller's own ([STORYTELLER_OWN]) and the armorer's
+ *   own ([ARMORER_OWN], M7-RELICS);
  * - the Analyst has its reads ([ANALYST_TOOLS]), the scout its own ([SCOUT_TOOLS]), the forger its own
  *   ([FORGER_TOOLS]);
- * - the Chronicler, the Dreamer and the storyteller have their own family, plus the tools they share with others
- *   ([CHRONICLER_SHARED], [DREAMER_SHARED], [STORYTELLER_SHARED]);
+ * - the Chronicler, the Dreamer, the storyteller and the armorer have their own family, plus the tools they share with
+ *   others ([CHRONICLER_SHARED], [DREAMER_SHARED], [STORYTELLER_SHARED], [ARMORER_SHARED]);
  * - the rules' own tools ([RULE_ONLY]) and the modules' ([MODULE_ONLY]) are nobody's: only the mechanics engine
  *   runs them.
  */
@@ -96,6 +98,12 @@ object ToolCatalog {
      */
     private val STORYTELLER_SHARED = setOf("inspire", "remember", "resolve", "recall", "player_profile")
 
+    /** The armorer's own tools (M7-RELICS), never the Director's: its typed outputs, checked by the code. */
+    private val ARMORER_OWN = setOf("create_champion", "create_relic", "create_consumable", "write_book")
+
+    /** What the armorer reads besides (M7-RELICS): the players' sheets and the memory, for names and lore tied to the story. */
+    private val ARMORER_SHARED = setOf("player_profile", "recall")
+
     /**
      * Every tool, family by family, built for the running server's [services]. The families of M4 (M4 §12.1), of
      * M5 (M5 §8.3, §9.1) and of M6 (M6 §12.6) are listed once and for all here; each is filled by its own task. Each
@@ -125,6 +133,7 @@ object ToolCatalog {
         forgerTools(services),
         inspireTools(services),
         storytellerTools(services),
+        relicTools(services),
     ).flatten()
 
     /**
@@ -175,12 +184,13 @@ object ToolCatalog {
     /** Whether [role] has the tool called [name] (M1_M2 §9.7; M3 §5, §7.5, §8.3; M4 §8.4, §14; M5 §8.1, §9.1; M6 §6.5). */
     private fun isFor(role: Role, name: String, jobs: JobTools): Boolean = name !in RULE_ONLY && name !in MODULE_ONLY && when (role) {
         Role.DIRECTOR -> name !in jobs.chronicler && name !in jobs.dreamer && name !in SCOUT_OWN && name !in FORGER_TOOLS &&
-            name !in STORYTELLER_OWN
+            name !in STORYTELLER_OWN && name !in ARMORER_OWN
         Role.ANALYST -> name in ANALYST_TOOLS
         Role.SCOUT -> name in SCOUT_TOOLS
         Role.CHRONICLER -> name in jobs.chronicler || name in CHRONICLER_SHARED
         Role.DREAMER -> name in jobs.dreamer || name in DREAMER_SHARED
         Role.FORGER -> name in FORGER_TOOLS
         Role.STORYTELLER -> name in STORYTELLER_OWN || name in STORYTELLER_SHARED
+        Role.ARMORER -> name in ARMORER_OWN || name in ARMORER_SHARED
     }
 }

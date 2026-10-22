@@ -130,6 +130,12 @@ enum class MechanicSignal {
      * failed) or tells the Director something (`tellDirector`, once every 5 minutes). No priority (M5 §9.2).
      */
     MODULE,
+
+    /** A champion (M7-RELICS) appeared, could not be made, was slain (with the relic its killer got), died or is gone. No priority. */
+    CHAMPION,
+
+    /** A player found an object of the armorer's reserves in a structure chest (M7-RELICS). No priority. */
+    TREASURE,
 }
 
 /** The drifts of tone a [DirectorSignal.StyleNote] tells (M6 §4.3), the gravest first. */

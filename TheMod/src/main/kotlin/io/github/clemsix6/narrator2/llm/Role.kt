@@ -16,6 +16,7 @@ enum class Role {
     @SerialName("storyteller") STORYTELLER,
     @SerialName("chronicler") CHRONICLER,
     @SerialName("dreamer") DREAMER,
+    @SerialName("armorer") ARMORER,
     ;
 
     /** Identifier used in the configuration, logs and conversation ids, e.g. `director`. */

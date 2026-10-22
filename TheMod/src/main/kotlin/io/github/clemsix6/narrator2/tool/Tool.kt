@@ -173,6 +173,8 @@ data class Caller(val role: Role, val conversationId: String, val turnId: Long?,
  *   of the Director), or the conversation is the storyteller's own: `inspire` needs it, with the Journal, and nothing
  *   else does (M6 §12.2). The role `storyteller` of `delegate` is in a static enum: it is refused with its reason,
  *   never hidden.
+ * @property relicsAvailable the armorer can work (`RelicsService.available`, M7-RELICS): `summon_champion` and the
+ *   armorer's own tools need it.
  */
 data class ToolEnv(
     val journalAvailable: Boolean,
@@ -181,6 +183,7 @@ data class ToolEnv(
     val mechanicsAvailable: Boolean = false,
     val forgeAvailable: Boolean = false,
     val storytellerAvailable: Boolean = false,
+    val relicsAvailable: Boolean = false,
 )
 
 /**

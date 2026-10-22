@@ -69,7 +69,8 @@
       "io.github.clemsix6.narrator2.gametest.DashboardAssemblyGameTests",
       "io.github.clemsix6.narrator2.gametest.ProgrammeEndToEndTests",
       "io.github.clemsix6.narrator2.gametest.LiveStyleGameTests",
-      "io.github.clemsix6.narrator2.gametest.DirectorChapterGameTests"
+      "io.github.clemsix6.narrator2.gametest.DirectorChapterGameTests",
+      "io.github.clemsix6.narrator2.gametest.LiveRelicsGameTests"
     ]
   },
   "depends": {

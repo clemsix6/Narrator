@@ -33,6 +33,7 @@ import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.observer.installObserver
 import io.github.clemsix6.narrator2.reflex.Reflexes
 import io.github.clemsix6.narrator2.reflex.createReflexes
+import io.github.clemsix6.narrator2.relics.RelicsService
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.runtime.RestartReport
@@ -80,7 +81,8 @@ import java.time.Clock
  * what may wait: the Journal (three attempts in 10 s at most), the player states, then the memory's reads (30 s at most,
  * [prepareMemory]). [wire] then creates the rest, without waiting, on the server thread, in this order, each factory
  * receiving the runtime with the services created before it: bus, guards, Observer, reflexes, workers, memory, style
- * watch, line review, Forge, mechanics, Director, dashboard. At `SERVER_STARTED` both run on the server thread, before
+ * watch, line review, Forge, mechanics, the armorer's work (M7-RELICS, with a Journal only: it starts once
+ * everything runs), Director, dashboard. At `SERVER_STARTED` both run on the server thread, before
  * the first tick (ARCHITECTURE §17.8); at a restart, [create] and [prepare] run on the restart's own thread, once the
  * old runtime is closed: an old Journal still closing keeps a new one from opening ([stopAndClose], `RestartSequence`).
  * The Forge comes before the mechanics, whose modules' part builds and runs its modules; it starts off the server thread
@@ -157,6 +159,10 @@ class NarratorRuntime private constructor(
     final override lateinit var mechanics: Mechanics
         private set
 
+    /** The armorer's work (M7-RELICS), with a Journal only; started once the rest is wired. */
+    final override var relics: RelicsService? = null
+        private set
+
     final override lateinit var director: DirectorControl
         private set
 
@@ -197,6 +203,7 @@ class NarratorRuntime private constructor(
         createLineReviewer(this)
         forge = createForge(this, ::tellOperatorsOnline)
         mechanics = createMechanics(this)
+        relics = if (journal.available) RelicsService(this) else null
         director = createDirector(this)
         dashboard = createDashboard(this)
         shutdown = ShutdownSequence(
@@ -204,6 +211,7 @@ class NarratorRuntime private constructor(
             stopForge = forge::stop, stopDashboard = dashboard::stop,
         )
         phase = Phase.RUNNING
+        relics?.start()
     }
 
     /**

@@ -21,7 +21,7 @@ class Prompts private constructor(private val texts: Map<String, String>) {
         /** Every prompt the mod ships. Adding a prompt means adding its file name here. */
         val NAMES = listOf(
             "director", "analyst", "scout", "forger", SDK, "storyteller", "chapter_summary", "chronicler", "dreamer", "ping", "reflex",
-            "line_review",
+            "line_review", "armorer",
         )
 
         /** The Forge's SDK reference (English), which follows `forger.md` in the forger's system prompt (M5 §8.1, §8.2). */

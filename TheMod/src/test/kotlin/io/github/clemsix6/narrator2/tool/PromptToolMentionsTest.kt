@@ -22,7 +22,7 @@ class PromptToolMentionsTest {
     private val services = TestServices()
     private val everythingWired = ToolEnv(
         journalAvailable = true, workerRoles = setOf(Role.ANALYST, Role.SCOUT), memoryAvailable = true, mechanicsAvailable = true,
-        forgeAvailable = true, storytellerAvailable = true,
+        forgeAvailable = true, storytellerAvailable = true, relicsAvailable = true,
     )
 
     private fun toolsOf(role: Role, env: ToolEnv = everythingWired): Set<String> = ToolCatalog.toolSetFor(role, env, services).names.toSet()
@@ -40,7 +40,7 @@ class PromptToolMentionsTest {
 
     @Test
     fun `the Director's prompt names its tools, all of them and nothing else`() {
-        assertEquals(48, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine, the Forge and inspire (M6 §12.6): ${toolsOf(Role.DIRECTOR)}")
+        assertEquals(49, toolsOf(Role.DIRECTOR).size, "the Director's tools with the mechanics engine, the Forge, inspire (M6 §12.6) and summon_champion (M7-RELICS): ${toolsOf(Role.DIRECTOR)}")
         assertNamesExactly("director", Role.DIRECTOR)
     }
 
@@ -82,6 +82,18 @@ class PromptToolMentionsTest {
             "the storyteller's tools (M6 §6.5, M6-16)",
         )
         assertNamesExactly("storyteller", Role.STORYTELLER)
+    }
+
+    /** The armorer (M7-RELICS): its four typed outputs and two reads of the memory. */
+    @Test
+    fun `the armorer's prompt names its tools, all of them and nothing else`() {
+        assertEquals(
+            setOf("create_champion", "create_relic", "create_consumable", "write_book", "player_profile", "recall"),
+            toolsOf(Role.ARMORER),
+            "the armorer's tools (M7-RELICS)",
+        )
+        assertEquals(emptySet(), toolsOf(Role.ARMORER, everythingWired.copy(relicsAvailable = false)) - setOf("player_profile", "recall"))
+        assertNamesExactly("armorer", Role.ARMORER)
     }
 
     @Test

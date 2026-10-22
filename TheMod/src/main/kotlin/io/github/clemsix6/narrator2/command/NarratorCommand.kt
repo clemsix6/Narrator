@@ -24,6 +24,7 @@ object NarratorCommand {
         ForgeCommands.attach(root)
         StyleCommands.attach(root)
         DashboardCommands.attach(root)
+        RelicsCommands.attach(root)
         dispatcher.register(root)
         PrayCommand.register(dispatcher)
         DuelCommand.register(dispatcher)

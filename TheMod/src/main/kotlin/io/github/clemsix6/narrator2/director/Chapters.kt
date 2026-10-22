@@ -164,6 +164,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             mechanicsAvailable = services.mechanics.available,
             forgeAvailable = forgeAvailable(services),
             storytellerAvailable = Role.STORYTELLER in roles,
+            relicsAvailable = services.relics?.available == true,
         )
         val tools = toolSet(env)
         val prompt = services.settings.get().prompts.get(Role.DIRECTOR.id)

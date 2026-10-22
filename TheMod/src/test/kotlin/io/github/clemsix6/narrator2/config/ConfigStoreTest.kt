@@ -31,7 +31,7 @@ class ConfigStoreTest {
         assertEquals(
             setOf(
                 "gateway", "roles", "language", "chaos", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex",
-                "style", "dashboard", "prices", "logging",
+                "style", "dashboard", "relics", "prices", "logging",
             ),
             written.keys,
             "only the settings in use",
@@ -185,7 +185,7 @@ class ConfigStoreTest {
     @Test
     fun `role ids are the English identifiers of the configuration`() {
         assertEquals(
-            listOf("director", "analyst", "scout", "forger", "storyteller", "chronicler", "dreamer"),
+            listOf("director", "analyst", "scout", "forger", "storyteller", "chronicler", "dreamer", "armorer"),
             Role.entries.map { it.id },
         )
         Role.entries.forEach { role -> assertEquals("\"${role.id}\"", Json.encodeToString(Role.serializer(), role)) }
