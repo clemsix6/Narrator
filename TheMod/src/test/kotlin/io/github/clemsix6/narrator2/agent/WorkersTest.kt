@@ -16,6 +16,12 @@ import io.github.clemsix6.narrator2.journal.Journal
 import io.github.clemsix6.narrator2.llm.ClaudeClient
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.ForgeHalt
+import io.github.clemsix6.narrator2.memory.Idea
+import io.github.clemsix6.narrator2.memory.IdeaKind
+import io.github.clemsix6.narrator2.memory.IdeaStatus
+import io.github.clemsix6.narrator2.memory.Ref
+import io.github.clemsix6.narrator2.memory.RefKind
+import io.github.clemsix6.narrator2.memory.Source
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
@@ -788,16 +794,73 @@ class WorkersTest {
         assertContains(request.path("system")[0].path("text").asText(), "Tu es la salle d'écriture du Narrateur")
         assertEquals("medium", request.path("output_config").path("effort").asText())
         assertEquals(
-            "<task id=\"T-$id\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>",
+            "<task id=\"T-$id\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>\n" +
+                "<ideas open=\"0\">(none open)</ideas>",
             request.path("messages")[0].path("content")[0].path("text").asText(),
         )
         assertEquals(Workers.STORYTELLER_STEPS + 2, rig.requestsOf(id).size, "six steps, then two replies whose calls are refused")
         assertEquals((0 until Workers.STORYTELLER_STEPS - 1).map { "SELECT $it" }, rig.queries, "only the calls of the first five replies run")
+        // M6-FIX-14: each reply whose calls ran is counted once, then the step limit speaks alone.
+        assertEquals(
+            (1 until Workers.STORYTELLER_STEPS).map { "Engine: " + AgentLoop.countdownNote(it, Workers.STORYTELLER_STEPS) } +
+                List(2) { "Engine: ${AgentLoop.STEP_LIMIT_NOTE}" },
+            rig.requestsOf(id).drop(1).map { it.json.path("messages").last().path("content").asText() },
+        )
+        assertEquals("Engine: 5 of your 6 messages used: the next one is your report, without tool calls (they would not run).", "Engine: " + AgentLoop.countdownNote(5, 6))
         assertEquals("step limit: still calling tools after 8 requests, no report", rig.task(id).error)
         val conversation = assertNotNull(rig.traces.latestConversation(session))
         assertEquals("Task T-$id (storyteller)", conversation.label)
         assertEquals(Role.STORYTELLER, conversation.role)
         assertEquals(Role.STORYTELLER to Status.FAILED, rig.done().single().let { it.role to it.status })
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+    }
+
+    /**
+     * M6-FIX-14: a task for a « soirée creuse » saw none of the open ideas, proposed the title of P-31 and was refused. Its
+     * opening now shows every open idea in short, the latest first (the season too: its title is taken as well); an
+     * Analyst's task shows none, and only a storyteller's task counts its messages.
+     */
+    @Test
+    fun `a storyteller task sees every open idea in short, and an Analyst task neither them nor a countdown`() {
+        val rig = Rig()
+        val gaspard = PlayerRef(UUID.fromString("00000000-0000-0000-0000-00000000000a"), "Gaspard")
+        val firmin = PlayerRef(UUID.fromString("00000000-0000-0000-0000-00000000000b"), "Firmin")
+        fun idea(id: Long, kind: IdeaKind, title: String, players: List<PlayerRef>, status: IdeaStatus = IdeaStatus.OPEN) {
+            rig.memory.store.rows[Ref(RefKind.IDEA, id)] = Idea(
+                Ref(RefKind.IDEA, id), START, kind, title, "Un pitch qu'une commande ne lit pas.", "un soir", players, null, 3, 3, 3,
+                emptyList(), null, null, status, 0, null, 100_000, null, null, Source.STORYTELLER,
+            )
+        }
+        idea(27, IdeaKind.SEASON, "La saison des vantards", emptyList())
+        idea(28, IdeaKind.CHALLENGE, "Le Nether, trop facile ?", listOf(firmin, gaspard))
+        idea(29, IdeaKind.FAVOR, "Le joker oublié", listOf(gaspard), IdeaStatus.DROPPED)
+        idea(31, IdeaKind.TWIST, "Le procès du <Fer Suspect>", listOf(gaspard, firmin))
+        val brief = "Soirée creuse : Gaspard et Firmin s'ennuient. Trois idées pour eux deux."
+        val story = rig.submit(brief, Role.STORYTELLER)
+        val analysis = rig.submit()
+        enqueueFor(rig.session(story), sqlCall(), reply { text("1. P-32 …") })
+        enqueueFor(rig.session(analysis), sqlCall(), analystReport())
+
+        rig.await("both reports") { rig.done().size == 2 }
+
+        val opening = rig.requestsOf(story).first().json.path("messages")[0].path("content")[0].path("text").asText()
+        assertEquals(
+            "<task id=\"T-$story\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"none\"/>\n" +
+                "<ideas open=\"3\">\nOpen, the latest first (the Narrator already has them):\n" +
+                "- P-31 twist · Gaspard, Firmin · « Le procès du ‹Fer Suspect› »\n" +
+                "- P-28 challenge · Firmin, Gaspard · « Le Nether, trop facile ? »\n" +
+                "- P-27 season · everyone · « La saison des vantards »\n</ideas>",
+            opening,
+        )
+        assertTrue("pitch" !in opening, "no pitch: $opening")
+        assertEquals(
+            "Engine: 1 of your 6 messages used (a message counts once, whatever its tool calls): 5 left, the report included.",
+            rig.requestsOf(story)[1].json.path("messages").last().path("content").asText(),
+        )
+
+        val analyst = rig.requestsOf(analysis)
+        assertTrue(analyst.first().json.path("messages")[0].path("content")[0].path("text").asText().endsWith("players_online=\"none\"/>"))
+        assertEquals("user", analyst[1].json.path("messages").last().path("role").asText(), "no countdown for the Analyst")
         assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 

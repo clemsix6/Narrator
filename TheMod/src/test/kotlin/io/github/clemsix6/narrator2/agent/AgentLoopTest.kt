@@ -326,6 +326,37 @@ class AgentLoopTest {
         assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
+    /**
+     * M6-FIX-14: a storyteller's task read « six requests » as six tool calls, and gave up with half of them left. With a
+     * countdown, each request that answers tools run below the limit says the messages used and left; three tool calls in
+     * one reply count once. From the limit on, only the step limit's note speaks.
+     */
+    @Test
+    fun `a countdown turn tells after each reply how many messages are used and left, whatever its tool calls`() {
+        val loop = AgentLoop(services(), executor)
+        fake.enqueue(reply { toolUse("look"); toolUse("look"); toolUse("look") }, reply { toolUse("look") }, reply { toolUse("look") }, reply { text("Report.") })
+        val conversation = conversation()
+
+        val outcome = assertIs<TurnOutcome.Ended>(loop.run(conversation, Pending.text("<task>…</task>"), limits = TurnLimits(3, countdown = true)))
+
+        assertEquals(4, outcome.calls)
+        assertEquals(2, executor.batches.size, "the tools of replies 1 and 2 ran")
+        val notes = fake.requests.drop(1).map { request -> request.messages().last().let { it.path("role").asText() to it.path("content").asText() } }
+        assertEquals(
+            listOf(
+                "system" to "Engine: 1 of your 3 messages used (a message counts once, whatever its tool calls): 2 left, the report included.",
+                "system" to "Engine: 2 of your 3 messages used: the next one is your report, without tool calls (they would not run).",
+                "system" to "Engine: ${AgentLoop.STEP_LIMIT_NOTE}",
+            ),
+            notes,
+        )
+        assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
+
+        fake.enqueue(reply { toolUse("look") }, reply { text("Done.") })
+        loop.run(conversation(), Pending.text("Go."))
+        assertEquals("user", fake.requests.last().messages().last().path("role").asText(), "no countdown unless the turn asks for it")
+    }
+
     // --- S14: the gateway rejects system messages ---
 
     @Test

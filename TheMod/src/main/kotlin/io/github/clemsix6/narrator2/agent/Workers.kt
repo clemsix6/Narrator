@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.journal.IdKind
 import io.github.clemsix6.narrator2.llm.Conversation
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.memory.dream.ProgrammeInputs
 import io.github.clemsix6.narrator2.runtime.NarratorServices
 import io.github.clemsix6.narrator2.runtime.Phase
 import io.github.clemsix6.narrator2.tool.Caller
@@ -49,7 +50,8 @@ import java.util.UUID
  *   the common line while the other roles' tasks go past them.
  * - **The storyteller** (M6 §6.4) works only while the memory and the Journal run, where its ideas go; its conversation sees `inspire`
  *   (`ToolEnv.storytellerAvailable`), and it runs within [STORYTELLER_STEPS] requests at most (fewer when
- *   `workers.maxSteps` says so): three ideas and a report take three to five.
+ *   `workers.maxSteps` says so): three ideas and a report take three to five. Its opening shows its open ideas in short,
+ *   and each request that answers its tool calls counts the messages it has left (`TurnLimits.countdown`, M6-FIX-14).
  * - **In parallel, then in line.** At most `workers.maxConcurrent` tasks run at once, each in its own
  *   coroutine of `services.scope`; the others wait, first come first served, [MAX_QUEUED] at most (one
  *   more is refused). Settings are read when used.
@@ -243,7 +245,7 @@ class Workers(
             val caller = Caller(record.role, conversationId, turnId = null, taskId = task.id)
             val opening = Pending.text(opening(task))
             val outcome = withTimeoutOrNull(timeoutMs) {
-                agent.runTurn(conversation, opening, caller, TurnLimits(steps))
+                agent.runTurn(conversation, opening, caller, TurnLimits(steps, countdown = storyteller))
             }
             if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${duration(timeoutMs)}") else endingOf(outcome)
         } catch (e: CancellationException) {
@@ -254,12 +256,17 @@ class Workers(
         }
     }
 
-    /** The first message of a task: the brief, then when it is and who is online. */
+    /**
+     * The first message of a task: the brief, then when it is and who is online; a storyteller's, then its open ideas in
+     * short ([ProgrammeInputs.taskIdeas], from the memory's cache), so that a new one takes neither the title nor the
+     * substance of an open one (M6-FIX-14).
+     */
     private fun opening(task: Task): String {
         val zone = services.settings.get().config.journal.zone(clock.zone)
         val now = STAMP.withZone(zone).format(clock.instant())
         val online = services.players.online.joinToString(", ") { ModelText.attribute(it.ref.name) }.ifEmpty { "none" }
-        return "<task id=\"T-${task.id}\" from=\"director\">\n${task.record.brief}\n</task>\n<context now=\"$now\" players_online=\"$online\"/>"
+        val head = "<task id=\"T-${task.id}\" from=\"director\">\n${task.record.brief}\n</task>\n<context now=\"$now\" players_online=\"$online\"/>"
+        return if (task.record.role == Role.STORYTELLER) head + "\n" + ProgrammeInputs.taskIdeas(services.memory.openIdeas()) else head
     }
 
     /** What a turn's [outcome] makes of the task. */

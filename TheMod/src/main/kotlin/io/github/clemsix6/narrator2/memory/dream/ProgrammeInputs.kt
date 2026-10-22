@@ -63,6 +63,7 @@ import kotlin.random.Random
  *   register, with how players took each register ([StyleReport]);
  * - `<ideas>`: every open idea, then those closed since the last programme without their pitch, each part in its own
  *   room: each time one was dealt to the Director, and what followed within [FOLLOW_UP] (a lever of its kind, or nothing);
+ *   a storyteller's task reads the open ones too, in short ([taskIdeas]);
  * - `<arsenal>`: the modules the Director may deploy ([ArsenalLine], the briefing's line), or why there are none;
  * - `<season>`: the Chronicle's season in progress and the open idea of kind season;
  * - `<draws>`: three seeds of the deck ([Deck]), to shake the model's habits; recorded nowhere, dealt to nobody.
@@ -341,15 +342,14 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
     }
 
     /**
-     * `- P-41 challenge · 2d0h of play left · Bartok, Mimosa · « La course au pic » · n4 f4 e4 sports_commentary · dealt 2:
-     * …: ` and its pitch, cut to [OPEN_PITCH]: the pitch comes last, the first cut when the room is short.
+     * `- P-41 challenge · Bartok, Mimosa · « La course au pic » · 2d0h of play left · n4 f4 e4 sports_commentary · dealt 2:
+     * …: ` and its pitch, cut to [OPEN_PITCH]: its [head], then the rest; the pitch comes last, the first cut when the room
+     * is short.
      */
     private fun openLine(idea: Idea, read: Read, worldPlay: Long): String {
         val left = ToolText.duration((idea.expiresPlaySeconds - worldPlay).coerceAtLeast(0) * 1_000)
-        val who = if (idea.players.isEmpty()) "everyone" else ToolText.names(idea.players)
         val notes = "n${idea.novelty} f${idea.funScore} e${idea.fairness}" + (idea.register?.let { " ${it.id}" } ?: "")
-        return "- ${idea.ref} ${idea.kind.id} · $left of play left · $who · « ${ModelText.escape(idea.title)} » · $notes · ${dealt(idea, read)}: " +
-            ModelText.cut(ModelText.escape(idea.pitch), OPEN_PITCH)
+        return "- ${head(idea)} · $left of play left · $notes · ${dealt(idea, read)}: " + ModelText.cut(ModelText.escape(idea.pitch), OPEN_PITCH)
     }
 
     /** `- P-38 law « La loi des bottes » · dropped 10-01 22:12 (Mimosa ne perd plus ses bottes.) · never dealt`: what became of it, no pitch. */
@@ -457,6 +457,27 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
     companion object {
         /** The step of the programme in a dream. */
         const val STEP = 5
+
+        /**
+         * `P-41 challenge · Bartok, Mimosa · « La course au pic »`: an open idea in short (`everyone` for whoever is online),
+         * the head of its line in `<ideas>`.
+         */
+        fun head(idea: Idea): String {
+            val who = if (idea.players.isEmpty()) "everyone" else ToolText.names(idea.players)
+            return "${idea.ref} ${idea.kind.id} · $who · « ${ModelText.escape(idea.title)} »"
+        }
+
+        /**
+         * The [open] ideas as a storyteller's task reads them, after its brief (M6-FIX-14): `<ideas open="3">`, then the
+         * [head] of each, the latest first, as the programme's `<ideas>` lists them. No pitch nor notes: enough for a new
+         * idea to take neither the title nor the substance of an open one, which the Director already has. Twelve ideas
+         * stay open at most: about 1 000 characters.
+         */
+        fun taskIdeas(open: List<Idea>): String {
+            if (open.isEmpty()) return "<ideas open=\"0\">(none open)</ideas>"
+            val top = listOf("<ideas open=\"${open.size}\">", "Open, the latest first (the Narrator already has them):")
+            return (top + open.map { "- ${head(it)}" } + "</ideas>").joinToString("\n")
+        }
 
         /** A player active in the last days, for whom the programme writes. */
         const val ACTIVE_DAYS = 7L

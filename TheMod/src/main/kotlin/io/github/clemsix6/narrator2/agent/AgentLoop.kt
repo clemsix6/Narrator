@@ -36,8 +36,12 @@ import kotlinx.coroutines.isActive
  * when the reply to request [hardSteps] still calls tools, the turn ends with [TurnOutcome.StepLimit].
  * With `director.maxStepsPerTurn = 12`: request 13 carries the first refused results, and a reply that
  * still calls tools at request 14 stops the turn.
+ *
+ * With [countdown], each request that answers tool calls run below the limit carries an engine note with the count
+ * ([AgentLoop.countdownNote]): the messages used and left, a message counting once whatever its tool calls. A model told
+ * « six messages at most » cannot count requests it never sees, and counted its tool calls instead (M6-FIX-14).
  */
-data class TurnLimits(val maxSteps: Int, val hardSteps: Int = maxSteps + 2) {
+data class TurnLimits(val maxSteps: Int, val hardSteps: Int = maxSteps + 2, val countdown: Boolean = false) {
     init {
         require(maxSteps >= 1 && hardSteps >= maxSteps) { "need 1 <= maxSteps <= hardSteps, got $maxSteps and $hardSteps" }
     }
@@ -169,7 +173,7 @@ class AgentLoop(private val services: NarratorServices, private val executor: To
                                 notes = listOf(OperatorNote.engine(STEP_LIMIT_NOTE))
                             } else {
                                 results = runTools(uses, sent.llmCallId)
-                                notes = emptyList()
+                                notes = if (limits.countdown) listOf(OperatorNote.engine(countdownNote(calls, limits.maxSteps))) else emptyList()
                             }
                             // The reply to the next request runs its tool calls only below the step limit.
                             val extra = hooks.afterTools(canAct = calls + 1 < limits.maxSteps)
@@ -301,6 +305,16 @@ class AgentLoop(private val services: NarratorServices, private val executor: To
 
         /** Engine note sent with [STEP_LIMIT_RESULT]. */
         const val STEP_LIMIT_NOTE = "Turn step limit reached: your last tool calls were not executed. End your turn now, without calling any tool."
+
+        /**
+         * The engine note of a turn with [TurnLimits.countdown], once the reply to request [used] of [max] ran its tools
+         * ([used] < [max]): how many messages are left, or that the next one is the report, its tool calls refused.
+         */
+        fun countdownNote(used: Int, max: Int): String = if (used + 1 < max) {
+            "$used of your $max messages used (a message counts once, whatever its tool calls): ${max - used} left, the report included."
+        } else {
+            "$used of your $max messages used: the next one is your report, without tool calls (they would not run)."
+        }
 
         /** Engine note sent with a request again after an empty reply. */
         const val EMPTY_REPLY_NOTE = "Your previous reply was empty. Reply with a short text to end your turn, or call a tool."

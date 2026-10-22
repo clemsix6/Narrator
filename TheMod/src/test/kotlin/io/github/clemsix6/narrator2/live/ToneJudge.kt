@@ -48,7 +48,10 @@ enum class Fairness(val id: String) {
     TOO_SOFT("too_soft"),
 }
 
-/** Does the player know what happens to them, why and for how long (a punishment, a challenge, a law)? */
+/**
+ * Does the player know what happens to them, why and when it ends (a punishment, a challenge, a law)? A time, a duration
+ * or a number of rounds or steps tells the end, as `director.md` asks of a challenge (M6-FIX-14).
+ */
 enum class Legibility(val id: String) {
     YES("yes"),
     NO("no"),
@@ -328,9 +331,10 @@ class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget?
               (« Onze secondes. ONZE. » then « Douze secondes. DOUZE. »; « Le Narrateur n'est pas impressionné » again). A running
               gag that evolves, a recurring nickname or a player's name is not a repetition. With no previous line, false.
             - legible: for a line that announces a punishment, a challenge, a law or a duel: yes when the player can tell what
-              happens to them (or what to do), why, and for how long or until when; no otherwise. n_a for any other line. The acts
-              tell what the line announces: a law the acts just made is a new law, even when an older one was disabled; a
-              duration only the acts give, and the line leaves out, is not legible.
+              happens to them (or what to do), why, and when it ends; no otherwise. n_a for any other line. A time, a duration,
+              or a number of rounds or steps (« trois manches », « huit ordres ») each tells the end: one is enough, even when
+              the acts give another. The acts tell what the line announces: a law the acts just made is a new law, even when an
+              older one was disabled; a line that gives no end at all, when only the acts give one, is not legible.
 
             Judge each line independently: there is no quota of good or bad lines.
         """.trimIndent()
