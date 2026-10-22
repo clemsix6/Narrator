@@ -189,7 +189,7 @@ class StyleAssemblyGameTests {
         }
 
         private fun labels(dark: Double) =
-            """{"reason": "La cour juge en style de tribunal.", "register": "courtroom", "dark": $dark, "cruel": 0.0, "flat": 0.0, "out_of_character": 0.0, "repeats": 0.0, "crutches": []}"""
+            """{"reason": "La cour juge en style de tribunal.", "register": "courtroom", "dark": $dark, "cruel": 0.0, "flat": 0.0, "out_of_character": 0.0, "obscure": 0.0, "repeats": 0.0, "crutches": []}"""
 
         companion object {
             /** A summary of 100 characters or more: a shorter one is no summary, and asked again (M6-FIX-9). */

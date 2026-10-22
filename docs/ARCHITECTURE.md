@@ -246,7 +246,7 @@ Claude Opus est la **réflexion** du Narrateur ; un petit modèle, **Claude Haik
 | **Filtre des battements** | Le résumé des dernières minutes mérite-t-il une intervention, et quelle accroche ? | Pas d'appel à Opus pour un battement sans matière : moins de coût, moins d'interventions forcées |
 | **Signaux de personnalité** | Pour chaque message d'un joueur : politesse, vantardise, entraide, agressivité, humour (scores) | Agrégés dans le temps, ils deviennent des **preuves chiffrées** pour les traits de la fiche joueur |
 | **Réaction aux interventions** (à venir) | Après une intervention : le joueur a-t-il ri, joué le jeu, ignoré, été agacé ? | Nourrit l'historique des interactions (valence) et le bilan de ce qui marche |
-| **Relecture des répliques** (M6) | Chaque réplique du Directeur, après envoi : registre comique, sombre, cruelle, plate, hors personnage, répétitive, mots béquilles ; sa longueur (phrases, sauts de ligne) est mesurée par le code, sans appel | Si le ton dérive, ou si une réplique est trop longue, une note du moteur recadre le Directeur à son réveil suivant ; les registres et les béquilles nourrissent la veille du style, `inspire` et la revue du Rêveur ([design M6](design/M6.md) §3.3, §4.3). C'est le garde-fou qui manquait à la v1 |
+| **Relecture des répliques** (M6) | Chaque réplique du Directeur, après envoi : registre comique, sombre, cruelle, plate, hors personnage, obscure (M7-CLARITY), répétitive, mots béquilles ; sa longueur (phrases, sauts de ligne) et son jargon inventé (dossier, formulaire, crayon) sont mesurés par le code, sans appel | Si le ton dérive, ou si une réplique est trop longue, une note du moteur recadre le Directeur à son réveil suivant ; les registres et les béquilles nourrissent la veille du style, `inspire` et la revue du Rêveur ([design M6](design/M6.md) §3.3, §4.3). C'est le garde-fou qui manquait à la v1 |
 | **Réminiscences** (à venir) | Ce souvenir est-il un bon rappel pour cet événement ? | Filtre les candidats de la recherche locale avant de les attacher |
 
 Précautions :
@@ -533,13 +533,14 @@ Avec des credentials d'abonnement Claude (OAuth), CLIProxyAPI « déguise » cha
     "retryMaxDelayMs": 30000
   },
   "roles": {
-    "director":    { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 300 },
-    "analyst":     { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
-    "scout":       { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
-    "forger":      { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 },
-    "storyteller": { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
-    "chronicler":  { "model": "claude-opus-5-5", "effort": "low",    "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
-    "dreamer":     { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 }
+    "director":    { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 300 },
+    "analyst":     { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "scout":       { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "forger":      { "model": "claude-opus-5-5", "effort": "xhigh",  "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 },
+    "storyteller": { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "chronicler":  { "model": "claude-opus-5-5", "effort": "medium", "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 },
+    "dreamer":     { "model": "claude-opus-5-5", "effort": "xhigh",  "maxTokens": 64000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 1200 },
+    "armorer":     { "model": "claude-opus-5-5", "effort": "high",   "maxTokens": 32000, "readTimeoutSeconds": 90, "totalTimeoutSeconds": 600 }
   },
   "logging": { "transcripts": true, "levels": {} }
 }
