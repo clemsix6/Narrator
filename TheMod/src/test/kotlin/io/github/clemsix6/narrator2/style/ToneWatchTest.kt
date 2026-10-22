@@ -45,9 +45,9 @@ class ToneWatchTest {
     /** M7-CLARITY: the owner's players could not follow « crayon retiré du dossier » nor « se paie en taille de lapin ». */
     @Test
     fun `an obscure line is told at its threshold, after the graver drifts`() {
-        alone(labels(1, obscure = 0.69))
+        alone(labels(1, obscure = 0.59))
         assertEquals(emptyList(), notes, "under the threshold")
-        alone(labels(2, obscure = 0.7, text = "Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin."))
+        alone(labels(2, obscure = 0.6, text = "Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin."))
         assertEquals(
             listOf(
                 StyleNoteKind.OBSCURE to "your line « Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin. » is hard to " +

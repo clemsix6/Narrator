@@ -3,7 +3,7 @@ package io.github.clemsix6.narrator2.live
 import io.github.clemsix6.narrator2.config.GatewayConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.Prompts
-import io.github.clemsix6.narrator2.config.ReflexConfig
+import io.github.clemsix6.narrator2.config.StyleConfig
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.NarratorChannel
@@ -45,8 +45,8 @@ import kotlin.test.assertTrue
  * threshold on a real line, unless the fixture calls it unsure); « céleste » found as a crutch in 8 of the 11 real lines
  * that hold it. The report (with each flaw's scores, to set `ToneWatch`'s thresholds) goes to
  * `build/reports/liveTest/line-review/`. The prompt is the bundled one, or the one in the folder named by
- * `NARRATOR2_LINE_REVIEW_PROMPT_DIR`; the effort is the reflexes' default, or `NARRATOR2_LINE_REVIEW_EFFORT` (M7-CLARITY:
- * its latency against low's). The key is never printed.
+ * `NARRATOR2_LINE_REVIEW_PROMPT_DIR`; the effort is `style.lineReviewEffort`'s default, or `NARRATOR2_LINE_REVIEW_EFFORT`
+ * (M7-CLARITY: its latency against low's). The key is never printed.
  */
 @Tag("live")
 class LiveLineReviewEvalTest {
@@ -69,9 +69,9 @@ class LiveLineReviewEvalTest {
         val key = LiveGateway.key()
         val promptDir = System.getenv("NARRATOR2_LINE_REVIEW_PROMPT_DIR")?.takeIf { it.isNotBlank() }?.let { Path.of(it) }
         val prompts = promptDir?.let { Prompts.load(it) } ?: Prompts.bundled()
-        val effort = System.getenv("NARRATOR2_LINE_REVIEW_EFFORT")?.takeIf { it.isNotBlank() } ?: ReflexConfig().effort
+        val effort = System.getenv("NARRATOR2_LINE_REVIEW_EFFORT")?.takeIf { it.isNotBlank() } ?: StyleConfig().lineReviewEffort
         val label = "${promptDir?.fileName?.toString() ?: "bundled"}-$effort"
-        val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL), reflex = ReflexConfig(effort = effort))
+        val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL), style = StyleConfig(lineReviewEffort = effort))
         val root = Json.parseToJsonElement(dataset()).jsonObject
         val frequent = root.getValue("frequent_words").jsonArray.map { it.jsonPrimitive.content }
         val evenings = root.getValue("evenings").jsonObject.mapValues { (_, lines) -> lines.jsonArray.map { it.jsonPrimitive.content } }

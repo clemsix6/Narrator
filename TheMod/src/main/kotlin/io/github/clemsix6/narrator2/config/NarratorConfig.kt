@@ -387,6 +387,11 @@ data class ReflexConfig(
 data class StyleConfig(
     /** The reflexes' model reviews each line of the Director once said; it needs the reflexes (`reflex.enabled`, the LLMGW key). */
     val lineReview: Boolean = true,
+    /**
+     * The review's own effort, low | medium | high; the chat labels keep `reflex.effort`. At medium it labels better than at
+     * low, as fast (M7-CLARITY: p50 1.86 s against 1.79 s on the 62 lines of the evaluation).
+     */
+    val lineReviewEffort: String = "medium",
     /** A drift of tone the review finds becomes a note of the engine for the Director. */
     val toneNotes: Boolean = true,
     /** `say` refuses, once a turn, a line that opens like too many of the latest; without, the `Style:` line still names them. */
@@ -633,6 +638,9 @@ object ConfigStore {
         if (reflex.model.isBlank()) add("reflex.model must not be empty")
         if (reflex.effort !in NarratorConfig.REFLEX_EFFORTS) add("reflex.effort must be one of ${NarratorConfig.REFLEX_EFFORTS.joinToString()}")
         range("reflex.timeoutMs", reflex.timeoutMs, 500, 10_000)
+        if (config.style.lineReviewEffort !in NarratorConfig.REFLEX_EFFORTS) {
+            add("style.lineReviewEffort must be one of ${NarratorConfig.REFLEX_EFFORTS.joinToString()}")
+        }
 
         val relics = config.relics
         listOf("relicChance" to relics.relicChance, "consumableChance" to relics.consumableChance, "bookChance" to relics.bookChance).forEach { (name, value) ->

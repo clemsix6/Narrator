@@ -50,7 +50,7 @@ class ConfigValidationTest {
         assertEquals(ForgeConfig(true, "auto", 4, 40, 20), defaults.forge, "M5 §13")
         assertEquals(ForgeApproval.AUTO, defaults.forge.approvalMode)
         assertEquals(ReflexConfig(true, "claude-haiku-5-5", "low", false, 3_000), defaults.reflex)
-        assertEquals(StyleConfig(lineReview = true, toneNotes = true, refuseRestingOpeners = true), defaults.style, "M6 §12.5")
+        assertEquals(StyleConfig(lineReview = true, lineReviewEffort = "medium", toneNotes = true, refuseRestingOpeners = true), defaults.style, "M6 §12.5, M7-CLARITY")
         assertEquals(DashboardConfig(enabled = false, port = 8770), defaults.dashboard, "M6 §12.5: optional, off by default (M6-FIX-2)")
         assertEquals(
             mapOf(
@@ -154,6 +154,7 @@ class ConfigValidationTest {
             defaults.copy(reflex = ReflexConfig(effort = "xhigh")) to "reflex.effort must be one of low, medium, high",
             defaults.copy(reflex = ReflexConfig(timeoutMs = 499)) to "reflex.timeoutMs must be between 500 and 10000",
             defaults.copy(reflex = ReflexConfig(timeoutMs = 10_001)) to "reflex.timeoutMs must be between 500 and 10000",
+            defaults.copy(style = StyleConfig(lineReviewEffort = "xhigh")) to "style.lineReviewEffort must be one of low, medium, high",
             defaults.copy(dashboard = DashboardConfig(port = 1_023)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",
             defaults.copy(dashboard = DashboardConfig(port = 65_536)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",
             defaults.copy(dashboard = DashboardConfig(port = -1)) to "dashboard.port must be 0 (any free port) or between 1024 and 65535",

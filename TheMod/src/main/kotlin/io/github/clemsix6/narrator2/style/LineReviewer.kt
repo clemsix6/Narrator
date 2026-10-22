@@ -31,8 +31,8 @@ import java.util.concurrent.TimeUnit
  * Only the Director's lines are reviewed ([reviewed]): a turn's, said with `say` in [Tics.OPENER_MIN_CHARS] characters or
  * more ([Tics.opens], the openers' rule); neither an operator's (`/narrator say`), nor a rule's or a module's, nor a
  * title, a line above the hotbar or a book (recorded with their kind first, `[title] …`), nor a short aside. Each review
- * is one call of the reflexes' client (`settings.reflex`, read at each line), with its `llm_calls` row (purpose
- * `line_review`).
+ * is one call of the reflexes' client (`settings.reflex`, read at each line) at its own effort (`style.lineReviewEffort`),
+ * with its `llm_calls` row (purpose `line_review`).
  *
  * Bounded: [MAX_PER_HOUR] reviews in any hour at most. A failure costs nothing but the labels: a timeout, an error, an
  * invalid answer, an open circuit or `style.lineReview = false` give no labels, and the line goes unlabeled. The
@@ -87,9 +87,10 @@ class LineReviewer(private val services: NarratorServices) {
         val candidates = services.style.crutchCandidates().take(LineReviewLabels.CANDIDATES)
         val recent = services.style.recentLines(envelope.id, LineReviewLabels.RECENT_LINES)
         val request = LineReviewLabels.request(line.text, line.recipients?.map { it.name }, recent, candidates)
+        val effort = settings.config.style.lineReviewEffort
         val startedAt = services.clock.instant()
         val result = try {
-            client.label(settings.prompts.get(LineReviewLabels.PROMPT), request, LineReviewLabels.SCHEMA)
+            client.label(settings.prompts.get(LineReviewLabels.PROMPT), request, LineReviewLabels.SCHEMA, effort)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -105,18 +106,18 @@ class LineReviewer(private val services: NarratorServices) {
                     call.latencyMs.toInt(), candidates,
                 )
                 if (labels == null) {
-                    record(startedAt, client.effort, call.copy(error = INVALID))
+                    record(startedAt, effort, call.copy(error = INVALID))
                     log.warn("line review: line #${envelope.id}: unexpected labels; the line stays unlabeled")
                     failed()
                 } else {
-                    record(startedAt, client.effort, call)
+                    record(startedAt, effort, call)
                     failuresInARow = 0
                     labeled(labels)
                 }
                 labels
             }
             is ReflexResult.Failed -> {
-                record(startedAt, client.effort, result.call)
+                record(startedAt, effort, result.call)
                 log.warn("line review: line #${envelope.id} failed after ${result.call.latencyMs} ms (${result.call.error}); the line stays unlabeled")
                 failed()
                 null

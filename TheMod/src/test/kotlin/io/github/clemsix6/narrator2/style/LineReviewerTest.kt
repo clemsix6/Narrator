@@ -88,7 +88,7 @@ class LineReviewerTest {
                 val body = request.json
                 assertEquals("claude-haiku-5-5", body.path("model").asText())
                 assertEquals("disabled", body.path("thinking").path("type").asText())
-                assertEquals("low", body.path("output_config").path("effort").asText())
+                assertEquals("medium", body.path("output_config").path("effort").asText(), "style.lineReviewEffort, not reflex.effort (low)")
                 val schema = body.path("output_config").path("format").path("schema")
                 assertEquals(
                     listOf("reason", "register", "dark", "cruel", "flat", "out_of_character", "obscure", "repeats", "crutches"),
@@ -124,7 +124,7 @@ class LineReviewerTest {
                 assertEquals(ClaudeReflexes.ROLE, row.role)
                 assertEquals(LlmCallRecord.Provider.ANTHROPIC, row.provider)
                 assertEquals("claude-haiku-5-5", row.model)
-                assertEquals("low", row.effort)
+                assertEquals("medium", row.effort)
                 assertNull(row.conversationId)
                 assertEquals(listOf(15, 2_900, 0, 120), listOf(row.inputTokens, row.cacheReadTokens, row.cacheWriteTokens, row.outputTokens))
                 assertNull(row.error)
