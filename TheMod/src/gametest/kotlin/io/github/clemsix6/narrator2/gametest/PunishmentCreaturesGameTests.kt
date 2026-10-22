@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.mechanics.punish.Primitives
 import io.github.clemsix6.narrator2.mechanics.punish.PunishmentCatalog
+import io.github.clemsix6.narrator2.relics.RelicsService
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.testing.testSettings
@@ -175,6 +176,45 @@ class PunishmentCreaturesGameTests {
         helper.assertTrue(zombie.isRemoved, "the zombie is sent away")
     }
 
+    /**
+     * A champion (M7-FIX) is a creature of `spawn` like that zombie, kept past `spawn`'s 10 minutes, whose fatal blow
+     * kills while the Narrator's quota of deaths lasts: Pistache dies, keeps his inventory, the death counts, and the
+     * champion goes with him. Beyond the quota, Bartok's fatal blow is a rescue where he stands, as for any creature.
+     */
+    @GameTest
+    fun aChampionKillsWithinTheQuotaOfDeaths(helper: GameTestHelper) = rig(helper) { rig ->
+        rig.floor(7)
+        val pistache = rig.player(BlockPos(2, 1, 2))
+        val bartok = rig.player(BlockPos(5, 1, 5))
+        val guards = helper.narrator().guards
+        val cap = guards.caps().narratorKillsPerHour
+        helper.assertTrue(cap > 0, "the server's chaos lets the Narrator kill: $cap a played hour")
+        GuardStates.write(bartok.live, GuardStates.read(bartok.live).copy(narratorKills = List(cap) { 0L }))
+
+        val first = rig.champion(pistache, act = 1)
+        val until = System.currentTimeMillis() + 30 * 60_000L
+        guards.mobs.extend(first, until)
+        helper.assertEquals(until, first.getAttached(NarratorMob.TYPE)?.expiresAt, "kept half an hour")
+        helper.assertTrue(guards.mobs.activeOn(pistache.live.uuid).any { it.until == until }, "and known so: ${guards.mobs.activeOn(pistache.live.uuid)}")
+        pistache.live.health = 1f
+        pistache.live.damageCooldownTime = 0
+        first.doHurtTarget(helper.level, pistache.live)
+        helper.assertTrue(pistache.live.isDeadOrDying, "the champion's fatal blow kills")
+        val dead = GuardStates.read(pistache.live)
+        helper.assertTrue(dead.protectedDeath && dead.narratorKills.size == 1, "inventory kept, the death counted: $dead")
+        helper.assertTrue(first.isRemoved, "the champion goes with its player's death")
+
+        val second = rig.champion(bartok, act = 2)
+        val where = bartok.live.position()
+        bartok.live.health = 1f
+        bartok.live.damageCooldownTime = 0
+        second.doHurtTarget(helper.level, bartok.live)
+        helper.assertFalse(bartok.live.isDeadOrDying, "beyond the quota, the fatal blow is refused")
+        helper.assertEquals(DeathGuard.RESCUE_HEALTH, bartok.live.health, "rescued, with three hearts")
+        helper.assertTrue(bartok.live.position().distanceTo(where) < 0.01, "where he stood: ${bartok.live.position()} (was $where)")
+        helper.assertTrue(second.isRemoved, "the champion is sent away")
+    }
+
     /** The guests go at the end of the punishment, at their player's death and at his departure. */
     @GameTest
     fun theGuestsGoWithThePunishmentAndWithTheirPlayer(helper: GameTestHelper) = rig(helper) { rig ->
@@ -238,6 +278,13 @@ class PunishmentCreaturesGameTests {
 
         /** The Director's own `spawn` ([args]) in its turn [act], on the server thread. */
         fun spawn(args: SpawnArgs, act: Long) = runBlocking { spawnTool.run(ToolContext(services, turn(act), clock, spawnTool.timeoutMs), args) }
+
+        /** A zombie of `spawn` sent at [player] in the Director's turn [act], made a champion as the armorer's service makes one (its tag). */
+        fun champion(player: TestPlayer, act: Long): Mob {
+            val result = spawn(SpawnArgs(entity = "zombie", near = player.name, distance = 2, target = true, lifetimeMinutes = 1), act)
+            helper.assertEquals(ToolStatus.OK, result.status, result.text)
+            return creaturesOf(player).single().also { it.addTag(RelicsService.TAG) }
+        }
 
         private fun turn(act: Long) = Caller(Role.DIRECTOR, "creatures-gametest", turnId = act, taskId = null)
 

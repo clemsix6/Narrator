@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.guard
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.forge.sdk.ModuleCreatures
+import io.github.clemsix6.narrator2.relics.RelicsService
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.effect.MobEffectCategory
 import net.minecraft.world.effect.MobEffectInstance
@@ -73,9 +74,18 @@ object CreatureShield {
 
     /**
      * The mark of the punishment's creature whose blow [source] is (the attacker, or what it shot); null for any
-     * other blow. A fatal one is a rescue, never a death ([GuardsImpl.allowDeath]).
+     * other blow. A fatal one is a rescue, never a death, but a champion's ([isChampions], [GuardsImpl.allowDeath]).
      */
     fun punishmentOf(source: DamageSource): NarratorMob? = boundTo(source.entity) ?: boundTo(source.directEntity)
+
+    /**
+     * Whether [source] is a champion's blow (M7-FIX: the champion, or what it shot): its fatal blow kills while the
+     * Narrator's quota of deaths lasts ([GuardsImpl.allowDeath]).
+     */
+    fun isChampions(source: DamageSource): Boolean = champion(source.entity) || champion(source.directEntity)
+
+    private fun champion(entity: Entity?): Boolean =
+        entity != null && (RelicsService.TAG in entity.entityTags() || (entity is TraceableEntity && entity.owner?.let { RelicsService.TAG in it.entityTags() } == true))
 
     /** Whether [player] is out of the Narrator's creatures' reach now. */
     @JvmStatic

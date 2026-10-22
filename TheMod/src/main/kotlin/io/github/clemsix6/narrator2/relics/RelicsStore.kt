@@ -74,15 +74,16 @@ class RelicsStore(private val journal: Journal) {
         }
     }
 
-    /** Records a champion that just appeared, and returns its id. */
-    suspend fun addChampion(row: ChampionRow, conversationId: String): Long = journal.write(TIMEOUT_MS) { connection ->
-        val id = nextId(connection, "champions")
+    /**
+     * Records a champion that just appeared, under its own [ChampionRow.id] (the service's counter, which its later updates
+     * use): never `max(id) + 1`, which two champions recorded out of order, or an id left unused, would shift.
+     */
+    suspend fun addChampion(row: ChampionRow, conversationId: String) = journal.write(TIMEOUT_MS) { connection ->
         connection.update(
             "INSERT INTO champions (id, entity_uuid, player_uuid, player, mob, name, spec, spawned_at, expires_at, status, conversation_id) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
-            id, row.entity, row.player, row.playerName, row.mob, row.name, row.spec, row.spawnedAt, row.expiresAt, conversationId,
+            row.id, row.entity, row.player, row.playerName, row.mob, row.name, row.spec, row.spawnedAt, row.expiresAt, conversationId,
         )
-        id
     }
 
     /** A champion's creature changed (a conversion: a zombie drowned): its new [entity]. */

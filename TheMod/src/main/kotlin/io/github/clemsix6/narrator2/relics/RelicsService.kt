@@ -86,8 +86,10 @@ class LiveChampion(val row: ChampionRow, val draft: ChampionDraft) {
  * - **Champions.** `summon_champion` (or `/narrator champion`) checks the caps (one per player, `relics.maxChampions` in
  *   all, those being designed counted) and the guards ([Verdict], category `creatures`), then hands the design to the
  *   armorer ([Armorer]). Its `create_champion` summons it through the `spawn` tool, with its guards, caps and marks
- *   (a creature of the Narrator's: it vanishes when due, its blows never kill, it goes for its player alone), then
- *   dresses it (gear, lasting effects, glow, the tag [TAG]) and keeps its sheet (`champions`).
+ *   (a creature of the Narrator's: it goes for its player alone, and goes when they die or leave), then dresses it
+ *   (gear, lasting effects, glow, the tag [TAG]), keeps it `relics.championMinutes` (past the 10 minutes of `spawn`) and
+ *   keeps its sheet (`champions`). Unlike the Narrator's other creatures, its fatal blow kills, within the Narrator's
+ *   quota of deaths (M7-FIX, `GuardsImpl.allowDeath`).
  * - **Its death** ([onDeath]): killed by a player, its gear drops whole and the armorer forges that player's relic, given
  *   at once (at their feet when the inventory is full); killed otherwise, nothing but the creature's own loot. Without
  *   Claude, or when the armorer fails, its gear alone drops. Each end is a `CHAMPION` line to the Director.
@@ -275,7 +277,7 @@ class RelicsService(private val services: NarratorServices) {
         }
         val minutes = config.championMinutes
         val name = Speech.fit(Speech.clean(draft.name), NAME_SHOWN_MAX)
-        val spawned = runner.invoke(SpawnTool(), ctx.caller, spawnArgs(job, draft, name, minutes))
+        val spawned = runner.invoke(SpawnTool(), ctx.caller, spawnArgs(job, draft, name, minOf(minutes, SPAWN_MAX_MINUTES)))
         if (spawned.status != ToolStatus.OK) refuse(spawned)
         val now = clock.instant()
         val row = ChampionRow(
@@ -329,11 +331,13 @@ class RelicsService(private val services: NarratorServices) {
     /**
      * The champion among what `spawn` brought ([spawned]'s creatures: the one of its kind, not a jockey's mount), dressed:
      * its gear (dropped by this service, whole, when a player kills it: the game drops none), its lasting effects, its
-     * glow and tag; then kept. Its place, or null when it is gone already. Server thread.
+     * glow and tag; then kept until the end of [row], with its mount or riders. Its place, or null when it is gone
+     * already. Server thread.
      */
     private fun dress(server: MinecraftServer, spawned: ToolResult, draft: ChampionDraft, gear: List<Pair<EquipmentSlot, ItemStack>>, row: ChampionRow): Pair<LiveChampion, String>? {
         val mobs = spawned.entities.mapNotNull { uuid -> server.allLevels.firstNotNullOfOrNull { it.getEntity(uuid) } as? Mob }
         val mob = mobs.firstOrNull { EntityType.getKey(it.type).path == draft.mob.id } ?: mobs.firstOrNull() ?: return null
+        mobs.forEach { services.guards.mobs.extend(it, row.expiresAt.toEpochMilli()) }
         for ((slot, stack) in gear) {
             mob.setItemSlot(slot, stack)
             mob.setDropChance(slot, 0f)
@@ -573,11 +577,14 @@ class RelicsService(private val services: NarratorServices) {
 
     /**
      * A loot table was drawn (`MODIFY_DROPS`): a structure chest's (`chests/…`, the bonus chest left out) takes, with each
-     * kind's chance, the oldest object of its reserve; a chest's nested tables draw once. Server thread, quick.
+     * kind's chance, the oldest object of its reserve; a chest's nested tables draw once. Only a draw for a player (the
+     * loot's `this_entity`: a chest they open, a vault's reward) takes anything: an active vault also draws its table
+     * every second to pick the item it shows, then throws the draw away (M7-FIX). Server thread, quick.
      */
     fun onChestLoot(table: Holder<LootTable>, context: LootContext, drops: MutableList<ItemStack>) {
         val id = table.unwrapKey().orElse(null)?.identifier() ?: return
         if (id.namespace != "minecraft" || !id.path.startsWith(CHESTS) || id.path == BONUS_CHEST) return
+        val opener = context.getOptional(LootContextParams.THIS_ENTITY) as? ServerPlayer ?: return
         if (stock.values.all { it.isEmpty() } || !available) return
         if (lastContext?.get() === context) return
         lastContext = WeakReference(context)
@@ -597,8 +604,7 @@ class RelicsService(private val services: NarratorServices) {
             found += row to true
         }
         if (found.isEmpty()) return
-        val opener = context.getOptional(LootContextParams.THIS_ENTITY) as? ServerPlayer
-        val player = opener?.ref()
+        val player = opener.ref()
         val table = id.path
         val now = clock.instant()
         services.scope.launch { taken(found, player, table, now) }
@@ -785,6 +791,9 @@ class RelicsService(private val services: NarratorServices) {
 
         /** How far from their player a champion appears, in blocks (`spawn`'s `distance`). */
         private const val SPAWN_DISTANCE = 10
+
+        /** The longest lifetime `spawn` takes (`lifetime_minutes`); a champion is kept longer afterwards ([dress]). */
+        private const val SPAWN_MAX_MINUTES = 10
 
         /** Longest name shown above a champion (`spawn`'s `name`). */
         private const val NAME_SHOWN_MAX = 32

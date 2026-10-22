@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.relics
 import io.github.clemsix6.narrator2.tool.ToolResult
 import io.github.clemsix6.narrator2.tool.ToolText.number
 import io.github.clemsix6.narrator2.tool.action.EnchantmentSpec
+import io.github.clemsix6.narrator2.tool.action.GiftLimiter
 import io.github.clemsix6.narrator2.tool.action.ItemSpec
 import io.github.clemsix6.narrator2.tool.action.ItemSpecs
 import io.github.clemsix6.narrator2.tool.refuse
@@ -23,6 +24,7 @@ import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.EquipmentSlotGroup
 import net.minecraft.world.entity.ai.attributes.Attribute
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
+import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.Rarity
@@ -57,7 +59,7 @@ object RelicItems {
         invalidIf(RelicRules.relic(draft))
         val spec = resolve(server, draft.item, draft.name, draft.lore, draft.enchantments, draft.unbreakable)
         val item = spec.item
-        if (BASE_TAGS.none { item.`is`(it) } && item.value() !in BASE_ITEMS) {
+        if (!isBase(item)) {
             refuse(ToolResult.invalid("${short(item)} is not a relic base: a weapon, a tool, a piece of armor, a shield, a bow, a crossbow, a trident or a mace"))
         }
         val stack = ItemSpecs.build(spec, null)
@@ -111,10 +113,15 @@ object RelicItems {
 
     /**
      * One piece of a champion's gear for [slot]: an item that may be given (`ItemSpecs`), never netherite, armor in its own
-     * slot, enchantments that fit it. Marked `champion_gear` when it is described (a name, enchantments).
+     * slot, enchantments that fit it. Marked `champion_gear` when it is described (a name, enchantments). Its killer gets it:
+     * nothing precious but a relic base (M7-FIX: no elytra, totem, enchanted golden apple, beacon…), which `give_item`
+     * rations ([ItemSpecs.preciousness]).
      */
     fun gear(server: MinecraftServer, piece: GearPiece, slot: EquipmentSlot): ItemStack {
         val spec = resolve(server, piece.item, piece.name, null, piece.enchantments, false)
+        if (ItemSpecs.preciousness(spec.item) >= GiftLimiter.PRECIOUS_POINTS_PER_HOUR && !isBase(spec.item)) {
+            refuse(ToolResult.invalid("gear.${slot.serializedName}: ${short(spec.item)} is too precious to drop from a champion; give it a weapon, a tool, armor or a shield"))
+        }
         val stack = ItemSpecs.build(spec, null)
         val worn = stack.get(DataComponents.EQUIPPABLE)?.slot()
         if (slot in ARMOR_SLOTS && worn != slot) {
@@ -161,6 +168,9 @@ object RelicItems {
     /** The effect called `minecraft:<path>`. */
     fun effect(path: String): Holder<MobEffect> =
         BuiltInRegistries.MOB_EFFECT.get(Identifier.withDefaultNamespace(path)).orElseThrow { IllegalStateException("no effect minecraft:$path") }
+
+    /** Whether [item] may be a relic: a weapon, a tool, a piece of armor, a shield, a bow, a crossbow, a trident or a mace. */
+    private fun isBase(item: Holder<Item>): Boolean = BASE_TAGS.any { item.`is`(it) } || item.value() in BASE_ITEMS
 
     /** Refuses with every problem of a draft, joined, when there is any. */
     private fun invalidIf(problems: List<String>) {

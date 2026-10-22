@@ -117,6 +117,9 @@ class DeathGuard(
         return true
     }
 
+    /** How many more deaths the Narrator may cause [player] now (the quota of [allowDeath]). */
+    fun quotaLeft(player: ServerPlayer): Int = quotaLeft(states.of(player).narratorKills, playTime(player), caps().narratorKillsPerHour)
+
     /**
      * Beyond the quota, [player] does not die of [source]: they are taken out of the danger that was
      * killing them ([save]). Decision `death_guard rescued` with the quota.
