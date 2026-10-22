@@ -355,7 +355,7 @@ Le Directeur voit ces réglages dans l'attribut `difficulty=` de `<world/>`. Dé
 Une relique est toujours un bon objet. Le code exige au moins un bonus et au plus un malus léger, sans malédiction ni rien qui touche aux déplacements (`scale`, gravité).
 
 **L'équilibre (M7-BALANCE).** Le code garantit ce qui suit, quel que soit le socle de difficulté.
-- **Le champion est taillé pour son joueur.** Il tient au moins 20 secondes face à la meilleure arme que porte le joueur, et au plus une minute (400 PV au maximum). Ses coups nus lui prennent au moins un cœur et demi à travers son armure.
+- **Le champion est taillé pour son joueur.** Il tient au moins 20 secondes face à la meilleure arme que porte le joueur, et au plus une minute (400 PV au maximum). À travers son armure et la difficulté du monde, chaque coup lui prend entre un cœur et demi (coup nu) et deux cœurs et demi (arme comprise) : le combat reste gagnable.
 - **Il ne reste jamais inoffensif.** Il reprend son joueur pour cible chaque seconde. Il s'en va dès que le Narrateur épargne ce joueur : sauvé d'une mort, protégé, en grâce ou en duel.
 - **La relique suit le palier du joueur** : bois, pierre, fer, diamant ou netherite. Le palier vient de son meilleur outil ou de sa meilleure arme, ou de son armure moins un cran. La base de la relique est au plus un cran au-dessus de ce palier, et ses enchantements sont bornés en nombre et en niveau. Après un combat expédié (moins de 10 s depuis le premier coup, ou moins de 2 cœurs pris), elle descend d'un cran.
 - **Les coffres** ne donnent une relique qu'à un ouvreur de son palier, à un cran près. Les réserves sont préparées palier par palier.

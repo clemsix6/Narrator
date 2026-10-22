@@ -73,23 +73,32 @@ Une fois le champion habillé, son joueur en ligne (`dress` → `Threat.size`) :
     poings est ramené à 240 PV au plus.
   - Le modificateur s'appelle `narrator2:champion/threat_health` (`ADD_MULTIPLIED_TOTAL`, positif ou négatif), et le
     champion repart avec sa vie pleine.
-- **Coup nu** : avant son arme, et une fois multiplié par le socle (`mobDamage`), son coup doit prendre au moins **3 PV**
-  à travers l'armure et la robustesse du joueur. La formule est celle de `CombatRules`, enchantements de protection mis à
-  part, et la difficulté du monde n'est pas comptée (Hard ajoute ×1,5). Le coup nu monte par demi-points et plafonne à
-  **10**.
-  - Le modificateur s'appelle `narrator2:champion/threat_damage` (`ADD_VALUE`, avant le facteur de l'Armurier). Il
-    s'ajoute donc au coup nu sans multiplier l'arme.
+- **Les coups.** Ils sont comptés une fois multipliés par le socle (`mobDamage`) et par la difficulté du monde (Hard
+  ×1,5, comme `Player.hurtServer`), puis réduits par l'armure, la robustesse et les points de Protection du joueur. Les
+  formules sont celles de `CombatRules` (`getDamageAfterAbsorb`, puis `getDamageAfterMagicAbsorb`).
+  - **Plancher** : le coup nu, avant l'arme, prend au moins **3 PV**. Il monte par demi-points et plafonne à **10**.
+  - **Plafond** : le coup entier, arme comprise, prend au plus **5 PV**. Il descend par demi-points.
+  - Pourquoi ce plafond : le soir du bug, un seul coup du husk (épée en fer, Hard) a pris 15,6 des 18 PV de Thawyn. Et
+    dans le premier essai réel, une épée en pierre sur un joueur nu prenait 8,75 PV, soit deux coups pour le tuer face à
+    un champion qui tient 20 s : un tel combat n'est pas gagnable.
+  - Un seul modificateur, `narrator2:champion/threat_damage` (`ADD_VALUE`), porte les deux. Il est ajouté avant le
+    facteur de l'Armurier, qui reste le multiplicateur, et il peut être négatif. L'arme compte pour sa valeur
+    `attribute_modifiers`. Ses enchantements (Tranchant, Aura de feu) ne comptent pas.
   - Il ne sert à rien pour les archers (squelette, pillard), dont les flèches ne lisent pas `attack_damage`.
 
-| Joueur | Meilleure arme | PV plancher | Coup nu |
+| Joueur (socle ×1,25, difficulté Normal) | Meilleure arme | PV plancher | Coup nu au moins |
 |---|---|---|---|
 | Thawyn (casque et jambières en fer) | hache en bois, 5,6/s | 112 | 3,5 |
 | nu | poings, 4/s | 80 | 2,5 |
 | épée en fer | 9,6/s | 192 | |
-| diamant complet, épée Tranchant V | 16/s | 320 | 8 |
+| diamant complet sans Protection, épée Tranchant V | 16/s | 320 | 8 |
 
-Le journal de log `[Relics] champion for X sized: health 45 → 112 against 5.6 damage a second (wooden_axe); bare blow
-3 → 3 against armor 0` le dit à chaque fois. Les PV finaux figurent aussi dans la ligne `CHAMPION` envoyée au Directeur.
+Le coup du champion de Thawyn, recalculé en Hard : 8,8 × 1,875 donnait 15,6 PV à travers 7 d'armure. Le plafond le
+ramène à 2,8 × 1,875, soit 4,3 PV.
+
+Le log le dit à chaque fois, par exemple : `[Relics] champion for X sized: health 45 → 112 against 5.6 damage a second
+(wooden_axe); blow 7 → 4 with its weapon, taking 5 through armor 0 and protection 0 (factor 1.25)`. Les PV finaux
+figurent aussi dans la ligne `CHAMPION` envoyée au Directeur.
 
 ### Les paliers et les plafonds des reliques (`RelicSpecs.kt` : `Tier`, `RelicCaps`, `RelicRules.withinCaps`)
 
@@ -152,10 +161,11 @@ tier="…">`.
 
 ### Les textes
 
-- `armorer.md` (6 904 caractères pour un budget de 7 000) :
+- `armorer.md` (6 911 caractères pour un budget de 7 000) :
   - la récompense est « à la mesure du joueur et du combat », avec les paliers, `<caps>` à respecter du premier coup,
     et « qui se bat à la hache en bois ne gagne pas une hache en diamant. Une relique modeste peut être la plus drôle » ;
-  - le dosage « diamant ×3, fer ×2 » est remplacé par le plancher du code ;
+  - le dosage « diamant ×3, fer ×2 » est remplacé par ce que garantit le code : une vingtaine de secondes de combat, et
+    « des coups qui comptent sans l'achever d'un seul » ;
   - un mort-vivant sans casque brûle de jour (sauf le husk) ;
   - incassable seulement quand `<caps>` le permet.
 - Descriptions des outils : `summon_champion` (taillé pour le joueur, part s'il est sauvé d'une mort, relique à la
@@ -170,13 +180,93 @@ tier="…">`.
   s'en sert, et un futur outil d'opérateur pourrait aussi.
 - **Non couvert** :
   - le coup des archers (voir plus haut) ;
-  - la difficulté du monde (Hard multiplie par 1,5 les coups des mobs : le plancher est donc prudent en Hard) ;
+  - les enchantements de l'arme du champion : Tranchant ajoute un peu au plafond, et Aura de feu ajoute sa brûlure
+    (c'est elle qui a fini Thawyn) ;
+  - la difficulté Easy (le jeu y divise les coups, donc le plancher y est plus doux) ;
   - un `/narrator reload` qui change le socle pendant un combat : le rapport des PV se garde, et le plafond n'est pas
-    recalculé.
-- Le champion du soir aurait quand même pu tuer Thawyn d'un coup et demi. Sur Hard, une épée en fer avec Aura de feu est
-  rude pour un joueur à 7 d'armure. Le plancher ne borne pas les coups par le haut : seul le schéma de l'Armurier le
-  fait (dégâts ×1,5 au plus).
+    recalculé ;
+  - l'équipement que le joueur change après l'apparition : le dimensionnement se fait une fois, à l'habillage.
 
 ## 4. Vérifications
 
-(à compléter)
+- **Tests unitaires** `RelicBalanceTest` (10 tests) :
+  - le palier, dont le cas Thawyn (pierre), et un matériau pour chaque outil, arme ou pièce d'armure du registre ;
+  - les plafonds par marche, avec le texte de `describe` ;
+  - la hache de Thawyn refusée avec chaque plafond qu'elle dépasse, et son vrai palier (diamant) ;
+  - le champ `tier` du schéma ;
+  - les cibles par palier ;
+  - les PV : plancher, plafond d'une minute, 400 PV au plus ;
+  - le coup nu, l'armure et la Protection selon les chiffres de `CombatRules` ;
+  - le plafond du coup entier (l'essai réel 8,75 → 5, le soir de Thawyn 15,6 → 4,3) ;
+  - le combat trop facile.
+- **GameTest** `ChampionGameTests.aChampionGoesForItsPlayerUntilItEnds`, avec un joueur simulé tenant une hache en bois
+  et un husk ×1,5 tenant une épée en pierre :
+  - le champion vise son joueur dès qu'il apparaît ;
+  - il a 112 PV et sa vie pleine ;
+  - le joueur reçoit ses coups, 5 PV au plus chacun ;
+  - privé de cible, il la reprend ;
+  - le joueur protégé (sauvetage sur place), il part.
+- **Build complet** (`.\gradlew.bat build --continue`) après fusion de `main` (`5a9708a`, M7-CLARITY) : **2 331 tests
+  unitaires, 0 échec, 0 ignoré**, et « **All 408 required tests passed** » pour les GameTests, en 9 min 49 s.
+- **Essais réels** (`.\gradlew.bat liveGameTest "-Pnarrator2.live.filter=narrator2-gametest:live_relics_*"`, GameTest
+  `LiveRelicsGameTests` adapté). Le joueur simulé n'a qu'une hache en bois. Le tunnel écoutait déjà sur 8088 (PID 2672,
+  pas le mien) : je ne l'ai ni ouvert ni fermé. Je n'ai lancé aucun `runServer`. Le rapport et les transcriptions sont
+  archivés dans `.research/m7-live/m7-balance/`.
+  - **Premier essai** (avant le plafond du coup) :
+    - réassort d'une relique par palier ;
+    - champion husk à 54 → 112 PV ;
+    - premier coup : le joueur tombe à 11,25 PV (épée en pierre, 8,75 par coup) ;
+    - 9 coups de hache à pleine charge en 12 s : 63 dégâts, le champion reste à 53/112 ;
+    - relique : hache en pierre Tranchant II, Efficacité II, +1 dégât ;
+    - coffre : la relique du palier bois ;
+    - coût **0,586 $**.
+
+    J'ai alors ajouté le plafond du coup.
+  - **Second essai** (code final) :
+    - champion « Gaston, Allumeur Syndiqué », husk ×1,8 avec épée en bois Aura de feu I : 54 → **112 PV**, coup 6,6 →
+      **3,6** (4,5 PV pris) ;
+    - premier coup : le joueur tombe à 15,5 ;
+    - 9 coups de hache en 12 s : 63 dégâts, champion à **51/112**, toujours debout ;
+    - combat de 11 s depuis le premier coup, 31,5 dégâts infligés au joueur, donc pas trop facile, et plafonds du palier
+      bois ;
+    - relique : « La Hache Briseuse de Grève », **hache en pierre Tranchant II, Efficacité II**, +20 % de vitesse de
+      minage, chance −1 ;
+    - coffre ouvert par ce joueur : la relique du palier bois (« Pelle du Premier Trou Pour Dormir », pelle en pierre
+      Efficacité II, Solidité I). Les reliques des autres paliers restent en réserve ;
+    - coût **0,523 $**.
+  - **Coût total : ≈ 1,11 $**. Un seul refus de l'Armurier dans les deux essais, et il n'avait rien à voir avec les
+    plafonds (Butin sur une masse).
+- **La clé** n'apparaît nulle part : une recherche exacte, faite sans l'afficher, ne la trouve ni dans `TheMod/src`, ni
+  dans `docs/`, ni dans l'archive.
+
+## 5. Exemples réels
+
+**Réserve préparée par palier** (second essai) :
+
+| Palier | Relique |
+|---|---|
+| bois | « Pelle du Premier Trou Pour Dormir » : pelle en pierre Efficacité II, Solidité I |
+| pierre | « Pioche du Diamant Qui Était du Lapis » : pioche en fer Fortune II, Efficacité I |
+| fer | « Bouclier Anti-Flèche-Dans-Le-Dos » : Solidité III, Raccommodage, armure +2 |
+| diamant | « Bottes du Saut de Foi Mal Calculé » : bottes en diamant Chute amortie IV, Protection IV, incassables |
+| netherite | « Masse de la Chute Enfin Utile » : Densité V, Rafale de vent III, Aura de feu II, incassable |
+
+**Relique d'un joueur en bois** (premier essai), « L'Éteignoir Repenti », hache en pierre Tranchant II, Efficacité II :
+« Taillée dans la pierre du tombeau de Lumignon. / Elle a éteint des torches, puis le veilleur. Belle carrière. / Le
+Narrateur conseille de les rallumer. Il n'y croit pas. »
+
+## 6. À trancher
+
+1. **Les seuils** sont des constantes du code (`Threat`, `RelicRules`), pas des réglages :
+   - 20 s et 60 s de combat, 400 PV au plus ;
+   - un coup entre 3 et 5 PV ;
+   - un combat trop facile en dessous de 10 s ou de 4 PV ;
+   - les plafonds par marche.
+
+   On peut les passer dans la section `relics` si le propriétaire veut les régler.
+2. **Le serveur de jeu** a encore `"championMinutes": 10` si son fichier date de M7-RELICS (voir M7-FIX §3). Ses
+   5 reliques en réserve seront classées au prochain démarrage, puis le réassort complétera les paliers vides (≈ 0,1 à
+   0,2 $).
+3. **La règle du « passant » des modules** a sauvé Thawyn d'une brûlure causée par le champion, parce que des poules
+   d'un module étaient à côté. Désormais, le champion part. Faut-il plutôt attribuer ces morts au champion (et donc au
+   quota) ? Je n'y ai pas touché.
