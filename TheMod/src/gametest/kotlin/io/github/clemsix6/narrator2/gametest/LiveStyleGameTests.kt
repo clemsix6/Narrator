@@ -46,6 +46,7 @@ import io.github.clemsix6.narrator2.memory.enumOfId
 import io.github.clemsix6.narrator2.memory.stats.StatsRefresher
 import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.runtime.RestartReport
+import io.github.clemsix6.narrator2.style.LineLength
 import io.github.clemsix6.narrator2.style.StyleReport
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.trace.LineLabelsRecord
@@ -987,7 +988,9 @@ private class StyleAcceptance(private val run: StyleRun) {
         val playable = ideas.filter { it.kind != "season" }
         val kinds = playable.map { it.kind }.toSet()
         val context = conversation?.let { run.firstUserText(it) }.orEmpty()
-        val judged = judgeIdeas(context, ideas, T4_BUDGET - (spend?.dollars ?: 0.0) + 0.3)
+        // The ideas' judge grades T4 only: an evening alone (`QUIET`) needs the programme, not its grades (M6-19's budget).
+        val graded = wanted("T4")
+        val judged = if (graded) judgeIdeas(context, ideas, T4_BUDGET - (spend?.dollars ?: 0.0) + 0.3) else emptyMap()
         val good = playable.count { judged[it.ref]?.feasibleAndFair == true }
         sections.append("- dream run $runId: ${status?.getOrNull(0)} · ${status?.getOrNull(1)} ${status?.getOrNull(2)}\n- decision: $decision\n")
         sections.append("- the storyteller's conversation `$conversation`: ${spend ?: "-"}; requests ${calls.size}: ${calls.joinToString { "${it[0]} ms, out ${it[1]}, ${it[2]}" }}\n")
@@ -996,7 +999,11 @@ private class StyleAcceptance(private val run: StyleRun) {
         ideasTable(ideas, judged)
         sections.append("\n<details><summary>The storyteller's first message (${context.length} characters)</summary>\n\n```\n$context\n```\n</details>\n\n")
         verdict("T4", "programme: ideas written", "5 to 8 (season apart)", "${playable.size}${if (ideas.size > playable.size) " + season" else ""}", playable.size in 5..8)
-        verdict("T4", "programme: feasible and fair (judge)", "≥ 80 %", "$good/${playable.size} (${pct(good, playable.size)})", playable.isNotEmpty() && good * 5 >= playable.size * 4)
+        if (graded) {
+            verdict("T4", "programme: feasible and fair (judge)", "≥ 80 %", "$good/${playable.size} (${pct(good, playable.size)})", playable.isNotEmpty() && good * 5 >= playable.size * 4)
+        } else {
+            verdict("T4", "programme: feasible and fair (judge)", "≥ 80 %", "not judged: T4 not asked", null)
+        }
         verdict("T4", "programme: kinds of levers", "≥ 3", "${kinds.size} (${kinds.sorted().joinToString()})", kinds.size >= 3)
         verdict("T4", "programme: cost and requests", "reported", "${spend?.calls ?: 0} requests, ${dollars(spend?.dollars ?: 0.0)}, output ${spend?.output ?: 0} tokens", null)
         run.note("T4 cost: ${dollars(run.spendOf("id > ${mark.llmCall}").dollars)}")
@@ -1022,6 +1029,17 @@ private class StyleAcceptance(private val run: StyleRun) {
             if (commission(commission)) passed++
         }
         verdict("T5", "on demand: three ranked, feasible ideas", "3/3", "$passed/${COMMISSIONS.size}", passed == COMMISSIONS.size)
+        // The repeats refused (M6-FIX-11: the title of an open idea), and any T5 idea that still took a programme idea's title.
+        val refused = run.rows("SELECT coalesce(result, '') FROM tool_calls WHERE role = 'storyteller' AND tool = 'propose_idea' AND status <> 'ok' AND id > ${mark.toolCall}").map { it[0].toString() }
+        val programme = ideas("source = 'storyteller' AND run_id IS NOT NULL AND status = 'open'")
+        val taken = ideas("source = 'storyteller' AND run_id IS NULL AND created_at >= '${Instant.ofEpochMilli(mark.millis)}'::TIMESTAMPTZ")
+            .filter { idea -> programme.any { titleKey(it.title) == titleKey(idea.title) } }
+        verdict(
+            "T5", "titles of an open idea taken again", "0 (M6-FIX-11)",
+            "${taken.size} ${taken.map { "${it.ref} « ${it.title} »" }}; propose_idea refused ${refused.size}: ${refused.count { "same title as" in it }} same title, " +
+                "${refused.count { "too close to" in it }} too close, ${refused.count { "same title as" !in it && "too close to" !in it }} other${refused.joinToString("") { " · ${it.take(160)}" }}",
+            taken.isEmpty(),
+        )
         run.note("T5 cost: ${dollars(run.spendOf("id > ${mark.llmCall}").dollars)}")
     }
 
@@ -1128,6 +1146,8 @@ private class StyleAcceptance(private val run: StyleRun) {
             // They leave first: departures after the close would open a chapter of their own, for nobody (M6-18, run 2).
             for (player in run.players.toList()) runCatching { run.leave(player) }
             runCatching { run.closeChapter() }
+            // The nap the close starts belongs to the evening's Chronicler cost (M6-19): it is measured once done.
+            if (run.live && !poll(180_000, 3_000) { chronicleRunning() == 0L }) run.note("(a Chronicler job still running after 180 s)")
             watch.cancel()
         }
         val end = Instant.now()
@@ -1135,6 +1155,10 @@ private class StyleAcceptance(private val run: StyleRun) {
         runCatching { measures(id, mark, start, end) }.onFailure { run.note("**the evening's measures failed**: ${it.javaClass.simpleName}: ${it.message}") }
         run.note("$id cost: ${dollars(run.spendOf("id > ${mark.llmCall}").dollars)}")
     }
+
+    /** The Chronicler's batches and naps still running. */
+    private suspend fun chronicleRunning(): Long =
+        run.rows("SELECT count(*) FROM memory_runs WHERE kind IN ('batch', 'nap') AND status = 'running'").single()[0] as Long
 
     /** Past the evening's budget: the tasks are cancelled and the Director put to sleep; the script stops at its next step. */
     private suspend fun watchdog(mark: StyleMarks) {
@@ -1405,6 +1429,11 @@ private class StyleAcceptance(private val run: StyleRun) {
         var opensOnArrival = false
         var first = false
 
+        /** The chapter's first message, as sent (the briefing and what woke it): what opened the chapter (M6-FIX-11). */
+        var opening: String? = null
+        val opensEmpty: Boolean get() = opening?.contains("No player online.") == true
+        val opensOnDeparture: Boolean get() = opening?.let { "] LEAVE " in it && "] JOIN " !in it } == true
+
         /** The ideas (`P-…`) its thinking or its calls cite: the programme the Director read in its briefing, its heartbeat or `inspire`. */
         val cited = mutableSetOf<Long>()
     }
@@ -1461,6 +1490,27 @@ private class StyleAcceptance(private val run: StyleRun) {
         // Openings on an arrival.
         val openings = turns.values.filter { it.first && it.opensOnArrival }
         verdict(id, "chapter openings on an arrival left mute", "few (M6-FIX-9, D9)", "${openings.count { !it.spoke }}/${openings.size}", if (openings.isEmpty()) null else openings.count { !it.spoke } * 2 <= openings.size)
+        // No chapter opened by a departure nor on an empty server (M6-FIX-11).
+        val opened = turns.values.filter { it.first }
+        val wrongOpenings = opened.filter { it.opensEmpty || it.opensOnDeparture }
+        verdict(
+            id, "chapters opened by a departure or on an empty server", "0 (M6-FIX-11)",
+            "${wrongOpenings.size} of ${opened.size} opened (${opened.joinToString { "${it.conversation} by ${it.trigger}${if (it.opensOnArrival) ", an arrival" else ""}${if (it.opensEmpty) ", **nobody online**" else ""}${if (it.opensOnDeparture) ", **a departure**" else ""}" }})",
+            wrongOpenings.isEmpty(),
+        )
+
+        // Long lines (more than three sentences, or a line break) and the notes `long` the Director got (M6-FIX-11).
+        val said = calls.filter { it.ok && it.tool == "say" }.mapNotNull { it.text("text") }
+        val long = said.filter { LineLength.of(it).long }
+        val longNotes = run.rows(
+            "SELECT strftime(ts, '%H:%M:%S'), coalesce(reason, '') FROM engine_decisions WHERE kind = 'style' AND decision = 'tone_noted' AND subject = 'long' AND id > ${mark.decision} ORDER BY id",
+        )
+        verdict(
+            id, "long lines, and the notes `long` sent to the Director", "reported (M6-FIX-11)",
+            "${long.size} of ${said.size} `say` lines long (${long.joinToString { LineLength.of(it).describe() }.ifEmpty { "none" }}); ${longNotes.size} tone_noted long" +
+                longNotes.joinToString("") { " · `${it[0]}` ${it[1].toString().take(160)}" },
+            null,
+        )
 
         // remember: intentions never said.
         val remembers = calls.filter { it.tool == "remember" }
@@ -1537,13 +1587,22 @@ private class StyleAcceptance(private val run: StyleRun) {
             val judged = ToneJudge(run.runtime.settings.get().config.gateway.baseUrl, key, budget).use { it.grade(lines) }
             val grid = GridSummary.of(judged.grades.values)
             grid.missed().let { missed -> verdict(id, "the grid of §4.2 (tone judge)", "dark 0, cruel 0, voice ≥ 95 %, repeats ≤ 15 %, funny ≥ 1.5, legible ≥ 90 %, fair ≥ 85 %", grid.line(), missed.isEmpty()) }
+            // The titles apart (M6-FIX-13: the spoken lines and the titles are not funny alike).
+            val titles = spoken.indices.filter { spoken[it].tool == "show_title" }.map { lines[it].id }.toSet()
+            val withoutTitles = judged.grades.filterKeys { it !in titles }.values
+            verdict(
+                id, "the grid without the titles", "reported (M6-FIX-13)",
+                "${titles.size} titles left out: ${if (withoutTitles.isEmpty()) "no line" else GridSummary.of(withoutTitles).line()}" +
+                    if (titles.isEmpty()) "" else "; the titles' funny ${judged.grades.filterKeys { it in titles }.values.joinToString { it.funny.toString() }}",
+                null,
+            )
             val confirmed = flagged.filter { line -> lines.any { it.text == line.text && judged.grades[it.id]?.let { g -> g.dark || g.cruel || !g.voice } == true } }
             verdict(id, "tone flags of the line review (dark, cruel, out of character ≥ 0.7) confirmed by the judge", "0 confirmed", "${flagged.size} flagged, ${confirmed.size} confirmed", confirmed.isEmpty())
             sections.append("- tone judge: ${judged.calls.size} requests, ${dollars(judged.dollars)}${judged.problems.takeIf { it.isNotEmpty() }?.let { " · problems: ${it.joinToString("; ")}" }.orEmpty()}\n")
-            sections.append("\n### Every line of the evening, with its grade\n\n| # | turn | situation | acts | grade | reason | line |\n|---|---|---|---|---|---|---|\n")
+            sections.append("\n### Every line of the evening, with its grade\n\n| # | turn | tool | situation | acts | grade | reason | line |\n|---|---|---|---|---|---|---|---|\n")
             lines.forEachIndexed { i, line ->
                 val grade = judged.grades[line.id]
-                sections.append("| ${line.id} | ${spoken[i].turn.cell()} | ${line.context.take(140).cell()} | ${line.acts.joinToString(" / ").take(200).cell()} | ${grade?.summary() ?: "not graded"} | ${grade?.reason.orEmpty().cell()} | ${line.text.cell()} |\n")
+                sections.append("| ${line.id} | ${spoken[i].turn.cell()} | ${spoken[i].tool} | ${line.context.take(140).cell()} | ${line.acts.joinToString(" / ").take(200).cell()} | ${grade?.summary() ?: "not graded"} | ${grade?.reason.orEmpty().cell()} | ${line.text.cell()} |\n")
             }
             sections.append("\n")
         }
@@ -1559,6 +1618,22 @@ private class StyleAcceptance(private val run: StyleRun) {
                 "highest ms/s ${moduleTimes.entries.joinToString { "${it.key} ${num(it.value)}" }.ifEmpty { "-" }}",
             null,
         )
+
+        // What the evening cost, the Chronicler apart (M6-FIX-12: one conversation across its jobs).
+        val evening = run.spendOf("id > ${mark.llmCall}")
+        val chronicler = run.spendOf("role = 'chronicler' AND id > ${mark.llmCall}")
+        val chronicleConversations = run.rows("SELECT DISTINCT conversation_id FROM llm_calls WHERE role = 'chronicler' AND id > ${mark.llmCall}").map { it[0].toString() }
+        val jobs = run.rows(
+            "SELECT run_id, kind, trigger, status, coalesce(array_to_string(conversations, ','), ''), writes, rejected FROM memory_runs " +
+                "WHERE kind IN ('batch', 'nap') AND started_at >= '${start}'::TIMESTAMPTZ ORDER BY run_id",
+        )
+        verdict(
+            id, "the Chronicler's cost", "reported (M6-FIX-12)",
+            "${chronicleConversations.size} conversation(s) ${chronicleConversations}, $chronicler (${pct(chronicler.dollars / evening.dollars.coerceAtLeast(1e-9))} of the evening); " +
+                "jobs: ${jobs.joinToString { "run ${it[0]} ${it[1]} (${it[2]}) ${it[3]}, ${it[5]} writes, ${it[6]} refused, in ${it[4]}" }.ifEmpty { "none" }}",
+            null,
+        )
+        verdict(id, "the evening's cost", "reported", "$evening in ${num(minutes)} min: ${dollars(evening.dollars / hours.coerceAtLeast(0.01))} an hour", null)
 
         // The rest, for a reading.
         sections.append("\n### The Narrator's lines (as the players read them)\n\n")
@@ -1628,8 +1703,12 @@ private class StyleAcceptance(private val run: StyleRun) {
                         lastText = null
                         lastUsedTools = false
                     }
-                    "sent" -> turn?.takeIf { it.first && !it.opensOnArrival }?.let { first ->
+                    "sent" -> turn?.takeIf { it.first }?.let { first ->
                         val content = data["content"]
+                        if (first.opening == null && content is JsonArray) {
+                            first.opening = content.joinToString("\n") { ((it as? JsonObject)?.get("text") as? JsonPrimitive)?.contentOrNull.orEmpty() }
+                        }
+                        if (first.opensOnArrival) return@let
                         if (content is JsonArray && content.any { "] JOIN " in ((it as? JsonObject)?.get("text") as? JsonPrimitive)?.contentOrNull.orEmpty() }) first.opensOnArrival = true
                     }
                     "response" -> turn?.let { current ->
@@ -1681,6 +1760,10 @@ private class StyleAcceptance(private val run: StyleRun) {
 }
 
 private fun String.cell() = replace("|", "/").replace("\n", " ")
+
+/** A title as the repeat rule compares it (`memory/MemoryRows.titleKey`): no accents, no case, no punctuation. */
+private fun titleKey(title: String): String = java.text.Normalizer.normalize(title, java.text.Normalizer.Form.NFD).replace(Regex("""\p{M}+"""), "")
+    .lowercase(Locale.ROOT).replace("œ", "oe").replace("æ", "ae").replace(Regex("""[^\p{L}\p{N}]+"""), " ").trim()
 
 // ── The players ─────────────────────────────────────────────────────────────────────────────────────
 
