@@ -16,7 +16,6 @@ import io.github.clemsix6.narrator2.guard.Peril
 import io.github.clemsix6.narrator2.guard.PlayerPacing
 import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.SpawnPolicy
-import io.github.clemsix6.narrator2.guard.TargetingPolicy
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.mechanics.PunishmentId
 import io.github.clemsix6.narrator2.tool.Caller
@@ -165,6 +164,6 @@ class FakeGuards(
     }
 
     override fun pacing(players: List<UUID>, now: Long): List<PlayerPacing> = players.map { uuid ->
-        pacingOf[uuid] ?: PlayerPacing(uuid, 0, TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR, emptyMap(), null, emptyList())
+        pacingOf[uuid] ?: PlayerPacing(uuid, 0, caps().punishmentsPerHour, emptyMap(), null, emptyList())
     }
 }

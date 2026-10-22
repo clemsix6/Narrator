@@ -162,12 +162,13 @@ class ForgeServiceTest {
     @Test
     fun `the acts are checked dry by the real tools at chaos 3`() = runBlocking<Unit> {
         val (forge, _) = forge()
-        val harsh = forge.test(BEACON_NAME, BEACON.replace("ctx.acts().say(\"Le Narrateur allume une balise.\");", "ctx.acts().punish(player, \"tiny\", 5, \"a bougé\");"))
+        val harsh = forge.test(BEACON_NAME, BEACON.replace("ctx.acts().say(\"Le Narrateur allume une balise.\");", "ctx.acts().effect(player, \"slowness\", 30, 4);"))
 
         assertFalse(harsh.ok, harsh.text)
         assertTrue("(1 refused by the dry checks)" in harsh.text, harsh.text)
         assertTrue(
-            "refused act \"punish Bartok tiny 5\": Invalid arguments: at chaos 3 a punishment has a severity of at most 4 (asked 5)" in harsh.text,
+            "refused act \"effect Bartok slowness 30s level 4\": Invalid arguments: slowness is harmful: at chaos 3 it lasts at most 600 s " +
+                "and goes up to level 3 (asked 30 s, level 4)" in harsh.text,
             harsh.text,
         )
     }

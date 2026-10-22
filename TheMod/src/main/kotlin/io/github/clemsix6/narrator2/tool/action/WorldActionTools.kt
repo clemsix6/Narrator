@@ -203,7 +203,7 @@ data class SpawnArgs(
     @MaxLen(64)
     val entity: String,
     @Doc("How many creatures.")
-    @Range(1.0, 12.0)
+    @Range(1.0, 20.0)
     val count: Int = 1,
     @Doc("Name of the online player they appear around.")
     @MaxLen(16)

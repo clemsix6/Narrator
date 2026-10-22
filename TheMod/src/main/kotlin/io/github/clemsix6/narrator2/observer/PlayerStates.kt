@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
  * @property underground no sky light and well below sea level (`SamplerRules.isUnderground`).
  * @property vehicle entity type of the vehicle or mount, if any.
  * @property lastDeathAt last death, if any: this session's, or at the join the one saved with the player
- *   (`GuardState.lastDeathAt`, kept 5 minutes), so that a reconnection does not hide a recent death.
+ *   (`GuardState.lastDeathAt`, kept a minute), so that a reconnection does not hide a recent death.
  * @property lastMoveAt last time the player moved (2 blocks or more) or acted.
  * @property idle no action and no move for 5 minutes (`IdleChanged`).
  */

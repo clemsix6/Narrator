@@ -67,7 +67,7 @@ data class PunishArgs(
  *    trap, a top to put them on, something to shuffle, the creatures allowed and room for them), so that a
  *    punishment that cannot happen opens no episode; then the episode itself, `Guards.hostile` with the
  *    punishment's category until its end, as the act's one `punish` of the player (a refusal comes back as it is:
- *    protected, chaos 0, grace, a duel, no piling on, already punished or already punished by this act, fair share,
+ *    protected, chaos 0, grace, a duel, no piling on, already punished by this act, fair share,
  *    the category resting); then the death guard for its perils; then the primitive;
  * 3. the steps, in order, through the real tools: their own hostile checks see the act's episode and pass, each
  *    strikes its own category. A step that fails is said; the others stay. When nothing at all was done, the
@@ -83,8 +83,8 @@ class PunishTool : MechanicsTool<PunishArgs>(
         "nothing lost), guests (named zombies in pumpkins; spawn dresses them up) and slime_rain (creatures after that player alone, who never kill), skyward, " +
         "tree_top, smite, cage (a glass cage) and web (cobwebs): " +
         "traps of a few seconds, set in thin air only, taken away by themselves. Refused like any punishment: protected, " +
-        "recently dead, already punished, too many this hour, or the same kind of punishment too recently. The reason goes " +
-        "into their history.",
+        "recently dead, already punished by this turn, too many this hour, or the same kind of punishment too recently; " +
+        "punishments of different turns stack. The reason goes into their history.",
     args = PunishArgs.serializer(),
     effect = ToolEffect.WORLD,
     timeoutMs = 10_000,

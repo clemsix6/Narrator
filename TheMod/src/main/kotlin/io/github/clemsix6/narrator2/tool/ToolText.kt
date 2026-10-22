@@ -110,7 +110,7 @@ fun ToolContext.online(name: String): PlayerRef = online(listOf(name)).single()
 
 /**
  * A hostile action against [player] until [until] (epoch milliseconds): the guards check it (protection,
- * chaos 0, no piling on, one punishment at a time, fairness; from M4 the grace and the rest of [category])
+ * chaos 0, no piling on, one `punish` per act, fairness; from M4 the grace and the rest of [category])
  * and open or extend the act's punishment. [category]: the kind of punishment (M4 §6.1), deduced by the tool.
  * Refuses with the verdict. Server thread.
  */

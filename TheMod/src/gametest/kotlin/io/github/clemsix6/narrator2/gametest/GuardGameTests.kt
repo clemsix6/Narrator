@@ -127,7 +127,7 @@ class GuardGameTests {
         helper.assertValueEqual(DeathGuard.RESCUE_FOOD, player.foodData.foodLevel, "fed: starving, they would die again")
         helper.assertValueEqual(5, count(player, Items.DIAMOND), "the inventory is untouched")
         helper.assertFalse(DeathGuard.keepsInventory(player), "no mark")
-        helper.assertValueEqual(listOf(PLAY_TIME - 1_000), GuardStates.read(player).narratorKills, "nothing is counted")
+        helper.assertValueEqual(spentKills(guards), GuardStates.read(player).narratorKills, "nothing is counted")
         helper.assertValueEqual(armed, GuardStates.read(player).let { it.armedUntil to it.perils }, "a rescue arms nothing, not even for the end of the levitation")
 
         // An hour of play later, the quota is back.
@@ -159,7 +159,7 @@ class GuardGameTests {
         helper.assertTrue(isAt(player, home), "rescued again: ${player.position()}")
         helper.assertValueEqual(DeathGuard.RESCUE_HEALTH, player.health, "with some health")
         helper.assertFalse(DeathGuard.keepsInventory(player), "no mark")
-        helper.assertValueEqual(listOf(PLAY_TIME - 1_000), GuardStates.read(player).narratorKills, "nothing is counted")
+        helper.assertValueEqual(spentKills(guards), GuardStates.read(player).narratorKills, "nothing is counted")
         helper.assertValueEqual(2, GuardStates.read(player).rescues.size, "two rescues")
         helper.assertValueEqual(5, count(player, Items.DIAMOND), "the inventory is untouched")
     }
@@ -838,10 +838,13 @@ class GuardGameTests {
             player.stats.setValue(player, Stats.CUSTOM.get(Stats.PLAY_TIME), ticks.toInt())
         }
 
-        /** Beyond the quota at chaos 3 (one death per played hour): the Narrator killed [player] 1 000 ticks of play ago. */
+        /** Beyond the quota (two deaths per played hour at chaos 3): the Narrator killed [player] as often as it may, 1 000 ticks of play ago. */
         fun spendQuota(guards: GuardsImpl, player: ServerPlayer) {
-            guards.states.update(player) { it.copy(narratorKills = listOf(PLAY_TIME - 1_000)) }
+            guards.states.update(player) { it.copy(narratorKills = spentKills(guards)) }
         }
+
+        /** The Narrator's kills [spendQuota] records. */
+        fun spentKills(guards: GuardsImpl): List<Long> = List(guards.caps().narratorKillsPerHour) { PLAY_TIME - 1_000 }
 
         /**
          * Lays a stone floor under the test and makes [pos], relative to the test, [player]'s respawn point:

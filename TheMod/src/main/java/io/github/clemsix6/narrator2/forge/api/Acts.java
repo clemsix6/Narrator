@@ -8,7 +8,7 @@ package io.github.clemsix6.narrator2.forge.api;
  *
  * <ul>
  *   <li>The acts of one call of the module are one act of the engine: the guards see them as one turn of the
- *       Director (a player already punished by an earlier act, one who died a few minutes ago, a protected player,
+ *       Director (one who died a minute ago, a protected player, too many punishments of one player this hour,
  *       the same kind of punishment too soon, chaos 0: each refused). {@link Limits#MAX_ACTS_PER_CALL} acts per call,
  *       {@link Limits#MAX_ACTS_PER_MINUTE} a minute; beyond, the outcome is {@code denied}
  *       ({@code DENIED (module_acts): …}) and nothing is done.</li>

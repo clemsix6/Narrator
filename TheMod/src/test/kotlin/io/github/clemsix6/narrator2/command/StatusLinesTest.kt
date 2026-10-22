@@ -61,7 +61,7 @@ class StatusLinesTest {
         assertEquals("Tasks: none running", lines[6])
         assertEquals("Journal: unavailable (unit test) · 0 lost", lines[7])
         assertEquals("Reflexes: heuristic (no LLMGW key in the environment variable NARRATOR_LLMGW_KEY)", lines[8])
-        assertEquals("Guards: chaos 3 · creatures 0 of 16 · protected online: nobody", lines[9])
+        assertEquals("Guards: chaos 3 · creatures 0 of 24 · protected online: nobody", lines[9])
         assertTrue(lines.any { it.startsWith("  director: claude-opus-5-5 · effort high") }, lines.toString())
         assertEquals("Mechanics: on · 0 challenges · 0 rules · 0 trap blocks pending", lines[11], "the engine of the tests (FakeMechanics), no trap set")
         assertEquals("Forge: on · 0 modules running", lines[12], "the Forge of the tests (FakeForge), no module")
@@ -138,7 +138,7 @@ class StatusLinesTest {
         assertEquals("Chapter: #3 · context 61k tokens · operator channel user_tag", lines[5])
         assertEquals("Tasks: T-13 analyst running 12 s, T-14 analyst queued", lines[6])
         assertEquals("Reflexes: heuristic (reflex.enabled is false)", lines[8])
-        assertEquals("Guards: chaos 4 · creatures 0 of 24 · protected online: Mimosa", lines[9])
+        assertEquals("Guards: chaos 4 · creatures 0 of 32 · protected online: Mimosa", lines[9])
     }
 
     @Test

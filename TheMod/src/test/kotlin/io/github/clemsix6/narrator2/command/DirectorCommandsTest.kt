@@ -74,10 +74,13 @@ class DirectorCommandsTest {
         val three = DirectorCommands.chaosLines(3).map { it.string }
         assertEquals("[Narrator] chaos 3 of 5", three[0])
         assertEquals(
-            "Harmful effects: up to 300 s, level 2 · creatures: 6 per action, 16 alive · explosions: power 3 · lightning: 3 hearts",
+            "Harmful effects: up to 600 s, level 3 · creatures: 10 per action, 24 alive · explosions: power 4 · lightning: 4 hearts",
             three[1],
         )
-        assertEquals("Launch: strength 2 · teleport: 1000 blocks · confiscation: 32 items · deaths caused: 1 per played hour", three[2])
+        assertEquals(
+            "Launch: strength 2.5 · teleport: 3000 blocks · confiscation: 64 items · deaths caused: 2 per played hour · punishments: 8 per player an hour",
+            three[2],
+        )
         assertTrue(DirectorCommands.chaosLines(1)[1].string.endsWith("lightning: 1 heart"))
         assertTrue("strength 1.5" in DirectorCommands.chaosLines(2)[2].string)
         assertEquals(

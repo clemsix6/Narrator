@@ -22,6 +22,8 @@ package io.github.clemsix6.narrator2.guard
  *   chooses are still bounded by the caps above.
  * @property categoryCooldownMinutes how long a category of punishment rests against a player once another
  *   act struck them in it (`same_punishment`, M4 §6.1): shorter as the chaos grows.
+ * @property punishmentsPerHour new punishments against one player in an hour, at most (`fair_share`); the
+ *   punishments of different acts stack (M7-LOOSEN).
  */
 data class Caps(
     val hostileAllowed: Boolean,
@@ -37,6 +39,7 @@ data class Caps(
     val narratorKillsPerHour: Int,
     val maxSeverity: Int,
     val categoryCooldownMinutes: Int,
+    val punishmentsPerHour: Int,
 ) {
     companion object {
         /** Lowest and highest chaos level (`chaos` in the configuration, validated). */
@@ -55,16 +58,16 @@ data class Caps(
         /** An `explosion` closer than this to a player, in blocks, is a hostile action against them (M1_M2 §10.3). */
         const val HOSTILE_EXPLOSION_BLOCKS = 8
 
-        // The table of M1_M2 §10.4 and M4 §6.2, one row per chaos level. Every cap grows (or stays) with the
-        // level; the rest of a category shortens.
+        // The table of M1_M2 §10.4 and M4 §6.2, one row per chaos level; levels 3 to 5 loosened by M7-LOOSEN, at the
+        // owner's request. Every cap grows (or stays) with the level; the rest of a category shortens.
         private val BY_CHAOS = listOf(
-            //   hostile  secs  level  spawns  living  power  hearts  launch  teleport  items  kills  severity  rest
-            Caps(false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0),
-            Caps(true, 60, 1, 2, 4, 1.0, 1.0, 1.0, 50, 8, 0, 2, 60),
-            Caps(true, 120, 1, 4, 8, 2.0, 2.0, 1.5, 200, 16, 0, 3, 45),
-            Caps(true, 300, 2, 6, 16, 3.0, 3.0, 2.0, 1_000, 32, 1, 4, 30),
-            Caps(true, 600, 3, 10, 24, 4.0, 4.0, 2.5, 3_000, 64, 1, 5, 20),
-            Caps(true, 900, 4, 12, 32, 4.0, 5.0, 3.0, 5_000, 128, 2, 5, 10),
+            //   hostile  secs  level  spawns  living  power  hearts  launch  teleport  items  kills  severity  rest  perHour
+            Caps(false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0),
+            Caps(true, 60, 1, 2, 4, 1.0, 1.0, 1.0, 50, 8, 0, 2, 60, 4),
+            Caps(true, 120, 1, 4, 8, 2.0, 2.0, 1.5, 200, 16, 0, 3, 45, 6),
+            Caps(true, 600, 3, 10, 24, 4.0, 4.0, 2.5, 3_000, 64, 2, 5, 15, 8),
+            Caps(true, 900, 4, 14, 32, 4.0, 5.0, 3.0, 5_000, 128, 3, 5, 10, 12),
+            Caps(true, 1_800, 5, 20, 48, 4.0, 5.0, 3.0, 10_000, 128, 5, 5, 5, 20),
         )
 
         /** The caps at [chaos], 0 to 5; a level out of range (the configuration is validated) is brought back into it. */

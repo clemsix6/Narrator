@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.tool.action
 
+import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.event.PlayerRef
 import io.github.clemsix6.narrator2.event.Pos
 import io.github.clemsix6.narrator2.guard.Rules
@@ -8,6 +9,7 @@ import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.NarratorTool
 import io.github.clemsix6.narrator2.tool.ToolArgs
@@ -42,6 +44,12 @@ class WorldActionToolsTest {
                 health = 20f, maxHealth = 20f, food = 20, vehicle = null, lastDeathAt = null, lastMoveAt = 0, idle = false,
             ),
         )
+    }
+
+    /** The chaos level of the guards' caps and of the settings, which the messages quote. */
+    private fun chaos(level: Int) {
+        guards.chaos = level
+        services.settings.swap(testSettings(NarratorConfig(chaos = level)))
     }
 
     private fun <A : Any> invalid(serializer: KSerializer<A>, json: String): String {
@@ -133,14 +141,14 @@ class WorldActionToolsTest {
     @Test
     fun `the caps of the chaos level come before anything else`() = runTest {
         online("Bob")
-        guards.chaos = 3
+        chaos(2)
         assertEquals(
-            "Invalid arguments: at chaos 3 one call summons at most 6 creatures (asked 7)",
-            SpawnTool().call("""{"entity":"zombie","near":"Bob","count":7}""").text,
+            "Invalid arguments: at chaos 2 one call summons at most 4 creatures (asked 5)",
+            SpawnTool().call("""{"entity":"zombie","near":"Bob","count":5}""").text,
         )
         assertEquals(
-            "Invalid arguments: at chaos 3 an explosion has a power of at most 3 (asked 3.5)",
-            SpawnTool().call("""{"entity":"cow","near":"Bob","explode":{"after_seconds":2,"power":3.5}}""").text,
+            "Invalid arguments: at chaos 2 an explosion has a power of at most 2 (asked 2.5)",
+            SpawnTool().call("""{"entity":"cow","near":"Bob","explode":{"after_seconds":2,"power":2.5}}""").text,
         )
         assertEquals(
             "Invalid arguments: movement_speed multiplies by 0.25 to 3 (asked 4)",
@@ -151,12 +159,12 @@ class WorldActionToolsTest {
             SpawnTool().call("""{"entity":"cow","near":"Bob","name":"§6"}""").text,
         )
         assertEquals(
-            "Invalid arguments: at chaos 3 an explosion has a power of at most 3 (asked 4)",
-            ExplosionTool().call("""{"player":"Bob","power":4}""").text,
+            "Invalid arguments: at chaos 2 an explosion has a power of at most 2 (asked 3)",
+            ExplosionTool().call("""{"player":"Bob","power":3}""").text,
         )
         assertEquals(
-            "Invalid arguments: at chaos 3 lightning does at most 3 hearts of damage (asked 4)",
-            LightningTool().call("""{"player":"Bob","damage_hearts":4}""").text,
+            "Invalid arguments: at chaos 2 lightning does at most 2 hearts of damage (asked 3)",
+            LightningTool().call("""{"player":"Bob","damage_hearts":3}""").text,
         )
 
         guards.chaos = 0
@@ -220,27 +228,27 @@ class WorldActionToolsTest {
      */
     @Test
     fun `the dry checks need no player and give the answers of run`() = runTest {
-        guards.chaos = 3
+        chaos(2)
         suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? = check(context, decode(args, json))
 
         assertEquals(
-            "Invalid arguments: at chaos 3 one call summons at most 6 creatures (asked 7)",
-            SpawnTool().dry("""{"entity":"zombie","near":"Bob","count":7}""")?.text,
+            "Invalid arguments: at chaos 2 one call summons at most 4 creatures (asked 5)",
+            SpawnTool().dry("""{"entity":"zombie","near":"Bob","count":5}""")?.text,
         )
         assertEquals(
             "Invalid arguments: movement_speed multiplies by 0.25 to 3 (asked 4)",
             SpawnTool().dry("""{"entity":"creeper","near":"Bob","attributes":[{"attribute":"movement_speed","multiply":4}]}""")?.text,
         )
         assertEquals(
-            "Invalid arguments: at chaos 3 an explosion has a power of at most 3 (asked 3.5)",
-            ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":3.5}""")?.text,
+            "Invalid arguments: at chaos 2 an explosion has a power of at most 2 (asked 2.5)",
+            ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":2.5}""")?.text,
         )
-        assertNull(ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":3}"""))
+        assertNull(ExplosionTool().dry("""{"x":0,"y":64,"z":0,"power":2}"""))
         assertEquals(
-            "Invalid arguments: at chaos 3 lightning does at most 3 hearts of damage (asked 4)",
-            LightningTool().dry("""{"player":"Bob","damage_hearts":4}""")?.text,
+            "Invalid arguments: at chaos 2 lightning does at most 2 hearts of damage (asked 3)",
+            LightningTool().dry("""{"player":"Bob","damage_hearts":3}""")?.text,
         )
-        assertNull(LightningTool().dry("""{"player":"Bob","damage_hearts":3}"""))
+        assertNull(LightningTool().dry("""{"player":"Bob","damage_hearts":2}"""))
         assertNull(LightningTool().dry("""{"x":0,"y":64,"z":0}"""), "a harmless bolt")
         assertNull(FireworksTool().dry("""{"x":0,"y":64,"z":0}"""), "the default colors")
         assertNull(ParticlesTool().dry("""{"x":0,"y":64,"z":0,"particle":"heart"}"""), "nothing to check: decoding said it all")

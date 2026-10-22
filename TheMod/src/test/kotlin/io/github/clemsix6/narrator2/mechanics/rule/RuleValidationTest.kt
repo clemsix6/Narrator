@@ -102,8 +102,8 @@ class RuleValidationTest {
                 "Invalid arguments: effect 1 (notify): leave fact out: the engine writes what happened",
             law("block_break", """{"tool":"explosion","at":"position","args":{"power":6}}""") to
                 "Invalid arguments: effect 1 (explosion): power must be between 0.5 and 4 (got 6)",
-            law("block_break", """{"tool":"explosion","at":"position","args":{"power":3.5}}""") to
-                "Invalid arguments: effect 1 (explosion): at chaos 3 an explosion has a power of at most 3 (asked 3.5)",
+            law("chat", """{"tool":"lightning","at":"actor","args":{"damage_hearts":5}}""") to
+                "Invalid arguments: effect 1 (lightning): at chaos 3 lightning does at most 4 hearts of damage (asked 5)",
             law("chat", """{"tool":"say","at":"actor","args":{"text":"§l"}}""") to
                 "Invalid arguments: effect 1 (say): text has nothing to show once formatting codes and invisible characters are removed; write plain text",
             law("chat", """{"tool":"mob_effect","at":"subject","args":{"effect":"glowing","seconds":10}}""") to
@@ -198,12 +198,14 @@ class RuleValidationTest {
     @Test
     fun `a rule never kills`() {
         assertEquals(
-            "Invalid arguments: effect 1 (lightning): at chaos 3 lightning does at most 3 hearts of damage (asked 5)",
+            "Invalid arguments: effect 1 (lightning): at chaos 3 lightning does at most 4 hearts of damage (asked 5)",
             f.refusal(law("chat", """{"tool":"lightning","at":"actor","args":{"damage_hearts":5}}""")),
         )
+        f.guards.chaos = 2
+        f.services.settings.swap(testSettings(NarratorConfig(chaos = 2)))
         assertEquals(
-            "Invalid arguments: effect 1 (explosion): at chaos 3 an explosion has a power of at most 3 (asked 4)",
-            f.refusal(law("chat", """{"tool":"explosion","at":"actor","args":{"power":4,"offset":0}}""")),
+            "Invalid arguments: effect 1 (explosion): at chaos 2 an explosion has a power of at most 2 (asked 3)",
+            f.refusal(law("chat", """{"tool":"explosion","at":"actor","args":{"power":3,"offset":0}}""")),
         )
         assertEquals(
             "DENIED (forbidden_effect): effect 1 (apply_effect): a rule never gives instant_damage: an effect that wounds is yours to give, one call at a time, never a law's",
@@ -394,16 +396,16 @@ class RuleValidationTest {
         // The damage of lightning, the power of explosions, at chaos 3.
         f.guards.chaos = 3
         f.services.settings.swap(testSettings(NarratorConfig(chaos = 3)))
-        val bolt = """{"tool":"lightning","at":"actor","args":{"damage_hearts":2}}"""
+        val bolt = """{"tool":"lightning","at":"actor","args":{"damage_hearts":3}}"""
         assertEquals(
-            "Invalid arguments: effects 1 and 2 (lightning) do 4 hearts of damage together, and at chaos 3 one firing may do 3 hearts of damage at most: " +
+            "Invalid arguments: effects 1 and 2 (lightning) do 6 hearts of damage together, and at chaos 3 one firing may do 4 hearts of damage at most: " +
                 "the caps hold for the whole rule, not for each effect; lower them",
             f.refusal(law("chat", "$bolt,$bolt")),
         )
-        val blast = """{"tool":"explosion","at":"position","args":{"power":2}}"""
+        val blast = """{"tool":"explosion","at":"position","args":{"power":3}}"""
         assertEquals(
-            "Invalid arguments: effects 1 and 3 (explosion) reach an explosion power of 4 together, and at chaos 3 one firing may reach an explosion " +
-                "power of 3 at most: the caps hold for the whole rule, not for each effect; lower them",
+            "Invalid arguments: effects 1 and 3 (explosion) reach an explosion power of 6 together, and at chaos 3 one firing may reach an explosion " +
+                "power of 4 at most: the caps hold for the whole rule, not for each effect; lower them",
             f.refusal(law("block_break", "$blast,$SAY,$blast")),
         )
         assertEquals(2, f.store.get().rules.size, "nothing more is active")

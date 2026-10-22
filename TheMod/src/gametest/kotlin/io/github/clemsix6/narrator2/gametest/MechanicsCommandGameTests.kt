@@ -118,7 +118,7 @@ class MechanicsCommandGameTests {
             }
             check(waiting == listOf(9_101L)) { "the pace shows only the offering still waiting for an answer (GuardsImpl.pacing): $waiting" }
             check(inspected.first() == "[Narrator] guards on ${operator.name} · chaos ${runtime.settings.get().config.chaos} of 5") { "guards: $inspected" }
-            check(inspected.any { it.startsWith("Pace: punished 0 of 4 this hour · categories resting: none · offerings waiting: O-9101 until ") }) { "the pace: $inspected" }
+            check(inspected.any { it.startsWith("Pace: punished 0 of 8 this hour · categories resting: none · offerings waiting: O-9101 until ") }) { "the pace: $inspected" }
             check("Grace: none" in inspected) { "the grace: $inspected" }
             check("Jokers: none given in the last 24 h · 0 in their inventory" in inspected) { "the jokers: $inspected" }
             check(inspected.any { it.startsWith("Offering O-9101: 10x minecraft:diamond, waiting for the Director's answer until ") }) { "the offering: $inspected" }

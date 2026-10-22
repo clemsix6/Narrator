@@ -120,7 +120,7 @@ public final class GravityStorm implements ForgeModule {
         /** The guards refuse the first player the wave picks: the storm lifts the other one in the same wave. */
         public void aRefusedPlayerIsSkipped(Bench b) {
             twoPlayers(b);
-            b.refuseNext("punish", "DENIED (already_punished): a punishment of another act still runs against them");
+            b.refuseNext("punish", "DENIED (same_punishment): another act gave them another gravity a moment ago");
             b.start("players=Bartok,Mimosa", "waves=2");
             b.run(FIRST_WAVE + 2 * Limits.TICKS_PER_SECOND);
             List<String> refused = punished(b, " → denied");

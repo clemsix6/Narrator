@@ -80,7 +80,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
 
     /**
      * In order: protection, chaos 0, the player's grace, a duel, then [TargetingPolicy] (no piling on a recent
-     * death or rescue, one punishment at a time and one `punish` per act, fairness, the categories' rest).
+     * death or rescue, one `punish` per act, fairness, the categories' rest; punishments of different acts stack).
      * Allowed: the act's episode opens or grows, and the strike of [category] is recorded. Every refusal is a
      * `guard denied` decision.
      */
@@ -89,9 +89,10 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
         if (verdict is Verdict.Denied) return verdict
         val now = clock.millis()
         episodes.open(target.uuid, caller.act, until, category, punishment)
-        // Saved with the player, so that the episode can be rebuilt when they join after a restart.
-        val same = states.of(target).episode?.takeIf { it.until > now && caller.act != null && it.act == caller.act }
-        val episode = OpenEpisode(caller.act, maxOf(until, same?.until ?: until))
+        // Saved with the player, so that the episode can be rebuilt when they join after a restart. Over another
+        // act's (punishments stack), the later end wins, as in `Episodes.open`.
+        val running = states.of(target).episode?.takeIf { it.until > now }
+        val episode = OpenEpisode(caller.act, maxOf(until, running?.until ?: until))
         states.update(target) { it.copy(episode = episode) }
         decisions.record(
             log, DecisionRecord.Kind.GUARD, "allowed", target.plainTextName,
@@ -327,7 +328,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
      * `ALLOW_DEATH` of [player]: whether the death may happen. A blow of a punishment's creature never kills
      * (M4-POST: a punishment of the catalogue is a gag, not an execution; M4-LEFTOVERS: nor does a hostile creature
      * of `spawn`): the creatures bound to them ([CreatureShield.boundTo]) are sent away, and the death is refused and
-     * turned into a rescue where they stand ([DeathGuard.rescue] in place: shielded 5 minutes, nothing lost, nothing
+     * turned into a rescue where they stand ([DeathGuard.rescue] in place: shielded a minute, nothing lost, nothing
      * counted). Any other death goes to the death guard. A champion's fatal blow (M7-FIX) kills, as any death the
      * Narrator causes, while its quota lasts ([DeathGuard.allowDeath]: inventory kept, the death counted); beyond the
      * quota it is the rescue above. Server thread.
@@ -349,7 +350,7 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
             PlayerPacing(
                 player = uuid,
                 punishedThisHour = episodes.recentPunishments(uuid, now).size,
-                perHour = TargetingPolicy.MAX_PUNISHMENTS_PER_HOUR,
+                perHour = caps().punishmentsPerHour,
                 resting = episodes.resting(uuid, rest, now),
                 graceUntil = state.graceUntil?.takeIf { it > now },
                 // Past its deadline, an offering only waits for room to go back: nobody can take it any more.

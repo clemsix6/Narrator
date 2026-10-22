@@ -112,8 +112,8 @@ class PunishmentCatalogTest {
                 }
             }
         }
-        // Severities allowed: 2 at chaos 1, 3 at chaos 2, 4 at chaos 3, 5 at chaos 4 and 5.
-        assertEquals(PunishmentId.entries.size * (2 + 3 + 4 + 5 + 5), plans)
+        // Severities allowed: 2 at chaos 1, 3 at chaos 2, 5 at chaos 3, 4 and 5 (M7-LOOSEN).
+        assertEquals(PunishmentId.entries.size * (2 + 3 + 5 + 5 + 5), plans)
     }
 
     @Test
@@ -169,11 +169,11 @@ class PunishmentCatalogTest {
             ),
             heavy.steps,
         )
-        assertEquals(listOf("hunger capped at level II by the chaos level"), PunishmentCatalog.plan(PunishmentId.HUNGER, 4, Caps.of(3), player).capped)
+        assertEquals(listOf("hunger capped at level III by the chaos level"), PunishmentCatalog.plan(PunishmentId.HUNGER, 4, Caps.of(3), player).capped)
         assertEquals(listOf("zombies capped at 2 by the chaos level"), PunishmentCatalog.plan(PunishmentId.GUESTS, 2, Caps.of(1), player).capped)
-        assertEquals(listOf("slimes capped at 6 by the chaos level"), PunishmentCatalog.plan(PunishmentId.SLIME_RAIN, 4, Caps.of(3), player).capped)
+        assertEquals(listOf("slimes capped at 10 by the chaos level"), PunishmentCatalog.plan(PunishmentId.SLIME_RAIN, 5, Caps.of(3), player).capped)
         assertEquals(listOf("strength capped at 1 by the chaos level"), PunishmentCatalog.plan(PunishmentId.SKYWARD, 2, Caps.of(1), player).capped)
-        assertEquals(listOf("damage capped at 3 hearts by the chaos level"), PunishmentCatalog.plan(PunishmentId.SMITE, 4, Caps.of(3), player).capped)
+        assertEquals(listOf("damage capped at 4 hearts by the chaos level"), PunishmentCatalog.plan(PunishmentId.SMITE, 5, Caps.of(3), player).capped)
 
         val cage = PunishmentCatalog.plan(PunishmentId.CAGE, 4, Caps.of(3), player)
         assertEquals(4 * MechanicsLimits.TRAP_SECONDS_PER_SEVERITY, cage.seconds, "a trap lasts 10 s per point of severity, no other cap")

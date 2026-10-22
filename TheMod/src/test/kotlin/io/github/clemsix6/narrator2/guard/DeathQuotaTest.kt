@@ -48,9 +48,10 @@ class DeathQuotaTest {
     @Test
     fun `the quota follows the chaos level`() {
         val quotas = (0..5).map { chaos -> DeathGuard.quotaLeft(emptyList(), start, Caps.of(chaos).narratorKillsPerHour) }
-        assertEquals(listOf(0, 0, 0, 1, 1, 2), quotas)
-        assertEquals(1, DeathGuard.quotaLeft(listOf(start - 100), start, Caps.of(5).narratorKillsPerHour), "chaos 5: a second death in the hour")
-        assertEquals(0, DeathGuard.quotaLeft(listOf(start - 100), start, Caps.of(3).narratorKillsPerHour), "chaos 3: one per hour")
+        assertEquals(listOf(0, 0, 0, 2, 3, 5), quotas)
+        assertEquals(4, DeathGuard.quotaLeft(listOf(start - 100), start, Caps.of(5).narratorKillsPerHour), "chaos 5: four more deaths in the hour")
+        assertEquals(1, DeathGuard.quotaLeft(listOf(start - 100), start, Caps.of(3).narratorKillsPerHour), "chaos 3: a second death in the hour")
+        assertEquals(0, DeathGuard.quotaLeft(listOf(start - 200, start - 100), start, Caps.of(3).narratorKillsPerHour), "chaos 3: two per hour")
     }
 
     @Test

@@ -535,7 +535,7 @@ class BriefingTest {
     @Test
     fun `the engine state ends with the mechanics' lines of the situation (M4 §4-5)`() {
         history()
-        guards.pacingOf[bartok.uuid] = PlayerPacing(bartok.uuid, 1, 4, mapOf(PunishmentCategory.SIZE to now.toEpochMilli() + 20 * 60_000L), null, emptyList())
+        guards.pacingOf[bartok.uuid] = PlayerPacing(bartok.uuid, 1, 8, mapOf(PunishmentCategory.SIZE to now.toEpochMilli() + 20 * 60_000L), null, emptyList())
         val mechanics = FakeMechanics(clock).apply {
             lines = listOf("Challenges: C-50 obtain « Œuf de tortue » → all · Mimosa 0/1, Bartok 0/1 · ends in 12m", "Rules: C-60 law block_break grief → punish (until 10-02 20:15)")
         }
@@ -552,7 +552,7 @@ class BriefingTest {
         )
         // Both players joined at 20:00: the order of arrival between them is not fixed.
         assertTrue(
-            Regex("^Pacing: punished this hour (Bartok 1/4, Mimosa 0/4|Mimosa 0/4, Bartok 1/4) · recent kinds Bartok size \\(again at 21:20\\)$").matches(state[state.size - 2]),
+            Regex("^Pacing: punished this hour (Bartok 1/8, Mimosa 0/8|Mimosa 0/8, Bartok 1/8) · recent kinds Bartok size \\(again at 21:20\\)$").matches(state[state.size - 2]),
             state[state.size - 2],
         )
         val off = render(services = services(mechanics = DisabledMechanics("not wired yet"))).substringAfter("<engine_state>\n").substringBefore("</engine_state>")

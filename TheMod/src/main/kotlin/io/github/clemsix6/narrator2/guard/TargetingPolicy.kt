@@ -11,15 +11,15 @@ import java.time.Clock
 /**
  * Who a hostile action may target (M1_M2 §10.3, M4 §6.1), after the guards have ruled out protected
  * players, chaos 0, the player's grace and a duel. In order:
- * 1. no piling on a player who is dead, or died less than [NO_PILE_ON_MINUTES] minutes ago, or was saved
+ * 1. no piling on a player who is dead, or died less than [NO_PILE_ON_MINUTES] minute ago, or was saved
  *    from a death lately (their [Shield]: a rescue, a duel's fatal blow stopped) ([Rules.NO_PILE_ON]);
- * 2. one punishment at a time: a punishment opened by another act is still running
- *    ([Rules.ALREADY_PUNISHED]); the hostile actions of the act that opened it are part of it. An act is a
- *    Director turn or an engine firing (`Caller.act`): turn 812 and firing 812 are two acts. And one `punish`
- *    of the catalogue per act and player (M4 review, finding 16): an act composes one, it never piles a second
- *    on it ([Rules.ALREADY_PUNISHED] too);
- * 3. fairness: a new punishment against a player who already had [MAX_PUNISHMENTS_PER_HOUR] in the
- *    last hour is refused ([FAIR_SHARE]), so that no player becomes the Narrator's only target;
+ * 2. one `punish` of the catalogue per act and player (M4 review, finding 16): an act composes one, it never
+ *    piles a second on it ([Rules.ALREADY_PUNISHED]). The punishments of different acts stack (M7-LOOSEN): a
+ *    player another act punishes may be punished again. An act is a Director turn or an engine firing
+ *    (`Caller.act`): turn 812 and firing 812 are two acts;
+ * 3. fairness: a new punishment (any action but one that extends its own act's running punishment) against a
+ *    player who already had [Caps.punishmentsPerHour] in the last hour is refused ([FAIR_SHARE]), so that no
+ *    player becomes the Narrator's only target;
  * 4. variety: an action of a category that another act struck the player in less than
  *    [Caps.categoryCooldownMinutes] ago is refused ([Rules.SAME_PUNISHMENT]); the actions of one act never
  *    stand in each other's way (a composed punishment), and [PunishmentCategory.OTHER] never rests.
@@ -47,7 +47,7 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
         val name = ModelText.name(target.name)
         val live = players.get(target.uuid)
         if (live != null && live.health <= 0f) {
-            return Verdict.Denied(Rules.NO_PILE_ON, "$name is dead; no hostile action against them until $NO_PILE_ON_MINUTES minutes after their death.")
+            return Verdict.Denied(Rules.NO_PILE_ON, "$name is dead; no hostile action against them until ${ToolText.duration(NO_PILE_ON_MS)} after their death.")
         }
         val died = listOfNotNull(live?.lastDeathAt, diedAt).maxOrNull()
         if (died != null && now - died < NO_PILE_ON_MS) {
@@ -64,25 +64,21 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
                     "hostile actions against them are refused until ${at(shield.until)} (in ${ToolText.wait(shield.until - now)}).",
             )
         }
-        val episode = episodes.active(target.uuid)
-        if (episode != null && (caller.act == null || episode.act != caller.act)) {
-            return Verdict.Denied(
-                Rules.ALREADY_PUNISHED,
-                "$name is already being punished (an earlier punishment runs until ${at(episode.until)}, in ${ToolText.wait(episode.until - now)}); one punishment at a time.",
-            )
-        }
         if (punishment != null) {
             episodes.punishmentBy(target.uuid, caller.act)?.let { first ->
                 return Verdict.Denied(
                     Rules.ALREADY_PUNISHED,
-                    "this act already punished $name (${first.id}); one punish per act and player: compose it with the other tools, or let it run.",
+                    "this act already punished $name (${first.id}); one punish per act and player: compose it with the other tools, or punish again in another turn.",
                 )
             }
         }
-        if (episode == null) {
+        val episode = episodes.active(target.uuid)
+        val extends = episode != null && caller.act != null && episode.act == caller.act
+        val perHour = caps().punishmentsPerHour
+        if (!extends && perHour > 0) {
             val recent = episodes.recentPunishments(target.uuid, now)
-            if (recent.size >= MAX_PUNISHMENTS_PER_HOUR) {
-                val next = recent[recent.size - MAX_PUNISHMENTS_PER_HOUR] + Episodes.WINDOW_MS
+            if (recent.size >= perHour) {
+                val next = recent[recent.size - perHour] + Episodes.WINDOW_MS
                 return Verdict.Denied(
                     FAIR_SHARE,
                     "$name was punished ${recent.size} times in the last hour; the next punishment against them is allowed at ${at(next)} (in ${ToolText.wait(next - now)}). Mind the other players, or reward this one.",
@@ -106,11 +102,8 @@ class TargetingPolicy(private val players: PlayerStates, private val clock: Cloc
     private fun at(epochMs: Long): String = clockTime(clock, epochMs)
 
     companion object {
-        /** A player who died less than this many minutes ago is not targeted. */
-        const val NO_PILE_ON_MINUTES = 5
-
-        /** New punishments against one player in an hour ([Episodes.WINDOW_MS]), at most. */
-        const val MAX_PUNISHMENTS_PER_HOUR = 4
+        /** A player who died less than this many minutes ago is not targeted (5 until M7-LOOSEN). */
+        const val NO_PILE_ON_MINUTES = 1
 
         /** The rule of fairness: too many punishments against the same player in the last hour. */
         const val FAIR_SHARE = "fair_share"
