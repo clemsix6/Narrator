@@ -70,6 +70,9 @@ class Log private constructor(val tag: String) {
         /** The permanent difficulty layer (M7-BASE). */
         val difficulty = of("Difficulty")
 
+        /** The armorer's work: champions, relics, the chests' reserves (M7-RELICS). */
+        val relics = of("Relics")
+
         /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
         fun applyLevels(levels: Map<String, String>) {
             loggers.values.forEach { it.level = Level.INFO }

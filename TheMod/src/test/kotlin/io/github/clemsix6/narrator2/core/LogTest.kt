@@ -30,7 +30,7 @@ class LogTest {
         assertContains(logs.text, "unknown subsystem 'Directr'")
         assertContains(
             logs.text,
-            "known: Bus, Command, Config, Difficulty, Director, Forge, Guard, Journal, LLM, Mechanics, Memory, Narrator, Observer, Reflex, Sql, Story, Style, " +
+            "known: Bus, Command, Config, Difficulty, Director, Forge, Guard, Journal, LLM, Mechanics, Memory, Narrator, Observer, Reflex, Relics, Sql, Story, Style, " +
                 "Tool, Trace, Web, Worker",
         )
         assertContains(logs.text, "logging.levels.LLM: unknown level 'VERBOSE'")

@@ -24,7 +24,7 @@ class PromptsTest {
     @Test
     fun `ships the prompts of the Director, the Analyst, the scout, the forger and its SDK, the storyteller, the chapter summary, the Chronicler, the Dreamer, the ping, the reflexes and the line review`() {
         assertEquals(
-            listOf("director", "analyst", "scout", "forger", "sdk", "storyteller", "chapter_summary", "chronicler", "dreamer", "ping", "reflex", "line_review"),
+            listOf("director", "analyst", "scout", "forger", "sdk", "storyteller", "chapter_summary", "chronicler", "dreamer", "ping", "reflex", "line_review", "armorer"),
             Prompts.NAMES,
         )
         assertEquals("/narrator2/forge/sdk.md", Prompts.resource(Prompts.SDK), "the SDK's reference ships with the Forge (M5 §8.2)")
@@ -44,6 +44,7 @@ class PromptsTest {
         val budgets = mapOf(
             "director" to 36_000, "analyst" to 8_000, "scout" to 6_000, "forger" to 9_000, "sdk" to 30_000, "storyteller" to 9_000,
             "chapter_summary" to 4_000, "chronicler" to 12_200, "dreamer" to 15_000, "ping" to 1_000, "reflex" to 6_000, "line_review" to 4_000,
+            "armorer" to 7_000,
         )
         assertEquals(Prompts.NAMES.toSet(), budgets.keys, "every prompt has a budget")
         budgets.forEach { (name, max) ->

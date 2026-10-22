@@ -112,8 +112,8 @@ class ForgeEndToEndTests {
                 val chapter = prayed.conversation!!
                 val opening = fake.requests.first { it.conversation == chapter }
                 val directorTools = opening.json.path("tools").map { it.path("name").asText() }
-                check(directorTools.size == 48 && directorTools.containsAll(FORGE_TOOLS + "inspire")) {
-                    "the Director's 48 tools, the Forge's three and inspire (the memory runs: the storyteller works, M6-08) among them: $directorTools"
+                check(directorTools.size == 49 && directorTools.containsAll(FORGE_TOOLS + "inspire" + "summon_champion")) {
+                    "the Director's 49 tools, the Forge's three, inspire (the memory runs: the storyteller works, M6-08) and summon_champion (M7-RELICS) among them: $directorTools"
                 }
                 val briefing = opening.json.path("messages")[0].path("content")[0].path("text").asText()
                 check(briefing.startsWith("<briefing chapter=\"") && "\nArsenal (" in briefing && MODULE !in briefing) {

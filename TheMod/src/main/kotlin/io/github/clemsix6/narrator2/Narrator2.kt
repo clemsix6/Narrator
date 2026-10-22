@@ -6,6 +6,7 @@ import io.github.clemsix6.narrator2.difficulty.registerDifficultyHooks
 import io.github.clemsix6.narrator2.guard.registerGuardHooks
 import io.github.clemsix6.narrator2.mechanics.registerMechanicsHooks
 import io.github.clemsix6.narrator2.observer.registerObserverHooks
+import io.github.clemsix6.narrator2.relics.registerRelicsHooks
 import io.github.clemsix6.narrator2.runtime.Attachments
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
@@ -24,6 +25,7 @@ object Narrator2 : ModInitializer {
         registerObserverHooks()
         registerGuardHooks()
         registerMechanicsHooks()
+        registerRelicsHooks()
         registerDifficultyHooks()
 
         ServerLifecycleEvents.SERVER_STARTED.register { server -> NarratorRuntime.start(server) }

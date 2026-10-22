@@ -42,6 +42,7 @@ data class NarratorConfig(
     val reflex: ReflexConfig = ReflexConfig(),
     val style: StyleConfig = StyleConfig(),
     val dashboard: DashboardConfig = DashboardConfig(),
+    val relics: RelicsConfig = RelicsConfig(),
     /**
      * What each model costs (M6 §8.7), by model id: the dashboard's and `/narrator usage`'s dollars. A model without
      * a price shows `$ ?`. Behind a subscription, an order of magnitude only.
@@ -77,6 +78,7 @@ data class NarratorConfig(
             Role.STORYTELLER to RoleConfig(effort = "medium"),
             Role.CHRONICLER to RoleConfig(effort = "low"),
             Role.DREAMER to RoleConfig(effort = "high", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
+            Role.ARMORER to RoleConfig(effort = "medium"),
         )
 
         /**
@@ -323,6 +325,30 @@ data class ForgeConfig(
     /** [approval] as a mode; valid once the configuration is validated. */
     val approvalMode: ForgeApproval get() = ForgeApproval.of(approval) ?: error("invalid forge.approval")
 }
+
+/**
+ * The armorer's work (M7-RELICS): champions the Director commissions, the relics their killers earn, and the objects the
+ * armorer prepares for structure chests (relics, strange consumables, books). Read when used: `/narrator reload` applies
+ * a change.
+ */
+@Serializable
+data class RelicsConfig(
+    /** False: no champion, no relic, nothing added to chests (the reserves are kept). */
+    val enabled: Boolean = true,
+    /** Chance that a structure chest, when first opened, holds a relic of the reserve; the same for a consumable and a book. */
+    val relicChance: Double = 0.03,
+    val consumableChance: Double = 0.08,
+    val bookChance: Double = 0.05,
+    /** How many objects of each kind the armorer keeps ready; a restock starts when one reserve falls under half. */
+    val relicStock: Int = 5,
+    val consumableStock: Int = 8,
+    val bookStock: Int = 5,
+    /** Champions standing at once, all players together, and for one player. */
+    val maxChampions: Int = 3,
+    val maxChampionsPerPlayer: Int = 1,
+    /** How long a champion stays before it vanishes, in minutes (`spawn`'s lifetime: 10 at most). */
+    val championMinutes: Int = 10,
+)
 
 /** Limits the engine enforces whatever the model asks. */
 @Serializable
@@ -607,6 +633,17 @@ object ConfigStore {
         if (reflex.model.isBlank()) add("reflex.model must not be empty")
         if (reflex.effort !in NarratorConfig.REFLEX_EFFORTS) add("reflex.effort must be one of ${NarratorConfig.REFLEX_EFFORTS.joinToString()}")
         range("reflex.timeoutMs", reflex.timeoutMs, 500, 10_000)
+
+        val relics = config.relics
+        listOf("relicChance" to relics.relicChance, "consumableChance" to relics.consumableChance, "bookChance" to relics.bookChance).forEach { (name, value) ->
+            if (!value.isFinite() || value < 0.0 || value > 1.0) add("relics.$name must be between 0 and 1")
+        }
+        range("relics.relicStock", relics.relicStock.toLong(), 0, 20)
+        range("relics.consumableStock", relics.consumableStock.toLong(), 0, 20)
+        range("relics.bookStock", relics.bookStock.toLong(), 0, 20)
+        range("relics.maxChampions", relics.maxChampions.toLong(), 1, 10)
+        range("relics.maxChampionsPerPlayer", relics.maxChampionsPerPlayer.toLong(), 1, 3)
+        range("relics.championMinutes", relics.championMinutes.toLong(), 1, 10)
 
         val port = config.dashboard.port
         if (port != 0 && port !in 1_024..65_535) add("dashboard.port must be 0 (any free port) or between 1024 and 65535")

@@ -10,6 +10,7 @@ import io.github.clemsix6.narrator2.mechanics.Mechanics
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.observer.PlayerStates
 import io.github.clemsix6.narrator2.reflex.Reflexes
+import io.github.clemsix6.narrator2.relics.RelicsService
 import io.github.clemsix6.narrator2.style.StyleWatch
 import io.github.clemsix6.narrator2.tool.ToolLimits
 import io.github.clemsix6.narrator2.trace.TraceSink
@@ -99,4 +100,10 @@ interface NarratorServices {
 
     /** The tools' limits that no new conversation resets (speech, gifts, weather and time, commands per turn). */
     val toolLimits: ToolLimits
+
+    /**
+     * The armorer's work (M7-RELICS): champions, relics, the chests' reserves. Null without a Journal (where its sheets and
+     * reserves are kept), and in unit tests.
+     */
+    val relics: RelicsService? get() = null
 }

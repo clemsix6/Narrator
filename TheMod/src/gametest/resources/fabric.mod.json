@@ -70,6 +70,7 @@
       "io.github.clemsix6.narrator2.gametest.ProgrammeEndToEndTests",
       "io.github.clemsix6.narrator2.gametest.LiveStyleGameTests",
       "io.github.clemsix6.narrator2.gametest.DirectorChapterGameTests",
+      "io.github.clemsix6.narrator2.gametest.LiveRelicsGameTests",
       "io.github.clemsix6.narrator2.gametest.DifficultyGameTests"
     ]
   },

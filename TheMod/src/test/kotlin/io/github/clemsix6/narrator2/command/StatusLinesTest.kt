@@ -68,7 +68,7 @@ class StatusLinesTest {
         assertEquals("Style: watch on · line review off (no reflex model: no LLMGW key) · tone notes on · resting openers refused", lines[13])
         assertEquals("Storyteller: off (the Journal is unavailable) · programme: no open idea", lines[14], "no Journal: the storyteller takes no task")
         assertEquals("Dashboard: off (dashboard.enabled is false)", lines[15])
-        assertTrue(lines.size <= 27, "status stays short: ${lines.size} lines")
+        assertTrue(lines.size <= 28, "status stays short: ${lines.size} lines")
     }
 
     /** What M6 adds (M6-17): the style, the storyteller and its programme, the dashboard. */
