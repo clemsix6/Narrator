@@ -186,7 +186,7 @@ class ConfigValidationTest {
             defaults.copy(safety = SafetyConfig(listOf("Steve", "a_b_c_1234567890"), listOf("scoreboard", "minecraft:tell"), listOf("sethome", "farmersdelight:cook"))),
             defaults.copy(reflex = ReflexConfig(effort = "high", timeoutMs = 500)),
             defaults.copy(reflex = ReflexConfig(effort = "medium", timeoutMs = 10_000)),
-            defaults.copy(style = StyleConfig(false, false, false), dashboard = DashboardConfig(false, 0)),
+            defaults.copy(style = StyleConfig(lineReview = false, lineReviewEffort = "low", toneNotes = false, refuseRestingOpeners = false), dashboard = DashboardConfig(false, 0)),
             defaults.copy(dashboard = DashboardConfig(port = 1_024)),
             defaults.copy(dashboard = DashboardConfig(port = 65_535)),
             defaults.copy(prices = emptyMap()),
