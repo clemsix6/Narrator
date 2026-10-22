@@ -30,8 +30,8 @@ public interface Acts {
     Pending sayTo(String player, String text);
 
     /**
-     * {@code show_title}: a big title (40 characters) and an optional subtitle (80, or null) on the screen of
-     * {@code player}, or of everyone online when it is null. Counted as {@link #say}.
+     * {@code show_title}: a big title (18 characters at most) and an optional subtitle (36, or null) on the screen of
+     * {@code player}, or of everyone online when it is null; longer is {@code invalid}, never cut. Counted as {@link #say}.
      */
     Pending title(String player, String title, String subtitle);
 

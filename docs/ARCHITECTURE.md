@@ -155,7 +155,7 @@ Calculer la distance entre deux joueurs ne demande pas d'assistant : c'est un ou
 ### 6.1 Des outils typés plutôt que des commandes
 Le Narrateur agit surtout par des outils typés, validés et journalisés — ils ne dépendent d'aucune syntaxe de commande :
 
-- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). Les barres de boss (M4) n'existent qu'attachées à un défi ou à un duel : une par participant, tenue par le moteur.
+- **Parole et mise en scène** : `say` (tout le monde ou certains joueurs), `show_title`, `actionbar`, `play_sound`, `give_book` (une prophétie, un contrat, une amende…). Les barres de boss (M4) n'existent qu'attachées à un défi ou à un duel : une par participant, tenue par le moteur. Le chat est la voix normale du Narrateur ; ce qui s'affiche à l'écran est court par construction (M7-TITLES) : un titre tient en 18 caractères, un sous-titre en 36, une ligne de la barre d'action en 40, et au-delà l'outil refuse en renvoyant au chat. Un titre reste le temps d'être lu (3 s, plus 1 s par tranche de 15 caractères, fondus en plus) et n'en recouvre jamais un autre encore à l'écran, celui d'un duel compris.
 - **Effets sur les joueurs** : `apply_effect` / `remove_effect`, `set_attribute` / `reset_attribute` (temporaire), `teleport` (atterrissage sûr, même dimension en M2), `launch`, `give_item` / `take_item` (objets décrits en JSON : nom, lore, enchantements, incassable… convertis en composants 26.x par le code ; une confiscation est toujours temporaire).
 - **Effets sur le monde** : `spawn` (mobs équipés, nommés, à durée de vie), `lightning`, `explosion`, `fireworks`, `particles`, `set_weather`, `set_time`.
 - **Mécaniques** (M4, §9) : `start_challenge`, `end_challenge`, `propose_duel`, `create_rule`, `remove_rule`, `punish` (dont deux pièges de blocs, posés dans l'air pour quelques secondes et retirés tout seuls par le `BlockRestorer`), `favor` (qui prend aussi une offrande en échange d'une faveur) ; `teleport` sait aussi un point au hasard dans un rayon. Ces outils n'existent que quand le moteur des mécaniques est disponible.
@@ -338,9 +338,10 @@ sévérité maximale, durée des pièges, fréquence des règles. Les plafonds q
 situation du Directeur lui montre ce qui le limite (`Pacing`) avant qu'il n'y bute.
 
 ### 9.7 Difficulté et reliques (M7)
-**Le socle de difficulté** vit dans `difficulty/`, avec la section `difficulty` de la configuration, lue au démarrage du serveur. Il marche sans Claude.
+**Le socle de difficulté** vit dans `difficulty/`, avec la section `difficulty` de la configuration, lue au démarrage du serveur puis relue par `/narrator reload`, qui l'applique aussitôt (les créatures hostiles chargées sont réconciliées, voir `design/handoff/M7-RELOAD.md`). Il marche sans Claude.
 - **Créatures hostiles** (`Enemy`, boss exclus) : +50 % de PV.
 - **Dégâts reçus par les joueurs** quand un `Enemy` en est l'auteur : ×1,25.
+- **Vitesse**, par type de créature (`mobSpeed`) : creepers ×2.
 - **Minerais** : moins de filons, chacun de taille vanilla. Diamant, émeraude et or ×0,5 ; fer et cuivre ×0,75 ; les grandes veines ne changent pas. Seuls les chunks générés ensuite sont concernés.
 - **Régénération naturelle** : deux fois plus lente.
 - **Coffres** : les diamants et les pommes dorées enchantées sont gardés une fois sur deux.

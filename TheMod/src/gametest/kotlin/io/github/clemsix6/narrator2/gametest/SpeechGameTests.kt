@@ -157,7 +157,10 @@ class SpeechGameTests {
         helper.assertEquals(emptyList<ClientboundSystemChatPacket>(), bob.chat(), "nothing said")
     }
 
-    /** The subtitle goes before the title (the title packet shows the last subtitle received); then 30 s per player. */
+    /**
+     * The subtitle goes before the title (the title packet shows the last subtitle received); the title stays its reading
+     * time however short the model asks (28 characters: 3 s + 2 s); then 30 s per player.
+     */
     @GameTest
     fun aTitleSendsItsSubtitleFirstThenWaitsThirtySeconds(helper: GameTestHelper) = withTestPlayers(helper, 1) { (bob) ->
         val tool = ShowTitleTool(SpeechLimiter(helper.narrator().clock))
@@ -168,7 +171,7 @@ class SpeechGameTests {
             helper.assertEquals("ok: title shown to ${bob.name}", result.text, "result")
             val packets = bob.packets.filter { it is ClientboundSetTitlesAnimationPacket || it is ClientboundSetSubtitleTextPacket || it is ClientboundSetTitleTextPacket }
             helper.assertEquals(
-                listOf("animation 10/80/20", "subtitle Bernard est condamné", "title JUGEMENT"),
+                listOf("animation 10/100/20", "subtitle Bernard est condamné", "title JUGEMENT"),
                 packets.map(::describe),
                 "packets in order",
             )
@@ -294,7 +297,7 @@ class SpeechGameTests {
         helper.assertEquals(null, check(helper, ActionbarTool(limiter), ActionbarArgs("Psst.", to = listOf(bob.name))), "actionbar")
 
         // Other tests may speak to everyone meanwhile: Bob's packets prove nothing; the limiter is this test's own.
-        helper.assertEquals(listOf(bob.ref), limiter.titles(listOf(bob.ref)).allowed, "no title was counted")
+        helper.assertEquals(listOf(bob.ref), limiter.titles(listOf(bob.ref), 5_000).allowed, "no title was counted")
         helper.assertEquals(listOf(bob.ref), limiter.actionbars(listOf(bob.ref)).allowed, "no line above the hotbar was counted")
     }
 

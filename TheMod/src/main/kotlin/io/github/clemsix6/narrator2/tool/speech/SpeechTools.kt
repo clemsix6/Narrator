@@ -30,10 +30,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.minecraft.core.Holder
 import net.minecraft.core.registries.BuiltInRegistries
-import net.minecraft.network.chat.Component
-import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
-import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
-import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket
 import net.minecraft.network.protocol.game.ClientboundSoundPacket
 import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
@@ -60,6 +56,10 @@ import net.minecraft.world.item.ItemStack
  *
  * In a turn of the Director, `say` refuses once a line that opens like too many of its latest (the watch of the style,
  * M6 §3.5); titles, lines above the hotbar and books are never checked.
+ *
+ * What shows on the screen is short by construction (M7-TITLES): a title, a subtitle or a line above the hotbar longer
+ * than the screen holds ([Speech.TITLE_MAX], [Speech.SUBTITLE_MAX], [Speech.ACTIONBAR_MAX]) is refused, never cut; a
+ * title stays at least its reading time ([Speech.titleStay]) and never replaces one still on a player's screen.
  */
 fun speechTools(services: NarratorServices): List<NarratorTool<*>> {
     val limiter = services.toolLimits.speech
@@ -157,32 +157,43 @@ class SayTool(private val limiter: SpeechLimiter) : NarratorTool<SayArgs>(
 
 // ── show_title ──────────────────────────────────────────────────────────────────────────────────
 
+/*
+ * The texts shown on the screen (M7-TITLES): no `@MaxLen` on them, the tool's `check` refuses one too long for the
+ * screen with what to do instead. A rule checks its texts at its creation with the longest name in place of `{actor}`.
+ */
+
 @Serializable
 data class ShowTitleArgs(
-    @Doc("The big title: a few words.")
-    @MaxLen(40)
+    @Doc("The big title: a name, a word, CHAPITRE II. ${Speech.TITLE_MAX} characters at most.")
     val title: String,
-    @Doc("A smaller line under the title.")
-    @MaxLen(80)
+    @Doc("A short line under the title, ${Speech.SUBTITLE_MAX} characters at most; a sentence goes in the chat.")
     val subtitle: String? = null,
     @Doc(TO_DOC)
     @Items(1, 8)
     @MaxLen(16)
     val to: List<String>? = null,
-    @Doc("How long the title stays on screen, in seconds.")
+    @Doc("To make the title linger, in seconds. It never stays less than its reading time: 3 s, plus 1 s per 15 characters of title and subtitle.")
     @Range(1.0, 10.0)
-    val seconds: Int = 3,
+    val seconds: Int? = null,
 )
 
 class ShowTitleTool(private val limiter: SpeechLimiter) : NarratorTool<ShowTitleArgs>(
     name = "show_title",
     description = "Shows a big title in the middle of the screen of some players, or of everyone online, with an optional " +
-        "subtitle under it. Keep it for big moments: one title per player every 30 seconds.",
+        "subtitle under it. The chat (say) is your normal voice; a title is a rare and very short punctuation: a name that " +
+        "bursts in, CHAPITRE II, one word. Never a sentence to read: it is drawn huge, so a title holds ${Speech.TITLE_MAX} " +
+        "characters and a subtitle ${Speech.SUBTITLE_MAX}, and a longer one is refused. What the players must understand goes " +
+        "in the chat. It stays long enough to be read. One title per player every 30 seconds, never over one still on screen.",
     args = ShowTitleArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
-    override suspend fun check(ctx: ToolContext, args: ShowTitleArgs): ToolResult? =
-        if (Speech.clean(args.title).isEmpty()) ToolResult.invalid(nothingLeft("title")) else null
+    override suspend fun check(ctx: ToolContext, args: ShowTitleArgs): ToolResult? {
+        val title = Speech.clean(args.title)
+        if (title.isEmpty()) return ToolResult.invalid(nothingLeft("title"))
+        val problem = tooLong("title", title, Speech.TITLE_MAX, "a title shows")
+            ?: args.subtitle?.let { tooLong("subtitle", Speech.clean(it), Speech.SUBTITLE_MAX, "a subtitle shows") }
+        return problem?.let { ToolResult.invalid(it) }
+    }
 
     override suspend fun run(ctx: ToolContext, args: ShowTitleArgs): ToolResult {
         check(ctx, args)?.let { return it }
@@ -190,15 +201,13 @@ class ShowTitleTool(private val limiter: SpeechLimiter) : NarratorTool<ShowTitle
         val subtitle = args.subtitle?.let { Speech.clean(it) }?.ifEmpty { null }
         val audience = audience(ctx, args.to)
         audience.problem?.let { return it }
-        val split = limiter.titles(audience.named ?: ctx.players.online.map { it.ref })
+        val stay = maxOf(Speech.titleStay(Speech.length(title) + (subtitle?.let(Speech::length) ?: 0)), (args.seconds ?: 0) * TICKS_PER_SECOND)
+        val split = limiter.titles(audience.named ?: ctx.players.online.map { it.ref }, Speech.titleOnScreenMs(stay))
         if (split.allowed.isEmpty()) return waitDenied("title", SpeechLimiter.TITLE_COOLDOWN_MS, split)
         val record = "[title] $title" + (subtitle?.let { " / $it" } ?: "")
         val shown = ctx.onServer { server ->
             deliver(server, ctx, record, split, everyone = audience.named == null) { player ->
-                player.connection.send(ClientboundSetTitlesAnimationPacket(TITLE_FADE_IN, args.seconds * TICKS_PER_SECOND, TITLE_FADE_OUT))
-                // Always send a subtitle, even an empty one: the title packet shows the last subtitle the client got.
-                player.connection.send(ClientboundSetSubtitleTextPacket(subtitle?.let { Component.literal(it) } ?: Component.empty()))
-                player.connection.send(ClientboundSetTitleTextPacket(Speech.colored(ctx.settings.ui, title)))
+                Speech.showTitle(player, ctx.settings.ui, title, subtitle, stay)
             }
         }
         if (shown.isEmpty()) return ToolResult.failed("nobody got it: ${names(split.allowed)} left the game")
@@ -206,8 +215,6 @@ class ShowTitleTool(private val limiter: SpeechLimiter) : NarratorTool<ShowTitle
     }
 
     private companion object {
-        const val TITLE_FADE_IN = 10
-        const val TITLE_FADE_OUT = 20
         const val TICKS_PER_SECOND = 20
     }
 }
@@ -216,8 +223,7 @@ class ShowTitleTool(private val limiter: SpeechLimiter) : NarratorTool<ShowTitle
 
 @Serializable
 data class ActionbarArgs(
-    @Doc("A short line shown above the hotbar for a few seconds.")
-    @MaxLen(100)
+    @Doc("A few words shown above the hotbar for about 3 seconds, ${Speech.ACTIONBAR_MAX} characters at most.")
     val text: String,
     @Doc(TO_DOC)
     @Items(1, 8)
@@ -227,13 +233,17 @@ data class ActionbarArgs(
 
 class ActionbarTool(private val limiter: SpeechLimiter) : NarratorTool<ActionbarArgs>(
     name = "actionbar",
-    description = "Shows a short line above the hotbar of some players, or of everyone online, for a few seconds: " +
-        "a fleeting aside. One per player every 5 seconds.",
+    description = "Shows a few words above the hotbar of some players, or of everyone online, for about 3 seconds: a fleeting " +
+        "aside, ${Speech.ACTIONBAR_MAX} characters at most (a longer line is refused). The chat (say) is your normal voice: " +
+        "what the players must understand goes there. One per player every 5 seconds.",
     args = ActionbarArgs.serializer(),
     effect = ToolEffect.SPEECH,
 ) {
-    override suspend fun check(ctx: ToolContext, args: ActionbarArgs): ToolResult? =
-        if (Speech.clean(args.text).isEmpty()) ToolResult.invalid(nothingLeft("text")) else null
+    override suspend fun check(ctx: ToolContext, args: ActionbarArgs): ToolResult? {
+        val text = Speech.clean(args.text)
+        if (text.isEmpty()) return ToolResult.invalid(nothingLeft("text"))
+        return tooLong("text", text, Speech.ACTIONBAR_MAX, "the line above the hotbar shows")?.let { ToolResult.invalid(it) }
+    }
 
     override suspend fun run(ctx: ToolContext, args: ActionbarArgs): ToolResult {
         check(ctx, args)?.let { return it }
@@ -492,6 +502,13 @@ private fun skipped(what: String, cooldownMs: Long, split: SpeechLimiter.Split):
 /** The problem of a text that is empty once cleaned. */
 private fun nothingLeft(argument: String) =
     "$argument has nothing to show once formatting codes and invisible characters are removed; write plain text"
+
+/** The problem of [text] (cleaned), shown on the screen, when longer than [max] characters ([shows]: `a title shows`); null when it fits. */
+private fun tooLong(argument: String, text: String, max: Int, shows: String): String? {
+    val length = Speech.length(text)
+    if (length <= max) return null
+    return "$argument is $length characters, but $shows $max at most: shorten it to a few words and put the rest in the chat with say"
+}
 
 /** What cleaning changed in a `say` text that the model should know, as ` (…)`; empty when nothing notable. */
 private fun cleaningNote(original: String, maxLines: Int): String {

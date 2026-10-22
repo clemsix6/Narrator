@@ -195,7 +195,7 @@ class StyleAssemblyGameTests {
             /** A summary of 100 characters or more: a shorter one is no summary, and asked again (M6-FIX-9). */
             const val SUMMARY = "Résumé de chapitre de l'assemblage du style : la cour a jugé un prévenu pour jardinage nocturne, puis s'est retirée pour délibérer."
             const val SHORT = "Silence, prévenu."
-            const val TITLE = "LA COUR SE RETIRE POUR DÉLIBÉRER"
+            const val TITLE = "LA COUR DÉLIBÈRE"
 
             const val ADDRESSED =
                 """{"reason": "Il interroge le Narrateur.", "addressed": 0.95, "tone": "respectful", "tone_confidence": 0.9, "intent": "question", "manipulation": 0.0, """ +

@@ -1,20 +1,28 @@
 package io.github.clemsix6.narrator2.difficulty
 
 import kotlinx.serialization.Serializable
+import net.minecraft.core.registries.BuiltInRegistries
+import net.minecraft.resources.Identifier
 
 /**
  * The permanent difficulty layer (`difficulty` in `narrator2.json`): the ground the Narrator's whims add to. It works
- * without Claude. Read at `SERVER_STARTING` only, before the worlds load: a change takes a restart of the server. The
- * ores only change in chunks generated afterwards.
+ * without Claude. Read at `SERVER_STARTING`, before the worlds load, and again by `/narrator reload`, which applies a
+ * change at once: the loaded creatures are reconciled, the rest counts from the next blow, tick or chest. The ores
+ * only change in chunks generated afterwards.
  */
 @Serializable
 data class DifficultyConfig(
-    /** False: the world plays as vanilla, and the creatures loaded again lose their extra health. */
+    /** False: the world plays as vanilla, and the creatures lose their extra health and speed at the reload or when loaded again. */
     val enabled: Boolean = true,
     /** Maximum health of hostile creatures (`Enemy`, endermen and piglins included), bosses excepted. */
     val mobHealth: Double = 1.5,
     /** Damage players take from a hostile creature (bosses excepted), its projectiles and explosions included; not its effects. */
     val mobDamage: Double = 1.25,
+    /**
+     * Movement speed of creatures, by type: its path in the vanilla `entity_type` registry (`creeper`). Free-form: any
+     * type may be added, and a default type keeps its factor unless the file sets it (1 gives back its vanilla speed).
+     */
+    val mobSpeed: Map<String, Double> = DEFAULT_MOB_SPEED,
     /**
      * Share of the ore blobs that are placed, by ore: 0 none, 1 vanilla. Each blob kept has its vanilla size and place.
      * `gold` covers the badlands' bonus and the Nether's gold. The large underground veins stay vanilla.
@@ -34,6 +42,14 @@ data class DifficultyConfig(
         }
         check("mobHealth", mobHealth, 0.1, 10.0)
         check("mobDamage", mobDamage, 0.0, 10.0)
+        mobSpeed.forEach { (type, factor) ->
+            check("mobSpeed.$type", factor, 0.5, 3.0)
+            // The default types are vanilla ones: only the others are looked up, which keeps the registry (it needs
+            // Minecraft's bootstrap) out of the unit tests that load a configuration.
+            if (type !in DEFAULT_MOB_SPEED && !isEntityType(type)) {
+                add("difficulty.mobSpeed.$type is not an entity type of the game: use its path, such as creeper or zombie")
+            }
+        }
         ores.forEach { (ore, factor) -> check("ores.$ore", factor, 0.0, 1.0) }
         check("regenerationSlowdown", regenerationSlowdown, 1.0, 10.0)
         check("chestDiamonds", chestDiamonds, 0.0, 1.0)
@@ -41,6 +57,9 @@ data class DifficultyConfig(
     }
 
     companion object {
+        /** The creatures faster by default. */
+        val DEFAULT_MOB_SPEED: Map<String, Double> = linkedMapOf("creeper" to 2.0)
+
         /** Every ore the layer knows ([Difficulty.ORE_FEATURES]), with its default share of blobs, the rarest first. */
         val DEFAULT_ORES: Map<String, Double> = linkedMapOf(
             "diamond" to 0.5,
@@ -54,6 +73,9 @@ data class DifficultyConfig(
             "quartz" to 1.0,
             "ancient_debris" to 1.0,
         )
+
+        private fun isEntityType(path: String): Boolean =
+            Identifier.tryBuild(Identifier.DEFAULT_NAMESPACE, path)?.let { BuiltInRegistries.ENTITY_TYPE.containsKey(it) } == true
     }
 }
 

@@ -15,7 +15,8 @@ import java.util.UUID
  *   of the mechanics engine (a rule's firing) is a turn of its own ([Caller.act], [TurnCounter]), and its lines
  *   count in the minute like the Director's. The engine's acts together say at most [ENGINE_LINES_PER_MINUTE]
  *   of them (M4 review, finding 33): a chatty rule never silences the Director, who keeps the rest;
- * - `show_title`: one title per player every [TITLE_COOLDOWN_MS];
+ * - `show_title`: one title per player every [TITLE_COOLDOWN_MS], and never one over a title still on the player's
+ *   screen, the engine's included ([engineTitle], M7-TITLES);
  * - `actionbar`: one line per player every [ACTIONBAR_COOLDOWN_MS];
  * - `give_book`: one book per player every [BOOK_COOLDOWN_MS];
  * - `play_sound`: [SOUNDS_PER_MINUTE] sounds per sliding minute.
@@ -29,7 +30,7 @@ class SpeechLimiter(private val clock: Clock) {
     private val engineLines = Window(ENGINE_LINES_PER_MINUTE)
     private val linesThisTurn = TurnCounter(LINES_PER_TURN)
     private val sounds = Window(SOUNDS_PER_MINUTE)
-    private val titles = Cooldown(TITLE_COOLDOWN_MS)
+    private val titles = Titles(TITLE_COOLDOWN_MS)
     private val actionbars = Cooldown(ACTIONBAR_COOLDOWN_MS)
     private val books = Cooldown(BOOK_COOLDOWN_MS)
 
@@ -90,9 +91,16 @@ class SpeechLimiter(private val clock: Clock) {
         return Verdict.Allowed
     }
 
-    /** Who among [players] may get a title now (counted), and who must wait. */
+    /** Who among [players] may get a title of the Narrator now, on their screen for [onScreenMs] (counted), and who must wait. */
     @Synchronized
-    fun titles(players: List<PlayerRef>): Split = titles.take(players, clock.millis())
+    fun titles(players: List<PlayerRef>, onScreenMs: Long): Split = titles.take(players, clock.millis(), onScreenMs)
+
+    /**
+     * Whether the engine may show [player] a title of its own now (a duel's start), on their screen for [onScreenMs]: true,
+     * and counted, when no title is on it; false while one is. It never starts the Narrator's cooldown.
+     */
+    @Synchronized
+    fun engineTitle(player: UUID, onScreenMs: Long): Boolean = titles.engine(player, clock.millis(), onScreenMs)
 
     /** Who among [players] may get a line above the hotbar now (counted), and who must wait. */
     @Synchronized
@@ -140,6 +148,32 @@ class SpeechLimiter(private val clock: Clock) {
             val (waiting, allowed) = players.distinctBy { it.uuid }.partition { it.uuid in last }
             allowed.forEach { last[it.uuid] = now }
             return Split(allowed, waiting.map { player -> last.getValue(player.uuid).let { Waiting(player, now - it, it + ms - now) } })
+        }
+    }
+
+    /**
+     * The titles on each player's screen: one of the Narrator every [cooldownMs] at most, and no title over another
+     * still shown (a new title would replace it at once on the client).
+     */
+    private class Titles(private val cooldownMs: Long) {
+        /** A player's last title: shown [at], on their screen until [goneAt]; the Narrator's next one possible at [nextAt]. */
+        private class Shown(val at: Long, val goneAt: Long, val nextAt: Long)
+
+        private val shown = HashMap<UUID, Shown>()
+
+        fun take(players: List<PlayerRef>, now: Long, onScreenMs: Long): Split {
+            shown.values.removeIf { now >= it.nextAt }
+            val (waiting, allowed) = players.distinctBy { it.uuid }.partition { it.uuid in shown }
+            allowed.forEach { shown[it.uuid] = Shown(now, now + onScreenMs, now + maxOf(cooldownMs, onScreenMs)) }
+            return Split(allowed, waiting.map { player -> shown.getValue(player.uuid).let { Waiting(player, now - it.at, it.nextAt - now) } })
+        }
+
+        fun engine(player: UUID, now: Long, onScreenMs: Long): Boolean {
+            val last = shown[player]
+            if (last != null && now < last.goneAt) return false
+            val goneAt = now + onScreenMs
+            shown[player] = Shown(now, goneAt, maxOf(last?.nextAt ?: 0, goneAt))
+            return true
         }
     }
 

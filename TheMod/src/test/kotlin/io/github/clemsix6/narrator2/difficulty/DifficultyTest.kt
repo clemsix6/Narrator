@@ -1,7 +1,10 @@
 package io.github.clemsix6.narrator2.difficulty
 
 import io.github.clemsix6.narrator2.config.ConfigStore
+import net.minecraft.SharedConstants
 import net.minecraft.resources.Identifier
+import net.minecraft.server.Bootstrap
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
@@ -46,13 +49,13 @@ class DifficultyTest {
     @Test
     fun `the briefing says what changes, nothing when all is vanilla`() {
         assertEquals(
-            "hostile mobs health x1.5, damage to players x1.25 (bosses vanilla); ores diamond/emerald/gold x0.5, iron/copper x0.75; " +
-                "natural regeneration x0.5; chests diamonds x0.5, enchanted golden apples x0.5",
+            "hostile mobs health x1.5, damage to players x1.25 (bosses vanilla); movement speed creeper x2; " +
+                "ores diamond/emerald/gold x0.5, iron/copper x0.75; natural regeneration x0.5; chests diamonds x0.5, enchanted golden apples x0.5",
             Difficulty.summary(defaults),
         )
         val vanilla = DifficultyConfig(
-            mobHealth = 1.0, mobDamage = 1.0, ores = DifficultyConfig.DEFAULT_ORES.mapValues { 1.0 }, regenerationSlowdown = 1.0,
-            chestDiamonds = 1.0, chestEnchantedGoldenApples = 1.0,
+            mobHealth = 1.0, mobDamage = 1.0, mobSpeed = mapOf("creeper" to 1.0), ores = DifficultyConfig.DEFAULT_ORES.mapValues { 1.0 },
+            regenerationSlowdown = 1.0, chestDiamonds = 1.0, chestEnchantedGoldenApples = 1.0,
         )
         assertNull(Difficulty.summary(vanilla))
         assertEquals("", Difficulty.briefingAttribute(), "not loaded (no server started): no attribute")
@@ -60,16 +63,34 @@ class DifficultyTest {
 
     @Test
     fun `the section merges ore by ore and is validated`() {
-        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "difficulty": { "ores": { "diamond": 0.3 }, "mobHealth": 2 } }""")
+        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "difficulty": { "ores": { "diamond": 0.3 }, "mobHealth": 2, "mobSpeed": { "zombie": 1.2 } } }""")
         val config = ConfigStore.load(dir).difficulty
         assertEquals(0.3, config.ores["diamond"])
         assertEquals(0.75, config.ores["iron"], "the other ores keep their default")
         assertEquals(2.0, config.mobHealth)
+        assertEquals(mapOf("creeper" to 2.0, "zombie" to 1.2), config.mobSpeed, "a type added, the default kept")
 
         assertEquals(emptyList<String>(), defaults.problems())
         assertEquals(
             listOf("difficulty.ores.diamond must be between 0 and 1", "difficulty.regenerationSlowdown must be between 1 and 10"),
             defaults.copy(ores = defaults.ores + ("diamond" to 1.5), regenerationSlowdown = 0.5).problems(),
         )
+        assertEquals(
+            listOf(
+                "difficulty.mobSpeed.creeper must be between 0.5 and 3",
+                "difficulty.mobSpeed.creepr is not an entity type of the game: use its path, such as creeper or zombie",
+            ),
+            defaults.copy(mobSpeed = mapOf("creeper" to 4.0, "creepr" to 2.0, "zombie" to 1.2)).problems(),
+        )
+    }
+
+    private companion object {
+        /** The types of `mobSpeed` are looked up in the registry. */
+        @JvmStatic
+        @BeforeAll
+        fun bootstrap() {
+            SharedConstants.tryDetectVersion()
+            Bootstrap.bootStrap()
+        }
     }
 }

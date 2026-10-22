@@ -141,6 +141,17 @@ class SpeechTest {
         assertEquals(listOf("un", "deux"), Speech.layOut(listOf("un", " §r ", "deux")))
     }
 
+    /** M7-TITLES: 3 s to see a title, one more per 15 characters begun to read it, the fades on top. */
+    @Test
+    fun `a title stays as long as it takes to read`() {
+        assertEquals(80, Speech.titleStay(8), "JUGEMENT: 3 s + 1 s")
+        assertEquals(80, Speech.titleStay(15))
+        assertEquals(100, Speech.titleStay(16))
+        assertEquals(140, Speech.titleStay(Speech.TITLE_MAX + Speech.SUBTITLE_MAX), "the longest: 7 s")
+        assertEquals(5_500L, Speech.titleOnScreenMs(80), "half a second in, a second out")
+        assertEquals(2, Speech.length("é🔥"), "characters as the players see them")
+    }
+
     @Test
     fun `a book never has more than 100 pages`() {
         val page = (1..300).joinToString("\n") { "x" }

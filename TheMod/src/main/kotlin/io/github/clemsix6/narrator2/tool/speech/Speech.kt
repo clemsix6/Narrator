@@ -12,6 +12,9 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
 import net.minecraft.network.chat.MutableComponent
 import net.minecraft.network.chat.TextColor
+import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
+import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
+import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.network.Filterable
@@ -23,7 +26,8 @@ import net.minecraft.world.item.component.WrittenBookContent
 /**
  * How the Narrator's words look in the game, whoever wrote them (the Director's speech tools, an
  * operator's `/narrator say`): plain text only, a recognizable prefix and color from [UiTexts], lines
- * and book pages laid out so that nothing is cut or garbled.
+ * and book pages laid out so that nothing is cut or garbled, titles short enough for the screen and
+ * left there long enough to be read (M7-TITLES).
  *
  * Every text goes through [clean]: the model and the players can write anything, and a `§` code would
  * recolor or scramble the line on every client (the client reads `§` codes inside plain text).
@@ -41,6 +45,38 @@ object Speech {
 
     /** Key of the custom data that marks what the Narrator gave (`{narrator2: {kind, turn}}`). */
     const val CUSTOM_DATA_KEY = "narrator2"
+
+    /**
+     * Longest title, in characters. The client draws a title 4 times as big as the chat: on a 1920×1080 screen at the
+     * automatic GUI scale (4), 480 GUI pixels wide, that leaves 120 pixels of the font. A letter takes 6 of them, capital
+     * and accented ones too ([advance]: `i`, `l`, `t` and a space less, `«`, `»` 7, `œ` 10), so 20 letters fill the whole
+     * width; 18 leave room for a window's borders and a few wide glyphs.
+     */
+    const val TITLE_MAX = 18
+
+    /** Longest subtitle, in characters: drawn twice as big as the chat, 240 pixels of the font, 40 letters; 36 leave the same room. */
+    const val SUBTITLE_MAX = 36
+
+    /**
+     * Longest line above the hotbar, in characters. At the chat's size the screen would hold 80 letters, but the client
+     * keeps the line 3 seconds (the last one fading), whatever the server says: about what a glance reads in that time.
+     */
+    const val ACTIONBAR_MAX = 40
+
+    /** A title's fade-in, in ticks. */
+    const val TITLE_FADE_IN = 10
+
+    /** A title's fade-out, in ticks. */
+    const val TITLE_FADE_OUT = 20
+
+    /** Seconds a title stays fully shown, whatever its length: the time to notice it. */
+    private const val SEEN_SECONDS = 3
+
+    /** Characters read in a second: a title stays one more second per this many characters begun. */
+    private const val READ_PER_SECOND = 15
+
+    private const val TICKS_PER_SECOND = 20
+    private const val MS_PER_TICK = 50L
 
     private val FORMATTING_CODE = Regex("§[0-9a-fk-orA-FK-OR]")
 
@@ -128,6 +164,31 @@ object Speech {
     fun colored(ui: UiTexts, text: String): MutableComponent {
         val color = color(ui)
         return Component.literal(text).withStyle { it.withColor(color) }
+    }
+
+    // ── Titles ──────────────────────────────────────────────────────────────────────────────────
+
+    /** Characters of [text] as the players see them: code points, not UTF-16 units. */
+    fun length(text: String): Int = text.codePointCount(0, text.length)
+
+    /**
+     * Ticks a title of [chars] characters (title and subtitle together) stays fully shown, between its fades:
+     * [SEEN_SECONDS], plus a second per [READ_PER_SECOND] characters begun. 18 + 36 characters: 7 s.
+     */
+    fun titleStay(chars: Int): Int = (SEEN_SECONDS + (chars + READ_PER_SECOND - 1) / READ_PER_SECOND) * TICKS_PER_SECOND
+
+    /** Milliseconds a title that stays [stay] ticks is on the screen, fades included. */
+    fun titleOnScreenMs(stay: Int): Long = (TITLE_FADE_IN + stay + TITLE_FADE_OUT) * MS_PER_TICK
+
+    /**
+     * Shows [player] [title] in the Narrator's color with [subtitle] under it (none when null), fully shown for [stay]
+     * ticks between the fades. The subtitle goes first, even an empty one: the title packet shows the last subtitle the
+     * client got. Server thread.
+     */
+    fun showTitle(player: ServerPlayer, ui: UiTexts, title: String, subtitle: String?, stay: Int) {
+        player.connection.send(ClientboundSetTitlesAnimationPacket(TITLE_FADE_IN, stay, TITLE_FADE_OUT))
+        player.connection.send(ClientboundSetSubtitleTextPacket(subtitle?.let { Component.literal(it) } ?: Component.empty()))
+        player.connection.send(ClientboundSetTitleTextPacket(colored(ui, title)))
     }
 
     // ── Chat ────────────────────────────────────────────────────────────────────────────────────

@@ -92,7 +92,7 @@ public final class OrbitingChickens implements ForgeModule {
         }
         orbit = ctx.timers().every(1, this::circle);
         ctx.timers().after(ctx.args().integer("seconds") * Limits.TICKS_PER_SECOND, () -> land(LANDED));
-        ctx.acts().title(player, "Mise en orbite", "Des poules gravitent autour de toi. Toi, tu restes au sol.");
+        ctx.acts().title(player, "Mise en orbite", "Des poules gravitent autour de toi.");
         ctx.acts().sound(player, "entity.chicken.ambient");
     }
 
@@ -159,7 +159,7 @@ public final class OrbitingChickens implements ForgeModule {
             b.start("player=Bartok", "chickens=8", "seconds=20");
             b.run(40);
             b.check(b.acts().stream().filter(act -> act.equals("spawn chicken x2 near Bartok")).count() == 4, "summoned two by two: " + b.acts());
-            b.check(b.acts().contains("title Bartok: Mise en orbite / Des poules gravitent autour de toi. Toi, tu restes au sol."), "told: " + b.acts());
+            b.check(b.acts().contains("title Bartok: Mise en orbite / Des poules gravitent autour de toi."), "told: " + b.acts());
             List<CreatureInfo> flock = b.creatures();
             b.check(flock.size() == 8, "eight chickens: " + flock);
             for (CreatureInfo chicken : flock) {
