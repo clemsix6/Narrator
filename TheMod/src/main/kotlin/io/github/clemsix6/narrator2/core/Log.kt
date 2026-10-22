@@ -67,6 +67,9 @@ class Log private constructor(val tag: String) {
         /** The storyteller and `inspire` (M6 §5, §6). */
         val story = of("Story")
 
+        /** The permanent difficulty layer (M7-BASE). */
+        val difficulty = of("Difficulty")
+
         /** Applies `logging.levels` (subsystem tag → level name). Unknown tags and levels are reported and skipped. */
         fun applyLevels(levels: Map<String, String>) {
             loggers.values.forEach { it.level = Level.INFO }
