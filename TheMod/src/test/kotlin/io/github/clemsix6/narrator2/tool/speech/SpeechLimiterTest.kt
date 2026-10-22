@@ -150,17 +150,42 @@ class SpeechLimiterTest {
 
     @Test
     fun `one title per player every 30 seconds`() {
-        assertEquals(SpeechLimiter.Split(listOf(bob), emptyList()), limiter.titles(listOf(bob)))
+        assertEquals(SpeechLimiter.Split(listOf(bob), emptyList()), limiter.titles(listOf(bob), ON_SCREEN_MS))
         clock.advance(Duration.ofSeconds(12))
 
-        val split = limiter.titles(listOf(bob, alice))
+        val split = limiter.titles(listOf(bob, alice), ON_SCREEN_MS)
         assertEquals(listOf(alice), split.allowed, "another player is not held back")
         assertEquals(listOf(SpeechLimiter.Waiting(bob, agoMs = 12_000, leftMs = 18_000)), split.waiting)
         assertEquals("Bob got one 12s ago (next in 18s)", split.waiting.single().describe())
 
         clock.advance(Duration.ofSeconds(18))
-        assertEquals(listOf(bob), limiter.titles(listOf(bob)).allowed, "30 s later")
-        assertEquals(listOf(alice), limiter.titles(listOf(alice)).waiting.map { it.player }, "Alice's title was 18 s ago")
+        assertEquals(listOf(bob), limiter.titles(listOf(bob), ON_SCREEN_MS).allowed, "30 s later")
+        assertEquals(listOf(alice), limiter.titles(listOf(alice), ON_SCREEN_MS).waiting.map { it.player }, "Alice's title was 18 s ago")
+    }
+
+    /** M7-TITLES: a title replaces the one on the client's screen at once, so none goes over another still shown. */
+    @Test
+    fun `the engine's title and the Narrator's never cover each other`() {
+        assertEquals(true, limiter.engineTitle(bob.uuid, ON_SCREEN_MS), "Bob's screen is free")
+        assertEquals(false, limiter.engineTitle(bob.uuid, ON_SCREEN_MS), "not over the engine's own")
+        clock.advance(Duration.ofSeconds(2))
+        assertEquals(listOf(SpeechLimiter.Waiting(bob, agoMs = 2_000, leftMs = 4_000)), limiter.titles(listOf(bob), ON_SCREEN_MS).waiting)
+
+        clock.advance(Duration.ofSeconds(4))
+        assertEquals(listOf(bob), limiter.titles(listOf(bob), ON_SCREEN_MS).allowed, "gone from the screen: the engine's title starts no cooldown")
+        clock.advance(Duration.ofSeconds(5))
+        assertEquals(false, limiter.engineTitle(bob.uuid, ON_SCREEN_MS), "the Narrator's title is still on screen")
+        clock.advance(Duration.ofSeconds(1))
+        assertEquals(true, limiter.engineTitle(bob.uuid, ON_SCREEN_MS), "gone: the engine shows its own")
+        assertEquals(listOf(bob), limiter.titles(listOf(bob), ON_SCREEN_MS).waiting.map { it.player }, "the Narrator still waits its 30 s")
+    }
+
+    @Test
+    fun `a title that stays longer than the cooldown holds the next one back as long`() {
+        limiter.titles(listOf(bob), 45_000)
+        clock.advance(Duration.ofSeconds(30))
+
+        assertEquals(15_000L, limiter.titles(listOf(bob), ON_SCREEN_MS).waiting.single().leftMs)
     }
 
     @Test
@@ -183,7 +208,7 @@ class SpeechLimiterTest {
     @Test
     fun `one book per player every 5 minutes, apart from titles`() {
         limiter.books(listOf(bob))
-        assertEquals(listOf(bob), limiter.titles(listOf(bob)).allowed, "each limit counts apart")
+        assertEquals(listOf(bob), limiter.titles(listOf(bob), ON_SCREEN_MS).allowed, "each limit counts apart")
         clock.advance(Duration.ofSeconds(130))
 
         val waiting = limiter.books(listOf(bob)).waiting.single()
@@ -197,5 +222,10 @@ class SpeechLimiterTest {
         val engine = PlayerRef(UUID.randomUUID(), "<engine>")
         assertEquals("‹engine› got one 12s ago (next in 18s)", SpeechLimiter.Waiting(engine, agoMs = 12_400, leftMs = 17_001).describe())
         assertEquals("Bob got one 0s ago (next in 1s)", SpeechLimiter.Waiting(bob, agoMs = 1, leftMs = 1).describe())
+    }
+
+    private companion object {
+        /** A title on screen for 6 s, fades included. */
+        const val ON_SCREEN_MS = 6_000L
     }
 }

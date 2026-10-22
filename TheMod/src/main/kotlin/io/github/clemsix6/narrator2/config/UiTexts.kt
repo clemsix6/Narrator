@@ -81,8 +81,9 @@ class UiTexts private constructor(val language: String, private val texts: Map<S
             "duel.decline_button" to emptySet(),
             "duel.accepted" to setOf("player"),
             "duel.declined" to setOf("player"),
-            // A title on screen when the duel starts.
-            "duel.start" to setOf("opponent"),
+            // A title on screen when the duel starts (18 characters at most), and its subtitle (36 with a name of 16).
+            "duel.start" to emptySet(),
+            "duel.start_subtitle" to setOf("opponent"),
             "duel.won" to emptySet(),
             "duel.lost" to emptySet(),
             "duel.draw" to emptySet(),

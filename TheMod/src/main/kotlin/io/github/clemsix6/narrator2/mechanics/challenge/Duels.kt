@@ -51,8 +51,6 @@ import net.minecraft.core.SectionPos
 import net.minecraft.core.registries.Registries
 import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
-import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
-import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket
 import net.minecraft.resources.Identifier
 import net.minecraft.resources.ResourceKey
 import net.minecraft.server.MinecraftServer
@@ -470,7 +468,7 @@ class Duels(
         for (player in players) {
             val other = opponentOf(running, running.participant(player.uuid)!!)
             fighting[player.uuid] = Fight(duel.id, other.playerId)
-            title(player, ui.format("duel.start", "opponent" to other.name))
+            title(player, other.name)
         }
         val line = DuelLines.started(running, clock)
         decisions.record(log, DecisionRecord.Kind.MECHANIC, Challenges.STARTED, "${duel.ref}", reason = line, conversationId = EngineActions.conversationOf(duel.ref))
@@ -816,9 +814,19 @@ class Duels(
 
     private fun private(text: String): Component = Speech.chatLine(ui, text, private = true)
 
-    private fun title(player: ServerPlayer, text: String) {
-        player.connection.send(ClientboundSetTitlesAnimationPacket(TITLE_FADE_IN, TITLE_STAY, TITLE_FADE_OUT))
-        player.connection.send(ClientboundSetTitleTextPacket(Speech.colored(ui, text)))
+    /**
+     * The duel's start on [player]'s screen: `duel.start` over `duel.start_subtitle` (cut should an operator have lengthened
+     * them), as long as it takes to read. Over a title still on their screen, it goes to the chat instead (M7-TITLES).
+     */
+    private fun title(player: ServerPlayer, opponent: String) {
+        val title = ModelText.cut(ui["duel.start"], Speech.TITLE_MAX)
+        val subtitle = ModelText.cut(ui.format("duel.start_subtitle", "opponent" to opponent), Speech.SUBTITLE_MAX)
+        val stay = Speech.titleStay(Speech.length(title) + Speech.length(subtitle))
+        if (services.toolLimits.speech.engineTitle(player.uuid, Speech.titleOnScreenMs(stay))) {
+            Speech.showTitle(player, ui, title, subtitle, stay)
+        } else {
+            player.sendSystemMessage(private("$title $subtitle"))
+        }
     }
 
     private fun saved(player: ServerPlayer, now: Long) = SavedPosition(
@@ -863,10 +871,6 @@ class Duels(
         /** Yaw looking east (+x) and west (−x): the two duelists face each other. */
         private const val FACING_EAST = -90f
         private const val FACING_WEST = 90f
-
-        private const val TITLE_FADE_IN = 10
-        private const val TITLE_STAY = 40
-        private const val TITLE_FADE_OUT = 20
 
         private fun invalid(message: String) = MechanicRejected(null, message)
 

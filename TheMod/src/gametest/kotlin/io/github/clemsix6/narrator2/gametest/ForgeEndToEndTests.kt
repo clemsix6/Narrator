@@ -371,7 +371,7 @@ class ForgeEndToEndTests {
                         over = true;
                         display.cancel();
                         String winner = chat.player();
-                        Pending last = ctx.acts().title(null, winner + " a trouvé", "le mot de passe était " + word);
+                        Pending last = ctx.acts().title(null, winner, "a trouvé le mot : " + word);
                         Game game = ctx.game();
                         if (game != null && game.running()) last = game.win(List.of(winner), winner + " a écrit « " + word + " » le premier");
                         last.then(o -> ctx.end(winner + " a trouvé le mot de passe « " + word + " »"));
