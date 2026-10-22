@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.config
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.OutputConfig
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.difficulty.DifficultyConfig
 import io.github.clemsix6.narrator2.guard.CommandPolicy
 import io.github.clemsix6.narrator2.llm.Role
 import kotlinx.serialization.Serializable
@@ -28,6 +29,8 @@ data class NarratorConfig(
     val language: String = "fr",
     /** How far the Narrator may go against players: 0 (no hostile action) to 5. Sets the engine's caps. */
     val chaos: Int = 3,
+    /** The permanent difficulty layer, without Claude (M7-BASE). Read at the server's start only. */
+    val difficulty: DifficultyConfig = DifficultyConfig(),
     val journal: JournalConfig = JournalConfig(),
     val observer: ObserverConfig = ObserverConfig(),
     val director: DirectorConfig = DirectorConfig(),
@@ -520,6 +523,7 @@ object ConfigStore {
             add("language must be a language the mod ships texts for (ui/<language>.properties), such as fr")
         }
         range("chaos", config.chaos.toLong(), 0, 5)
+        addAll(config.difficulty.problems())
 
         val journal = config.journal
         range("journal.flushIntervalMs", journal.flushIntervalMs, 200, 10_000)

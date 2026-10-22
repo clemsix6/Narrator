@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.difficulty.Difficulty
 import io.github.clemsix6.narrator2.guard.BlockRestorer
 import io.github.clemsix6.narrator2.guard.DeathGuard
 import io.github.clemsix6.narrator2.guard.GuardStates
@@ -205,7 +206,9 @@ class PunishGameTests {
                 val slimes = b.adopt()
                 helper.assertEquals(6, slimes.size, "six slimes")
                 helper.assertTrue(slimes.all { it is Slime && it.size == 1 }, "all of size 1: ${slimes.map { (it as? Slime)?.size }}")
-                helper.assertTrue(slimes.all { it.health == 1f && it.maxHealth == 1f }, "with the health of their size")
+                // The difficulty layer raises it like any hostile creature's (M7-BASE).
+                val health = (Difficulty.config?.takeIf { it.enabled }?.mobHealth ?: 1.0).toFloat()
+                helper.assertTrue(slimes.all { it.health == health && it.maxHealth == health }, "with the health of their size, raised by the difficulty layer")
             },
             ended = { helper.assertEquals(emptyList<Mob>(), b.summoned(), "the slimes are gone") },
         )
