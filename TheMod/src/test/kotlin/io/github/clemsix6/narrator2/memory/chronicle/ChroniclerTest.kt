@@ -290,14 +290,14 @@ class ChroniclerTest {
         assertTrue(full.conversations.single() != fresh.conversations.single(), "a new conversation reads less than one of 40 000 tokens")
 
         val config = f.services.settings.get().config
-        val medium = config.copy(roles = config.roles + (Role.CHRONICLER to config.role(Role.CHRONICLER).copy(effort = "medium")))
-        f.services.settings.swap(testSettings(medium, ClaudeClient(medium, TEST_API_KEY)))
+        val high = config.copy(roles = config.roles + (Role.CHRONICLER to config.role(Role.CHRONICLER).copy(effort = "high")))
+        f.services.settings.swap(testSettings(high, ClaudeClient(high, TEST_API_KEY)))
         f.runRow(9, RunKind.BATCH, "20:00", "20:10")
         f.fake.enqueue(reply { text("Rien.") })
         val reloaded = f.chronicler.batch(9, f.chapter, at("20:00"), at("20:10"))
 
         assertTrue(fresh.conversations.single() != reloaded.conversations.single(), "a conversation keeps the effort it began with")
-        assertEquals("medium", f.fake.requests.last().json.path("output_config").path("effort").asText())
+        assertEquals("high", f.fake.requests.last().json.path("output_config").path("effort").asText())
         assertEquals(listOf("done", "done", null), f.rows("SELECT end_reason FROM conversations WHERE role = 'chronicler' ORDER BY started_at") { getString(1) })
     }
 

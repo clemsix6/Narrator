@@ -70,7 +70,7 @@ object StyleReport {
      * The flaws the line review scores, in the order of `narrator_lines`' columns: every drift of tone but the length,
      * which is measured, never scored ([LineLength], M6-FIX-11).
      */
-    val FLAWS: List<Flaw> = listOf(Flaw.DARK, Flaw.CRUEL, Flaw.OUT_OF_CHARACTER, Flaw.FLAT, Flaw.REPEATS)
+    val FLAWS: List<Flaw> = listOf(Flaw.DARK, Flaw.CRUEL, Flaw.OUT_OF_CHARACTER, Flaw.OBSCURE, Flaw.FLAT, Flaw.REPEATS)
 
     /**
      * A line of the Director and its latest labels: [register] is null when the line was not reviewed, and [flaws] and
@@ -352,7 +352,7 @@ object StyleReport {
 
     // ── Parts ───────────────────────────────────────────────────────────────────────────────────────
 
-    private const val LINE_COLUMNS = "SELECT n.id, epoch_ms(n.ts), n.text, n.register, n.dark, n.cruel, n.out_of_character, n.flat, n.repeats, n.crutches"
+    private const val LINE_COLUMNS = "SELECT n.id, epoch_ms(n.ts), n.text, n.register, n.dark, n.cruel, n.out_of_character, n.obscure, n.flat, n.repeats, n.crutches"
 
     /** A line the review reads ([Tics.opens]), on `chat c`: its two parameters are [Tics.KIND_PATTERN] and [Tics.OPENER_MIN_CHARS]. */
     private const val REVIEWED_TEXT = "NOT regexp_matches(c.text, ?) AND length(c.text) >= ?"
@@ -364,7 +364,7 @@ object StyleReport {
     private fun ResultSet.line(): Line {
         val register = getString(4)?.let { enumOfId<ComicRegister>(it) ?: ComicRegister.OTHER }
         val flaws = if (register == null) emptyMap() else FLAWS.mapIndexedNotNull { i, flaw -> doubleOrNull(5 + i)?.let { flaw to it } }.toMap()
-        return Line(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), register, flaws, if (register == null) emptyList() else strings(10))
+        return Line(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), register, flaws, if (register == null) emptyList() else strings(11))
     }
 
     /** The reactions to the lines of [period]; none read when no line of it was reviewed, since only those are matched. */

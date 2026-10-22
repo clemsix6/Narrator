@@ -64,7 +64,7 @@ COMMENT ON COLUMN narrator_actions.status IS 'ok, invalid, denied, failed, timeo
 
 -- The line review (M6 §3.3): the latest labels of each line, if any.
 CREATE OR REPLACE VIEW narrator_lines AS
-SELECT c.id, c.ts, c.recipients, c.text, l.register, l.dark, l.cruel, l.flat, l.out_of_character, l.repeats, l.crutches
+SELECT c.id, c.ts, c.recipients, c.text, l.register, l.dark, l.cruel, l.flat, l.out_of_character, l.obscure, l.repeats, l.crutches
 FROM chat c
 LEFT JOIN (SELECT DISTINCT ON (event_id) * FROM line_labels ORDER BY event_id, ts DESC) l ON l.event_id = c.id
 WHERE c.channel = 'narrator';

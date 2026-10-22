@@ -194,9 +194,13 @@ object ReplaySituations {
 
     private val JSON = Json { ignoreUnknownKeys = false }
 
-    /** Every situation of [DIR], in the order of their file names. */
+    /**
+     * Every situation of [DIR], in the order of their file names; of the folder `NARRATOR2_REPLAY_DIR` names instead, when
+     * set: situations of a real server kept out of the repository, with their transcripts (M7-CLARITY).
+     */
     internal fun load(): List<ReplaySituation> {
-        val dir = Paths.get(ReplaySituations::class.java.getResource(DIR)!!.toURI())
+        val dir = System.getenv("NARRATOR2_REPLAY_DIR")?.takeIf { it.isNotBlank() }?.let { Paths.get(it) }
+            ?: Paths.get(ReplaySituations::class.java.getResource(DIR)!!.toURI())
         val files = Files.list(dir).use { stream -> stream.filter { it.extension == "json" }.sorted().toList() }
         return files.map { file -> resolve(JSON.decodeFromString(SituationSpec.serializer(), Files.readString(file)), dir) }
     }

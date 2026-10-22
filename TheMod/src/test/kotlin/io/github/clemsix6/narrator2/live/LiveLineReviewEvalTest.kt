@@ -3,6 +3,7 @@ package io.github.clemsix6.narrator2.live
 import io.github.clemsix6.narrator2.config.GatewayConfig
 import io.github.clemsix6.narrator2.config.NarratorConfig
 import io.github.clemsix6.narrator2.config.Prompts
+import io.github.clemsix6.narrator2.config.StyleConfig
 import io.github.clemsix6.narrator2.config.UiTexts
 import io.github.clemsix6.narrator2.event.Envelope
 import io.github.clemsix6.narrator2.event.NarratorChannel
@@ -33,18 +34,19 @@ import java.util.UUID
 import kotlin.test.assertTrue
 
 /**
- * T1 of design M6 §15.4: the line review (Haiku 5.5, `prompts/line_review.md`) against 60 lines of the Narrator labeled
- * by hand (`narrator2/style/lines-eval.json`: 40 real lines of the acceptance runs of M4 and M5, 20 fabricated), through
- * the owner's LLMGW: `gradlew liveTest` only, one real call per line (a few cents). Each line goes through
- * [LineReviewer.review], the code of the server: its context (the 5 lines said before it) and the crutch candidates
- * come from a [FakeStyle].
+ * T1 of design M6 §15.4: the line review (Haiku 5.5, `prompts/line_review.md`) against 62 lines of the Narrator labeled
+ * by hand (`narrator2/style/lines-eval.json`: 40 real lines of the acceptance runs of M4 and M5, 2 obscure ones of the
+ * owner's server (M7-CLARITY), 20 fabricated), through the owner's LLMGW: `gradlew liveTest` only, one real call per line
+ * (a few cents). Each line goes through [LineReviewer.review], the code of the server: its context (the 5 lines said
+ * before it) and the crutch candidates come from a [FakeStyle].
  *
  * Thresholds: the register right for 75 % of the lines; every fabricated dark and cruel line found (a score over the
  * thresholds of [ToneWatch], M6 §4.3); false alerts on 10 % of the good lines at most (a flaw over its
  * threshold on a real line, unless the fixture calls it unsure); « céleste » found as a crutch in 8 of the 11 real lines
  * that hold it. The report (with each flaw's scores, to set `ToneWatch`'s thresholds) goes to
  * `build/reports/liveTest/line-review/`. The prompt is the bundled one, or the one in the folder named by
- * `NARRATOR2_LINE_REVIEW_PROMPT_DIR`. The key is never printed.
+ * `NARRATOR2_LINE_REVIEW_PROMPT_DIR`; the effort is `style.lineReviewEffort`'s default, or `NARRATOR2_LINE_REVIEW_EFFORT`
+ * (M7-CLARITY: its latency against low's). The key is never printed.
  */
 @Tag("live")
 class LiveLineReviewEvalTest {
@@ -67,13 +69,14 @@ class LiveLineReviewEvalTest {
         val key = LiveGateway.key()
         val promptDir = System.getenv("NARRATOR2_LINE_REVIEW_PROMPT_DIR")?.takeIf { it.isNotBlank() }?.let { Path.of(it) }
         val prompts = promptDir?.let { Prompts.load(it) } ?: Prompts.bundled()
-        val label = promptDir?.fileName?.toString() ?: "bundled"
-        val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL))
+        val effort = System.getenv("NARRATOR2_LINE_REVIEW_EFFORT")?.takeIf { it.isNotBlank() } ?: StyleConfig().lineReviewEffort
+        val label = "${promptDir?.fileName?.toString() ?: "bundled"}-$effort"
+        val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL), style = StyleConfig(lineReviewEffort = effort))
         val root = Json.parseToJsonElement(dataset()).jsonObject
         val frequent = root.getValue("frequent_words").jsonArray.map { it.jsonPrimitive.content }
         val evenings = root.getValue("evenings").jsonObject.mapValues { (_, lines) -> lines.jsonArray.map { it.jsonPrimitive.content } }
         val cases = root.getValue("lines").jsonArray.map { case(it.jsonObject, evenings) }
-        check(cases.size == 60 && cases.count { it.real } == 40) { "the fixture holds 60 lines, 40 of them real" }
+        check(cases.size == 62 && cases.count { it.real } == 42) { "the fixture holds 62 lines, 42 of them real" }
 
         ReflexClient(config, key).use { client ->
             val style = FakeStyle().also { it.candidates = frequent }
@@ -109,7 +112,7 @@ class LiveLineReviewEvalTest {
                 append("| answered | $answered/$n | |\n\n")
                 append("Other fabricated flaws found: ")
                 append(
-                    listOf(OUT_OF_CHARACTER, FLAT, REPEATS).joinToString(" · ") { flaw ->
+                    listOf(OUT_OF_CHARACTER, OBSCURE, FLAT, REPEATS).joinToString(" · ") { flaw ->
                         val expected = cases.filter { flaw in it.flaws }
                         "$flaw ${expected.count { found(results[it.id], flaw) }}/${expected.size}"
                     },
@@ -131,7 +134,7 @@ class LiveLineReviewEvalTest {
                     ),
                 )
                 append("Failed calls: ${calls.mapNotNull { it.error }.ifEmpty { listOf("none") }.joinToString("; ")}\n\n")
-                append("| line | register (expected) | dark | cruel | flat | ooc | repeats | crutches | misses | reason |\n|---|---|---|---|---|---|---|---|---|---|\n")
+                append("| line | register (expected) | dark | cruel | flat | ooc | obscure | repeats | crutches | misses | reason |\n|---|---|---|---|---|---|---|---|---|---|---|\n")
                 cases.forEach { case ->
                     val r = results[case.id]
                     val misses = misses(case, r)
@@ -147,7 +150,7 @@ class LiveLineReviewEvalTest {
             // The raw scores, for a calibration across runs.
             Files.writeString(
                 dir.resolve("eval-$run.tsv"),
-                "line\tflaws\tunsure\tregister\tdark\tcruel\tflat\tout_of_character\trepeats\tcrutches\n" + cases.joinToString("") { case ->
+                "line\tflaws\tunsure\tregister\tdark\tcruel\tflat\tout_of_character\tobscure\trepeats\tcrutches\n" + cases.joinToString("") { case ->
                     val r = results[case.id]
                     "${case.id}\t${case.flaws.joinToString(",")}\t${case.unsure.joinToString(",")}\t${r?.register?.id}\t" +
                         FLAWS.joinToString("\t") { score(r, it)?.toString() ?: "" } + "\t${r?.crutches?.joinToString(",").orEmpty()}\n"
@@ -194,6 +197,7 @@ class LiveLineReviewEvalTest {
             CRUEL -> it.cruel
             FLAT -> it.flat
             OUT_OF_CHARACTER -> it.outOfCharacter
+            OBSCURE -> it.obscure
             REPEATS -> it.repeats
             else -> error("unknown flaw $flaw")
         }
@@ -249,15 +253,16 @@ class LiveLineReviewEvalTest {
         const val CRUEL = "cruel"
         const val FLAT = "flat"
         const val OUT_OF_CHARACTER = "out_of_character"
+        const val OBSCURE = "obscure"
         const val REPEATS = "repeats"
         const val CELESTE = "céleste"
 
-        val FLAWS = listOf(DARK, CRUEL, FLAT, OUT_OF_CHARACTER, REPEATS)
+        val FLAWS = listOf(DARK, CRUEL, FLAT, OUT_OF_CHARACTER, OBSCURE, REPEATS)
 
         /** The thresholds of [ToneWatch] (M6 §4.3): a line over one of them is flagged. */
         val THRESHOLDS = mapOf(
             DARK to ToneWatch.DARK, CRUEL to ToneWatch.CRUEL, OUT_OF_CHARACTER to ToneWatch.OUT_OF_CHARACTER, FLAT to ToneWatch.FLAT,
-            REPEATS to ToneWatch.REPEATS,
+            OBSCURE to ToneWatch.OBSCURE, REPEATS to ToneWatch.REPEATS,
         )
     }
 }

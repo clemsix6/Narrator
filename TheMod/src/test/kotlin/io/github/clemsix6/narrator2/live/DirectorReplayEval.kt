@@ -81,6 +81,12 @@ internal class ReplaySample(
 ) : ReplayTurn {
     val dollars: Double get() = stats.sumOf { cost(it) }
 
+    /** The requests' time up to the one that said the turn's first line, in milliseconds; null without a line or stats. */
+    val firstLineMs: Long? get() = lines.firstOrNull()?.request?.takeIf { it <= stats.size }?.let { r -> stats.take(r).sumOf { it.durationMs } }
+
+    /** The requests' time of the whole turn, in milliseconds. */
+    val turnMs: Long get() = stats.sumOf { it.durationMs }
+
     /** `sql → say | punish, say` : the tools of each request, in order. */
     fun toolLine(): String = (1..requests).joinToString(" | ") { r -> calls.filter { it.request == r }.joinToString(", ") { it.name }.ifEmpty { "(end)" } }
 
@@ -291,6 +297,9 @@ internal class ReplayVerdict(
  * - `NARRATOR2_REPLAY_BUDGET`: the run's budget in dollars, [DEFAULT_BUDGET] by default and never above [HARD_CAP], judge
  *   included. A situation is not started when its four turns could cross it, nor a request.
  * - `NARRATOR2_REPLAY_STORYTELLER`: `true` to declare `inspire`, the 48th tool (once M6-16 is merged).
+ * - `NARRATOR2_REPLAY_EFFORT_A`, `NARRATOR2_REPLAY_EFFORT_B`: the Director's effort of each version, its default when not
+ *   set (M7-CLARITY: a retouch of the prompt measured with a new effort, and the time to the first line of each).
+ * - `NARRATOR2_REPLAY_DIR`: the folder of the situations, the test resources' when not set ([ReplaySituations.load]).
  *
  * Turns run one after the other: A then B for each sample of a situation, so that a stop by the budget leaves whole
  * situations. Situations of the same chapter share its opening and, for each version, its prompt in the cache: play them
@@ -313,6 +322,11 @@ class DirectorReplayEval {
         val only = System.getenv("NARRATOR2_REPLAY_ONLY")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
         val cap = (System.getenv("NARRATOR2_REPLAY_BUDGET")?.toDoubleOrNull() ?: DEFAULT_BUDGET).coerceAtMost(HARD_CAP)
         val storyteller = System.getenv("NARRATOR2_REPLAY_STORYTELLER") == "true"
+        val defaultEffort = NarratorConfig.DEFAULT_ROLES.getValue(Role.DIRECTOR).effort
+        val efforts = mapOf(
+            a.label to (System.getenv("NARRATOR2_REPLAY_EFFORT_A")?.takeIf { it.isNotBlank() } ?: defaultEffort),
+            b.label to (System.getenv("NARRATOR2_REPLAY_EFFORT_B")?.takeIf { it.isNotBlank() } ?: defaultEffort),
+        )
         val situations = ReplaySituations.load().filter { only == null || it.id in only }
         assertTrue(situations.isNotEmpty(), "no situation to play (NARRATOR2_REPLAY_ONLY: $only)")
 
@@ -325,14 +339,19 @@ class DirectorReplayEval {
         val planned = situations.size * perSituationTurns
         println(
             "[replay] ${situations.size} situations × (A ${samplesOf[a.label]} + B ${samplesOf[b.label]}) samples = $planned turns${if (real) " + the real turns as A#0" else ""} · " +
-                "${tools.names.size} tools · budget ${ToneJudge.dollars(cap)} · A ${a.source} (${a.sha}) · B ${b.source} (${b.sha})",
+                "${tools.names.size} tools · budget ${ToneJudge.dollars(cap)} · A ${a.source} (${a.sha}, effort ${efforts[a.label]}) · " +
+                "B ${b.source} (${b.sha}, effort ${efforts[b.label]})",
         )
 
         val samples = mutableListOf<ReplaySample>()
-        val config = NarratorConfig(gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL, maxRetries = 2))
-        ClaudeClient(config, key).use { client ->
+        fun config(effort: String) = NarratorConfig(
+            gateway = GatewayConfig(baseUrl = LiveGateway.BASE_URL, maxRetries = 2),
+            roles = NarratorConfig.DEFAULT_ROLES + (Role.DIRECTOR to NarratorConfig.DEFAULT_ROLES.getValue(Role.DIRECTOR).copy(effort = effort)),
+        )
+        val clients = efforts.mapValues { (_, effort) -> ClaudeClient(config(effort), key) }
+        try {
             val reserve = judgeReserve(planned)
-            val runner = ReplayRunner(client, tools, transcripts, budget, reserve)
+            val runners = clients.mapValues { (_, client) -> ReplayRunner(client, tools, transcripts, budget, reserve) }
             var played = 0
             for (situation in situations) {
                 val perSituation = if (played == 0) perSituationTurns * ReplayRunner.REQUEST_ESTIMATE_DOLLARS else samples.sumOf { it.dollars } / played
@@ -343,16 +362,19 @@ class DirectorReplayEval {
                 if (real) realSample(situation, a)?.let { samples += it }
                 for (n in 1..samplesOf.values.max()) {
                     for (version in listOf(a, b).filter { n <= samplesOf.getValue(it.label) }) {
-                        val sample = runner.run(situation, version, n)
+                        val sample = runners.getValue(version.label).run(situation, version, n)
                         samples += sample
                         println(
                             "[replay] ${situation.id} ${version.label}#$n · ${sample.end.id} after ${sample.requests} request(s) · ${sample.toolLine()} · " +
-                                "${sample.lines.size} line(s) · ${ToneJudge.dollars(sample.dollars)} (total ${ToneJudge.dollars(budget.spent)})",
+                                "${sample.lines.size} line(s) · first line ${seconds(sample.firstLineMs)} · ${ToneJudge.dollars(sample.dollars)} " +
+                                "(total ${ToneJudge.dollars(budget.spent)})",
                         )
                     }
                 }
                 played++
             }
+        } finally {
+            clients.values.forEach { it.close() }
         }
 
         val lines = samples.flatMap { sample ->
@@ -365,7 +387,7 @@ class DirectorReplayEval {
         val judged = ToneJudge(LiveGateway.BASE_URL, key, budget).use { it.grade(lines) }
         val verdict = ReplayVerdict.of(situations, samples, a.label, b.label, judged.grades, planned, judged.problems)
         val sampling = "A ${samplesOf[a.label]}${if (real) " (+ the real turn as A#0)" else ""}, B ${samplesOf[b.label]} samples"
-        val report = report(situations, samples, a, b, judged, lines, verdict, budget, sampling, tools.names.size)
+        val report = report(situations, samples, a, b, judged, lines, verdict, budget, sampling, tools.names.size, efforts)
         Files.writeString(dir.resolve("report.md"), report)
         Files.writeString(dir.resolve("samples.json"), samplesJson(samples, judged.grades).toString())
         println(report)
@@ -427,11 +449,12 @@ class DirectorReplayEval {
             budget: LiveBudget,
             sampling: String,
             tools: Int,
+            efforts: Map<String, String> = emptyMap(),
         ): String = buildString {
             fun pct(n: Int, of: Int) = if (of == 0) "-" else "%.0f %%".format(Locale.ROOT, 100.0 * n / of)
             append("# Director replay (M6 §4.5)\n\n")
-            append("- A: ${a.source} · ${a.text.length} characters · sha ${a.sha}\n")
-            append("- B: ${b.source} · ${b.text.length} characters · sha ${b.sha}\n")
+            append("- A: ${a.source} · ${a.text.length} characters · sha ${a.sha}${efforts[a.label]?.let { " · effort $it" }.orEmpty()}\n")
+            append("- B: ${b.source} · ${b.text.length} characters · sha ${b.sha}${efforts[b.label]?.let { " · effort $it" }.orEmpty()}\n")
             append("- ${situations.size} situations · $sampling · $tools tools declared · at most ${ReplayRunner.MAX_REQUESTS} requests per turn\n\n")
             append("## Verdict: ${if (verdict.passes) "B PASSES" else "B FAILS"}\n\n")
             verdict.reasons().ifEmpty { listOf("no structural check lost, funny within ${ReplayVerdict.FUNNY_TOLERANCE}, no more eliminatory failure") }.forEach { append("- $it\n") }
@@ -447,7 +470,12 @@ class DirectorReplayEval {
             append("| requests per turn ${cell { s -> GridSummary.num(s.map { it.requests }.average()) }}\n")
             append("| turns at the request cap ${cell { s -> s.count { it.end == TurnEnd.REQUEST_CAP }.toString() }}\n")
             append("| refused, incomplete, failed ${cell { s -> "${s.count { it.end == TurnEnd.REFUSED }}, ${s.count { it.end == TurnEnd.INCOMPLETE }}, ${s.count { it.end == TurnEnd.FAILED }}" }}\n")
-            append("| cost of the turns ${cell { s -> ToneJudge.dollars(s.sumOf { it.dollars }) }}\n\n")
+            append("| cost of the turns ${cell { s -> ToneJudge.dollars(s.sumOf { it.dollars }) }}\n")
+            // The real turns (sample 0) have no stats: their time is the evening's, not the replay's.
+            fun timed(s: List<ReplaySample>) = s.filter { it.stats.isNotEmpty() }
+            append("| cost per replayed turn ${cell { s -> timed(s).takeIf { it.isNotEmpty() }?.let { t -> ToneJudge.dollars(t.sumOf { it.dollars } / t.size) } ?: "-" }}\n")
+            append("| time to the first line, mean · median ${cell { s -> timing(timed(s).mapNotNull { it.firstLineMs }) }}\n")
+            append("| time of the turn, mean · median ${cell { s -> timing(timed(s).map { it.turnMs }) }}\n\n")
 
             append("## Noise (A against B)\n\n")
             val tallies = verdict.tallies
@@ -479,7 +507,8 @@ class DirectorReplayEval {
                 tallies.filter { it.situation == situation.id }.forEach { append("| ${it.check} | ${it.a}/${it.aSamples} | ${it.b}/${it.bSamples} |\n") }
                 append("\n")
                 for (sample in ofSituation) {
-                    append("- **${sample.version}#${sample.sample}** · ${sample.end.id}${sample.detail?.let { " ($it)" }.orEmpty()} · ${sample.toolLine()} · ${ToneJudge.dollars(sample.dollars)}\n")
+                    val time = if (sample.stats.isEmpty()) "" else " · first line ${seconds(sample.firstLineMs)}, turn ${seconds(sample.turnMs)}"
+                    append("- **${sample.version}#${sample.sample}** · ${sample.end.id}${sample.detail?.let { " ($it)" }.orEmpty()} · ${sample.toolLine()} · ${ToneJudge.dollars(sample.dollars)}$time\n")
                     sample.calls.filter { it.name !in SPEECH }.forEach { call ->
                         append("  - `${call.name}` ${call.input.take(300)}${call.result?.let { " → ${it.lineSequence().first().take(300)}" }.orEmpty()}\n")
                     }
@@ -493,6 +522,17 @@ class DirectorReplayEval {
         }
 
         private val SPEECH = setOf("say", "show_title", "actionbar")
+
+        /** `4.2 s`, or `-`. */
+        internal fun seconds(ms: Long?): String = ms?.let { "%.1f s".format(Locale.ROOT, it / 1000.0) } ?: "-"
+
+        /** `4.5 s · 4.1 s`: the mean and the median of [ms], or `-`. */
+        private fun timing(ms: List<Long>): String {
+            if (ms.isEmpty()) return "-"
+            val sorted = ms.sorted()
+            val median = if (sorted.size % 2 == 1) sorted[sorted.size / 2] else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2
+            return "${seconds(ms.average().toLong())} · ${seconds(median)}"
+        }
 
         /** Every sample, its calls, its lines and their grades: the raw results, for a later look. */
         internal fun samplesJson(samples: List<ReplaySample>, grades: Map<String, Grade>): JsonObject = buildJsonObject {
@@ -521,12 +561,14 @@ class DirectorReplayEval {
                                     put("text", line.text)
                                     grades[ReplayVerdict.lineId(sample, i)]?.let { g ->
                                         put("funny", g.funny); put("fair", g.fair.id); put("dark", g.dark); put("cruel", g.cruel)
-                                        put("voice", g.voice); put("repeats", g.repeats); put("legible", g.legible.id); put("reason", g.reason)
+                                        put("voice", g.voice); put("repeats", g.repeats); put("legible", g.legible.id); put("clear", g.clear); put("reason", g.reason)
                                     }
                                 }
                             }
                         }
-                        putJsonArray("stats") { sample.stats.forEach { s -> add("in ${s.inputTokens} read ${s.cacheReadTokens} write ${s.cacheWriteTokens} out ${s.outputTokens} stop ${s.stopReason}") } }
+                        sample.firstLineMs?.let { put("first_line_ms", it) }
+                        put("turn_ms", sample.turnMs)
+                        putJsonArray("stats") { sample.stats.forEach { s -> add("in ${s.inputTokens} read ${s.cacheReadTokens} write ${s.cacheWriteTokens} out ${s.outputTokens} stop ${s.stopReason} ${s.durationMs} ms") } }
                     }
                 }
             }

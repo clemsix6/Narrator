@@ -308,7 +308,7 @@ class WorkersTest {
         assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
-    /** The scout (M4 §14) is a worker like the Analyst: its own prompt, settings (effort low) and tools, the same line. */
+    /** The scout (M4 §14) is a worker like the Analyst: its own prompt, settings (effort medium) and tools, the same line. */
     @Test
     fun `a scout task is its own conversation, with the scout's prompt, effort and tools`() {
         val rig = Rig()
@@ -327,7 +327,7 @@ class WorkersTest {
         )
         val request = rig.requestsOf(id).first().json
         assertContains(request.path("system")[0].path("text").asText(), "Tu es l'Éclaireur du Narrateur")
-        assertEquals("low", request.path("output_config").path("effort").asText())
+        assertEquals("medium", request.path("output_config").path("effort").asText())
         assertEquals(
             "<task id=\"T-$id\" from=\"director\">\nFind a flat open square near Bartok for a duel, in the overworld.\n</task>\n" +
                 "<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>",
@@ -601,7 +601,7 @@ class WorkersTest {
         val request = rig.requestsOf(id).single().json
         val prompts = Prompts.bundled()
         assertEquals(listOf(prompts.get("forger"), prompts.get(Prompts.SDK)), request.path("system").map { it.path("text").asText() }, "forger.md, then sdk.md")
-        assertEquals("high", request.path("output_config").path("effort").asText())
+        assertEquals("xhigh", request.path("output_config").path("effort").asText())
         assertEquals(64_000, request.path("max_tokens").asInt())
         assertEquals("claude-opus-5-5", request.path("model").asText())
         assertEquals(
@@ -807,7 +807,7 @@ class WorkersTest {
         )
         val request = rig.requestsOf(id).first().json
         assertContains(request.path("system")[0].path("text").asText(), "Tu es la salle d'écriture du Narrateur")
-        assertEquals("medium", request.path("output_config").path("effort").asText())
+        assertEquals("high", request.path("output_config").path("effort").asText())
         assertEquals(
             "<task id=\"T-$id\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:00\" players_online=\"Bartok\"/>\n" +
                 "<ideas open=\"0\">(none open)</ideas>",

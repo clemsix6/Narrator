@@ -96,7 +96,7 @@ class TranscriptsTest {
         assertEquals("Steve: hello!", lines[1].path("data").path("content").asText())
         with(lines[2].path("data")) {
             assertEquals("claude-opus-5-5", path("model").asText())
-            assertEquals("medium", path("output_config").path("effort").asText())
+            assertEquals("high", path("output_config").path("effort").asText())
             assertTrue(path("cache_control").isMissingNode, "no cache marker by default")
             assertEquals("adaptive", path("thinking").path("type").asText())
             assertEquals("narrator2-${conversation.role.id}", path("headers").path("X-Session-ID").asText())
@@ -144,7 +144,7 @@ class TranscriptsTest {
             "You are the Narrator.",
             " · RECEIVED",
             "Steve: hello!",
-            " · REQUEST — `claude-opus-5-5` · effort `medium` · 1 messages",
+            " · REQUEST — `claude-opus-5-5` · effort `high` · 1 messages",
             " · CLAUDE — ",
             "input 50 (+1000 cache read, 0 cache write) · output 20 · tool_use",
             "1 attempt · request req_fake_",

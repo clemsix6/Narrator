@@ -267,7 +267,7 @@ class DirectorResilienceTest {
         h.awaitTurns(1)
         val old = h.services.settings.get()
         val director = old.config.role(Role.DIRECTOR)
-        val config = old.config.copy(roles = NarratorConfig.DEFAULT_ROLES + (Role.DIRECTOR to director.copy(model = "claude-test-other", effort = "high")))
+        val config = old.config.copy(roles = NarratorConfig.DEFAULT_ROLES + (Role.DIRECTOR to director.copy(model = "claude-test-other", effort = "max")))
         val client = ClaudeClient(config, TEST_API_KEY)
         try {
             val new = testSettings(config, client)
@@ -275,7 +275,7 @@ class DirectorResilienceTest {
             h.director.post(DirectorSignal.SettingsChanged(old, new))
             h.runCurrent()
             assertEquals(
-                "chapter 1, reload: the director model went from ${director.model} to claude-test-other and the director effort went from ${director.effort} to high",
+                "chapter 1, reload: the director model went from ${director.model} to claude-test-other and the director effort went from ${director.effort} to max",
                 h.decisions(DecisionRecord.Kind.CHAPTER, "marked").single().reason,
             )
 
@@ -295,7 +295,7 @@ class DirectorResilienceTest {
             }
             assertNotEquals(h.sessionOf(0), h.sessionOf(3))
             assertEquals("claude-test-other", model(h, 3))
-            assertEquals("high", effort(h, 3))
+            assertEquals("max", effort(h, 3))
             assertEquals(director.model, h.traces.llmCalls.first { it.purpose == LlmCallRecord.Purpose.CHAPTER_SUMMARY }.model)
             h.assertInvariants()
         } finally {

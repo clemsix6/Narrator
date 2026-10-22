@@ -1,5 +1,5 @@
 {
-  "about": "T1 of design M6 §15.4: 60 lines of the Narrator labeled by hand for the line review (LiveLineReviewEvalTest). 40 real lines (r..) said by the Director in the acceptance runs of M4 (.research/spikes/m6/lines.txt) and M5 (.research/m5-live, passes 3 to 5), among them the 11 that hold « céleste »; 20 fabricated lines (f..): dark, cruel, out of character, flat, repeating, with crutch words. A real line's context is the 5 lines of 25 characters or more said before it in its evening; a fabricated line gives its own. Every line is reviewed with frequent_words, the crutch candidates the style watch (StyleWatchImpl.crutchCandidates, M6-03) gives at the end of M4's acceptance run; the reviewer sends those the line holds. registers: the registers accepted (they overlap). flaws: what the review must find (dark, cruel, flat, out_of_character, repeats). unsure: flaws a careful reader could raise either way, never scored. crutches: the crutch words to find; crutches_ok: words that may also be taken for crutches.",
+  "about": "T1 of design M6 §15.4: 62 lines of the Narrator labeled by hand for the line review (LiveLineReviewEvalTest). 42 real lines (r..): 40 said by the Director in the acceptance runs of M4 (.research/spikes/m6/lines.txt) and M5 (.research/m5-live, passes 3 to 5), among them the 11 that hold « céleste », and the 2 obscure lines of the owner's server that M7-CLARITY fixes (r41, r42, with their own context); 20 fabricated lines (f..): dark, cruel, out of character, flat, repeating, with crutch words. A real line's context is the 5 lines of 25 characters or more said before it in its evening; a fabricated line gives its own. Every line is reviewed with frequent_words, the crutch candidates the style watch (StyleWatchImpl.crutchCandidates, M6-03) gives at the end of M4's acceptance run; the reviewer sends those the line holds. registers: the registers accepted (they overlap). flaws: what the review must find (dark, cruel, flat, out_of_character, obscure, repeats). unsure: flaws a careful reader could raise either way, never scored. crutches: the crutch words to find; crutches_ok: words that may also be taken for crutches.",
   "frequent_words": ["secondes", "céleste", "désert", "pomme", "minutes", "diamants", "narrateur", "bonsoir"],
   "evenings": {
     "m4": [
@@ -175,6 +175,24 @@
       "registers": ["plain", "game_show", "user_manual", "other"], "flaws": [], "unsure": [], "crutches": [], "crutches_ok": [] },
     { "id": "r40", "evening": "m5-pass5", "text": "Firmin a crié « plus vite » si fort que le métronome divin a pris feu. Tu as cassé le rythme, mon garçon. Littéralement.", "to": ["Firmin"],
       "registers": ["plain"], "flaws": [], "unsure": [], "crutches": [], "crutches_ok": [] },
+    { "id": "r41", "text": "Sous la plage, la taupe Thawyn a trouvé sa vocation : trente-quatre filons de charbon, pas une construction d'autrui abîmée. Le ciel, ému, retire un crayon de son dossier. Un seul, ne t'emballe pas.",
+      "recent": [
+        "Le Thawyn sauvage regagne sa plage natale. Espèce protégée ? Pas encore. Mais on observe.",
+        "Clowew, championne en titre de la pastèque, est de retour. Le trophée n'a pas été remis en jeu.",
+        "Service client céleste : Clowew, un cœur et quart, deux zombies en approche. Douze secondes de régénération offertes à notre fidèle championne. Au-delà, c'est payant.",
+        "Le zombie a gagné aux points, et Clowew se réveille à sept cents blocs de ses affaires, tombées vers -739 -882. clemsix6, tu es à côté : l'occasion rêvée d'effacer une page de ton dossier. Ou d'en écrire une très épaisse.",
+        "Météo : nuit claire, zombies épars, clemsix6 à 3 cœurs. Se déconnecter ne soigne pas, j'ai vérifié."
+      ],
+      "registers": ["nature_documentary", "divine_bureaucracy", "plain", "other"], "flaws": ["obscure"], "unsure": ["repeats", "flat"], "crutches": [], "crutches_ok": [] },
+    { "id": "r42", "text": "Trois minutes. Le crayon retiré du dossier de Thawyn aura tenu trois minutes avant qu'une torche de Clowew ne disparaisse. Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin.",
+      "recent": [
+        "Clowew, championne en titre de la pastèque, est de retour. Le trophée n'a pas été remis en jeu.",
+        "Service client céleste : Clowew, un cœur et quart, deux zombies en approche. Douze secondes de régénération offertes à notre fidèle championne. Au-delà, c'est payant.",
+        "Le zombie a gagné aux points, et Clowew se réveille à sept cents blocs de ses affaires, tombées vers -739 -882. clemsix6, tu es à côté : l'occasion rêvée d'effacer une page de ton dossier. Ou d'en écrire une très épaisse.",
+        "Météo : nuit claire, zombies épars, clemsix6 à 3 cœurs. Se déconnecter ne soigne pas, j'ai vérifié.",
+        "Sous la plage, la taupe Thawyn a trouvé sa vocation : trente-quatre filons de charbon, pas une construction d'autrui abîmée. Le ciel, ému, retire un crayon de son dossier. Un seul, ne t'emballe pas."
+      ],
+      "registers": ["divine_bureaucracy", "plain", "other"], "flaws": ["obscure"], "unsure": ["repeats"], "crutches": [], "crutches_ok": [] },
 
     { "id": "f01", "text": "Personne ne viendra te chercher au fond de cette grotte, Gaspard. Ta torche s'éteint, et le monde t'aura oublié avant l'aube.", "to": ["Gaspard"],
       "registers": ["plain", "silly_prophecy", "other"], "flaws": ["dark"], "unsure": ["cruel"], "crutches": [], "crutches_ok": [] },

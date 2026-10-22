@@ -120,14 +120,14 @@ class ReflexClient internal constructor(
 
     /**
      * Asks the model to label [request] (the user message) under [system] (the prompt), answering with
-     * [schema]. [ReflexResult.Labeled] when it answered a JSON object; [ReflexResult.Failed] when a request
-     * went out and brought none; [ReflexResult.Skipped] when nothing went out.
+     * [schema], at [effort] (the configured one by default). [ReflexResult.Labeled] when it answered a JSON object;
+     * [ReflexResult.Failed] when a request went out and brought none; [ReflexResult.Skipped] when nothing went out.
      */
-    suspend fun label(system: String, request: String, schema: JsonOutputFormat.Schema): ReflexResult {
+    suspend fun label(system: String, request: String, schema: JsonOutputFormat.Schema, effort: String = reflex.effort): ReflexResult {
         enter()?.let { return ReflexResult.Skipped(it) }
         val start = nanoTime()
         try {
-            val params = params(system, request, schema)
+            val params = params(system, request, schema, effort)
             val (message, requestId) = try {
                 val response = withTimeoutOrNull(reflex.timeoutMs) { client.messages().withRawResponse().create(params, options()).await() }
                     ?: return failed(start, null, error = "timeout after ${reflex.timeoutMs} ms")
@@ -179,7 +179,7 @@ class ReflexClient internal constructor(
 
     override fun toString(): String = "ReflexClient(${reflex.model})"
 
-    private fun params(system: String, request: String, schema: JsonOutputFormat.Schema): MessageCreateParams =
+    private fun params(system: String, request: String, schema: JsonOutputFormat.Schema, effort: String): MessageCreateParams =
         MessageCreateParams.builder()
             .model(reflex.model)
             .maxTokens(maxTokens)
@@ -188,7 +188,7 @@ class ReflexClient internal constructor(
             }
             .outputConfig(
                 OutputConfig.builder()
-                    .effort(OutputConfig.Effort.of(reflex.effort))
+                    .effort(OutputConfig.Effort.of(effort))
                     .format(JsonOutputFormat.builder().schema(schema).build())
                     .build(),
             )

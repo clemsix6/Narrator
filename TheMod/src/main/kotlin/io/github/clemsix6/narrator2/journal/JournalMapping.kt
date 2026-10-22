@@ -81,7 +81,7 @@ internal enum class AppendTable(val sqlName: String, val columns: Int) {
     CHAT("chat", 9),
     PRIVATE_MESSAGES("private_messages", 6),
     CHAT_SIGNALS("chat_signals", 15),
-    LINE_LABELS("line_labels", 12),
+    LINE_LABELS("line_labels", 13),
     LLM_CALLS("llm_calls", 24),
     TOOL_CALLS("tool_calls", 14),
     ENGINE_DECISIONS("engine_decisions", 10),
@@ -530,7 +530,7 @@ internal class JournalMapping {
 
     private fun lineLabelsRow(r: LineLabelsRecord) = Append(
         AppendTable.LINE_LABELS,
-        listOf(r.eventId, r.ts, r.source, r.register, r.dark, r.cruel, r.flat, r.outOfCharacter, r.repeats, r.crutches, r.reason, r.latencyMs),
+        listOf(r.eventId, r.ts, r.source, r.register, r.dark, r.cruel, r.flat, r.outOfCharacter, r.repeats, r.crutches, r.reason, r.latencyMs, r.obscure),
     )
 
     private fun turnRow(r: TurnRecord) = Replace(

@@ -76,6 +76,7 @@ data class LineLabels(
     val cruel: Double,
     val flat: Double,
     val outOfCharacter: Double,
+    val obscure: Double,
     val repeats: Double,
     val crutches: List<String>,
     val reason: String?,
@@ -83,7 +84,7 @@ data class LineLabels(
 ) {
     /** The `line_labels` row of these labels. */
     fun record(): LineLabelsRecord =
-        LineLabelsRecord(eventId, ts, source, register.id, dark, cruel, flat, outOfCharacter, repeats, crutches, reason, latencyMs)
+        LineLabelsRecord(eventId, ts, source, register.id, dark, cruel, flat, outOfCharacter, repeats, crutches, reason, latencyMs, obscure)
 }
 
 /**
