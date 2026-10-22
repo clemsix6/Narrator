@@ -1,6 +1,7 @@
 package io.github.clemsix6.narrator2.relics
 
 import io.github.clemsix6.narrator2.config.RelicsConfig
+import io.github.clemsix6.narrator2.config.WorldNotes
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.core.onServerThread
@@ -812,12 +813,17 @@ class RelicsService(private val services: NarratorServices) {
         }
     }
 
-    /** `<context now="…" players_online="…"/>`, as a worker's task gets it. */
+    /**
+     * `<context now="…" players_online="…"/>`, as a worker's task gets it, after the operator's `<server_notes>` when there
+     * are any (M7-NOTES): the other mods' items and what they change.
+     */
     private fun context(): String {
-        val zone = services.settings.get().config.journal.zone(clock.zone)
+        val config = services.settings.get().config
+        val zone = config.journal.zone(clock.zone)
         val now = STAMP.withZone(zone).format(clock.instant())
         val online = services.players.online.joinToString(", ") { ModelText.attribute(it.ref.name) }.ifEmpty { "none" }
-        return "<context now=\"$now\" players_online=\"$online\"/>"
+        val notes = WorldNotes.render(config.worldNotes)?.let { "$it\n" }.orEmpty()
+        return "$notes<context now=\"$now\" players_online=\"$online\"/>"
     }
 
     /** What the task of [ctx]'s conversation asks for, for a tool called out of place. */

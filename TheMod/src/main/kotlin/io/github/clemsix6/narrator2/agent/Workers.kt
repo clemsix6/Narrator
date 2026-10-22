@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.agent
 
 import com.anthropic.models.messages.TextBlockParam
 import io.github.clemsix6.narrator2.config.Prompts
+import io.github.clemsix6.narrator2.config.WorldNotes
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
@@ -258,16 +259,18 @@ class Workers(
     }
 
     /**
-     * The first message of a task: the brief, then when it is and who is online; a storyteller's, then its open ideas in
-     * short ([ProgrammeInputs.taskIdeas], from the memory's cache), so that a new one takes neither the title nor the
-     * substance of an open one (M6-FIX-14).
+     * The first message of a task: the brief, then when it is and who is online; a storyteller's, then the operator's
+     * `<server_notes>` (M7-NOTES) and its open ideas in short ([ProgrammeInputs.taskIdeas], from the memory's cache), so
+     * that a new one takes neither the title nor the substance of an open one (M6-FIX-14).
      */
     private fun opening(task: Task): String {
-        val zone = services.settings.get().config.journal.zone(clock.zone)
+        val config = services.settings.get().config
+        val zone = config.journal.zone(clock.zone)
         val now = STAMP.withZone(zone).format(clock.instant())
         val online = services.players.online.joinToString(", ") { ModelText.attribute(it.ref.name) }.ifEmpty { "none" }
         val head = "<task id=\"T-${task.id}\" from=\"director\">\n${task.record.brief}\n</task>\n<context now=\"$now\" players_online=\"$online\"/>"
-        return if (task.record.role == Role.STORYTELLER) head + "\n" + ProgrammeInputs.taskIdeas(services.memory.openIdeas()) else head
+        if (task.record.role != Role.STORYTELLER) return head
+        return listOfNotNull(head, WorldNotes.render(config.worldNotes), ProgrammeInputs.taskIdeas(services.memory.openIdeas())).joinToString("\n")
     }
 
     /** What a turn's [outcome] makes of the task. */

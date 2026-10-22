@@ -8,6 +8,7 @@ import io.github.clemsix6.narrator2.tool.action.ItemSpec
 import io.github.clemsix6.narrator2.tool.action.ItemSpecs
 import io.github.clemsix6.narrator2.tool.refuse
 import io.github.clemsix6.narrator2.tool.speech.Speech
+import net.fabricmc.fabric.api.tag.convention.v2.ConventionalItemTags
 import net.minecraft.core.Holder
 import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
@@ -47,10 +48,15 @@ import net.minecraft.world.item.enchantment.Enchantment
  * never `kind: "item"`: a relic found is never taken for a gift of the Narrator.
  */
 object RelicItems {
-    /** The tags of the items a relic may be made from, besides [BASE_ITEMS]. */
+    /**
+     * The tags of the items a relic may be made from, besides [BASE_ITEMS]: the game's, and the conventional ones other mods
+     * put their weapons, tools and armor in (M7-NOTES).
+     */
     private val BASE_TAGS = listOf(
         ItemTags.SWORDS, ItemTags.AXES, ItemTags.PICKAXES, ItemTags.SHOVELS, ItemTags.HOES, ItemTags.SPEARS,
         ItemTags.HEAD_ARMOR, ItemTags.CHEST_ARMOR, ItemTags.LEG_ARMOR, ItemTags.FOOT_ARMOR,
+        ConventionalItemTags.MELEE_WEAPON_TOOLS, ConventionalItemTags.RANGED_WEAPON_TOOLS, ConventionalItemTags.MINING_TOOL_TOOLS,
+        ConventionalItemTags.HUMANOID_ARMORS,
     )
     private val BASE_ITEMS = setOf(Items.SHIELD, Items.BOW, Items.CROSSBOW, Items.TRIDENT, Items.MACE)
 
@@ -77,11 +83,16 @@ object RelicItems {
         return stack
     }
 
-    /** The strange consumable of [draft], marked with its reserve [id]. */
+    /**
+     * The strange consumable of [draft], marked with its reserve [id]: any food of the registry, other mods' included
+     * (M7-NOTES), but a precious one ([ItemSpecs.preciousness]: golden apples).
+     */
     fun consumable(server: MinecraftServer, draft: ConsumableDraft, id: Long): ItemStack {
         invalidIf(RelicRules.consumable(draft))
-        val spec = resolve(server, draft.food.id, draft.name, draft.lore, emptyList(), false)
+        val spec = resolve(server, draft.food, draft.name, draft.lore, emptyList(), false)
+        if (ItemSpecs.preciousness(spec.item) > 0) refuse(ToolResult.invalid("${short(spec.item)} is too precious to become a consumable: take a plain food"))
         val stack = ItemSpecs.build(spec, null)
+        if (!stack.has(DataComponents.FOOD)) refuse(ToolResult.invalid("${short(spec.item)} is not a food: a consumable is made from something to eat"))
         val base = stack.get(DataComponents.CONSUMABLE) ?: Consumable.builder().build()
         val effects = draft.effects.map { entry ->
             val instance = MobEffectInstance(effect(entry.effect.id), entry.seconds * TICKS_PER_SECOND, entry.level - 1)
@@ -144,7 +155,7 @@ object RelicItems {
 
     /** `apple « Name » (speed II 30s, nausea I 10s 50%)`. */
     fun describe(draft: ConsumableDraft): String =
-        "${draft.food.id} « ${Speech.clean(draft.name)} » (" + draft.effects.joinToString { e ->
+        "${bare(draft.food)} « ${Speech.clean(draft.name)} » (" + draft.effects.joinToString { e ->
             "${e.effect.id} ${roman(e.level)} ${e.seconds}s" + if (e.chance < 1.0) " ${(e.chance * 100).toInt()}%" else ""
         } + ")"
 
@@ -177,10 +188,13 @@ object RelicItems {
         if (problems.isNotEmpty()) refuse(ToolResult.invalid(problems.joinToString("; ")))
     }
 
-    /** [ItemSpecs.resolve] for one item, then no netherite: a relic or a champion's gear never skips a whole stage of the game. */
+    /**
+     * [ItemSpecs.resolve] for one item, of any mod, then no netherite, another mod's included: a relic or a champion's gear
+     * never skips a whole stage of the game.
+     */
     private fun resolve(server: MinecraftServer, raw: String, name: String?, lore: List<String>?, enchantments: List<EnchantmentSpec>, unbreakable: Boolean): ItemSpec {
         val spec = ItemSpecs.resolve(server.registryAccess(), server.worldData.enabledFeatures(), raw, 1, name, lore, enchantments, unbreakable)
-        if (short(spec.item).startsWith("netherite_")) refuse(ToolResult.invalid("${short(spec.item)}: never netherite, which would skip a whole stage of the game; take diamond or less"))
+        if (short(spec.item).substringAfter(':').startsWith("netherite_")) refuse(ToolResult.invalid("${short(spec.item)}: never netherite, which would skip a whole stage of the game; take diamond or less"))
         return spec
     }
 

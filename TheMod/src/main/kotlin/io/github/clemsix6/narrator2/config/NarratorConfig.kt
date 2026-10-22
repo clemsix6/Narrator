@@ -31,6 +31,11 @@ data class NarratorConfig(
     val chaos: Int = 3,
     /** The permanent difficulty layer, without Claude (M7-BASE). Read at the server's start only. */
     val difficulty: DifficultyConfig = DifficultyConfig(),
+    /**
+     * The operator's notes on this server, in any language: the other mods and what they change (M7-NOTES, [WorldNotes]).
+     * Shown to the Director, the armorer and the storyteller; 12 notes at most, 300 characters each.
+     */
+    val worldNotes: List<String> = emptyList(),
     val journal: JournalConfig = JournalConfig(),
     val observer: ObserverConfig = ObserverConfig(),
     val director: DirectorConfig = DirectorConfig(),
@@ -558,6 +563,7 @@ object ConfigStore {
         }
         range("chaos", config.chaos.toLong(), 0, 5)
         addAll(config.difficulty.problems())
+        addAll(WorldNotes.problems(config.worldNotes))
 
         val journal = config.journal
         range("journal.flushIntervalMs", journal.flushIntervalMs, 200, 10_000)

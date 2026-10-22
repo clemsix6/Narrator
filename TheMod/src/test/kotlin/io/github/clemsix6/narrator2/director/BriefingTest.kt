@@ -1,5 +1,7 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.config.NarratorConfig
+import io.github.clemsix6.narrator2.config.WorldNotes
 import io.github.clemsix6.narrator2.event.ChatChannel
 import io.github.clemsix6.narrator2.event.ChatMessage
 import io.github.clemsix6.narrator2.event.GameEvent
@@ -55,6 +57,7 @@ import io.github.clemsix6.narrator2.testing.FakeMechanics
 import io.github.clemsix6.narrator2.testing.FakeMemory
 import io.github.clemsix6.narrator2.testing.TestClock
 import io.github.clemsix6.narrator2.testing.TestServices
+import io.github.clemsix6.narrator2.testing.testSettings
 import io.github.clemsix6.narrator2.tool.ToolEffect
 import io.github.clemsix6.narrator2.tool.ToolStatus
 import io.github.clemsix6.narrator2.trace.ConversationRecord
@@ -234,6 +237,16 @@ class BriefingTest {
         assertContains(text, "<players_recent window=\"24h\">\n(no other player in the last 24 hours)\n</players_recent>")
         assertContains(text, "Tasks: none\nReminders: none\n")
         assertContains(text, "Deaths you may still cause: Bartok ")
+        assertFalse("server_notes" in text, "no notes, no block")
+    }
+
+    @Test
+    fun `the operator's notes on the server follow the world, one a line`() {
+        history()
+        val notes = listOf("Universal Graves : à sa mort, l'inventaire d'un joueur reste dans une tombe.", "Farmer's Delight est installé.")
+        val text = render(services = services(notes = notes))
+
+        assertContains(text, "weather=\"rain\"/>\n<server_notes>\n${notes[0]}\n${notes[1]}\n</server_notes>\n<players_online>\n")
     }
 
     // ── Previous chapters (M2 review, finding 28) ───────────────────────────────────────────────────
@@ -349,7 +362,7 @@ class BriefingTest {
         val mechanics = fullMechanics(crowd.take(10))
         val text = render(
             reminders = reminders, players = crowd.take(10), activity = { "mined ${"a".repeat(200)}" },
-            services = services(memory = memory, mechanics = mechanics, forge = fullArsenal()),
+            services = services(memory = memory, mechanics = mechanics, forge = fullArsenal(), notes = List(WorldNotes.MAX_NOTES) { "n".repeat(WorldNotes.NOTE_MAX) }),
         )
         val state = text.substringAfter("<engine_state>\n").substringBefore("</engine_state>").trimEnd('\n')
         val arsenal = state.lines().single { it.startsWith("Arsenal") }
@@ -366,7 +379,10 @@ class BriefingTest {
             listOf("Arsenal", "Challenges", "Rules", "Modules", "Pacing", "Offerings"),
             state.lines().takeLast(6).map { it.substringBefore(' ').substringBefore(':') },
         )
-        assertEquals(75_400, Briefing.MAX_CHARS, "70 000, the 1 200 of the mechanics' lines, the 1 200 of the arsenal and the 3 000 of the programme")
+        assertEquals(
+            75_400 + WorldNotes.BLOCK_MAX, Briefing.MAX_CHARS,
+            "70 000, the 1 200 of the mechanics' lines, the 1 200 of the arsenal, the 3 000 of the programme and the operator's notes",
+        )
         assertEquals(3_000, Briefing.MEMORY_BUDGETS.getValue("programme"), "the storyteller's programme (M6 §7)")
         assertEquals(3_900, MechanicsLimits.ENGINE_STATE, "2 700 and the 1 200 of the arsenal (M5 §9.3)")
         assertFalse("(cut:" in text, "no memory section went over its budget")
@@ -731,7 +747,11 @@ class BriefingTest {
         memory: Memory = FakeMemory(clock),
         mechanics: Mechanics = FakeMechanics(clock),
         forge: Forge = FakeForge(clock),
-    ) = TestServices(clock = clock, journal = journal, trace = fixture.journal, players = players, guards = guards, memory = memory, mechanics = mechanics, forge = forge)
+        notes: List<String> = emptyList(),
+    ) = TestServices(
+        clock = clock, settings = testSettings(NarratorConfig(worldNotes = notes)), journal = journal, trace = fixture.journal, players = players,
+        guards = guards, memory = memory, mechanics = mechanics, forge = forge,
+    )
 
     private fun online(player: PlayerRef, idle: Boolean = false, activity: String? = null) {
         players.put(
