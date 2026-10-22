@@ -16,6 +16,7 @@ import io.github.clemsix6.narrator2.memory.ChronicleLevel
 import io.github.clemsix6.narrator2.memory.DocKey
 import io.github.clemsix6.narrator2.memory.IdeaDraft
 import io.github.clemsix6.narrator2.memory.IdeaKind
+import io.github.clemsix6.narrator2.memory.IdeaStatus
 import io.github.clemsix6.narrator2.memory.Memory
 import io.github.clemsix6.narrator2.memory.PlayerSheets
 import io.github.clemsix6.narrator2.memory.RecallChannel
@@ -262,7 +263,8 @@ class ProgrammeInputsTest {
         val open = ideas.subList(2, 4)
         assertEquals(listOf("- $diploma favor ", "- $race challenge "), open.map { it.substringBefore("·") }, "$ideas")
         assertTrue(" · dealt 2: 10-01 23:00 inspire → challenge reach 4m later; 10-01 23:30 heartbeat → nothing: " in open[1], open[1])
-        assertTrue(" of play left · Bartok, Mimosa · « La course au pic » · n4 f4 e4 sports_commentary · " in open[1], open[1])
+        assertTrue(open[1].startsWith("- $race challenge · Bartok, Mimosa · « La course au pic » · "), open[1])
+        assertTrue(" of play left · n4 f4 e4 sports_commentary · " in open[1], open[1])
         assertTrue(open[1].endsWith(": Course au sommet du pic enneigé au nord du spawn ; le premier arrivé gagne un joker."), "the pitch, short: ${open[1]}")
         assertTrue(" · dealt 1: 10-01 23:38 inspire → favor joker 5m later: " in open[0], open[0])
         // The closed ones without their pitch: what became of them, and what followed.
@@ -275,6 +277,21 @@ class ProgrammeInputsTest {
             ideas.drop(4),
         )
         assertTrue(ideas.none { "$old " in it }, "closed before the last dream: $ideas")
+
+        // M6-FIX-14: a storyteller's task reads the same open ideas, by the head of their lines here, and nothing more.
+        val task = ProgrammeInputs.taskIdeas(store.ideas(IdeaStatus.OPEN, 50)).lines()
+        assertEquals(
+            listOf(
+                "<ideas open=\"2\">",
+                "Open, the latest first (the Narrator already has them):",
+                "- $diploma favor · Bartok · « Le diplôme du plongeur »",
+                "- $race challenge · Bartok, Mimosa · « La course au pic »",
+                "</ideas>",
+            ),
+            task,
+        )
+        assertTrue(open.indices.all { open[it].startsWith(task[it + 2] + " · ") }, "the programme's lines start with the task's: $open")
+        assertEquals("<ideas open=\"0\">(none open)</ideas>", ProgrammeInputs.taskIdeas(emptyList()))
     }
 
     /**

@@ -165,9 +165,9 @@ class DirectorStorytellerScenariosTest {
                 assertContains(requests[0].json.path("system")[0].path("text").asText(), "Tu es la salle d'écriture du Narrateur")
                 val opening = requests[0].json.path("messages")[0].path("content")[0].path("text").asText()
                 assertTrue(opening.startsWith("<task id=\"T-1\" from=\"director\">\n$brief\n</task>\n<context now=\"2026-09-25 21:32:0"), opening)
-                val draw = requests[1].json.path("messages").last().path("content")[0].path("content").asText()
+                val draw = h.toolResults(h.fake.requests.indexOf(requests[1])).single()
                 assertTrue(draw.startsWith("ok: ") && "for Bartok" in draw.lineSequence().first(), draw)
-                val written = requests[2].json.path("messages").last().path("content").map { it.path("content").asText() }
+                val written = h.toolResults(h.fake.requests.indexOf(requests[2]))
                 assertEquals(3, written.size)
                 assertTrue(written.all { it.startsWith("ok: P-") }, "$written")
                 val ideas = runBlocking { h.memory.store.ideas(null, 10) }

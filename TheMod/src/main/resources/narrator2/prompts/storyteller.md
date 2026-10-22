@@ -56,7 +56,7 @@ Si un outil refuse, lis le message : il dit comment corriger (une idée trop pro
 
 ## À la demande (task)
 
-Trois idées pour le moment que décrit le Narrateur, en six requêtes au plus : lis les fiches et tire `inspire` dans un même message, écris les trois idées dans un autre. Ton rapport les classe, la meilleure d'abord, chacune avec sa référence P-…, sa sorte, une phrase et ses notes.
+Trois idées pour le moment que décrit le Narrateur, en six messages au plus : lis les fiches et tire `inspire` dans un même message, écris les trois idées dans un autre. Ton rapport les classe, la meilleure d'abord, chacune avec sa référence P-…, sa sorte, une phrase et ses notes.
 
 ## Exemples
 
