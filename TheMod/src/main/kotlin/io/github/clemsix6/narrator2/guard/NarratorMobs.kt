@@ -38,7 +38,8 @@ import kotlin.math.floor
  *   [SPAWN] for a creature of `spawn` that can hurt or was sent at [player] (M4-LEFTOVERS: a punishment of that player
  *   too). Such a creature is [player]'s alone: it goes for nobody else and hurts nobody else ([CreatureShield.boundTo]),
  *   it goes when [player] dies or leaves ([NarratorMobs.retirePunishments]), and its fatal blow is a rescue, never a
- *   death ([GuardsImpl.allowDeath]): a creature the Narrator summons never kills. A module that makes it its own takes
+ *   death ([GuardsImpl.allowDeath]): a creature the Narrator summons never kills, but a champion within the Narrator's
+ *   quota of deaths (M7-FIX). A module that makes it its own takes
  *   this mark off: its module aims it, and its fatal blow is a rescue all the same (M5 §4.5, `ModuleCreatures`).
  */
 data class NarratorMob(
@@ -111,6 +112,16 @@ class NarratorMobs(private val items: ItemLedger? = null) {
         (entity as? Mob)?.setPersistenceRequired()
         noReinforcements(entity)
         entity.setAttached(NarratorMob.TYPE, NarratorMob(expiresAt, player, harmful, Belongings.keptSlots(entity), punishment))
+    }
+
+    /**
+     * Keeps [entity], one of the Narrator's creatures, until [expiresAt] (epoch milliseconds) instead of its own time: a
+     * champion outlives the 10 minutes of `spawn` (M7-FIX). Server thread.
+     */
+    fun extend(entity: Entity, expiresAt: Long) {
+        val mob = entity.getAttached(NarratorMob.TYPE) ?: return
+        entity.setAttached(NarratorMob.TYPE, mob.copy(expiresAt = expiresAt))
+        onLoad(entity)
     }
 
     /** The Narrator's creatures loaded now. Any thread. */

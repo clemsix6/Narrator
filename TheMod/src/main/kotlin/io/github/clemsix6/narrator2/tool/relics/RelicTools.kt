@@ -59,7 +59,8 @@ class SummonChampionTool : RelicTool<SummonChampionArgs>(
     name = "summon_champion",
     description = "Commissions a champion from the armorer: a hostile creature far harder than its kind, designed for one " +
         "player online (its name, legend, gear and powers fit them and your story). It appears near them within a minute " +
-        "or two, goes for them alone, and vanishes after some minutes; its blows never kill. Whoever kills it gets a relic " +
+        "or two, goes for them alone, and vanishes at its time (half an hour by default) or when they die or leave; its " +
+        "fatal blow kills within your quota of deaths, else it is a rescue. Whoever kills it gets a relic " +
         "made for them, a lasting good item, and its gear. A punishment of that player (creatures) under your rules. Rare: " +
         "for a strong player who boasts, coasts or earned a trial, or the peak of an arc, a challenge or a season; never " +
         "for a new or struggling player, nor twice in an evening for the same one. A CHAMPION event tells you what it " +

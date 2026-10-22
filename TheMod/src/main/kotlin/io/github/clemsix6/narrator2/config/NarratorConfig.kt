@@ -346,8 +346,8 @@ data class RelicsConfig(
     /** Champions standing at once, all players together, and for one player. */
     val maxChampions: Int = 3,
     val maxChampionsPerPlayer: Int = 1,
-    /** How long a champion stays before it vanishes, in minutes (`spawn`'s lifetime: 10 at most). */
-    val championMinutes: Int = 10,
+    /** How long a champion stays before it vanishes, in minutes; it goes sooner when its player dies or leaves. */
+    val championMinutes: Int = 30,
 )
 
 /** Limits the engine enforces whatever the model asks. */
@@ -643,7 +643,7 @@ object ConfigStore {
         range("relics.bookStock", relics.bookStock.toLong(), 0, 20)
         range("relics.maxChampions", relics.maxChampions.toLong(), 1, 10)
         range("relics.maxChampionsPerPlayer", relics.maxChampionsPerPlayer.toLong(), 1, 3)
-        range("relics.championMinutes", relics.championMinutes.toLong(), 1, 10)
+        range("relics.championMinutes", relics.championMinutes.toLong(), 1, 60)
 
         val port = config.dashboard.port
         if (port != 0 && port !in 1_024..65_535) add("dashboard.port must be 0 (any free port) or between 1024 and 65535")

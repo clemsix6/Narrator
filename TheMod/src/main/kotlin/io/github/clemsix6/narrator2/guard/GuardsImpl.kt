@@ -328,10 +328,13 @@ class GuardsImpl(private val services: NarratorServices, private val clock: Cloc
      * (M4-POST: a punishment of the catalogue is a gag, not an execution; M4-LEFTOVERS: nor does a hostile creature
      * of `spawn`): the creatures bound to them ([CreatureShield.boundTo]) are sent away, and the death is refused and
      * turned into a rescue where they stand ([DeathGuard.rescue] in place: shielded 5 minutes, nothing lost, nothing
-     * counted). Any other death goes to the death guard. Server thread.
+     * counted). Any other death goes to the death guard. A champion's fatal blow (M7-FIX) kills, as any death the
+     * Narrator causes, while its quota lasts ([DeathGuard.allowDeath]: inventory kept, the death counted); beyond the
+     * quota it is the rescue above. Server thread.
      */
     fun allowDeath(player: ServerPlayer, source: DamageSource): Boolean {
         val creature = CreatureShield.punishmentOf(source) ?: return death.allowDeath(player, source)
+        if (CreatureShield.isChampions(source) && death.quotaLeft(player) > 0) return death.allowDeath(player, source)
         val gone = mobs.retirePunishments(player.uuid, clock.millis(), "a fatal blow refused")
         val sent = if (gone.isEmpty()) "" else ", ${gone.joinToString()} sent away"
         val act = if (creature.punishment == NarratorMob.SPAWN) NarratorMob.SPAWN else "punish ${creature.punishment}"
