@@ -39,18 +39,22 @@ sealed class ArmorerJob(val label: String) {
         var champion: LiveChampion? = null
     }
 
-    /** A relic for [killer], who slew [champion]; [fight] says how. */
-    class Relic(val killer: PlayerRef, val champion: LiveChampion, val fight: String) : ArmorerJob("relic for ${killer.name}") {
+    /** A relic for [killer], who slew [champion]; [fight] says how, [caps] what the relic may be (M7-BALANCE). */
+    class Relic(val killer: PlayerRef, val champion: LiveChampion, val fight: String, val caps: RelicCaps) : ArmorerJob("relic for ${killer.name}") {
         /** What [killer] got, described; null until then. */
         @Volatile
         var given: String? = null
     }
 
-    /** Objects for the chests' reserves: [wanted] of each kind. */
-    class Restock(val wanted: Map<StockKind, Int>) : ArmorerJob("restock") {
+    /** Objects for the chests' reserves: [wanted] consumables and books, and relics by the [tiers] of players they wait for. */
+    class Restock(wanted: Map<StockKind, Int>, val tiers: Map<Tier, Int>) : ArmorerJob("restock") {
+        val wanted: Map<StockKind, Int> = wanted + (StockKind.RELIC to tiers.values.sum())
         val made = ConcurrentHashMap<StockKind, Int>()
+        val madeTiers = ConcurrentHashMap<Tier, Int>()
 
         fun left(kind: StockKind): Int = (wanted[kind] ?: 0) - (made[kind] ?: 0)
+
+        fun left(tier: Tier): Int = (tiers[tier] ?: 0) - (madeTiers[tier] ?: 0)
     }
 }
 

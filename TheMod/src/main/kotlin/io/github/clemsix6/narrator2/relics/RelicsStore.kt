@@ -9,8 +9,11 @@ import java.sql.Connection
 import java.time.Instant
 import java.util.UUID
 
-/** An object of the reserves: [spec] is the armorer's draft as JSON, rebuilt into an item when a chest takes it. */
-data class StockRow(val id: Long, val kind: StockKind, val name: String, val spec: String, val createdAt: Instant)
+/**
+ * An object of the reserves: [spec] is the armorer's draft as JSON, rebuilt into an item when a chest takes it. [tier]: a
+ * relic's, the players it waits for (M7-BALANCE: in the draft, or the lowest it fits); null for the other kinds.
+ */
+data class StockRow(val id: Long, val kind: StockKind, val name: String, val spec: String, val createdAt: Instant, val tier: Tier? = null)
 
 /** A champion's sheet, as kept in the database. [status]: `active`, `slain` (by a player), `died` (otherwise), `gone`. */
 data class ChampionRow(
