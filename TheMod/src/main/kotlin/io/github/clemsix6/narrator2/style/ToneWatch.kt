@@ -4,12 +4,14 @@ import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.StyleNoteKind
+import io.github.clemsix6.narrator2.memory.stats.Tics
 import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Clock
+import java.time.Instant
 import java.util.EnumMap
 
 /**
@@ -23,6 +25,7 @@ import java.util.EnumMap
  * | dark | a line `dark` ≥ [DARK] |
  * | cruel | a line `cruel` ≥ [CRUEL] |
  * | out of character | a line `out_of_character` ≥ [OUT_OF_CHARACTER] |
+ * | obscure | a line `obscure` ≥ [OBSCURE] (M7-CLARITY); or, measured when it is said, labeled or not, a line holding a word of [JARGON] |
  * | flat | the line, and [RUN] of the latest [WINDOW] labeled lines in all, `flat` ≥ [FLAT] |
  * | repeats | the line, and [RUN] of the latest [WINDOW] labeled lines in all, `repeats` ≥ [REPEATS] |
  * | long | a line of more than three sentences, or of two paragraphs or more ([LineLength], M6-18 finding 2): measured when it is said, labeled or not |
@@ -59,20 +62,28 @@ class ToneWatch(
             put("cruel", labels.cruel)
             put("flat", labels.flat)
             put("out_of_character", labels.outOfCharacter)
+            put("obscure", labels.obscure)
             put("repeats", labels.repeats)
         }
     }
 
     /**
-     * The Director said [text], a line the review reads (its `chat` row [eventId]): one longer than a message allows
-     * ([LineLength.long]) is a drift of its own, measured here without a call, whether the review labels it or not.
+     * The Director said [text], a line the review reads (its `chat` row [eventId]): measured here without a call, whether
+     * the review labels it or not, a line holding invented paperwork ([jargon]) is obscure, and one longer than a message
+     * allows ([LineLength.long]) is long.
      */
     fun said(eventId: Long, text: String) {
         if (!enabled()) return
+        val words = jargon(text)
         val length = LineLength.of(text)
-        if (!length.long) return
-        tell(listOf(StyleNoteKind.LONG to long(text, length)), eventId) {
+        val drifts = listOfNotNull(
+            words.takeIf { it.isNotEmpty() }?.let { StyleNoteKind.OBSCURE to jargonNote(text, it) },
+            (StyleNoteKind.LONG to long(text, length)).takeIf { length.long },
+        )
+        if (drifts.isEmpty()) return
+        tell(drifts, eventId) {
             put("line", text)
+            if (words.isNotEmpty()) put("jargon", words.joinToString(", "))
             put("sentences", length.sentences)
             put("paragraphs", length.paragraphs)
         }
@@ -95,6 +106,7 @@ class ToneWatch(
         const val DARK = 0.7
         const val CRUEL = 0.7
         const val OUT_OF_CHARACTER = 0.8
+        const val OBSCURE = 0.7
         const val FLAT = 0.6
         const val REPEATS = 0.6
 
@@ -119,6 +131,7 @@ class ToneWatch(
             if (labels.dark >= DARK) add(StyleNoteKind.DARK to "$line reads dark; find its absurd version, or drop the idea")
             if (labels.cruel >= CRUEL) add(StyleNoteKind.CRUEL to "$line mocks the person, not the play; tease the choice made in the game")
             if (labels.outOfCharacter >= OUT_OF_CHARACTER) add(StyleNoteKind.OUT_OF_CHARACTER to "$line steps out of character")
+            if (labels.obscure >= OBSCURE) add(StyleNoteKind.OBSCURE to "$line is hard to follow at the first read; $PLAINLY")
             val recent = window.any { it.eventId == labels.eventId }
             val flat = window.count { it.flat >= FLAT }
             if (recent && labels.flat >= FLAT && flat >= RUN) {
@@ -129,6 +142,25 @@ class ToneWatch(
                 add(StyleNoteKind.REPEATS to "$repeated of your last ${window.size} lines reuse a recent construction")
             }
         }
+
+        /**
+         * The paperwork the owner's players could not follow (« crayon retiré du dossier », « formulaire 12-T »,
+         * M7-CLARITY): a word starting with one of these is invented jargon in a line of the Narrator. Search data, in
+         * French like [Tics]'s stop words.
+         */
+        val JARGON: List<String> = listOf("dossier", "formulaire", "crayon", "tampon")
+
+        /** What an obscure line should do instead, the rule of `director.md` (« Clair d'abord »). */
+        private const val PLAINLY = "say plainly what happened, what you think and what comes next; no jargon, no metaphor carried over"
+
+        /** The words of [text] that start with a word of [JARGON], in lower case, in order; empty for a line without any. */
+        fun jargon(text: String): List<String> =
+            Tics.words(Tics.said(text, Instant.EPOCH, Tics.Names.NONE)).filter { word -> JARGON.any { word.startsWith(it) } }
+
+        /** The note of a [text] that holds the jargon [words]: `your line « … » uses invented paperwork (« dossier »); …`. */
+        fun jargonNote(text: String, words: List<String>): String =
+            "your line ${ModelText.guillemets(text, QUOTE_MAX)} uses invented paperwork (${words.joinToString(", ") { ModelText.guillemets(it) }}) " +
+                "that players do not follow; $PLAINLY"
 
         /**
          * The note of a [text] too long ([length]): `your line « … » has 5 sentences in 2 paragraphs: …`, with the rule of

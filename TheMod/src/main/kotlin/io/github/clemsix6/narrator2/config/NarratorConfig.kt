@@ -71,14 +71,14 @@ data class NarratorConfig(
             listOf(CacheControlEphemeral.Ttl.TTL_5M, CacheControlEphemeral.Ttl.TTL_1H).map { it.asString() } + NO_CACHE_MARKER
 
         val DEFAULT_ROLES: Map<Role, RoleConfig> = mapOf(
-            Role.DIRECTOR to RoleConfig(effort = "medium", totalTimeoutSeconds = 300),
-            Role.ANALYST to RoleConfig(effort = "low"),
-            Role.SCOUT to RoleConfig(effort = "low"),
-            Role.FORGER to RoleConfig(effort = "high", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
-            Role.STORYTELLER to RoleConfig(effort = "medium"),
-            Role.CHRONICLER to RoleConfig(effort = "low"),
-            Role.DREAMER to RoleConfig(effort = "high", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
-            Role.ARMORER to RoleConfig(effort = "medium"),
+            Role.DIRECTOR to RoleConfig(effort = "high", totalTimeoutSeconds = 300),
+            Role.ANALYST to RoleConfig(effort = "medium"),
+            Role.SCOUT to RoleConfig(effort = "medium"),
+            Role.FORGER to RoleConfig(effort = "xhigh", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
+            Role.STORYTELLER to RoleConfig(effort = "high"),
+            Role.CHRONICLER to RoleConfig(effort = "medium"),
+            Role.DREAMER to RoleConfig(effort = "xhigh", maxTokens = 64_000, totalTimeoutSeconds = 1_200),
+            Role.ARMORER to RoleConfig(effort = "high"),
         )
 
         /**

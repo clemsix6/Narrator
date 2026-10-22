@@ -83,6 +83,11 @@ data class Grade(
     val voice: Boolean,
     val repeats: Boolean,
     val legible: Legibility,
+    /**
+     * Whether a player who knows nothing of the mod understands the line at the first read (M7-CLARITY). Reported apart,
+     * like fairness: no defect of the grid's calibration.
+     */
+    val clear: Boolean = true,
 ) {
     /** Dark or cruel: an eliminatory failure. */
     val eliminatory: Boolean get() = dark || cruel
@@ -105,6 +110,7 @@ data class Grade(
         append(if (voice) " · voice" else " · OUT OF VOICE")
         if (repeats) append(" · repeats")
         append(" · legible ${legible.id}")
+        if (!clear) append(" · UNCLEAR")
     }
 }
 
@@ -158,6 +164,8 @@ data class GridSummary(
     val legibleConcerned: Int,
     val legible: Double,
     val fairOk: Double,
+    /** The share of the lines a player understands at the first read (M7-CLARITY); no threshold of an evening. */
+    val clear: Double = 1.0,
 ) {
     val eliminatory: Int get() = dark + cruel
 
@@ -175,7 +183,7 @@ data class GridSummary(
 
     fun line(): String =
         "$lines lines · funny ${num(funnyMean)} · dark $dark · cruel $cruel · voice ${pct(voice)} · repeats ${pct(repeats)} · " +
-            "legible ${pct(legible)} of $legibleConcerned · fair ok ${pct(fairOk)}"
+            "legible ${pct(legible)} of $legibleConcerned · fair ok ${pct(fairOk)} · clear ${pct(clear)}"
 
     companion object {
         fun of(grades: Collection<Grade>): GridSummary {
@@ -191,6 +199,7 @@ data class GridSummary(
                 legibleConcerned = concerned.size,
                 legible = if (concerned.isEmpty()) 1.0 else concerned.count { it.legible == Legibility.YES } / concerned.size.toDouble(),
                 fairOk = grades.count { it.fair == Fairness.OK } / n,
+                clear = grades.count { it.clear } / n,
             )
         }
 
@@ -335,11 +344,16 @@ class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget?
               or a number of rounds or steps (« trois manches », « huit ordres ») each tells the end: one is enough, even when
               the acts give another. The acts tell what the line announces: a law the acts just made is a new law, even when an
               older one was disabled; a line that gives no end at all, when only the acts give one, is not legible.
+            - clear: true when a player who knows nothing of the mod, and did not read the previous lines, understands the line
+              at the first read: what happened, what the Narrator thinks of it, and what will happen (a threat or a reward said
+              plainly). false for invented jargon (a numbered form, a file, a pencil taken back), a metaphor carried over from
+              the previous lines, a threat only hinted at (« la prochaine torche se paie en taille de lapin »), or the engine's
+              words (« construction d'autrui »). An image or an invented name one gets at once (« la Pioche du Pardon ») is clear.
 
             Judge each line independently: there is no quota of good or bad lines.
         """.trimIndent()
 
-        /** The answer: `{"grades": [{id, reason, funny, fair, dark, cruel, voice, repeats, legible}, …]}`, one entry per line. */
+        /** The answer: `{"grades": [{id, reason, funny, fair, dark, cruel, voice, repeats, legible, clear}, …]}`, one entry per line. */
         val SCHEMA: JsonOutputFormat.Schema = run {
             val grade = linkedMapOf<String, Any>(
                 "id" to mapOf("type" to "integer"),
@@ -351,6 +365,7 @@ class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget?
                 "voice" to mapOf("type" to "boolean"),
                 "repeats" to mapOf("type" to "boolean"),
                 "legible" to mapOf("type" to "string", "enum" to Legibility.entries.map { it.id }),
+                "clear" to mapOf("type" to "boolean"),
             )
             val item = mapOf("type" to "object", "properties" to grade, "required" to grade.keys.toList(), "additionalProperties" to false)
             JsonOutputFormat.Schema.builder()
@@ -420,6 +435,7 @@ class ToneJudge(baseUrl: String, apiKey: String, private val budget: LiveBudget?
                 voice = bool("voice") ?: return null,
                 repeats = bool("repeats") ?: return null,
                 legible = Legibility.entries.firstOrNull { it.id == string("legible") } ?: return null,
+                clear = bool("clear") ?: return null,
             )
         }
 

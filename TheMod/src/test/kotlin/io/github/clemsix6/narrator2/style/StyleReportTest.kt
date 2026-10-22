@@ -106,12 +106,13 @@ internal object StyleDataset {
         flat: Double = 0.0,
         outOfCharacter: Double = 0.0,
         repeats: Double = 0.0,
+        obscure: Double = 0.0,
         crutches: List<String> = emptyList(),
         after: Long = 1,
     ) = fixture.journal.lineLabels(
         LineLabelsRecord(
             line.id, Instant.ofEpochMilli(line.ts).plusSeconds(after), "reflex:claude-haiku-5-5", register, dark, cruel, flat, outOfCharacter,
-            repeats, crutches, "Une phrase du relecteur.", 900,
+            repeats, crutches, "Une phrase du relecteur.", 900, obscure,
         ),
     )
 
@@ -314,7 +315,7 @@ class StyleReportTest {
 
         val clean = listOf(line(1, "Une réplique.", ComicRegister.FOOD_CRITIC, mapOf(Flaw.FLAT to 0.69)))
         assertEquals(
-            "<tone_flags flagged=\"0\" of=\"1\">(none: no line reached 0.7 in dark, cruel, out_of_character, flat, repeats)</tone_flags>",
+            "<tone_flags flagged=\"0\" of=\"1\">(none: no line reached 0.7 in dark, cruel, out_of_character, obscure, flat, repeats)</tone_flags>",
             StyleReport.flagsBlock(clean, utc),
         )
         assertEquals(

@@ -149,6 +149,12 @@ enum class StyleNoteKind {
     /** A line that steps out of character. */
     OUT_OF_CHARACTER,
 
+    /**
+     * A line a player would not understand at the first read: invented jargon, a metaphor carried over from earlier lines,
+     * the engine's words (M7-CLARITY).
+     */
+    OBSCURE,
+
     /** Lines that report without a punchline. */
     FLAT,
 

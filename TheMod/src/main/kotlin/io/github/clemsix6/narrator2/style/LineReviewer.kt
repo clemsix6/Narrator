@@ -130,7 +130,7 @@ class LineReviewer(private val services: NarratorServices) {
         log.info(
             "line #${labels.eventId} reviewed by ${labels.source.removePrefix(ClaudeReflexes.SOURCE_PREFIX)} in ${labels.latencyMs} ms: " +
                 "${labels.register.id}, dark ${p(labels.dark)}, cruel ${p(labels.cruel)}, flat ${p(labels.flat)}, " +
-                "out of character ${p(labels.outOfCharacter)}, repeats ${p(labels.repeats)}, crutches ${labels.crutches.joinToString().ifEmpty { "none" }}",
+                "out of character ${p(labels.outOfCharacter)}, obscure ${p(labels.obscure)}, repeats ${p(labels.repeats)}, crutches ${labels.crutches.joinToString().ifEmpty { "none" }}",
         )
         try {
             services.trace.lineLabels(labels.record())

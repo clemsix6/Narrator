@@ -42,6 +42,48 @@ class ToneWatchTest {
         assertTrue(notes.all { it.at == clock.millis() })
     }
 
+    /** M7-CLARITY: the owner's players could not follow « crayon retiré du dossier » nor « se paie en taille de lapin ». */
+    @Test
+    fun `an obscure line is told at its threshold, after the graver drifts`() {
+        alone(labels(1, obscure = 0.69))
+        assertEquals(emptyList(), notes, "under the threshold")
+        alone(labels(2, obscure = 0.7, text = "Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin."))
+        assertEquals(
+            listOf(
+                StyleNoteKind.OBSCURE to "your line « Formulaire 12-T : crayon réintégré, et la prochaine torche se paie en taille de lapin. » is hard to " +
+                    "follow at the first read; say plainly what happened, what you think and what comes next; no jargon, no metaphor carried over",
+            ),
+            notes.map { it.kind to it.text },
+        )
+        notes.clear()
+        alone(labels(3, outOfCharacter = 0.9, obscure = 0.9, flat = 0.9))
+        assertEquals(listOf(StyleNoteKind.OUT_OF_CHARACTER), notes.map { it.kind }, "out of character is graver")
+    }
+
+    @Test
+    fun `invented paperwork is told as obscure when the line is said, without a call, with a decision`() {
+        tone.said(1, "Clowew, encore une torche volée et tu finis à la taille d'un lapin.")
+        tone.said(2, "La pluie de poulets tombe pile sur la ferme de Josiane.")
+        assertEquals(emptyList(), notes, "plain lines")
+
+        val text = "Le ciel, ému, retire un crayon de son dossier. Formulaire 12-T : crayons réintégrés."
+        tone.said(3, text)
+        val note = notes.single()
+        assertEquals(StyleNoteKind.OBSCURE, note.kind)
+        assertEquals(
+            "your line « $text » uses invented paperwork (« crayon », « dossier », « formulaire », « crayons ») that players do not follow; " +
+                "say plainly what happened, what you think and what comes next; no jargon, no metaphor carried over",
+            note.text,
+        )
+        val decision = trace.decisions.single()
+        assertEquals(listOf("tone_noted", "obscure", "3"), listOf(decision.decision, decision.subject, decision.eventId.toString()))
+        assertEquals("""{"line":"$text","jargon":"crayon, dossier, formulaire, crayons","sentences":2,"paragraphs":1}""", decision.detail.toString())
+
+        tone.said(4, "Un. Deux. Trois. Quatre. Tampon apposé.")
+        assertEquals(listOf(StyleNoteKind.OBSCURE, StyleNoteKind.LONG), notes.map { it.kind }, "obscure waits thirty minutes: the line is told as long")
+        assertEquals(listOf("tampon", "dossiers"), ToneWatch.jargon("Tampon apposé, dossiers classés."))
+    }
+
     @Test
     fun `a flat or repetitive run is three of the last eight, the line among them`() {
         val window = mutableListOf<LineLabels>()
@@ -101,7 +143,7 @@ class ToneWatchTest {
         assertEquals("cruel", decision.subject)
         assertEquals(7L, decision.eventId)
         assertEquals(note.text, decision.reason)
-        assertEquals("""{"line":"« Nul » <b>, dit le juge\nau perdant.","register":"courtroom","dark":0.0,"cruel":0.8,"flat":0.0,"out_of_character":0.0,"repeats":0.0}""", decision.detail.toString())
+        assertEquals("""{"line":"« Nul » <b>, dit le juge\nau perdant.","register":"courtroom","dark":0.0,"cruel":0.8,"flat":0.0,"out_of_character":0.0,"obscure":0.0,"repeats":0.0}""", decision.detail.toString())
     }
 
     /** M6-18, finding 2: two lines of five and six sentences in two paragraphs, and no flag; the length is now measured. */

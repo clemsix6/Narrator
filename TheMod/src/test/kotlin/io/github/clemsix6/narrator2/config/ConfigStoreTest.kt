@@ -65,7 +65,7 @@ class ConfigStoreTest {
             """
             {
               "gateway": { "baseUrl": "https://llmgw.example.com", "maxRetries": null },
-              "roles": { "director": { "effort": "high" }, "forger": { "effort": "xhigh" } }
+              "roles": { "director": { "effort": "low" }, "forger": { "effort": "max" } }
             }
             """.trimIndent(),
         )
@@ -74,9 +74,9 @@ class ConfigStoreTest {
         assertEquals("https://llmgw.example.com", config.gateway.baseUrl)
         assertEquals(GatewayConfig().maxRetries, config.gateway.maxRetries)
         assertEquals("NARRATOR_LLMGW_KEY", config.gateway.apiKeyEnv)
-        assertEquals(NarratorConfig.DEFAULT_ROLES.getValue(Role.DIRECTOR).copy(effort = "high"), config.role(Role.DIRECTOR))
+        assertEquals(NarratorConfig.DEFAULT_ROLES.getValue(Role.DIRECTOR).copy(effort = "low"), config.role(Role.DIRECTOR))
         val forger = config.role(Role.FORGER)
-        assertEquals("xhigh", forger.effort)
+        assertEquals("max", forger.effort)
         assertEquals(64_000, forger.maxTokens, "the forger keeps its own default budget")
         assertEquals(1_200, forger.totalTimeoutSeconds, "and its own default timeout")
         assertEquals(Role.entries.toSet(), config.roles.keys, "missing roles get their default")

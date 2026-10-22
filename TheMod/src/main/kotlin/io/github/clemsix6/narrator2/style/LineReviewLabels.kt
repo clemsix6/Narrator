@@ -35,6 +35,7 @@ object LineReviewLabels {
     const val CRUEL = "cruel"
     const val FLAT = "flat"
     const val OUT_OF_CHARACTER = "out_of_character"
+    const val OBSCURE = "obscure"
     const val REPEATS = "repeats"
     const val CRUTCHES = "crutches"
 
@@ -56,9 +57,9 @@ object LineReviewLabels {
     /** The reason is kept to this many characters. */
     const val REASON_MAX_CHARS = 300
 
-    private val FLAWS = listOf(DARK, CRUEL, FLAT, OUT_OF_CHARACTER, REPEATS)
+    private val FLAWS = listOf(DARK, CRUEL, FLAT, OUT_OF_CHARACTER, OBSCURE, REPEATS)
 
-    /** The labels, in the order the model writes them: its reason, the register, the five flaws, the crutch words. */
+    /** The labels, in the order the model writes them: its reason, the register, the six flaws, the crutch words. */
     val SCHEMA: JsonOutputFormat.Schema = JsonOutputFormat.Schema.builder()
         .putAdditionalProperty("type", JsonValue.from("object"))
         .putAdditionalProperty(
@@ -116,6 +117,7 @@ object LineReviewLabels {
             cruel = flaws.getValue(CRUEL),
             flat = flaws.getValue(FLAT),
             outOfCharacter = flaws.getValue(OUT_OF_CHARACTER),
+            obscure = flaws.getValue(OBSCURE),
             repeats = flaws.getValue(REPEATS),
             crutches = crutches,
             reason = ModelText.cut(reason.trim(), REASON_MAX_CHARS),

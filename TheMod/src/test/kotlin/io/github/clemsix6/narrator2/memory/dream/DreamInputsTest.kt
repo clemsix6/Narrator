@@ -141,7 +141,7 @@ class DreamInputsTest {
         said.forEachIndexed { i, id ->
             val flaw = if (i % 10 == 0) 0.9 else 0.1
             f.journal.journal.lineLabels(
-                LineLabelsRecord(id, f.clock.instant(), "reflex:claude-haiku-5-5", ComicRegister.VOICE[i % ComicRegister.VOICE.size].id, flaw, flaw, flaw, flaw, flaw, listOf("céleste"), null, 900),
+                LineLabelsRecord(id, f.clock.instant(), "reflex:claude-haiku-5-5", ComicRegister.VOICE[i % ComicRegister.VOICE.size].id, flaw, flaw, flaw, flaw, flaw, listOf("céleste"), null, 900, flaw),
             )
         }
         f.journal.sync()

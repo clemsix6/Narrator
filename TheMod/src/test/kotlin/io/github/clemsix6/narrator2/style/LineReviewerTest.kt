@@ -63,10 +63,11 @@ class LineReviewerTest {
         cruel: Any = 0.0,
         flat: Any = 0.1,
         outOfCharacter: Any = 0.0,
+        obscure: Any = 0.0,
         repeats: Any = 0.2,
         crutches: List<String> = listOf("céleste"),
     ) = """{"reason": "$REASON", "register": "$register", "dark": $dark, "cruel": $cruel, "flat": $flat, "out_of_character": $outOfCharacter, """ +
-        """"repeats": $repeats, "crutches": [${crutches.joinToString { "\"$it\"" }}]}"""
+        """"obscure": $obscure, "repeats": $repeats, "crutches": [${crutches.joinToString { "\"$it\"" }}]}"""
 
     private fun answer(text: String = labels()): FakeResponse = reply { text(text); usage(input = 15, output = 120, cacheRead = 2_900, cacheWrite = 0) }
 
@@ -90,10 +91,10 @@ class LineReviewerTest {
                 assertEquals("low", body.path("output_config").path("effort").asText())
                 val schema = body.path("output_config").path("format").path("schema")
                 assertEquals(
-                    listOf("reason", "register", "dark", "cruel", "flat", "out_of_character", "repeats", "crutches"),
+                    listOf("reason", "register", "dark", "cruel", "flat", "out_of_character", "obscure", "repeats", "crutches"),
                     schema.path("required").map { it.asText() },
                 )
-                assertEquals(listOf("reason", "register", "dark", "cruel", "flat", "out_of_character", "repeats", "crutches"), schema.path("properties").fieldNames().asSequence().toList())
+                assertEquals(listOf("reason", "register", "dark", "cruel", "flat", "out_of_character", "obscure", "repeats", "crutches"), schema.path("properties").fieldNames().asSequence().toList())
                 assertEquals(ComicRegister.entries.map { it.id }, schema.path("properties").path("register").path("enum").map { it.asText() })
                 assertEquals("array", schema.path("properties").path("crutches").path("type").asText())
                 assertFalse(schema.path("additionalProperties").asBoolean(true))
@@ -112,7 +113,7 @@ class LineReviewerTest {
                 assertEquals(LINE, labels.text)
                 assertEquals("reflex:claude-haiku-5-5", labels.source)
                 assertEquals(ComicRegister.CUSTOMER_SERVICE, labels.register)
-                assertEquals(listOf(0.05, 0.0, 0.1, 0.0, 0.2), listOf(labels.dark, labels.cruel, labels.flat, labels.outOfCharacter, labels.repeats))
+                assertEquals(listOf(0.05, 0.0, 0.1, 0.0, 0.0, 0.2), listOf(labels.dark, labels.cruel, labels.flat, labels.outOfCharacter, labels.obscure, labels.repeats))
                 assertEquals(listOf("céleste"), labels.crutches)
                 assertEquals(REASON, labels.reason)
 
@@ -409,7 +410,7 @@ class LineReviewerTest {
                     repeat(3) { review(services, line(it + 1L), reviewer) }
 
                     assertContains(logs.text, "line #1 reviewed by claude-haiku-5-5")
-                    assertContains(logs.text, "customer_service, dark 0.05, cruel 0.00, flat 0.10, out of character 0.00, repeats 0.20, crutches céleste")
+                    assertContains(logs.text, "customer_service, dark 0.05, cruel 0.00, flat 0.10, out of character 0.00, obscure 0.00, repeats 0.20, crutches céleste")
                     assertFalse(REASON in logs.text, "the reason is never logged")
                     assertFalse("dieu qu'on vient d'insulter" in logs.text, "the line is never logged")
                     assertFalse(KEY in logs.text)

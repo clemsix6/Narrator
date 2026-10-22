@@ -36,15 +36,16 @@ class MemorySchemaTest {
     private fun DuckDBConnection.run(sql: String) = createStatement().use { it.execute(sql) }
 
     @Test
-    fun `V1 to V4 apply, once, and the schema is at version 4`() {
-        assertEquals(MemorySchema.MIGRATION, DuckDatabase.MIGRATIONS.last())
+    fun `V1 to V5 apply, once, and the schema is at version 5`() {
+        // V5 (M7-CLARITY) only adds a column of line_labels: the memory still needs V4.
+        assertEquals(MemorySchema.MIGRATION, DuckDatabase.MIGRATIONS[3])
         val file = dir.resolve(DuckDatabase.FILE_NAME)
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(4, db.schemaVersion)
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(5, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
         }
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
         }
     }
 
@@ -162,8 +163,8 @@ class MemorySchemaTest {
             )
         }
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(4, db.schemaVersion)
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(5, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             assertEquals(listOf("C-45 promise active"), db.writer.strings("SELECT ref || ' ' || kind || ' ' || status FROM mem_canon"), "the view still reads the canon")
             assertEquals(listOf(null), db.writer.strings("SELECT mechanic FROM canon WHERE id = 45"))
         }
