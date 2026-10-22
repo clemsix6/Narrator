@@ -76,7 +76,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 class GuardGapGameTests {
 
-    /** A player who died, left and came back within 5 minutes is still spared: the death is saved with them. */
+    /** A player who died, left and came back within a minute is still spared: the death is saved with them. */
     @GameTest
     fun aRecentDeathHoldsAcrossAReconnection(helper: GameTestHelper) = withPlayer(helper) { player ->
         val runtime = helper.narrator()
@@ -95,19 +95,19 @@ class GuardGapGameTests {
         helper.assertTrue(runtime.players.get(back.uuid)?.lastDeathAt != null, "the situation report sees the death too")
         helper.assertTrue(guards.spares(back), "and the Narrator's creatures spare them")
 
-        // Five minutes later, the rule no longer holds and the saved death is forgotten. Guards of their own,
-        // five minutes ahead: the server's check would also expire the creatures of the other tests.
+        // A minute later, the rule no longer holds and the saved death is forgotten. Guards of their own,
+        // a minute ahead: the server's check would also expire the creatures of the other tests.
         val later = GuardsImpl(
             TestServices(minecraft = helper.level.server, settings = testSettings(NarratorConfig()), players = runtime.players),
             Clock.offset(Clock.systemUTC(), Duration.ofMillis(TargetingPolicy.NO_PILE_ON_MS)),
         )
-        helper.assertFalse(later.spares(back), "fair game again after 5 minutes")
+        helper.assertFalse(later.spares(back), "fair game again after a minute")
         later.check(listOf(back), System.currentTimeMillis() + TargetingPolicy.NO_PILE_ON_MS)
-        helper.assertEquals(null, GuardStates.read(back).lastDeathAt, "forgotten after 5 minutes")
+        helper.assertEquals(null, GuardStates.read(back).lastDeathAt, "forgotten after a minute")
     }
 
     /**
-     * The Narrator's creatures never hurt a protected player nor one who died less than 5 minutes ago:
+     * The Narrator's creatures never hurt a protected player nor one who died less than a minute ago:
      * not by a blow, an arrow, a potion or its effect, and they do not target them. The rule is the
      * Narrator's alone: an ordinary zombie still hurts the protected player, and the Narrator's creatures
      * hurt the others.
@@ -121,7 +121,7 @@ class GuardGapGameTests {
         val exposed = realPlayer(helper, BlockPos(5, 1, 1))
         try {
             guards.setProtected(shielded.uuid, shielded.plainTextName, on = true)
-            guards.states.update(mourned) { it.copy(lastDeathAt = System.currentTimeMillis() - 60_000) }
+            guards.states.update(mourned) { it.copy(lastDeathAt = System.currentTimeMillis() - 20_000) }
             val expiresAt = System.currentTimeMillis() + 600_000
             val zombie = narratorMob(helper, EntityTypes.ZOMBIE, Vec3(2.5, 1.0, 4.5), null, expiresAt)
             val skeleton = narratorMob(helper, EntityTypes.SKELETON, Vec3(4.5, 1.0, 4.5), null, expiresAt)
@@ -134,7 +134,7 @@ class GuardGapGameTests {
             val combat = TargetingConditions.forCombat().ignoreLineOfSight()
 
             for (player in listOf(shielded, mourned)) {
-                val who = if (player === shielded) "the protected player" else "the player who died a minute ago"
+                val who = if (player === shielded) "the protected player" else "the player who died 20 s ago"
                 helper.assertFalse(hit(helper, player, sources.mobAttack(zombie)), "the Narrator's zombie's blow spares $who")
                 helper.assertFalse(hit(helper, player, sources.arrow(arrow, skeleton)), "its skeleton's arrow spares $who")
                 helper.assertFalse(hit(helper, player, sources.indirectMagic(potion, witch)), "its witch's harming potion spares $who")
@@ -155,7 +155,7 @@ class GuardGapGameTests {
             helper.assertTrue(zombie.target === exposed, "kept as a target")
 
             guards.states.update(mourned) { it.copy(lastDeathAt = System.currentTimeMillis() - TargetingPolicy.NO_PILE_ON_MS) }
-            helper.assertTrue(hit(helper, mourned, sources.mobAttack(zombie)), "5 minutes after the death, fair game again")
+            helper.assertTrue(hit(helper, mourned, sources.mobAttack(zombie)), "a minute after the death, fair game again")
         } finally {
             guards.setProtected(shielded.uuid, shielded.plainTextName, on = false)
             removePlayers(helper, shielded, mourned, exposed)

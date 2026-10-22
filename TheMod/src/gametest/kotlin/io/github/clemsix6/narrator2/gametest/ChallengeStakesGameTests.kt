@@ -168,7 +168,7 @@ class ChallengeStakesGameTests {
             val line = rig.awaitEnd(view.ref)
             val (head, penalty) = line.split(" · ")
             check(head == "${view.ref} lost: nobody held 1 emerald in 3m") { "the line: $line" }
-            check(Regex("^penalty: ${bob.name} refused \\(${Rules.SAME_PUNISHMENT}: .+\\),${ann.name} slow_hands \\(1\\) until \\d\\d:\\d\\d, ${cid.name} offline, not paid$").matches(penalty)) {
+            check(Regex("^penalty: ${bob.name} refused \\(${Rules.SAME_PUNISHMENT}: .+\\), ${ann.name} slow_hands \\(1\\) until \\d\\d:\\d\\d, ${cid.name} offline, not paid$").matches(penalty)) {
                 "the forfeit: refused, paid, offline; nothing for the latecomer: $penalty"
             }
             rig.onServer {

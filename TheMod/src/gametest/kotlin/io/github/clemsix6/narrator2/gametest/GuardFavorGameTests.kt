@@ -82,7 +82,7 @@ class GuardFavorGameTests {
         val refused = guards.hostile(player, turn(2), clock.millis() + 60_000, PunishmentCategory.SIZE)
         helper.assertTrue(
             refused is Verdict.Denied && refused.rule == Rules.SAME_PUNISHMENT && refused.message.contains(" 12m ago (size); ") &&
-                refused.message.endsWith("(in 18m). Vary the punishment."),
+                refused.message.endsWith("(in 3m). Vary the punishment."),
             "another turn, the same category: $refused",
         )
         val engine = Caller(Role.DIRECTOR, "mechanics:C-60", turnId = null, taskId = null, firingId = 1)
@@ -99,14 +99,14 @@ class GuardFavorGameTests {
         helper.assertEquals(null, pacing.graceUntil, "no grace")
         helper.assertEquals(2, pacing.punishedThisHour, "two punishments this hour")
         helper.assertEquals(listOf(PunishmentCategory.SIZE, PunishmentCategory.MOVEMENT, PunishmentCategory.AIR), pacing.resting.keys.toList(), "resting, soonest first")
-        helper.assertEquals(clock.millis() + Duration.ofMinutes(30).toMillis(), pacing.resting[PunishmentCategory.AIR], "air rests 30 minutes at chaos 3")
+        helper.assertEquals(clock.millis() + Duration.ofMinutes(15).toMillis(), pacing.resting[PunishmentCategory.AIR], "air rests 15 minutes at chaos 3")
         helper.assertTrue(
             services.traces.decisions.any { it.decision == "denied" && it.reason.orEmpty().startsWith("same_punishment: ") },
             "the refusal is a decision",
         )
 
-        clock.advance(Duration.ofMinutes(18))
-        helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(3), clock.millis() + 60_000, PunishmentCategory.SIZE), "30 minutes after the first strike")
+        clock.advance(Duration.ofMinutes(3))
+        helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(3), clock.millis() + 60_000, PunishmentCategory.SIZE), "15 minutes after the first strike")
     }
 
     /**
@@ -315,7 +315,7 @@ class GuardFavorGameTests {
     fun aShieldKeepsTheNarratorAwayUntilItEnds(helper: GameTestHelper) = withPlayer(helper) { player ->
         val (guards, clock, services) = ownGuards(helper)
         helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(31), clock.millis() + 600_000, PunishmentCategory.SIZE), "a punishment runs")
-        guards.shield(player, clock.millis() + Guards.RESCUE_SHIELD_MS, "duel C-52: fatal blow stopped at 1 hp")
+        guards.shield(player, clock.millis() + 5 * 60_000L, "duel C-52: fatal blow stopped at 1 hp")
         guards.shield(player, clock.millis() + 60_000, "shorter")
         clock.advance(Duration.ofMinutes(2))
         for (caller in listOf(turn(31), turn(32))) {
@@ -345,7 +345,7 @@ class GuardFavorGameTests {
 
         val back = reconnect(helper, player)
         val after = ownGuards(helper, clock).guards // the guards of the next start: nothing in memory
-        clock.advance(Duration.ofMinutes(1))
+        clock.advance(Duration.ofSeconds(30))
         val refused = after.hostile(back, turn(51), clock.millis() + 60_000, PunishmentCategory.HARM)
         helper.assertTrue(
             refused is Verdict.Denied && refused.rule == Rules.NO_PILE_ON && refused.message.contains("(duel C-52: fatal blow stopped at 1 hp)"),
