@@ -75,6 +75,7 @@ import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.Packet
 import net.minecraft.network.protocol.game.ClientboundBossEventPacket
+import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket
 import net.minecraft.resources.Identifier
@@ -168,7 +169,9 @@ class DuelGameTests {
                 check(rig.running(view.ref)) { "both accepted: it runs" }
                 check(rig.duels.isDueling(bob.uuid) && rig.duels.isDueling(ann.uuid) && !rig.duels.isDueling(cid.uuid)) { "Bob and Ann fight a duel, Cid does not" }
                 for ((player, opponent) in listOf(bob to ann, ann to bob)) {
-                    check(player.titles() == listOf(ui.format("duel.start", "opponent" to opponent.name))) { "${player.name}'s title: ${player.titles()}" }
+                    check(player.titles() == listOf(ui["duel.start"])) { "${player.name}'s title: ${player.titles()}" }
+                    val subtitle = ui.format("duel.start_subtitle", "opponent" to opponent.name)
+                    check(player.subtitles() == listOf(subtitle)) { "${player.name}'s subtitle: ${player.subtitles()}" }
                 }
                 rig.second()
                 check(bars(bob).single().let { it.name.startsWith("Au soleil · ") && it.color == BossBarColor.RED }) { "Bob's bar: ${bars(bob)}" }
@@ -1354,7 +1357,8 @@ class DuelGameTests {
         }
 
         fun isOfInterest(packet: Packet<*>): Boolean =
-            packet is ClientboundSystemChatPacket || packet is ClientboundBossEventPacket || packet is ClientboundSetTitleTextPacket
+            packet is ClientboundSystemChatPacket || packet is ClientboundBossEventPacket || packet is ClientboundSetTitleTextPacket ||
+                packet is ClientboundSetSubtitleTextPacket
 
         /** A duel of [a] and [b], the rest as given. */
         fun spec(a: TestPlayer, b: TestPlayer, title: String, minutes: Int = 5, arena: ArenaSpec? = null) = DuelSpec(
@@ -1397,6 +1401,9 @@ class DuelGameTests {
 
         /** The titles [this] was shown. */
         fun TestPlayer.titles(): List<String> = packets.filterIsInstance<ClientboundSetTitleTextPacket>().map { it.text().string }
+
+        /** The subtitles [this] was shown. */
+        fun TestPlayer.subtitles(): List<String> = packets.filterIsInstance<ClientboundSetSubtitleTextPacket>().map { it.text().string }
 
         /** The bars [player]'s client shows: the boss bar packets played back in order. */
         fun bars(player: TestPlayer): List<ShownBar> {

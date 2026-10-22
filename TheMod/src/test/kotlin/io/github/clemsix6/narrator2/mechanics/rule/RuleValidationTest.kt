@@ -139,9 +139,10 @@ class RuleValidationTest {
 
     @Test
     fun `a text with the actor's name fits once the longest name is in it`() {
-        val text = "a".repeat(93) + "{actor}" // 100 characters as written, 109 with a name of 16
+        val text = "a".repeat(33) + "{actor}" // 40 characters as written, 49 with a name of 16
         assertEquals(
-            "Invalid arguments: effect 1 (actionbar): text is longer than 100 characters (got 109)",
+            "Invalid arguments: effect 1 (actionbar): text is 49 characters, but the line above the hotbar shows 40 at most: " +
+                "shorten it to a few words and put the rest in the chat with say",
             f.refusal(law("chat", """{"tool":"actionbar","at":"actor","args":{"text":"$text"}}""")),
         )
     }

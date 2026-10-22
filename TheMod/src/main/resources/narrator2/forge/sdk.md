@@ -88,7 +88,7 @@ interface World {  // immediate, loaded chunks only
 interface Acts {  // §4
   Pending say(String text);  // to everyone: 300 chars, 3 lines
   Pending sayTo(String player, String text);  // only they see it
-  Pending title(String player, String title, String subtitle);  // 40 and 80 chars; null player: everyone
+  Pending title(String player, String title, String subtitle);  // 18 and 36 chars, longer is invalid; null player: everyone
   Pending hud(String player, String text);  // the action bar, 80 chars; null: everyone
   Pending sound(String player, String sound);  // entity.chicken.egg; null: everyone
   Pending particles(Place at, String particle, int count);  // 1 to 200
@@ -352,7 +352,7 @@ public final class WordRace implements ForgeModule {
         if (over || !players.contains(chat.player()) || !Text.normalize(chat.text()).equals(word)) return;
         over = true;
         String winner = chat.player();
-        Pending last = ctx.acts().title(null, winner + " gagne", "le mot était " + word);
+        Pending last = ctx.acts().title(null, winner, "gagne : le mot était " + word);
         Game game = ctx.game();
         if (game != null && game.running()) last = game.win(List.of(winner), winner + " a écrit « " + word + " » le premier");
         last.then(o -> ctx.end(winner + " a gagné la course au mot"));  // ending now would drop the title and the win

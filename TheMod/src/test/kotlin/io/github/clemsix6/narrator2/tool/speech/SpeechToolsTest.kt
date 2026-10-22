@@ -50,6 +50,13 @@ class SpeechToolsTest {
         assertEquals(status to text, result.status to result.text)
     }
 
+    /** The tool's dry checks (`check`) on [json]. */
+    private suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? {
+        val decoded = ToolArgs.decode(args, json)
+        assertIs<ToolArgs.Decoded.Ok<A>>(decoded, "arguments: $decoded")
+        return check(context, decoded.args)
+    }
+
     @Test
     fun `a player who is not online is refused with the players who are`() = runTest {
         online("Alice", "Carl")
@@ -98,11 +105,6 @@ class SpeechToolsTest {
      */
     @Test
     fun `the dry checks need nobody online and count nothing`() = runTest {
-        suspend fun <A : Any> NarratorTool<A>.dry(json: String): ToolResult? {
-            val decoded = ToolArgs.decode(args, json)
-            assertIs<ToolArgs.Decoded.Ok<A>>(decoded, "arguments: $decoded")
-            return check(context, decoded.args)
-        }
         val nothing = "has nothing to show once formatting codes and invisible characters are removed; write plain text"
 
         assertEquals("Invalid arguments: text $nothing", SayTool(limiter).dry("""{"text":"§c "}""")?.text)
@@ -130,7 +132,7 @@ class SpeechToolsTest {
         val engine = services.players.byName("<engine>")!!.ref
         // Lines and a title given in an earlier chapter, through the server's limiter (ToolLimits.speech).
         repeat(SpeechLimiter.LINES_PER_TURN) { services.toolLimits.speech.line(caller) }
-        services.toolLimits.speech.titles(listOf(engine))
+        services.toolLimits.speech.titles(listOf(engine), ON_SCREEN_MS)
         val tools = speechTools(services)
 
         val say = tools.filterIsInstance<SayTool>().single().call("""{"text":"Encore un mot."}""")
@@ -146,7 +148,7 @@ class SpeechToolsTest {
     fun `a title, a line above the hotbar or a book everyone waits for is denied`() = runTest {
         online("Alice")
         val alice = services.players.byName("Alice")!!.ref
-        limiter.titles(listOf(alice))
+        limiter.titles(listOf(alice), ON_SCREEN_MS)
         limiter.actionbars(listOf(alice))
         limiter.books(listOf(alice))
 
@@ -165,6 +167,39 @@ class SpeechToolsTest {
             "DENIED (speech_limit): one book per player every 5m: Alice got one 0s ago (next in 5m)",
             GiveBookTool(limiter).call("""{"to":"alice","title":"Amende","pages":["Payez."]}"""),
         )
+    }
+
+    /** M7-TITLES: what is too long for the screen is refused before anything is counted or shown, never cut, with what to do instead. */
+    @Test
+    fun `a text too long for the screen is refused with what to do instead`() = runTest {
+        online("Alice")
+        val shorten = "shorten it to a few words and put the rest in the chat with say"
+
+        assertResult(
+            ToolStatus.INVALID,
+            "Invalid arguments: title is 32 characters, but a title shows 18 at most: $shorten",
+            ShowTitleTool(limiter).call("""{"title":"LA COUR SE RETIRE POUR DÉLIBÉRER"}"""),
+        )
+        assertResult(
+            ToolStatus.INVALID,
+            "Invalid arguments: subtitle is 37 characters, but a subtitle shows 36 at most: $shorten",
+            ShowTitleTool(limiter).call("""{"title":"JUGEMENT","subtitle":"${"é".repeat(37)}"}"""),
+        )
+        assertResult(
+            ToolStatus.INVALID,
+            "Invalid arguments: text is 41 characters, but the line above the hotbar shows 40 at most: $shorten",
+            ActionbarTool(limiter).call("""{"text":"${"a".repeat(41)}"}"""),
+        )
+        val alice = services.players.byName("Alice")!!.ref
+        assertEquals(listOf(alice), limiter.titles(listOf(alice), ON_SCREEN_MS).allowed, "nothing was counted")
+        assertEquals(listOf(alice), limiter.actionbars(listOf(alice)).allowed, "nothing was counted")
+    }
+
+    /** The limit is on what the players see: formatting codes do not count, an accented letter is one character. */
+    @Test
+    fun `a text as long as the screen holds passes`() = runTest {
+        assertEquals(null, ShowTitleTool(limiter).dry("""{"title":"§l${"É".repeat(Speech.TITLE_MAX)}","subtitle":"${"à".repeat(Speech.SUBTITLE_MAX)}"}"""))
+        assertEquals(null, ActionbarTool(limiter).dry("""{"text":"§6${"a".repeat(Speech.ACTIONBAR_MAX)}"}"""))
     }
 
     @Test
@@ -190,5 +225,10 @@ class SpeechToolsTest {
         assertEquals(ToolArgs.Decoded.Invalid("pages must have 1 to 10 items (got 0)"), book)
         val title = ToolArgs.decode(ShowTitleArgs.serializer(), """{"title":"T","seconds":11}""")
         assertEquals(ToolArgs.Decoded.Invalid("seconds must be between 1 and 10 (got 11)"), title)
+    }
+
+    private companion object {
+        /** A title on screen for 5 s, fades included. */
+        const val ON_SCREEN_MS = 5_000L
     }
 }
