@@ -16,6 +16,11 @@ data class DifficultyConfig(
     val enabled: Boolean = true,
     /** Maximum health of hostile creatures (`Enemy`, endermen and piglins included), bosses excepted. */
     val mobHealth: Double = 1.5,
+    /**
+     * Maximum health by type (path in `entity_type`), over its vanilla health: it replaces [mobHealth] for the types
+     * listed, bosses and animals included if listed. Free-form, like [mobSpeed].
+     */
+    val mobHealthByType: Map<String, Double> = DEFAULT_MOB_HEALTH_BY_TYPE,
     /** Damage players take from a hostile creature (bosses excepted), its projectiles and explosions included; not its effects. */
     val mobDamage: Double = 1.25,
     /**
@@ -23,6 +28,11 @@ data class DifficultyConfig(
      * type may be added, and a default type keeps its factor unless the file sets it (1 gives back its vanilla speed).
      */
     val mobSpeed: Map<String, Double> = DEFAULT_MOB_SPEED,
+    /**
+     * Fire rate of bow archers (`RangedBowAttackGoal`), by type: 2 draws the bow twice as fast and waits half as long
+     * between shots, each arrow still at full power. Free-form, like [mobSpeed].
+     */
+    val mobFireRate: Map<String, Double> = DEFAULT_MOB_FIRE_RATE,
     /**
      * Share of the ore blobs that are placed, by ore: 0 none, 1 vanilla. Each blob kept has its vanilla size and place.
      * `gold` covers the badlands' bonus and the Nether's gold. The large underground veins stay vanilla.
@@ -42,14 +52,19 @@ data class DifficultyConfig(
         }
         check("mobHealth", mobHealth, 0.1, 10.0)
         check("mobDamage", mobDamage, 0.0, 10.0)
-        mobSpeed.forEach { (type, factor) ->
-            check("mobSpeed.$type", factor, 0.5, 3.0)
-            // The default types are vanilla ones: only the others are looked up, which keeps the registry (it needs
-            // Minecraft's bootstrap) out of the unit tests that load a configuration.
-            if (type !in DEFAULT_MOB_SPEED && !isEntityType(type)) {
-                add("difficulty.mobSpeed.$type is not an entity type of the game: use its path, such as creeper or zombie")
+        fun byType(setting: String, table: Map<String, Double>, defaults: Map<String, Double>, min: Double, max: Double) {
+            table.forEach { (type, factor) ->
+                check("$setting.$type", factor, min, max)
+                // The default types are vanilla ones: only the others are looked up, which keeps the registry (it
+                // needs Minecraft's bootstrap) out of the unit tests that load a configuration.
+                if (type !in defaults && !isEntityType(type)) {
+                    add("difficulty.$setting.$type is not an entity type of the game: use its path, such as creeper or zombie")
+                }
             }
         }
+        byType("mobHealthByType", mobHealthByType, DEFAULT_MOB_HEALTH_BY_TYPE, 0.1, 10.0)
+        byType("mobSpeed", mobSpeed, DEFAULT_MOB_SPEED, 0.5, 3.0)
+        byType("mobFireRate", mobFireRate, DEFAULT_MOB_FIRE_RATE, 0.5, 4.0)
         ores.forEach { (ore, factor) -> check("ores.$ore", factor, 0.0, 1.0) }
         check("regenerationSlowdown", regenerationSlowdown, 1.0, 10.0)
         check("chestDiamonds", chestDiamonds, 0.0, 1.0)
@@ -57,8 +72,17 @@ data class DifficultyConfig(
     }
 
     companion object {
+        /** The bow skeletons, glass cannons by default (M7-SKELETONS): a quarter of their vanilla health, twice the fire rate. */
+        private val ARCHERS = listOf("skeleton", "stray", "bogged", "parched")
+
+        /** The creatures with their own health by default. */
+        val DEFAULT_MOB_HEALTH_BY_TYPE: Map<String, Double> = ARCHERS.associateWithTo(linkedMapOf()) { 0.25 }
+
         /** The creatures faster by default. */
         val DEFAULT_MOB_SPEED: Map<String, Double> = linkedMapOf("creeper" to 2.0)
+
+        /** The archers shooting faster by default. */
+        val DEFAULT_MOB_FIRE_RATE: Map<String, Double> = ARCHERS.associateWithTo(linkedMapOf()) { 2.0 }
 
         /** Every ore the layer knows ([Difficulty.ORE_FEATURES]), with its default share of blobs, the rarest first. */
         val DEFAULT_ORES: Map<String, Double> = linkedMapOf(

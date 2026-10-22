@@ -5,6 +5,7 @@
   "mixins": [
     "FeaturePlacerOreMixin",
     "FoodDataRegenerationMixin",
+    "RangedBowAttackGoalFireRateMixin",
     "ServerPlayerDamageMixin"
   ],
   "injectors": {

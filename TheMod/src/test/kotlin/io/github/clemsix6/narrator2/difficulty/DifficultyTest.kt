@@ -49,12 +49,15 @@ class DifficultyTest {
     @Test
     fun `the briefing says what changes, nothing when all is vanilla`() {
         assertEquals(
-            "hostile mobs health x1.5, damage to players x1.25 (bosses vanilla); movement speed creeper x2; " +
+            "hostile mobs health x1.5, damage to players x1.25 (bosses vanilla); " +
+                "health by type, over vanilla: skeleton/stray/bogged/parched x0.25; movement speed creeper x2; " +
+                "bow fire rate skeleton/stray/bogged/parched x2; " +
                 "ores diamond/emerald/gold x0.5, iron/copper x0.75; natural regeneration x0.5; chests diamonds x0.5, enchanted golden apples x0.5",
             Difficulty.summary(defaults),
         )
         val vanilla = DifficultyConfig(
-            mobHealth = 1.0, mobDamage = 1.0, mobSpeed = mapOf("creeper" to 1.0), ores = DifficultyConfig.DEFAULT_ORES.mapValues { 1.0 },
+            mobHealth = 1.0, mobDamage = 1.0, mobHealthByType = emptyMap(), mobSpeed = mapOf("creeper" to 1.0),
+            mobFireRate = DifficultyConfig.DEFAULT_MOB_FIRE_RATE.mapValues { 1.0 }, ores = DifficultyConfig.DEFAULT_ORES.mapValues { 1.0 },
             regenerationSlowdown = 1.0, chestDiamonds = 1.0, chestEnchantedGoldenApples = 1.0,
         )
         assertNull(Difficulty.summary(vanilla))
@@ -63,12 +66,21 @@ class DifficultyTest {
 
     @Test
     fun `the section merges ore by ore and is validated`() {
-        dir.resolve(ConfigStore.FILE_NAME).writeText("""{ "difficulty": { "ores": { "diamond": 0.3 }, "mobHealth": 2, "mobSpeed": { "zombie": 1.2 } } }""")
+        dir.resolve(ConfigStore.FILE_NAME).writeText(
+            """{ "difficulty": { "ores": { "diamond": 0.3 }, "mobHealth": 2, "mobSpeed": { "zombie": 1.2 },
+                "mobHealthByType": { "skeleton": 0.5, "zombie": 1 }, "mobFireRate": { "stray": 1 } } }""",
+        )
         val config = ConfigStore.load(dir).difficulty
         assertEquals(0.3, config.ores["diamond"])
         assertEquals(0.75, config.ores["iron"], "the other ores keep their default")
         assertEquals(2.0, config.mobHealth)
         assertEquals(mapOf("creeper" to 2.0, "zombie" to 1.2), config.mobSpeed, "a type added, the default kept")
+        assertEquals(
+            mapOf("skeleton" to 0.5, "stray" to 0.25, "bogged" to 0.25, "parched" to 0.25, "zombie" to 1.0),
+            config.mobHealthByType,
+            "a default changed, a type added, the other defaults kept",
+        )
+        assertEquals(mapOf("skeleton" to 2.0, "stray" to 1.0, "bogged" to 2.0, "parched" to 2.0), config.mobFireRate)
 
         assertEquals(emptyList<String>(), defaults.problems())
         assertEquals(
@@ -81,6 +93,17 @@ class DifficultyTest {
                 "difficulty.mobSpeed.creepr is not an entity type of the game: use its path, such as creeper or zombie",
             ),
             defaults.copy(mobSpeed = mapOf("creeper" to 4.0, "creepr" to 2.0, "zombie" to 1.2)).problems(),
+        )
+        assertEquals(
+            listOf(
+                "difficulty.mobHealthByType.skeleton must be between 0.1 and 10",
+                "difficulty.mobFireRate.skeleton must be between 0.5 and 4",
+                "difficulty.mobFireRate.skeletn is not an entity type of the game: use its path, such as creeper or zombie",
+            ),
+            defaults.copy(
+                mobHealthByType = mapOf("skeleton" to 0.0, "zombie" to 2.0),
+                mobFireRate = mapOf("skeleton" to 5.0, "skeletn" to 2.0, "illusioner" to 2.0),
+            ).problems(),
         )
     }
 
