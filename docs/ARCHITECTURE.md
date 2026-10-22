@@ -346,6 +346,7 @@ ce qui le limite (`Pacing`, avec le plafond de l'heure au chaos en vigueur) avan
 - **Créatures hostiles** (`Enemy`, boss exclus) : +50 % de PV.
 - **Dégâts reçus par les joueurs** quand un `Enemy` en est l'auteur : ×1,25.
 - **Vitesse**, par type de créature (`mobSpeed`) : creepers ×2.
+- **Squelettes archers**, des canons de verre (`mobHealthByType`, `mobFireRate`) : un quart de leur vie vanilla, cadence de tir ×2 (`design/handoff/M7-SKELETONS.md`).
 - **Minerais** : moins de filons, chacun de taille vanilla. Diamant, émeraude et or ×0,5 ; fer et cuivre ×0,75 ; les grandes veines ne changent pas. Seuls les chunks générés ensuite sont concernés.
 - **Régénération naturelle** : deux fois plus lente.
 - **Coffres** : les diamants et les pommes dorées enchantées sont gardés une fois sur deux.
