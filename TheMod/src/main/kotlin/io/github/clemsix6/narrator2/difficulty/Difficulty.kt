@@ -28,11 +28,12 @@ import kotlin.math.roundToInt
 
 /**
  * The permanent difficulty layer (M7-BASE, `docs/research/DIFFICULTY_API.md`): hostile creatures with more health
- * that hit players harder, faster creatures of some types (creepers), fewer ore blobs, slower natural regeneration,
- * fewer diamonds and enchanted golden apples in chests. It needs neither Claude nor the Narrator's runtime: its section is read at `SERVER_STARTING`, before the
- * worlds load and generate their spawn chunks, and again by `/narrator reload` ([reload], M7-RELOAD). The mixins of
- * `mixin/difficulty` and the hooks of [registerDifficultyHooks] read the section in force here at each use, from the
- * server thread and the world generation threads.
+ * that hit players harder, faster creatures of some types (creepers), frail archers that shoot faster (skeletons),
+ * fewer ore blobs, slower natural regeneration, fewer diamonds and enchanted golden apples in chests. It needs neither
+ * Claude nor the Narrator's runtime: its section is read at `SERVER_STARTING`, before the worlds load and generate
+ * their spawn chunks, and again by `/narrator reload` ([reload], M7-RELOAD). The mixins of `mixin/difficulty` and the
+ * hooks of [registerDifficultyHooks] read the section in force here at each use, from the server thread and the world
+ * generation threads.
  */
 object Difficulty {
     private val log = Log.difficulty
@@ -104,23 +105,50 @@ object Difficulty {
 
     /**
      * `ENTITY_LOAD` of [mob], born or loaded from a chunk: a creature of a type of [DifficultyConfig.mobSpeed] gets the
-     * permanent speed modifier; a hostile creature gets the health modifier and keeps the same share of its health, so a
-     * fresh one is at its new maximum. Each modifier is taken off when the layer is off or its factor is 1 (a type out
-     * of the table included). Idempotent: a creature loaded again already has the right modifiers. Returns whether it
-     * changed. Server thread.
+     * permanent speed modifier; a creature of a type of [DifficultyConfig.mobHealthByType], or else a hostile one, gets
+     * the health modifier and keeps the same share of its health, so a fresh one is at its new maximum. Each modifier is
+     * taken off when the layer is off or its factor is 1 (a type out of the table included). Idempotent: a creature
+     * loaded again already has the right modifiers. Returns whether it changed. Server thread.
      */
     fun onMobLoad(mob: Mob): Boolean {
         val config = config ?: return false
-        val type = EntityType.getKey(mob.type)
-        val speed = config.mobSpeed[type.path]?.takeIf { config.enabled && type.namespace == Identifier.DEFAULT_NAMESPACE } ?: 1.0
+        val speed = byType(config, config.mobSpeed, mob) ?: 1.0
         val faster = setFactor(mob, Attributes.MOVEMENT_SPEED, SPEED_ID, speed)
         if (faster) log.debug { "${mob.typeId} movement speed x${number(speed)}" }
-        if (mob !is Enemy || isBoss(mob)) return faster
+        val health = byType(config, config.mobHealthByType, mob)
+            ?: if (config.enabled && mob is Enemy && !isBoss(mob)) config.mobHealth else 1.0
         val before = mob.maxHealth
-        if (!setFactor(mob, Attributes.MAX_HEALTH, HEALTH_ID, if (config.enabled) config.mobHealth else 1.0)) return faster
+        if (!setFactor(mob, Attributes.MAX_HEALTH, HEALTH_ID, health)) return faster
         mob.health = mob.health * mob.maxHealth / before
         log.debug { "${mob.typeId} max health ${number(before.toDouble())} -> ${number(mob.maxHealth.toDouble())}, health ${number(mob.health.toDouble())}" }
         return true
+    }
+
+    /** [mob]'s factor in [table], a by-type setting of [config]; null when the layer is off or its type is not listed (nor vanilla). */
+    private fun byType(config: DifficultyConfig, table: Map<String, Double>, mob: Mob): Double? {
+        if (!config.enabled) return null
+        val type = EntityType.getKey(mob.type)
+        return if (type.namespace == Identifier.DEFAULT_NAMESPACE) table[type.path] else null
+    }
+
+    /** [mob]'s fire rate ([DifficultyConfig.mobFireRate]); 1 when it does not change. */
+    private fun fireRate(mob: Mob): Double = config?.let { byType(it, it.mobFireRate, mob) } ?: 1.0
+
+    /**
+     * Mixin of `RangedBowAttackGoal.tick`: how long [archer] has drawn its bow, [ticks], as the goal sees it. Sped up by
+     * the fire rate, the bow is fully drawn (20) sooner, and the same value gives the arrow its power: full power.
+     */
+    @JvmStatic
+    fun drawTicks(archer: Mob, ticks: Int): Int {
+        val rate = fireRate(archer)
+        return if (rate == 1.0) ticks else (ticks * rate).toInt()
+    }
+
+    /** Mixin of `RangedBowAttackGoal.tick`: [archer]'s wait between a shot and the next draw, [ticks], shortened by its fire rate. */
+    @JvmStatic
+    fun attackInterval(archer: Mob, ticks: Int): Int {
+        val rate = fireRate(archer)
+        return if (rate == 1.0) ticks else (ticks / rate).roundToInt().coerceAtLeast(1)
     }
 
     /** Puts the layer's modifier [id] for [factor] on [mob]'s [attribute], or takes it off at 1; false when it already was so. */
@@ -216,7 +244,9 @@ object Difficulty {
                 config.mobDamage.takeIf { it != 1.0 }?.let { "damage to players x${number(it)}" },
             )
             if (mobs.isNotEmpty()) add("hostile mobs ${mobs.joinToString(", ")} (bosses vanilla)")
+            factors(config.mobHealthByType)?.let { add("health by type, over vanilla: $it") }
             factors(config.mobSpeed)?.let { add("movement speed $it") }
+            factors(config.mobFireRate)?.let { add("bow fire rate $it") }
             factors(config.ores)?.let { add("ores $it") }
             if (config.regenerationSlowdown != 1.0) add("natural regeneration x${number(1 / config.regenerationSlowdown)}")
             val chests = listOfNotNull(
