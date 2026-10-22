@@ -49,16 +49,16 @@ class DuckDatabaseTest {
     @Test
     fun `creates the file and applies the migrations once`() {
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(4, db.schemaVersion)
+            assertEquals(5, db.schemaVersion)
             assertEquals(2, db.readers.size, "two for the Director and the memory; one more only with the dashboard (M6 §8.5)")
             assertEquals(tables.sorted(), db.writer.strings("SELECT table_name FROM duckdb_tables() ORDER BY 1"))
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             db.writer.run("INSERT INTO events (id, ts, game_time, type) VALUES (1, now(), 0, 'join')")
         }
         assertTrue(Files.isRegularFile(file))
 
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"), "not applied twice")
             assertEquals(listOf("1"), db.readers[0].strings("SELECT count(*) FROM events"), "data kept")
         }
     }
@@ -203,15 +203,35 @@ class DuckDatabaseTest {
                 DROP VIEW mem_ideas;
                 DROP TABLE line_labels;
                 DROP TABLE ideas;
-                DELETE FROM schema_version WHERE version = 4;
+                DELETE FROM schema_version WHERE version >= 4;
                 """.trimIndent(),
             )
         }
         DuckDatabase.open(file, options).use { db ->
-            assertEquals(4, db.schemaVersion)
-            assertEquals(listOf("1", "2", "3", "4"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
+            assertEquals(5, db.schemaVersion)
+            assertEquals(listOf("1", "2", "3", "4", "5"), db.writer.strings("SELECT version FROM schema_version ORDER BY 1"))
             assertEquals(listOf("Onze secondes. ONZE. null"), db.writer.strings("SELECT text || ' ' || coalesce(register, 'null') FROM narrator_lines"))
             assertEquals(listOf("0"), db.writer.strings("SELECT count(*) FROM mem_ideas"))
+        }
+    }
+
+    /** M7-CLARITY: V5 adds `obscure` to the labels of a world at version 4; the labels written before keep it NULL. */
+    @Test
+    fun `V5 applies to a world at version 4 and keeps its labels`() {
+        DuckDatabase.open(file, options).use { db ->
+            db.writer.run(
+                """
+                INSERT INTO chat (id, ts, channel, text, turn_id) VALUES (7, now(), 'narrator', 'Formulaire 12-T : crayon réintégré.', 40);
+                DROP VIEW narrator_lines;
+                ALTER TABLE line_labels DROP COLUMN obscure;
+                INSERT INTO line_labels VALUES (7, now(), 'reflex:claude-haiku-5-5', 'divine_bureaucracy', 0, 0, 0, 0, 0.4, [], NULL, 900);
+                DELETE FROM schema_version WHERE version = 5;
+                """.trimIndent(),
+            )
+        }
+        DuckDatabase.open(file, options).use { db ->
+            assertEquals(5, db.schemaVersion)
+            assertEquals(listOf("divine_bureaucracy null 0.4"), db.writer.strings("SELECT register || ' ' || coalesce(obscure::VARCHAR, 'null') || ' ' || repeats FROM narrator_lines"))
         }
     }
 
@@ -223,24 +243,24 @@ class DuckDatabaseTest {
         fixture.publish(NarratorSpoke(NarratorChannel.NARRATOR, "Pas encore relue.", null, 41, null))
         val labels = LineLabelsRecord(
             reviewed.id, t0, "reflex:claude-haiku-5-5", "sports_commentary", 0.0, 0.1, 0.2, 0.05, 0.7, listOf("céleste"),
-            "Un commentaire sportif de fin de défi.", 1_400,
+            "Un commentaire sportif de fin de défi.", 1_400, 0.3,
         )
         fixture.journal.lineLabels(labels)
         fixture.journal.lineLabels(labels.copy(ts = t0.plusSeconds(1), register = "plain", crutches = emptyList(), reason = null, latencyMs = null))
 
         assertEquals(
             listOf(
-                listOf(reviewed.id, t0, "reflex:claude-haiku-5-5", "sports_commentary", 0.0, 0.1, 0.2, 0.05, 0.7, listOf("céleste"), "Un commentaire sportif de fin de défi.", 1_400),
-                listOf(reviewed.id, t0.plusSeconds(1), "reflex:claude-haiku-5-5", "plain", 0.0, 0.1, 0.2, 0.05, 0.7, emptyList<String>(), null, null),
+                listOf(reviewed.id, t0, "reflex:claude-haiku-5-5", "sports_commentary", 0.0, 0.1, 0.2, 0.05, 0.7, listOf("céleste"), "Un commentaire sportif de fin de défi.", 1_400, 0.3),
+                listOf(reviewed.id, t0.plusSeconds(1), "reflex:claude-haiku-5-5", "plain", 0.0, 0.1, 0.2, 0.05, 0.7, emptyList<String>(), null, null, 0.3),
             ),
             fixture.values("SELECT * FROM line_labels ORDER BY ts"),
         )
         assertEquals(
             listOf(
-                listOf("Onze secondes. ONZE. Gaspard remporte la Pioche.", "plain", 0.7, emptyList<String>()),
-                listOf("Pas encore relue.", null, null, null),
+                listOf("Onze secondes. ONZE. Gaspard remporte la Pioche.", "plain", 0.3, 0.7, emptyList<String>()),
+                listOf("Pas encore relue.", null, null, null, null),
             ),
-            fixture.values("SELECT text, register, repeats, crutches FROM narrator_lines ORDER BY id"),
+            fixture.values("SELECT text, register, obscure, repeats, crutches FROM narrator_lines ORDER BY id"),
             "the latest labels of each line; none for a line not reviewed",
         )
     }

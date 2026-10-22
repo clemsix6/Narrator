@@ -231,7 +231,7 @@ class DirectorEndToEndTests {
                     toolUse("say", """{"text": "Un instant, je consulte mes archives.", "to": ["$player"]}""")
                 }
                 "TASK T-" in text -> reply { toolUse("say", """{"text": "Mes archives disent : overworld.", "to": ["$player"]}""") }
-                prayer in text -> reply { toolUse("say", """{"text": "Prière reçue, dossier ouvert.", "to": ["$player"]}""") }
+                prayer in text -> reply { toolUse("say", """{"text": "Prière reçue. Je réfléchis.", "to": ["$player"]}""") }
                 again in text -> reply { toolUse("say", """{"text": "Toujours là, hélas pour toi."}""") }
                 else -> reply { text("Rien à dire.") }
             }

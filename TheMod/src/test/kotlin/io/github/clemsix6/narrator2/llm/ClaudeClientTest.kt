@@ -75,7 +75,7 @@ class ClaudeClientTest {
         assertTrue(body.path("stream").asBoolean())
         assertEquals("adaptive", body.path("thinking").path("type").asText())
         assertEquals("summarized", body.path("thinking").path("display").asText())
-        assertEquals("medium", body.path("output_config").path("effort").asText())
+        assertEquals("high", body.path("output_config").path("effort").asText())
         assertTrue(body.path("cache_control").isMissingNode, "LLMGW places its own cache markers")
         assertEquals("You are the Narrator.", body.path("system").path(0).path("text").asText())
         assertEquals("user", body.path("messages").path(0).path("role").asText())
@@ -180,7 +180,7 @@ class ClaudeClientTest {
             assertEquals(conversation.id, conversationId)
             assertEquals(Role.DIRECTOR, role)
             assertEquals("claude-opus-5-5", model)
-            assertEquals("medium", effort)
+            assertEquals("high", effort)
             assertEquals(1, attempts)
             assertTrue(requestId!!.startsWith("req_fake_"), "request id from the response header: $requestId")
             assertTrue(messageId!!.startsWith("msg_fake_"), "message id: $messageId")
@@ -378,7 +378,7 @@ class ClaudeClientTest {
         val result = logs.use { send(conversation) }
 
         val start = logs.messages.single { "· call ·" in it }
-        listOf(conversation.id, "role director", "claude-opus-5-5", "effort medium", "1 messages").forEach { assertContains(start, it) }
+        listOf(conversation.id, "role director", "claude-opus-5-5", "effort high", "1 messages").forEach { assertContains(start, it) }
         val end = logs.messages.single { "first token" in it }
         listOf(
             conversation.id, "request ${result.stats.requestId}", "message ${result.stats.messageId}", "1 attempt",

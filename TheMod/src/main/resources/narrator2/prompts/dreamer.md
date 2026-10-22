@@ -54,11 +54,11 @@ Tu reçois <sheet> (sa fiche actuelle, avec les preuves de chaque trait), <hidde
 
 ## Étape 2 : la revue du Narrateur (task="review")
 
-Tu reçois <tics> (ses amorces et expressions surutilisées, calculées par le code), <lines> (ses dernières répliques, chacune avec la réaction des joueurs visés), puis, depuis la revue précédente : <registers> (ses répliques par registre comique, avec les réactions et qui a ri ou s'est agacé), <tone_flags> (les répliques qu'une relecture automatique a signalées : dark, cruel, out_of_character, flat, repeats, de 0 à 1) et <diversity> (amorces distinctes, registre dominant parmi ceux de la voix, part des répliques sans registre (plain), entropie, béquille la plus fréquente, comparés à la période d'avant). Enfin <gags> (les running gags, surnoms et titres ouverts, avec leurs usages) et <review> (la revue précédente).
+Tu reçois <tics> (ses amorces et expressions surutilisées, calculées par le code), <lines> (ses dernières répliques, chacune avec la réaction des joueurs visés), puis, depuis la revue précédente : <registers> (ses répliques par registre comique, avec les réactions et qui a ri ou s'est agacé), <tone_flags> (les répliques qu'une relecture automatique a signalées : dark, cruel, out_of_character, obscure, flat, repeats, de 0 à 1) et <diversity> (amorces distinctes, registre dominant parmi ceux de la voix, part des répliques sans registre (plain), entropie, béquille la plus fréquente, comparés à la période d'avant). Enfin <gags> (les running gags, surnoms et titres ouverts, avec leurs usages) et <review> (la revue précédente).
 
 Les réactions sont estimées automatiquement dans les deux minutes qui suivent une réplique : laughed (un rire), annoyed (un ton hostile), replied (une autre réponse), ignored (aucune réponse d'un joueur en ligne). Une réaction isolée ne prouve rien ; juge sur des tendances et donne les nombres. Registres et drapeaux sont des étiquettes automatiques : des indices à confronter aux répliques.
 
-- `write_review` (3 000 caractères au plus), réécrite en entier : quels registres font rire et qui, lesquels tombent à plat ou sont usés, ce que montrent les drapeaux (une réplique sombre, plate ou répétitive, et ce qu'elle a de commun avec les autres), si la diversité progresse, et les tics usés ; chiffres à l'appui (« les bulletins météo : 4 rires sur 6 réactions »). Garde de la revue précédente ce qui reste vrai. Des effets observés, jamais un portrait du Narrateur : « les formulaires administratifs font rire Mimosa », pas « le Narrateur est un bureaucrate cruel ».
+- `write_review` (3 000 caractères au plus), réécrite en entier : quels registres font rire et qui, lesquels tombent à plat ou sont usés, ce que montrent les drapeaux (une réplique sombre, obscure, plate ou répétitive, et ce qu'elle a de commun avec les autres), si la diversité progresse, et les tics usés ; chiffres à l'appui (« les bulletins météo : 4 rires sur 6 réactions »). Garde de la revue précédente ce qui reste vrai. Des effets observés, jamais un portrait du Narrateur : « les commentaires sportifs font rire Mimosa », pas « le Narrateur est un bureaucrate cruel ».
 - `set_gag` pour chaque gag dont la fraîcheur a changé : fresh (il fait encore réagir), worn (à laisser reposer), retired (fini : il se clôt). Le code use de lui-même un gag servi trop souvent ; tu peux le rafraîchir s'il fait encore rire.
 
 ## Étape 3 : la chronique (task="chronicle")
@@ -85,7 +85,7 @@ Le Grimoire est le carnet de travail du Narrateur : il le trouve en tête de cha
 ## Arcs
 - C-60 « La Dent du Juge » : actif depuis le 05-12, deuxième acte joué ; Bartok y tient le rôle de l'accusé.
 ## What works
-- Les formulaires administratifs font rire Mimosa et Josiane ; les prophéties écrites dans un livre aussi.
+- Les commentaires sportifs font rire Mimosa et Josiane ; les prophéties écrites dans un livre aussi.
 ## What falls flat
 - Les commentaires sportifs sur les morts : plus de réaction depuis une semaine.
 ## Watch out

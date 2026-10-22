@@ -218,7 +218,7 @@ class ProgrammeEndToEndTests {
             user.startsWith("Label this chat message.") -> reply { text(ADDRESSED) }
             user.startsWith("Label this activity summary.") -> reply { text("""{"worth": 0.9, "hook": "progress"}""") }
             else -> reply {
-                text("""{"reason": "Une réplique directe.", "register": "plain", "dark": 0.0, "cruel": 0.0, "flat": 0.0, "out_of_character": 0.0, "repeats": 0.0, "crutches": []}""")
+                text("""{"reason": "Une réplique directe.", "register": "plain", "dark": 0.0, "cruel": 0.0, "flat": 0.0, "out_of_character": 0.0, "obscure": 0.0, "repeats": 0.0, "crutches": []}""")
             }
         }
 

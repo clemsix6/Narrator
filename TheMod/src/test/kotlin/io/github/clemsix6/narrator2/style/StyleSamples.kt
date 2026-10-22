@@ -20,8 +20,9 @@ object StyleSamples {
         flat: Double = 0.0,
         outOfCharacter: Double = 0.0,
         repeats: Double = 0.0,
+        obscure: Double = 0.0,
         text: String = "La ligne numéro $id du Narrateur.",
-    ) = LineLabels(id, START.plusSeconds(id), text, "reflex:claude-haiku-5-5", register, dark, cruel, flat, outOfCharacter, repeats, crutches, null, 900)
+    ) = LineLabels(id, START.plusSeconds(id), text, "reflex:claude-haiku-5-5", register, dark, cruel, flat, outOfCharacter, obscure, repeats, crutches, null, 900)
 
     /** A watch holding [texts] as the lines 1, 2, 3… of the Director, with [names] known. */
     fun watch(texts: List<String>, names: Collection<String> = emptyList(), tone: ToneWatch? = null): StyleWatchImpl =

@@ -227,7 +227,7 @@ class StyleWatchTest {
             writer.update("INSERT INTO chat (id, ts, channel, text, operator) VALUES (111, ?, 'operator', 'Un opérateur parle.', 'clement')", START)
             for ((ts, register) in listOf(1L to "courtroom", 2L to "game_show")) {
                 writer.update(
-                    "INSERT INTO line_labels VALUES (100, ?, 'reflex:claude-haiku-5-5', ?, 0.1, 0.0, 0.2, 0.0, 0.0, ['céleste'], 'une raison', 900)",
+                    "INSERT INTO line_labels VALUES (100, ?, 'reflex:claude-haiku-5-5', ?, 0.1, 0.0, 0.2, 0.0, 0.0, ['céleste'], 'une raison', 900, 0.0)",
                     START.plusSeconds(ts), register,
                 )
             }

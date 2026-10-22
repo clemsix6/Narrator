@@ -277,8 +277,8 @@ class ReplayHarnessTest {
             fake.enqueue(
                 reply {
                     text(
-                        """{"grades":[{"id":2,"reason":"report","funny":0,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a"},""" +
-                            """{"id":1,"reason":"a good punchline","funny":3,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"yes"}]}""",
+                        """{"grades":[{"id":2,"reason":"report","funny":0,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a","clear":true},""" +
+                            """{"id":1,"reason":"a good punchline","funny":3,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"yes","clear":true}]}""",
                     )
                     usage(input = 1_000, output = 200)
                 },
@@ -354,9 +354,9 @@ class ReplayHarnessTest {
     @Test
     fun `the judge's answer is checked line by line`() {
         val parsed = ToneJudge.parse(
-            """{"grades":[{"id":1,"reason":"r","funny":4,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a"},""" +
-                """{"id":3,"reason":"r","funny":1,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a"},""" +
-                """{"id":2,"reason":"r","funny":1,"fair":"meh","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a"}]}""",
+            """{"grades":[{"id":1,"reason":"r","funny":4,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a","clear":true},""" +
+                """{"id":3,"reason":"r","funny":1,"fair":"ok","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a","clear":true},""" +
+                """{"id":2,"reason":"r","funny":1,"fair":"meh","dark":false,"cruel":false,"voice":true,"repeats":false,"legible":"n_a","clear":true}]}""",
             count = 2,
         )
         assertTrue(parsed.grades.isEmpty())

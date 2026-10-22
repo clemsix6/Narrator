@@ -238,7 +238,7 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         val flaws = labels?.let {
             mapOf(
                 StyleReport.Flaw.DARK to it.dark, StyleReport.Flaw.CRUEL to it.cruel, StyleReport.Flaw.OUT_OF_CHARACTER to it.outOfCharacter,
-                StyleReport.Flaw.FLAT to it.flat, StyleReport.Flaw.REPEATS to it.repeats,
+                StyleReport.Flaw.OBSCURE to it.obscure, StyleReport.Flaw.FLAT to it.flat, StyleReport.Flaw.REPEATS to it.repeats,
             )
         }
         return StyleReport.Line(held.id, held.said.ts, held.said.text, labels?.register, flaws.orEmpty(), labels?.crutches.orEmpty())
@@ -313,7 +313,7 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
         /**
          * What the Journal holds for the watch, on a read connection: the Director's latest [WINDOW] lines (`chat` channel
          * `narrator` with a turn, no operator), the names ([Tics.names]), and the latest review of the latest [LABELS]
-         * lines reviewed.
+         * lines reviewed (`obscure` 0 in the rows older than that flaw, M7-CLARITY).
          */
         fun read(connection: Connection): Seed {
             val lines = connection.query(
@@ -321,15 +321,15 @@ class StyleWatchImpl(private val tone: ToneWatch? = null) : StyleWatch {
                 timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
             ) { SeedLine(getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3)) }.reversed()
             val labels = connection.query(
-                "SELECT l.event_id, epoch_ms(l.ts), c.text, l.source, l.register, l.dark, l.cruel, l.flat, l.out_of_character, l.repeats, l.crutches, " +
-                    "l.latency_ms FROM (SELECT DISTINCT ON (event_id) * FROM line_labels ORDER BY event_id, ts DESC) l JOIN chat c ON c.id = l.event_id " +
+                "SELECT l.event_id, epoch_ms(l.ts), c.text, l.source, l.register, l.dark, l.cruel, l.flat, l.out_of_character, coalesce(l.obscure, 0), " +
+                    "l.repeats, l.crutches, l.latency_ms FROM (SELECT DISTINCT ON (event_id) * FROM line_labels ORDER BY event_id, ts DESC) l JOIN chat c ON c.id = l.event_id " +
                     "ORDER BY l.event_id DESC LIMIT $LABELS",
                 timeoutSeconds = SheetStats.QUERY_TIMEOUT_SECONDS,
             ) {
                 enumOfId<ComicRegister>(getString(5))?.let { register ->
                     LineLabels(
                         getLong(1), Instant.ofEpochMilli(getLong(2)), getString(3), getString(4), register, getDouble(6), getDouble(7), getDouble(8),
-                        getDouble(9), getDouble(10), strings(11), null, getInt(12),
+                        getDouble(9), getDouble(10), getDouble(11), strings(12), null, getInt(13),
                     )
                 }
             }.filterNotNull()

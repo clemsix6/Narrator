@@ -485,6 +485,7 @@ data class ChatSignalsRecord(
  * @property dark and the other flaws: 0 to 1.
  * @property crutches the line's crutch words, 3 at most.
  * @property reason the reviewer's one sentence; it quotes the Narrator, never a player.
+ * @property obscure the sixth flaw (M7-CLARITY), last like its column (`V5__line_obscure.sql`); null only in older rows.
  */
 data class LineLabelsRecord(
     val eventId: Long,
@@ -499,4 +500,5 @@ data class LineLabelsRecord(
     val crutches: List<String>,
     val reason: String?,
     val latencyMs: Int?,
+    val obscure: Double? = null,
 )
