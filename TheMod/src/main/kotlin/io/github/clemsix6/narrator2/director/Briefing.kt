@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2.director
 
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
+import io.github.clemsix6.narrator2.difficulty.Difficulty
 import io.github.clemsix6.narrator2.tool.ToolText.duration
 import io.github.clemsix6.narrator2.tool.ToolText.dimension
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.id
@@ -43,7 +44,7 @@ import java.util.UUID
  * - `<previous_chapters>`: the last two chapters of the Director (three without a memory, whose
  *   chronicle covers the older ones), with their factual summaries (commitments included) or why they
  *   have none;
- * - `<world …/>`: the Overworld's day, hour and weather;
+ * - `<world …/>`: the Overworld's day, hour and weather, and what the difficulty layer changes (`difficulty="…"`);
  * - `<players_online>`: each player online with their dimension, position and state, how long they have
  *   played and what they did in the last minutes;
  * - `<players_recent>`: who else played in the last 24 hours;
@@ -279,7 +280,7 @@ class Briefing(
     // ── World and players ───────────────────────────────────────────────────────────────────────────
 
     private fun worldLine(snapshot: Result<WorldSnapshot>): String = snapshot.fold(
-        { "<world day=\"${it.day}\" time=\"${it.time}\" clock=\"${it.clock}\" weather=\"${it.weather}\"/>" },
+        { "<world day=\"${it.day}\" time=\"${it.time}\" clock=\"${it.clock}\" weather=\"${it.weather}\"${Difficulty.briefingAttribute()}/>" },
         { "<world>(unavailable: ${reason(it)})</world>" },
     )
 

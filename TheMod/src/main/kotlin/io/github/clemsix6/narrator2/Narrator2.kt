@@ -2,6 +2,7 @@ package io.github.clemsix6.narrator2
 
 import io.github.clemsix6.narrator2.command.NarratorCommand
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.difficulty.registerDifficultyHooks
 import io.github.clemsix6.narrator2.guard.registerGuardHooks
 import io.github.clemsix6.narrator2.mechanics.registerMechanicsHooks
 import io.github.clemsix6.narrator2.observer.registerObserverHooks
@@ -25,6 +26,7 @@ object Narrator2 : ModInitializer {
         registerGuardHooks()
         registerMechanicsHooks()
         registerRelicsHooks()
+        registerDifficultyHooks()
 
         ServerLifecycleEvents.SERVER_STARTED.register { server -> NarratorRuntime.start(server) }
         ServerLifecycleEvents.SERVER_STOPPING.register { NarratorRuntime.current?.beginShutdown() }

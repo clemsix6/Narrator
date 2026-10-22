@@ -764,7 +764,7 @@ class RelicsService(private val services: NarratorServices) {
     }
 
     companion object {
-        val log = Log.of("Relics")
+        val log = Log.relics
 
         /** The tag of every champion (`/tag`, entity `Tags`), besides the Narrator's own. */
         const val TAG = "narrator2_champion"
