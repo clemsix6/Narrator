@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.relics.RelicItems
 import io.github.clemsix6.narrator2.relics.RelicsService
 import io.github.clemsix6.narrator2.tool.Caller
 import io.github.clemsix6.narrator2.tool.ToolStatus
@@ -12,14 +13,16 @@ import io.github.clemsix6.narrator2.trace.DecisionRecord
 import io.github.clemsix6.narrator2.trace.Decisions
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
+import net.minecraft.commands.SharedSuggestionProvider
 import net.minecraft.commands.arguments.EntityArgument
 import net.minecraft.server.level.ServerPlayer
 
 /**
- * `/narrator champion <player> [brief]`, `/narrator relics` and `/narrator relics restock` (M7-RELICS), for the operators:
- * force a champion (it goes through the caps and the guards like the Director's, and the armorer designs it), see the
- * reserves and the champions, and start a restock now (when a reserve is under its target, whatever the last one did).
- * Each command that acts is an `operator` decision.
+ * `/narrator champion <player> [brief]`, `/narrator relics`, `/narrator relics restock` (M7-RELICS) and
+ * `/narrator relics revoke <player>` (M7-REVOKE), for the operators: force a champion (it goes through the caps and the
+ * guards like the Director's, and the armorer designs it), see the reserves and the champions, start a restock now
+ * (when a reserve is under its target, whatever the last one did), and take a player's relics back for good. Each
+ * command that acts is an `operator` decision.
  */
 object RelicsCommands {
     private val log = Log.command
@@ -41,7 +44,14 @@ object RelicsCommands {
         root.then(
             Commands.literal("relics")
                 .executes { status(it.source) }
-                .then(Commands.literal("restock").executes { restock(it.source) }),
+                .then(Commands.literal("restock").executes { restock(it.source) })
+                .then(
+                    Commands.literal("revoke").then(
+                        Commands.argument("player", StringArgumentType.word())
+                            .suggests { context, builder -> SharedSuggestionProvider.suggest(context.source.onlinePlayerNames, builder) }
+                            .executes { revoke(it.source, StringArgumentType.getString(it, "player")) },
+                    ),
+                ),
         )
     }
 
@@ -92,6 +102,33 @@ object RelicsCommands {
         val what = relics.maybeRestock("asked by ${source.textName}", force = true)
         Decisions(runtime.trace, runtime.clock).record(log, DecisionRecord.Kind.OPERATOR, "relics_restock", source.textName, what)
         source.sendSuccess({ narratorLine(what) }, false)
+        return 1
+    }
+
+    /**
+     * Takes every relic of [name] back for good (M7-REVOKE): from the inventory and from what the Narrator holds for
+     * them (a running confiscation, a stake), with neither quota nor guards. Only for a player online: an offline
+     * player's inventory is not read.
+     */
+    private fun revoke(source: CommandSourceStack, name: String): Int {
+        val runtime = runningNarrator(source) ?: return 0
+        val player = source.server.playerList.getPlayerByName(name)
+        if (player == null) {
+            source.sendFailure(errorLine("$name is not online: relics are revoked from a player online only (an offline player's inventory is not read)."))
+            return 0
+        }
+        val by = source.textName
+        val who = player.plainTextName
+        log.info("$by: narrator relics revoke $who")
+        val seized = runtime.guards.items.seize(player, RelicItems::isRelic, Int.MAX_VALUE, "relics revoked by operator $by", turnId = null)
+        if (seized == null) {
+            source.sendSuccess({ narratorLine("$who has no relic, neither in their inventory nor held by the Narrator.") }, false)
+            return 1
+        }
+        Decisions(runtime.trace, runtime.clock).record(log, DecisionRecord.Kind.OPERATOR, "relics_revoke", who, "$by revoked ${seized.what} for good")
+        source.sendSuccess({ narratorLine("revoked for good from $who:") }, true)
+        seized.taken.forEach { stack -> source.sendSuccess({ detailLine("  ${stack.count}× ${stack.hoverName.string} (${stack.typeHolder().registeredName})") }, true) }
+        if (seized.held.isNotEmpty()) source.sendSuccess({ detailLine("  ${seized.held}") }, true)
         return 1
     }
 }

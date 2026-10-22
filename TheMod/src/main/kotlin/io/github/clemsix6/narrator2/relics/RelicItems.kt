@@ -79,7 +79,7 @@ object RelicItems {
         }
         stack.set(DataComponents.ATTRIBUTE_MODIFIERS, modifiers)
         stack.set(DataComponents.RARITY, Rarity.EPIC)
-        mark(stack, "relic", id)
+        mark(stack, RELIC_KIND, id)
         return stack
     }
 
@@ -226,6 +226,13 @@ object RelicItems {
             else -> EquipmentSlotGroup.MAINHAND
         }
     }
+
+    /** The mark of a relic: `{narrator2: {kind: "relic"}}`. */
+    const val RELIC_KIND = "relic"
+
+    /** Whether [stack] is one of the Narrator's relics, marked [RELIC_KIND]: what `/narrator relics revoke` takes back. */
+    fun isRelic(stack: ItemStack): Boolean =
+        stack.get(DataComponents.CUSTOM_DATA)?.copyTag()?.getCompoundOrEmpty(Speech.CUSTOM_DATA_KEY)?.getStringOr("kind", "") == RELIC_KIND
 
     /** Marks [stack] `{narrator2: {kind, id}}`, replacing the mark `ItemSpecs.build` gave a described item. */
     private fun mark(stack: ItemStack, kind: String, id: Long) {

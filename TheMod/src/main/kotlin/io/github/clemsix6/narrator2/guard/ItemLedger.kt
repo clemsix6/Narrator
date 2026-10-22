@@ -43,7 +43,8 @@ import kotlin.math.abs
 
 /**
  * The ledger of the items the Narrator holds for players (M1_M2 §10.2, M4 §5.6, §7.2): an item is never lost for
- * good. Every entry is written in the player's [GuardState] in the same tick as the items leave the inventory, so
+ * good, unless [seize]d (M7-REVOKE: a permanent `take_item`, `/narrator relics revoke`), which is told in the decisions.
+ * Every entry is written in the player's [GuardState] in the same tick as the items leave the inventory, so
  * both reach the player's file at the same save, and a crash can only lose both or neither. A stack of any size
  * fits in the file (a full book, a shulker box of books: [GuardState]), and one held across an update of the game is
  * brought up to date by its data fixer before it comes back.
@@ -64,7 +65,7 @@ import kotlin.math.abs
  * expires ([recover]).
  *
  * Decisions `ledger confiscated`, `held`, `released`, `forfeited`, `transferred`, `offered`, `owed`, `returned`,
- * `delivered`, `unreadable`, `recovered` and `dropped`. Server thread only.
+ * `delivered`, `unreadable`, `recovered`, `dropped` and `seized`. Server thread only.
  *
  * @param tell where the ledger's news for the Director goes (an offering given back untaken): by default the
  *   Director of the running Narrator on the player's server.
@@ -122,6 +123,86 @@ class ItemLedger(
         for ((slot, stack) in taken) inventory.removeItem(slot, stack.count)
         player.containerMenu.broadcastChanges()
         return confiscation
+    }
+
+    /** How many items matching [match] the ledger holds for [player] that [seize] may take. */
+    fun heldCount(player: ServerPlayer, match: (ItemStack) -> Boolean): Int =
+        states.of(player).confiscations.filter { it.owedTo == null }.sumOf { entry -> stacks(entry, player).filter(match).sumOf { it.count } }
+
+    /**
+     * Takes up to [max] items matching [match] from [player] **for good**: nothing of it ever comes back (M7-REVOKE).
+     * First out of what the ledger holds for them (a running confiscation, a stake, an offering, what they are owed), so
+     * that an item held for a while becomes the Narrator's for good; then from the inventory (armor and off hand
+     * included). A stake ceded to a winner is no longer theirs and stays as it is, and so do stacks that no longer read
+     * back. An entry left empty is gone. Returns what was taken, or null when nothing matched. Decision `ledger seized`.
+     */
+    fun seize(player: ServerPlayer, match: (ItemStack) -> Boolean, max: Int, reason: String, turnId: Long?): Seizure? {
+        require(max > 0) { "max must be positive" }
+        val ops = ops(player)
+        val fixer = player.level().server.fixerUpper
+        var left = max
+        val fromLedger = mutableListOf<ItemStack>()
+        val touched = mutableListOf<String>()
+        val entries = states.of(player).confiscations.mapNotNull { entry ->
+            if (left <= 0 || entry.owedTo != null) return@mapNotNull entry
+            val kept = mutableListOf<String>()
+            val keptStacks = mutableListOf<ItemStack>()
+            var unreadable = 0
+            var hit = false
+            for (snbt in entry.items) {
+                val tag = upToDate(snbt, entry.dataVersion, fixer)
+                val stack = tag?.let { read(it, ops) }
+                if (stack == null) {
+                    kept += tag?.toString() ?: snbt
+                    unreadable++
+                    continue
+                }
+                if (left > 0 && match(stack)) {
+                    val part = minOf(left, stack.count)
+                    fromLedger += stack.copyWithCount(part)
+                    stack.shrink(part)
+                    left -= part
+                    hit = true
+                }
+                if (!stack.isEmpty) {
+                    kept += encode(stack, ops)
+                    keptStacks += stack
+                }
+            }
+            if (!hit) return@mapNotNull entry
+            touched += Escrow.label(entry)
+            val what = listOfNotNull(describe(keptStacks).ifEmpty { null }, if (unreadable > 0) "$unreadable unreadable stacks" else null).joinToString(", ")
+            if (kept.isEmpty()) null else entry.copy(items = kept, what = what, dataVersion = DATA_VERSION)
+        }
+        val inventory = player.inventory
+        val fromInventory = mutableListOf<Pair<Int, ItemStack>>()
+        for (slot in 0 until inventory.containerSize) {
+            if (left <= 0) break
+            val stack = inventory.getItem(slot)
+            if (stack.isEmpty || !match(stack)) continue
+            val part = stack.copyWithCount(minOf(left, stack.count))
+            fromInventory += slot to part
+            left -= part.count
+        }
+        val taken = fromLedger + fromInventory.map { it.second }
+        if (taken.isEmpty()) return null
+        val what = describe(taken)
+        val held = if (touched.isEmpty()) "" else "${describe(fromLedger)} of it out of ${touched.joinToString()}"
+        val id = decisions.record(
+            log, DecisionRecord.Kind.LEDGER, "seized", player.plainTextName,
+            reason = "$what taken for good" + (if (held.isEmpty()) "" else " ($held)") + ": $reason",
+            turnId = turnId,
+            detail = buildJsonObject {
+                put("items", what)
+                put("count", taken.sumOf { it.count })
+                put("from_ledger", describe(fromLedger))
+                put("entries", touched.joinToString())
+            },
+        )
+        states.update(player) { it.copy(confiscations = entries) }
+        for ((slot, stack) in fromInventory) inventory.removeItem(slot, stack.count)
+        player.containerMenu.broadcastChanges()
+        return Seizure(id, taken, held)
     }
 
     /**
@@ -591,6 +672,15 @@ class ItemLedger(
             null
         }
     }
+}
+
+/**
+ * What [ItemLedger.seize] took for good: decision [id], the [taken] stacks, and [held], what of them the ledger held
+ * already: `2x minecraft:diamond of it out of confiscation 812` (empty when none).
+ */
+class Seizure(val id: Long, val taken: List<ItemStack>, val held: String) {
+    /** `6x minecraft:diamond, 1x minecraft:iron_sword`. */
+    val what: String get() = ItemLedger.describe(taken)
 }
 
 /** Posts [signal] to the Director of the running Narrator, when [player] is on its server (the ledger's default [ItemLedger] `tell`). */
