@@ -339,7 +339,10 @@ data class RelicsConfig(
     val relicChance: Double = 0.03,
     val consumableChance: Double = 0.08,
     val bookChance: Double = 0.05,
-    /** How many objects of each kind the armorer keeps ready; a restock starts when one reserve falls under half. */
+    /**
+     * How many objects of each kind the armorer keeps ready, the relics spread over the five tiers of players (the lowest
+     * first, M7-BALANCE); a restock starts when one reserve (a tier's, for the relics) falls under half.
+     */
     val relicStock: Int = 5,
     val consumableStock: Int = 8,
     val bookStock: Int = 5,

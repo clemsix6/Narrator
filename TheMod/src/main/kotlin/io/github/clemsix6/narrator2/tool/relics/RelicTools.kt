@@ -59,9 +59,10 @@ class SummonChampionTool : RelicTool<SummonChampionArgs>(
     name = "summon_champion",
     description = "Commissions a champion from the armorer: a hostile creature far harder than its kind, designed for one " +
         "player online (its name, legend, gear and powers fit them and your story). It appears near them within a minute " +
-        "or two, goes for them alone, and vanishes at its time (half an hour by default) or when they die or leave; its " +
-        "fatal blow kills within your quota of deaths, else it is a rescue. Whoever kills it gets a relic " +
-        "made for them, a lasting good item, and its gear. A punishment of that player (creatures) under your rules. Rare: " +
+        "or two, sized to their gear (twenty seconds at least against their best weapon), goes for them alone, and vanishes " +
+        "at its time (half an hour by default) or when they die, leave or are saved from a death; its fatal blow kills " +
+        "within your quota of deaths, else it is a rescue. Whoever kills it gets a relic made for them, a lasting good item " +
+        "measured to their gear and the fight, and its gear. A punishment of that player (creatures) under your rules. Rare: " +
         "for a strong player who boasts, coasts or earned a trial, or the peak of an arc, a challenge or a season; never " +
         "for a new or struggling player, nor twice in an evening for the same one. A CHAMPION event tells you what it " +
         "looks like once it stands, then how it ends: announce it, taunt, crown the winner.",
@@ -89,8 +90,10 @@ class CreateChampionTool : RelicTool<ChampionDraft>(
 class CreateRelicTool : RelicTool<RelicDraft>(
     name = "create_relic",
     description = "Forges one relic: a weapon, a tool, a piece of armor or a shield that stays a good item (at least one " +
-        "bonus, at most one light malus). In a relic task it goes to the champion's killer at once; in a restock it waits " +
-        "in the chests' reserve. Refused with the reason when something is off: fix it and call again.",
+        "bonus, at most one light malus), within the caps of its player's tier (its base one tier above theirs at most, " +
+        "its enchantments bounded in number and level). In a relic task it goes to the champion's killer at once, within " +
+        "the task's <caps>; in a restock it waits in the chests' reserve for the tier it names. Refused with the reason " +
+        "when something is off: fix it and call again.",
     args = RelicDraft.serializer(),
     effect = ToolEffect.WORLD,
 ) {

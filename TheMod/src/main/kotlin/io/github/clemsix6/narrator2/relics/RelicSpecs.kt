@@ -90,7 +90,93 @@ data class RelicDraft(
     @Items(0, 4)
     val attributes: List<RelicAttribute> = emptyList(),
     @Doc("It never wears out.") val unbreakable: Boolean = false,
+    @Doc(
+        "Restocks only: the players this relic waits for in the chests, by their best gear (the task says which tiers it " +
+            "wants, with their caps). Left out for a champion's killer, whose tier the task gives.",
+    )
+    val tier: Tier? = null,
 )
+
+// ── Tiers (M7-BALANCE) ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How far a player has come, by the material of their best gear: what a relic is measured against (M7-BALANCE). A
+ * relic's base is one tier above its player's at most, and never netherite.
+ */
+@Serializable
+enum class Tier(val id: String) {
+    @SerialName("wood") WOOD("wood"),
+    @SerialName("stone") STONE("stone"),
+    @SerialName("iron") IRON("iron"),
+    @SerialName("diamond") DIAMOND("diamond"),
+    @SerialName("netherite") NETHERITE("netherite"),
+    ;
+
+    companion object {
+        /**
+         * The tier of the material of a tool, a weapon, a piece of armor or a relic base, by its id: wooden and leather
+         * items and the bow are wood; stone, golden and copper ones and the shield, stone; iron and chainmail ones and the
+         * crossbow, iron; diamond ones, the trident and the mace, diamond. Null for anything else.
+         */
+        fun ofMaterial(id: String): Tier? {
+            val bare = id.trim().lowercase().removePrefix("minecraft:")
+            return when {
+                bare.startsWith("wooden_") || bare.startsWith("leather_") || bare == "bow" -> WOOD
+                bare.startsWith("stone_") || bare.startsWith("golden_") || bare.startsWith("copper_") || bare == "shield" -> STONE
+                bare.startsWith("iron_") || bare.startsWith("chainmail_") || bare == "crossbow" -> IRON
+                bare.startsWith("diamond_") || bare == "trident" || bare == "mace" -> DIAMOND
+                bare.startsWith("netherite_") -> NETHERITE
+                else -> null
+            }
+        }
+
+        /**
+         * A player's tier from the ids of the [tools] (swords, axes, pickaxes, shovels, hoes, spears) and the [armor] they
+         * carry: their best tool or weapon, or one below their best armor (armor is found in chests early, a pickaxe is
+         * crafted); wood at least.
+         */
+        fun ofPlayer(tools: List<String>, armor: List<String>): Tier {
+            val tool = tools.mapNotNull(::ofMaterial).maxOrNull() ?: WOOD
+            val worn = armor.mapNotNull(::ofMaterial).maxOrNull()?.let { entries[maxOf(it.ordinal - 1, 0)] } ?: WOOD
+            return maxOf(tool, worn)
+        }
+    }
+}
+
+/**
+ * What a relic may be for a player of [tier] (M7-BALANCE): its base at most [material], [level] enchantments at most,
+ * none above level [level], attribute bonuses at most [share] of their own cap, unbreakable or not. One step up from the
+ * player's tier; a [trivial] fight (the champion killed in a few seconds, or hardly hurting its killer) takes that step
+ * back. Never netherite.
+ */
+data class RelicCaps(val tier: Tier, val trivial: Boolean = false) {
+    private val step = tier.ordinal + if (trivial) 0 else 1
+    val material: Tier = MATERIALS[step]
+    val level: Int = LEVELS[step]
+    val share: Double = SHARES[step]
+    val unbreakable: Boolean = step >= UNBREAKABLE_STEP
+
+    /** For the armorer: `base stone at most (wooden_, leather_, stone_…); 2 enchantments at most, level II at most; …`. */
+    fun describe(): String =
+        "base ${material.id} at most (${BASES.filterKeys { it <= material }.values.joinToString()}); " +
+            "$level enchantment${if (level > 1) "s" else ""} at most, level ${ROMAN[level - 1]} at most; " +
+            "attribute bonuses ${if (share >= 1.0) "up to their cap" else "up to ${(share * 100).toInt()} % of their cap"}; " +
+            if (unbreakable) "unbreakable allowed" else "never unbreakable"
+
+    private companion object {
+        val MATERIALS = listOf(Tier.WOOD, Tier.STONE, Tier.IRON, Tier.DIAMOND, Tier.DIAMOND, Tier.DIAMOND)
+        val LEVELS = listOf(1, 2, 2, 3, 4, 5)
+        val SHARES = listOf(0.5, 0.5, 0.5, 0.75, 1.0, 1.0)
+        const val UNBREAKABLE_STEP = 4
+        val ROMAN = listOf("I", "II", "III", "IV", "V")
+        val BASES = mapOf(
+            Tier.WOOD to "wooden_, leather_, bow",
+            Tier.STONE to "stone_, golden_, copper_, shield",
+            Tier.IRON to "iron_, chainmail_, crossbow",
+            Tier.DIAMOND to "diamond_, trident, mace",
+        )
+    }
+}
 
 // ── Consumables ─────────────────────────────────────────────────────────────────────────────────────
 
@@ -311,6 +397,41 @@ object RelicRules {
         val enchantments = draft.enchantments.groupBy { it.id.trim().lowercase().removePrefix("minecraft:") }.filterValues { it.size > 1 }.keys
         if (enchantments.isNotEmpty()) add("enchantments: each once (repeated: ${enchantments.joinToString()})")
     }
+
+    /**
+     * What makes [draft] too strong for a player under [caps] (M7-BALANCE): its base, its enchantments (how many, how
+     * high), its attribute bonuses, unbreakable. Each problem says the cap; empty when it fits. An unknown base counts as
+     * diamond.
+     */
+    fun withinCaps(draft: RelicDraft, caps: RelicCaps): List<String> {
+        val problems = buildList {
+            val material = Tier.ofMaterial(draft.item) ?: Tier.DIAMOND
+            if (material > caps.material) add("base: ${caps.material.id} at most (${draft.item.trim()} is ${material.id})")
+            if (draft.enchantments.size > caps.level) add("${draft.enchantments.size} enchantments: ${caps.level} at most")
+            val high = draft.enchantments.filter { it.level > caps.level }
+            if (high.isNotEmpty()) add("enchantments up to level ${caps.level} (${high.joinToString { "${it.id.trim().removePrefix("minecraft:")} ${it.level}" }})")
+            for (change in draft.attributes) {
+                val max = change.attribute.bonusMax * caps.share
+                if (change.amount > max + 1e-9) add("${change.attribute.id}: a bonus up to ${number(max)} here (got ${number(change.amount)})")
+            }
+            if (draft.unbreakable && !caps.unbreakable) add("unbreakable: not at this tier")
+        }
+        if (problems.isEmpty()) return problems
+        val fight = if (caps.trivial) ", after a fight that was too easy" else ""
+        return listOf("too strong for a ${caps.tier.id}-tier player$fight: " + problems.joinToString("; ") + "; caps: ${caps.describe()}")
+    }
+
+    /** The lowest tier whose caps [draft] fits: the players a relic of the reserves made before the tiers waits for. */
+    fun fittingTier(draft: RelicDraft): Tier = Tier.entries.firstOrNull { withinCaps(draft, RelicCaps(it)).isEmpty() } ?: Tier.NETHERITE
+
+    /**
+     * Whether a champion's fight was too easy to earn a full relic (M7-BALANCE): killed less than [TRIVIAL_MS] after the
+     * first player's blow ([foughtMs]), or hurting its killer by less than [TRIVIAL_DAMAGE] in all ([dealt]).
+     */
+    fun trivial(foughtMs: Long, dealt: Double): Boolean = foughtMs < TRIVIAL_MS || dealt < TRIVIAL_DAMAGE
+
+    const val TRIVIAL_MS = 10_000L
+    const val TRIVIAL_DAMAGE = 4.0
 
     fun consumable(draft: ConsumableDraft): List<String> = buildList {
         texts(draft.name, draft.lore)

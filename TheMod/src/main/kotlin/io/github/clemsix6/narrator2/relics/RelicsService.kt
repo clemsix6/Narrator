@@ -7,6 +7,7 @@ import io.github.clemsix6.narrator2.core.onServerThread
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.MechanicSignal
 import io.github.clemsix6.narrator2.event.PlayerRef
+import io.github.clemsix6.narrator2.guard.CreatureShield
 import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.guard.clockTime
@@ -65,6 +66,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 
 /** A champion in the world: its sheet, its draft, and the tally of its fight (damage by whom, damage to whom). */
 class LiveChampion(val row: ChampionRow, val draft: ChampionDraft) {
@@ -77,6 +79,18 @@ class LiveChampion(val row: ChampionRow, val draft: ChampionDraft) {
 
     /** Damage it dealt to players, by player. */
     val dealt = ConcurrentHashMap<String, Float>()
+
+    /** When a player first hurt it, epoch milliseconds; 0 before (M7-BALANCE: how long the fight really lasted). */
+    @Volatile
+    var firstBlowAt = 0L
+
+    /** Why it was sent away, when the service did it ([RelicsService.onSecond]); null otherwise. */
+    @Volatile
+    var sentAway: String? = null
+
+    /** What it is and where it stands, once dressed: `husk « … » (…) at overworld 1 64 2 until 19:42, 112 health`. */
+    @Volatile
+    var summary: String = ""
 }
 
 /**
@@ -89,14 +103,17 @@ class LiveChampion(val row: ChampionRow, val draft: ChampionDraft) {
  *   (a creature of the Narrator's: it goes for its player alone, and goes when they die or leave), then dresses it
  *   (gear, lasting effects, glow, the tag [TAG]), keeps it `relics.championMinutes` (past the 10 minutes of `spawn`) and
  *   keeps its sheet (`champions`). Unlike the Narrator's other creatures, its fatal blow kills, within the Narrator's
- *   quota of deaths (M7-FIX, `GuardsImpl.allowDeath`).
+ *   quota of deaths (M7-FIX, `GuardsImpl.allowDeath`). M7-BALANCE: its health and blow are sized to its player's gear
+ *   ([Threat]), it goes for its player every second, and leaves when the Narrator spares them ([onSecond]).
  * - **Its death** ([onDeath]): killed by a player, its gear drops whole and the armorer forges that player's relic, given
- *   at once (at their feet when the inventory is full); killed otherwise, nothing but the creature's own loot. Without
- *   Claude, or when the armorer fails, its gear alone drops. Each end is a `CHAMPION` line to the Director.
+ *   at once (at their feet when the inventory is full), within the caps of their tier and of the fight ([RelicCaps]);
+ *   killed otherwise, nothing but the creature's own loot. Without Claude, or when the armorer fails, its gear alone
+ *   drops. Each end is a `CHAMPION` line to the Director.
  * - **The reserves** ([onChestLoot]): objects prepared ahead (`relic_stock`), drawn into a structure chest's loot when it is
- *   first opened, each kind with its chance; the player who opened it, when known, makes a `TREASURE` line. When a
- *   reserve falls under half its target, one restock task fills them all ([maybeRestock]): at the start, then after
- *   a chest took something; one at a time, and not again within [RETRY_MS] of one that made nothing.
+ *   first opened, each kind with its chance, a relic only for an opener of its tier, one off at most; the player who
+ *   opened it, when known, makes a `TREASURE` line. When a reserve (the relics: one per tier) falls under half its
+ *   target, one restock task fills them all ([maybeRestock]): at the start, then after a chest took something; one at a
+ *   time, and not again within [RETRY_MS] of one that made nothing.
  *
  * Hooks run on the server thread; the database and Claude never do.
  */
@@ -161,7 +178,7 @@ class RelicsService(private val services: NarratorServices) {
     }
 
     private suspend fun load() {
-        for (row in store.stock()) stock.getValue(row.kind).addLast(row)
+        for (row in store.stock()) stock.getValue(row.kind).addLast(withTier(row))
         val now = clock.instant()
         for (row in store.activeChampions()) {
             val draft = decode(ChampionDraft.serializer(), row.spec)
@@ -255,7 +272,7 @@ class RelicsService(private val services: NarratorServices) {
         return buildString {
             append("<task kind=\"champion\" for=\"${ModelText.attribute(job.player.name)}\" asked_by=\"${ModelText.attribute(job.by)}\">\n")
             append(ModelText.lines(brief)).append("\n</task>\n")
-            append("<player>\n").append(report.header(null, false)).append('\n')
+            append("<player tier=\"${Threat.tierOf(player).id}\">\n").append(report.header(null, false)).append('\n')
             report.position().forEach { append(it).append('\n') }
             append(report.equipment()).append("\n</player>\n")
             append(context())
@@ -263,47 +280,53 @@ class RelicsService(private val services: NarratorServices) {
     }
 
     /**
-     * `create_champion`: the champion of the task in [ctx], made from [draft] (`RelicRules`, the gear through `RelicItems`),
-     * summoned by `spawn` with its guards, then dressed and kept.
+     * `create_champion`: the champion of the task in [ctx], made from [draft] and standing near the task's player ([stand]).
      */
     suspend fun createChampion(ctx: ToolContext, draft: ChampionDraft): ToolResult = answer {
         val job = armorer.job(ctx.caller.conversationId) as? ArmorerJob.Champion
             ?: refuse(ToolResult.invalid("this task asks for no champion: ${taskSays(ctx)}"))
         if (job.champion != null) refuse(ToolResult.invalid("your champion already stands: end with your one-line report"))
+        val live = stand(ctx.caller, job.player, draft)
+        job.champion = live
+        ToolResult.ok("ok: champion ${ModelText.escape(live.summary)} stands near ${job.player.shownName}; the Narrator is told. End with your one-line report.", listOf(job.player))
+    }
+
+    /**
+     * The champion of [draft] for [player], asked by [caller]: checked (`RelicRules`, the gear through `RelicItems`),
+     * summoned by `spawn` with its guards, dressed, sized to its player ([Threat.size]), recorded and told to the Director.
+     * Throws a refusal ([refuse]) with the reason when it cannot stand; inside a tool's [answer], that is the answer.
+     */
+    suspend fun stand(caller: Caller, player: PlayerRef, draft: ChampionDraft): LiveChampion {
         val problems = RelicRules.champion(draft)
         if (problems.isNotEmpty()) refuse(ToolResult.invalid(problems.joinToString("; ")))
-        val gear = ctx.onServer { server ->
-            RelicRules.pieces(draft.gear).map { (slot, piece) -> EquipmentSlot.byName(slot).let { it to RelicItems.gear(server, piece, it) } }
+        val gear = services.server.onServerThread {
+            RelicRules.pieces(draft.gear).map { (slot, piece) -> EquipmentSlot.byName(slot).let { it to RelicItems.gear(services.server, piece, it) } }
         }
         val minutes = config.championMinutes
         val name = Speech.fit(Speech.clean(draft.name), NAME_SHOWN_MAX)
-        val spawned = runner.invoke(SpawnTool(), ctx.caller, spawnArgs(job, draft, name, minOf(minutes, SPAWN_MAX_MINUTES)))
+        val spawned = runner.invoke(SpawnTool(), caller, spawnArgs(player, draft, name, minOf(minutes, SPAWN_MAX_MINUTES)))
         if (spawned.status != ToolStatus.OK) refuse(spawned)
         val now = clock.instant()
         val row = ChampionRow(
-            nextChampion.getAndIncrement(), UUID(0, 0), job.player.uuid, job.player.name, draft.mob.id, name,
+            nextChampion.getAndIncrement(), UUID(0, 0), player.uuid, player.name, draft.mob.id, name,
             json.encodeToString(ChampionDraft.serializer(), draft), now, now.plusSeconds(minutes * 60L), "active",
         )
-        val placed = ctx.onServer { server -> dress(server, spawned, draft, gear, row) }
+        val live = services.server.onServerThread { dress(services.server, spawned, draft, gear, row) }
             ?: refuse(ToolResult.failed("the champion vanished as it appeared"))
-        val live = placed.first
-        job.champion = live
-        store.addChampion(live.row.copy(entity = live.entity), ctx.caller.conversationId)
-        val until = clockTime(clock, row.expiresAt.toEpochMilli())
-        val look = RelicItems.describe(draft)
-        Decisions(services.trace, clock).record(log, DecisionRecord.Kind.MECHANIC, "champion_summoned", job.player.name, "$look at ${placed.second} until $until")
+        store.addChampion(live.row, caller.conversationId)
+        Decisions(services.trace, clock).record(log, DecisionRecord.Kind.MECHANIC, "champion_summoned", player.name, live.summary)
         post(
             MechanicSignal.CHAMPION,
-            "${ModelText.escape(look)} appeared near ${job.player.shownName} (${placed.second}) until $until, and goes for them: " +
+            "${ModelText.escape(live.summary)} appeared near ${player.shownName}, and goes for them: " +
                 "« ${ModelText.escape(ModelText.cut(Speech.clean(draft.lore), 300))} »; whoever kills it gets a relic",
         )
-        ToolResult.ok("ok: champion ${ModelText.escape(look)} stands near ${job.player.shownName} at ${placed.second} until $until; the Narrator is told. End with your one-line report.", listOf(job.player))
+        return live
     }
 
     /** The arguments of `spawn` for a champion: its creature, its name, its factors, sent at its player. */
-    private fun spawnArgs(job: ArmorerJob.Champion, draft: ChampionDraft, name: String, minutes: Int): String = buildJsonObject {
+    private fun spawnArgs(player: PlayerRef, draft: ChampionDraft, name: String, minutes: Int): String = buildJsonObject {
         put("entity", draft.mob.id)
-        put("near", job.player.name)
+        put("near", player.name)
         put("distance", SPAWN_DISTANCE)
         put("name", name)
         put("target", true)
@@ -331,10 +354,10 @@ class RelicsService(private val services: NarratorServices) {
     /**
      * The champion among what `spawn` brought ([spawned]'s creatures: the one of its kind, not a jockey's mount), dressed:
      * its gear (dropped by this service, whole, when a player kills it: the game drops none), its lasting effects, its
-     * glow and tag; then kept until the end of [row], with its mount or riders. Its place, or null when it is gone
-     * already. Server thread.
+     * glow and tag, its health and blow sized to its player ([Threat.size]); then kept until the end of [row], with its
+     * mount or riders. Null when it is gone already. Server thread.
      */
-    private fun dress(server: MinecraftServer, spawned: ToolResult, draft: ChampionDraft, gear: List<Pair<EquipmentSlot, ItemStack>>, row: ChampionRow): Pair<LiveChampion, String>? {
+    private fun dress(server: MinecraftServer, spawned: ToolResult, draft: ChampionDraft, gear: List<Pair<EquipmentSlot, ItemStack>>, row: ChampionRow): LiveChampion? {
         val mobs = spawned.entities.mapNotNull { uuid -> server.allLevels.firstNotNullOfOrNull { it.getEntity(uuid) } as? Mob }
         val mob = mobs.firstOrNull { EntityType.getKey(it.type).path == draft.mob.id } ?: mobs.firstOrNull() ?: return null
         mobs.forEach { services.guards.mobs.extend(it, row.expiresAt.toEpochMilli()) }
@@ -344,12 +367,35 @@ class RelicsService(private val services: NarratorServices) {
         }
         for (entry in draft.effects) mob.addEffect(MobEffectInstance(RelicItems.effect(entry.effect.id), MobEffectInstance.INFINITE_DURATION, entry.level - 1, false, true))
         mob.health = mob.maxHealth
+        server.playerList.getPlayer(row.player)?.let { player -> log.info("champion for ${row.playerName} sized: ${Threat.size(mob, player)}") }
         mob.addTag(TAG)
         mob.setGlowingTag(true)
         val live = LiveChampion(row.copy(entity = mob.uuid), draft)
-        champions[mob.uuid] = live
         val where = "${ToolText.dimension(mob.level().dimension().identifier().toString())} ${mob.blockX} ${mob.blockY} ${mob.blockZ}"
-        return live to where
+        live.summary = "${RelicItems.describe(draft)} at $where until ${clockTime(clock, row.expiresAt.toEpochMilli())}, ${number(mob.maxHealth.toDouble())} health"
+        champions[mob.uuid] = live
+        return live
+    }
+
+    /**
+     * Once a second (server thread, M7-BALANCE): each champion goes for its player, from the moment it stands to its end;
+     * one whose player the Narrator now spares (saved from a death, protected, in grace or in a duel: its blows would be
+     * refused) is sent away, for a champion never stands harmless while its killer earns a relic.
+     */
+    fun onSecond(server: MinecraftServer) {
+        if (champions.isEmpty()) return
+        for (live in champions.values.toList()) {
+            val mob = server.allLevels.firstNotNullOfOrNull { it.getEntity(live.entity) } as? Mob ?: continue
+            val player = server.playerList.getPlayer(live.row.player) ?: continue
+            if (!mob.isAlive || player.isSpectator || player.isCreative) continue
+            if (CreatureShield.spares(player)) {
+                live.sentAway = "its player is spared now (saved from a death, protected, in grace or in a duel): a champion never stands harmless"
+                log.info("champion « ${live.row.name} » sent away: ${live.row.playerName} is spared now")
+                services.guards.mobs.retire(mob, clock.millis())
+                continue
+            }
+            if (mob.level() === player.level() && mob.target !== player) mob.target = player
+        }
     }
 
     /**
@@ -372,26 +418,32 @@ class RelicsService(private val services: NarratorServices) {
         val now = clock.instant()
         val fight = fight(live, source, killer, now)
         val where = "${ToolText.dimension(level.dimension().identifier().toString())} ${entity.blockX} ${entity.blockY} ${entity.blockZ}"
+        // What the killer's relic may be (M7-BALANCE): their tier now, one step lower after a fight that was too easy.
+        val caps = killer?.let {
+            val fought = if (live.firstBlowAt == 0L) 0L else now.toEpochMilli() - live.firstBlowAt
+            RelicCaps(Threat.tierOf(it), RelicRules.trivial(fought, (live.dealt[it.plainTextName] ?: 0f).toDouble()))
+        }
         val ref = killer?.ref()
-        services.scope.launch { ended(live, ref, fight, where, now) }
+        services.scope.launch { ended(live, ref, fight, where, now, caps) }
     }
 
-    /** How the fight went, in one line: its length, who hit it how hard, what it dealt, the last blow. */
+    /** How the fight went, in one line: its length (from its coming, from the first blow), who hit it how hard, what it dealt, the last blow. */
     private fun fight(live: LiveChampion, source: DamageSource, killer: ServerPlayer?, now: Instant): String {
         val took = ToolText.duration(now.toEpochMilli() - live.row.spawnedAt.toEpochMilli())
+        val fought = if (live.firstBlowAt == 0L) "killed at the first blow" else "fought ${ToolText.duration(now.toEpochMilli() - live.firstBlowAt)} from the first blow"
         val hits = live.hits.entries.sortedByDescending { it.value }.joinToString { "${ModelText.name(it.key)} ${number(it.value.toDouble())}" }.ifEmpty { "nobody" }
         val dealt = live.dealt.entries.sortedByDescending { it.value }.joinToString { "${ModelText.name(it.key)} ${number(it.value.toDouble())}" }.ifEmpty { "nobody" }
         val blow = source.typeHolder().registeredName.removePrefix("minecraft:") +
             (killer?.mainHandItem?.takeUnless { it.isEmpty }?.let { " with ${it.typeHolder().registeredName.removePrefix("minecraft:")}" } ?: "")
-        return "lasted $took; damage it took: $hits; damage it dealt: $dealt; last blow: $blow"
+        return "lasted $took, $fought; damage it took: $hits; damage it dealt: $dealt; last blow: $blow"
     }
 
-    /** The end of [live] at [now]: recorded, then the relic of its [killer], and the Director told. */
-    private suspend fun ended(live: LiveChampion, killer: PlayerRef?, fight: String, where: String, now: Instant) {
+    /** The end of [live] at [now]: recorded, then the relic of its [killer] within [caps], and the Director told. */
+    private suspend fun ended(live: LiveChampion, killer: PlayerRef?, fight: String, where: String, now: Instant, caps: RelicCaps?) {
         val name = "« ${ModelText.escape(live.row.name)} » (${live.row.mob})"
         try {
             store.ended(live.row.id, if (killer != null) "slain" else "died", now, killer?.name, fight)
-            if (killer == null) {
+            if (killer == null || caps == null) {
                 Decisions(services.trace, clock).record(log, DecisionRecord.Kind.MECHANIC, "champion_died", live.row.playerName, "${live.row.name}: $fight")
                 post(MechanicSignal.CHAMPION, "$name died at $where without a player's blow: no relic, its gear lost ($fight)")
                 return
@@ -403,7 +455,8 @@ class RelicsService(private val services: NarratorServices) {
                 post(MechanicSignal.CHAMPION, "$head; no relic: the armorer cannot work ($absent)")
                 return
             }
-            val job = ArmorerJob.Relic(killer, live, fight)
+            val job = ArmorerJob.Relic(killer, live, fight, caps)
+            log.info("relic for ${killer.name}: ${caps.tier.id} tier${if (caps.trivial) ", a fight too easy" else ""}: ${caps.describe()}")
             val opening = services.server.onServerThread { relicOpening(job) }
             val ending = armorer.run(job, opening, RELIC_STEPS, JOB_TIMEOUT_MS)
             val given = job.given
@@ -429,8 +482,10 @@ class RelicsService(private val services: NarratorServices) {
             append("<fight>").append(job.fight).append("</fight>\n")
             if (killer != null) {
                 val report = PlayerReport(killer)
-                append("<player>\n").append(report.header(null, false)).append('\n').append(report.equipment()).append("\n</player>\n")
+                append("<player tier=\"${job.caps.tier.id}\">\n").append(report.header(null, false)).append('\n').append(report.equipment()).append("\n</player>\n")
             }
+            val easy = if (job.caps.trivial) " fight=\"too easy: killed within ${RelicRules.TRIVIAL_MS / 1000} s of the first blow, or hurting them by less than ${number(RelicRules.TRIVIAL_DAMAGE)}\"" else ""
+            append("<caps tier=\"${job.caps.tier.id}\"$easy>").append(job.caps.describe()).append("</caps>\n")
             append(context())
         }
     }
@@ -439,7 +494,9 @@ class RelicsService(private val services: NarratorServices) {
     fun onDamage(entity: LivingEntity, source: DamageSource, taken: Float) {
         if (champions.isEmpty() || taken <= 0f) return
         champions[entity.uuid]?.let { live ->
-            val who = (source.entity as? ServerPlayer)?.plainTextName ?: source.entity?.let { EntityType.getKey(it.type).path } ?: source.typeHolder().registeredName.removePrefix("minecraft:")
+            val player = source.entity as? ServerPlayer
+            if (player != null && live.firstBlowAt == 0L) live.firstBlowAt = clock.millis()
+            val who = player?.plainTextName ?: source.entity?.let { EntityType.getKey(it.type).path } ?: source.typeHolder().registeredName.removePrefix("minecraft:")
             live.hits.merge(who, taken, Float::plus)
             return
         }
@@ -457,7 +514,7 @@ class RelicsService(private val services: NarratorServices) {
             store.ended(live.row.id, "gone", now, null, null)
             Decisions(services.trace, clock).record(log, DecisionRecord.Kind.MECHANIC, "champion_gone", live.row.playerName, live.row.name)
             if (now.isBefore(live.row.expiresAt.plusSeconds(GONE_TOLD_SECONDS))) {
-                val why = if (now.isBefore(live.row.expiresAt)) "sent away before its time (its player died, left or was pardoned)" else "its time ran out"
+                val why = live.sentAway ?: if (now.isBefore(live.row.expiresAt)) "sent away before its time (its player died, left or was pardoned)" else "its time ran out"
                 post(MechanicSignal.CHAMPION, "« ${ModelText.escape(live.row.name)} » (${live.row.mob}) is gone, unslain: $why")
             }
         }
@@ -477,12 +534,20 @@ class RelicsService(private val services: NarratorServices) {
 
     // ── Relics, consumables, books ──────────────────────────────────────────────────────────────────
 
-    /** `create_relic`: a relic task's relic, given to the killer; a restock's, put in the reserve. */
+    /**
+     * `create_relic`: a relic task's relic, within its killer's caps, given to them; a restock's, for the tier it names
+     * and within that tier's caps, put in the reserve (M7-BALANCE).
+     */
     suspend fun createRelic(ctx: ToolContext, draft: RelicDraft): ToolResult = answer {
         when (val job = armorer.job(ctx.caller.conversationId)) {
-            is ArmorerJob.Relic -> give(ctx, job, draft)
-            is ArmorerJob.Restock -> stockUp(ctx, job, StockKind.RELIC, Speech.clean(draft.name), json.encodeToString(RelicDraft.serializer(), draft), RelicItems.describe(draft)) { server ->
-                RelicItems.relic(server, draft, 0)
+            is ArmorerJob.Relic -> give(ctx, job, draft.copy(tier = null))
+            is ArmorerJob.Restock -> {
+                val tier = draft.tier ?: refuse(ToolResult.invalid("say which players this relic waits for (tier); still wanted: ${wanted(job)}"))
+                if (job.left(tier) <= 0) refuse(ToolResult.invalid("no more relics wanted for ${tier.id}-tier players; still wanted: ${wanted(job)}"))
+                RelicRules.withinCaps(draft, RelicCaps(tier)).takeIf { it.isNotEmpty() }?.let { refuse(ToolResult.invalid(it.joinToString("; "))) }
+                stockUp(ctx, job, StockKind.RELIC, Speech.clean(draft.name), json.encodeToString(RelicDraft.serializer(), draft), "${tier.id} tier: ${RelicItems.describe(draft)}", tier) { server ->
+                    RelicItems.relic(server, draft, 0)
+                }
             }
             else -> refuse(ToolResult.invalid("this task asks for no relic: ${taskSays(ctx)}"))
         }
@@ -506,9 +571,13 @@ class RelicsService(private val services: NarratorServices) {
         }
     }
 
-    /** Gives the relic of [draft] to the killer of a relic task: in their inventory, at their feet when it is full; to the reserve when they left. */
+    /**
+     * Gives the relic of [draft], within the killer's caps, to the killer of a relic task: in their inventory, at their feet
+     * when it is full; to the reserve, for their tier, when they left.
+     */
     private suspend fun give(ctx: ToolContext, job: ArmorerJob.Relic, draft: RelicDraft): ToolResult {
         if (job.given != null) refuse(ToolResult.invalid("the relic is already given: end with your one-line report"))
+        RelicRules.withinCaps(draft, job.caps).takeIf { it.isNotEmpty() }?.let { refuse(ToolResult.invalid(it.joinToString("; "))) }
         val dropped = ctx.onServer { server ->
             val stack = RelicItems.relic(server, draft, 0)
             server.playerList.getPlayer(job.killer.uuid)?.let { give(it, stack) }
@@ -516,8 +585,9 @@ class RelicsService(private val services: NarratorServices) {
         val look = RelicItems.describe(draft)
         val lore = ModelText.escape(ModelText.cut(Speech.clean(draft.lore.first()), 120))
         if (dropped == null) {
-            val id = store.addStock(StockKind.RELIC, Speech.clean(draft.name), json.encodeToString(RelicDraft.serializer(), draft), clock.instant(), ctx.caller.conversationId)
-            stock.getValue(StockKind.RELIC).addLast(StockRow(id, StockKind.RELIC, Speech.clean(draft.name), json.encodeToString(RelicDraft.serializer(), draft), clock.instant()))
+            val spec = json.encodeToString(RelicDraft.serializer(), draft.copy(tier = job.caps.tier))
+            val id = store.addStock(StockKind.RELIC, Speech.clean(draft.name), spec, clock.instant(), ctx.caller.conversationId)
+            stock.getValue(StockKind.RELIC).addLast(StockRow(id, StockKind.RELIC, Speech.clean(draft.name), spec, clock.instant(), job.caps.tier))
             job.given = "none: ${job.killer.shownName} left, ${ModelText.escape(look)} went to the chests' reserve"
             return ToolResult.ok("ok: ${job.killer.shownName} left the game: ${ModelText.escape(look)} goes to the chests' reserve instead. End with your one-line report.")
         }
@@ -547,7 +617,7 @@ class RelicsService(private val services: NarratorServices) {
         return dropped
     }
 
-    /** One object for the reserve of [kind]: built once to check it ([build], server thread), then kept. */
+    /** One object for the reserve of [kind] (a relic for [tier]): built once to check it ([build], server thread), then kept. */
     private suspend fun stockUp(
         ctx: ToolContext,
         job: ArmorerJob.Restock,
@@ -555,22 +625,32 @@ class RelicsService(private val services: NarratorServices) {
         name: String,
         spec: String,
         look: String,
+        tier: Tier? = null,
         build: (MinecraftServer) -> ItemStack,
     ): ToolResult {
         if (job.left(kind) <= 0) refuse(ToolResult.invalid("the reserve wants no more ${plural(kind)}: still wanted: ${wanted(job)}"))
         ctx.onServer { server -> build(server) }
         val now = clock.instant()
         val id = store.addStock(kind, name, spec, now, ctx.caller.conversationId)
-        stock.getValue(kind).addLast(StockRow(id, kind, name, spec, now))
+        stock.getValue(kind).addLast(StockRow(id, kind, name, spec, now, tier))
         job.made.merge(kind, 1, Int::plus)
+        tier?.let { job.madeTiers.merge(it, 1, Int::plus) }
         log.info("${kind.id} #$id in the reserve: $look")
         return ToolResult.ok("ok: ${kind.id} #$id ${ModelText.escape(look)} in the reserve; still wanted: ${wanted(job)}")
     }
 
-    /** `2 relics, 5 consumables, no book`. */
+    /** `2 relics (1 wood-tier, 1 iron-tier), 5 consumables, no book`. */
     private fun wanted(job: ArmorerJob.Restock): String = StockKind.entries.joinToString { kind ->
         val left = job.left(kind).coerceAtLeast(0)
-        if (left == 0) "no ${kind.id}" else "$left ${if (left == 1) kind.id else plural(kind)}"
+        val tiers = if (kind != StockKind.RELIC || left == 0) "" else " (" + Tier.entries.filter { job.left(it) > 0 }.joinToString { "${job.left(it)} ${it.id}-tier" } + ")"
+        if (left == 0) "no ${kind.id}" else "$left ${if (left == 1) kind.id else plural(kind)}$tiers"
+    }
+
+    /** [row] with its tier when it is a relic: the one its draft names, else the lowest it fits (a relic made before the tiers). */
+    private fun withTier(row: StockRow): StockRow {
+        if (row.kind != StockKind.RELIC) return row
+        val draft = decode(RelicDraft.serializer(), row.spec) ?: return row
+        return row.copy(tier = draft.tier ?: RelicRules.fittingTier(draft))
     }
 
     // ── The reserves ────────────────────────────────────────────────────────────────────────────────
@@ -592,7 +672,7 @@ class RelicsService(private val services: NarratorServices) {
         val found = mutableListOf<Pair<StockRow, Boolean>>()
         for (kind in StockKind.entries) {
             if (context.random.nextDouble() >= chance(cfg, kind)) continue
-            val row = stock.getValue(kind).pollFirst() ?: continue
+            val row = (if (kind == StockKind.RELIC) relicFor(Threat.tierOf(opener)) else stock.getValue(kind).pollFirst()) ?: continue
             val stack = try {
                 build(context.level.server, row)
             } catch (e: Exception) {
@@ -608,6 +688,16 @@ class RelicsService(private val services: NarratorServices) {
         val table = id.path
         val now = clock.instant()
         services.scope.launch { taken(found, player, table, now) }
+    }
+
+    /**
+     * Takes from the reserve the oldest relic for a player of [tier], one tier off at most (M7-BALANCE: a relic made ahead
+     * does not know who finds it); null when there is none.
+     */
+    private fun relicFor(tier: Tier): StockRow? {
+        val reserve = stock.getValue(StockKind.RELIC)
+        val row = reserve.firstOrNull { it.tier != null && abs(it.tier.ordinal - tier.ordinal) <= 1 } ?: return null
+        return row.takeIf { reserve.remove(it) }
     }
 
     /** The objects a chest took: recorded, the Director told who found what, and the reserves filled again if need be. */
@@ -660,14 +750,19 @@ class RelicsService(private val services: NarratorServices) {
         if (restocking?.isActive == true) return "a restock already runs"
         if (!force && clock.millis() - restockFailedAt < RETRY_MS) return "no restock: the last one made nothing, less than ${RETRY_MS / 60_000} minutes ago"
         val cfg = config
-        val counts = StockKind.entries.associateWith { stock.getValue(it).size }
-        val low = StockKind.entries.filter { if (force) counts.getValue(it) < target(cfg, it) else counts.getValue(it) * 2 < target(cfg, it) }
-        if (low.isEmpty()) return "no restock: the reserves are full enough (${stockLine()})"
-        val wanted = StockKind.entries.associateWith { (target(cfg, it) - counts.getValue(it)).coerceAtLeast(0) }.filterValues { it > 0 }
-        val job = ArmorerJob.Restock(wanted)
+        // Each reserve as (count, target): the consumables, the books, and the relics of each tier (M7-BALANCE).
+        val kinds = listOf(StockKind.CONSUMABLE, StockKind.BOOK).associateWith { stock.getValue(it).size to target(cfg, it) }
+        val tiers = tierTargets(cfg.relicStock).mapValues { (tier, target) -> stock.getValue(StockKind.RELIC).count { it.tier == tier } to target }
+        val low = { reserve: Pair<Int, Int> -> if (force) reserve.first < reserve.second else reserve.first * 2 < reserve.second }
+        if (kinds.values.none(low) && tiers.values.none(low)) return "no restock: the reserves are full enough (${stockLine()})"
+        val job = ArmorerJob.Restock(missing(kinds), missing(tiers))
         restocking = services.scope.launch { restock(job, why) }
         return "restock started: ${wanted(job)}"
     }
+
+    /** What each reserve (count, target) misses to reach its target; the full ones left out. */
+    private fun <K> missing(reserves: Map<K, Pair<Int, Int>>): Map<K, Int> =
+        reserves.mapValues { (_, it) -> (it.second - it.first).coerceAtLeast(0) }.filterValues { it > 0 }
 
     private suspend fun restock(job: ArmorerJob.Restock, why: String) {
         try {
@@ -701,10 +796,16 @@ class RelicsService(private val services: NarratorServices) {
         }
         return buildString {
             append("<task kind=\"restock\">\nThe chests of the world need: ${wanted(job)}.\n</task>\n")
+            if (job.tiers.isNotEmpty()) {
+                append("<relic_tiers>\nEach relic names its tier (tier) and stays within its caps; a chest gives it to a player of that tier, one off at most.\n")
+                for (tier in job.tiers.keys) append("${tier.id}: ").append(RelicCaps(tier).describe()).append('\n')
+                append("</relic_tiers>\n")
+            }
             append("<reserves>\n")
             for (kind in StockKind.entries) {
                 val rows = stock.getValue(kind).toList()
-                append("${plural(kind)} (${rows.size}): ").append(rows.joinToString { "« ${ModelText.escape(it.name)} »" }.ifEmpty { "none" }).append('\n')
+                append("${plural(kind)} (${rows.size}): ")
+                append(rows.joinToString { "« ${ModelText.escape(it.name)} »" + (it.tier?.let { tier -> " (${tier.id})" } ?: "") }.ifEmpty { "none" }).append('\n')
             }
             append("</reserves>\n<players>").append(players).append("</players>\n")
             append(context())
@@ -735,7 +836,7 @@ class RelicsService(private val services: NarratorServices) {
         val cfg = config
         for (kind in StockKind.entries) {
             val rows = stock.getValue(kind).toList()
-            add("${plural(kind)} ${rows.size}/${target(cfg, kind)} (chance ${number(chance(cfg, kind) * 100)}%): " + rows.joinToString { "#${it.id} ${it.name}" }.ifEmpty { "none" })
+            add("${plural(kind)} ${rows.size}/${target(cfg, kind)} (chance ${number(chance(cfg, kind) * 100)}%): " + rows.joinToString { "#${it.id} ${it.name}" + (it.tier?.let { tier -> " (${tier.id})" } ?: "") }.ifEmpty { "none" })
         }
         val standing = standing()
         add("champions standing ${standing.size}/${cfg.maxChampions}: " + standing.joinToString { "« ${it.row.name} » ${it.row.mob} for ${it.row.playerName} until ${clockTime(clock, it.row.expiresAt.toEpochMilli())}" }.ifEmpty { "none" })
@@ -826,5 +927,9 @@ class RelicsService(private val services: NarratorServices) {
         }
 
         fun plural(kind: StockKind): String = kind.id + "s"
+
+        /** How many relics each tier's reserve keeps (M7-BALANCE): `relics.relicStock` spread over the tiers, the lowest first. */
+        fun tierTargets(total: Int): Map<Tier, Int> =
+            Tier.entries.associateWith { total / Tier.entries.size + if (it.ordinal < total % Tier.entries.size) 1 else 0 }
     }
 }
