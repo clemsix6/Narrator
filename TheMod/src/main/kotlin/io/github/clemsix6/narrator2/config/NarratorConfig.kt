@@ -440,7 +440,7 @@ object ConfigStore {
      * Settings whose keys are free-form (a map), so unknown keys there are expected. A key the defaults have too (a
      * model of `prices`) is still merged key by key with its default.
      */
-    private val FREE_FORM = setOf("logging.levels", "prices")
+    private val FREE_FORM = setOf("logging.levels", "prices", "difficulty.mobSpeed")
 
     /** Keys an operator may be tempted to add, which must never be read from the file → what they hold. */
     private val SECRETS = mapOf("gateway.apiKey" to "the LLMGW key")

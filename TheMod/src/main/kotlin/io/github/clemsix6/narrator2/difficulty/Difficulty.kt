@@ -4,11 +4,15 @@ import io.github.clemsix6.narrator2.config.ConfigStore
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.observer.typeId
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Holder
 import net.minecraft.resources.Identifier
+import net.minecraft.server.MinecraftServer
 import net.minecraft.util.RandomSource
 import net.minecraft.world.damagesource.DamageSource
 import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.Mob
+import net.minecraft.world.entity.ai.attributes.Attribute
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon
@@ -24,10 +28,11 @@ import kotlin.math.roundToInt
 
 /**
  * The permanent difficulty layer (M7-BASE, `docs/research/DIFFICULTY_API.md`): hostile creatures with more health
- * that hit players harder, fewer ore blobs, slower natural regeneration, fewer diamonds and enchanted golden apples
- * in chests. It needs neither Claude nor the Narrator's runtime: its section is read at `SERVER_STARTING`, before the
- * worlds load and generate their spawn chunks, and stays for the whole launch. The mixins of `mixin/difficulty` and
- * the hooks of [registerDifficultyHooks] read it here, from the server thread and the world generation threads.
+ * that hit players harder, faster creatures of some types (creepers), fewer ore blobs, slower natural regeneration,
+ * fewer diamonds and enchanted golden apples in chests. It needs neither Claude nor the Narrator's runtime: its section is read at `SERVER_STARTING`, before the
+ * worlds load and generate their spawn chunks, and again by `/narrator reload` ([reload], M7-RELOAD). The mixins of
+ * `mixin/difficulty` and the hooks of [registerDifficultyHooks] read the section in force here at each use, from the
+ * server thread and the world generation threads.
  */
 object Difficulty {
     private val log = Log.difficulty
@@ -37,6 +42,9 @@ object Difficulty {
      * bounds and removals never count nor remove it, and the Narrator's factors multiply with it.
      */
     val HEALTH_ID: Identifier = Identifier.fromNamespaceAndPath("narrator2", "difficulty/max_health")
+
+    /** The difficulty's own speed modifier ([DifficultyConfig.mobSpeed]); a rule's `mob_attribute` multiplies with it. */
+    val SPEED_ID: Identifier = Identifier.fromNamespaceAndPath("narrator2", "difficulty/movement_speed")
 
     /** The ore features of the vanilla `worldgen/feature` registry (path) → their ore in [DifficultyConfig.ores]. */
     val ORE_FEATURES: Map<String, String> = mapOf(
@@ -53,7 +61,7 @@ object Difficulty {
         "ore_ancient_debris_large" to "ancient_debris", "ore_ancient_debris_small" to "ancient_debris",
     )
 
-    /** The section in force; null before the first `SERVER_STARTING` (unit tests), when nothing changes. */
+    /** The section in force, replaced whole by a reload; null before the first `SERVER_STARTING` (unit tests), when nothing changes. */
     @Volatile
     var config: DifficultyConfig? = null
         private set
@@ -69,31 +77,62 @@ object Difficulty {
             DifficultyConfig()
         }
         config = loaded
-        log.info(if (loaded.enabled) "on: ${summary(loaded) ?: "every factor is vanilla"}" else "off: the world plays as vanilla")
+        log.info(state(loaded))
     }
+
+    /**
+     * `/narrator reload` (M7-RELOAD): puts [next] in force at once, for the next blow, tick, chest and generated chunk,
+     * then reconciles every creature already loaded, in every dimension, through [onMobLoad]. Returns how many changed.
+     * Server thread.
+     */
+    fun reload(server: MinecraftServer, next: DifficultyConfig): Int {
+        config = next
+        var reconciled = 0
+        for (level in server.allLevels) {
+            for (entity in level.allEntities) if (entity is Mob && onMobLoad(entity)) reconciled++
+        }
+        log.info("reloaded, ${state(next)}; $reconciled loaded creatures reconciled")
+        return reconciled
+    }
+
+    /** `on: <what changes>` or `off: …`, for the log and `/narrator reload`. */
+    fun state(config: DifficultyConfig): String =
+        if (config.enabled) "on: ${summary(config) ?: "every factor is vanilla"}" else "off: the world plays as vanilla"
 
     /** The wither, the ender dragon, the warden and the elder guardian keep their vanilla health and damage. */
     fun isBoss(entity: Entity): Boolean = entity is WitherBoss || entity is EnderDragon || entity is Warden || entity is ElderGuardian
 
     /**
-     * `ENTITY_LOAD` of [mob], born or loaded from a chunk: a hostile creature gets the permanent health modifier (or
-     * loses it when the layer is off), and keeps the same share of its health, so a fresh one is at its new maximum.
-     * Idempotent: a creature loaded again already has the right modifier. Server thread.
+     * `ENTITY_LOAD` of [mob], born or loaded from a chunk: a creature of a type of [DifficultyConfig.mobSpeed] gets the
+     * permanent speed modifier; a hostile creature gets the health modifier and keeps the same share of its health, so a
+     * fresh one is at its new maximum. Each modifier is taken off when the layer is off or its factor is 1 (a type out
+     * of the table included). Idempotent: a creature loaded again already has the right modifiers. Returns whether it
+     * changed. Server thread.
      */
-    fun onMobLoad(mob: Mob) {
-        val config = config ?: return
-        if (mob !is Enemy || isBoss(mob)) return
-        val factor = if (config.enabled) config.mobHealth else 1.0
-        val instance = mob.getAttribute(Attributes.MAX_HEALTH) ?: return
-        if ((instance.getModifier(HEALTH_ID)?.amount() ?: 0.0) == factor - 1) return
+    fun onMobLoad(mob: Mob): Boolean {
+        val config = config ?: return false
+        val type = EntityType.getKey(mob.type)
+        val speed = config.mobSpeed[type.path]?.takeIf { config.enabled && type.namespace == Identifier.DEFAULT_NAMESPACE } ?: 1.0
+        val faster = setFactor(mob, Attributes.MOVEMENT_SPEED, SPEED_ID, speed)
+        if (faster) log.debug { "${mob.typeId} movement speed x${number(speed)}" }
+        if (mob !is Enemy || isBoss(mob)) return faster
         val before = mob.maxHealth
-        if (factor == 1.0) {
-            instance.removeModifier(HEALTH_ID)
-        } else {
-            instance.addOrReplacePermanentModifier(AttributeModifier(HEALTH_ID, factor - 1, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL))
-        }
+        if (!setFactor(mob, Attributes.MAX_HEALTH, HEALTH_ID, if (config.enabled) config.mobHealth else 1.0)) return faster
         mob.health = mob.health * mob.maxHealth / before
         log.debug { "${mob.typeId} max health ${number(before.toDouble())} -> ${number(mob.maxHealth.toDouble())}, health ${number(mob.health.toDouble())}" }
+        return true
+    }
+
+    /** Puts the layer's modifier [id] for [factor] on [mob]'s [attribute], or takes it off at 1; false when it already was so. */
+    private fun setFactor(mob: Mob, attribute: Holder<Attribute>, id: Identifier, factor: Double): Boolean {
+        val instance = mob.getAttribute(attribute) ?: return false
+        if ((instance.getModifier(id)?.amount() ?: 0.0) == factor - 1) return false
+        if (factor == 1.0) {
+            instance.removeModifier(id)
+        } else {
+            instance.addOrReplacePermanentModifier(AttributeModifier(id, factor - 1, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL))
+        }
+        return true
     }
 
     /** Mixin of `ServerPlayer.hurtServer`: what a hostile creature (not a boss) inflicts on a player, scaled. */
@@ -177,8 +216,8 @@ object Difficulty {
                 config.mobDamage.takeIf { it != 1.0 }?.let { "damage to players x${number(it)}" },
             )
             if (mobs.isNotEmpty()) add("hostile mobs ${mobs.joinToString(", ")} (bosses vanilla)")
-            val ores = config.ores.filterValues { it != 1.0 }.entries.groupBy({ it.value }, { it.key })
-            if (ores.isNotEmpty()) add("ores " + ores.entries.sortedBy { it.key }.joinToString(", ") { (factor, names) -> "${names.joinToString("/")} x${number(factor)}" })
+            factors(config.mobSpeed)?.let { add("movement speed $it") }
+            factors(config.ores)?.let { add("ores $it") }
             if (config.regenerationSlowdown != 1.0) add("natural regeneration x${number(1 / config.regenerationSlowdown)}")
             val chests = listOfNotNull(
                 config.chestDiamonds.takeIf { it != 1.0 }?.let { "diamonds x${number(it)}" },
@@ -187,5 +226,11 @@ object Difficulty {
             if (chests.isNotEmpty()) add("chests ${chests.joinToString(", ")}")
         }
         return parts.takeIf { it.isNotEmpty() }?.joinToString("; ")
+    }
+
+    /** The factors of [byName] that are not 1, grouped by value, the lowest first: `diamond/emerald x0.5, iron x0.75`. */
+    private fun factors(byName: Map<String, Double>): String? {
+        val groups = byName.filterValues { it != 1.0 }.entries.groupBy({ it.value }, { it.key })
+        return groups.entries.sortedBy { it.key }.joinToString(", ") { (factor, names) -> "${names.joinToString("/")} x${number(factor)}" }.ifEmpty { null }
     }
 }

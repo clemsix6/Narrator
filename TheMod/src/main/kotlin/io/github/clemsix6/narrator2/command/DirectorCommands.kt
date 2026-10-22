@@ -7,6 +7,8 @@ import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.config.ConfigException
 import io.github.clemsix6.narrator2.config.ConfigStore
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.difficulty.Difficulty
 import io.github.clemsix6.narrator2.director.DirectorSignal
 import io.github.clemsix6.narrator2.director.DirectorState
 import io.github.clemsix6.narrator2.director.DirectorStatus
@@ -203,6 +205,8 @@ object DirectorCommands {
                 log.error("reload after the chaos change failed, the settings in force stay", e)
                 return@replyLater listOf(errorLine("chaos $level written to ${ConfigStore.FILE_NAME}, but the reload failed: ${e.message}. The chaos stays at $before until a reload succeeds."))
             }
+            // Like `/narrator reload`, the difficulty read again is in force (M7-RELOAD).
+            runtime.server.onServerThread { Difficulty.reload(runtime.server, next.config.difficulty) }
             record(runtime, "chaos", operator, "chaos $before → ${next.config.chaos}", detail = buildJsonObject {
                 put("before", before)
                 put("after", next.config.chaos)

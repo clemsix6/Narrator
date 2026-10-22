@@ -5,6 +5,8 @@ import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.builder.LiteralArgumentBuilder
 import io.github.clemsix6.narrator2.NarratorRuntime
 import io.github.clemsix6.narrator2.core.Log
+import io.github.clemsix6.narrator2.core.onServerThread
+import io.github.clemsix6.narrator2.difficulty.Difficulty
 import io.github.clemsix6.narrator2.director.DirectorStatus
 import io.github.clemsix6.narrator2.guard.BlockRestorer
 import io.github.clemsix6.narrator2.journal.JournalHealth
@@ -269,7 +271,8 @@ object AdminCommands {
 
     /**
      * Loads the configuration, prompts and texts again, off the server thread, and installs them; the
-     * services keep running. When loading fails, the settings in force stay.
+     * services keep running. When loading fails, the settings in force stay. The difficulty section is put
+     * in force too, its loaded creatures reconciled on the server thread (M7-RELOAD).
      */
     private fun reload(source: CommandSourceStack): Int {
         val runtime = runningNarrator(source) ?: return 0
@@ -286,7 +289,12 @@ object AdminCommands {
                 return@replyLater listOf(errorLine("reload failed: ${e.message}. The previous settings stay active."))
             }
             val key = if (next.claude != null) "key present" else "no LLMGW key"
-            listOf(narratorLine("configuration and prompts reloaded ($key)."))
+            val difficulty = next.config.difficulty
+            val reconciled = runtime.server.onServerThread { Difficulty.reload(runtime.server, difficulty) }
+            listOf(
+                narratorLine("configuration and prompts reloaded ($key)."),
+                detailLine("[Difficulty] ${Difficulty.state(difficulty)} · $reconciled loaded creatures reconciled."),
+            )
         }
         job.invokeOnCompletion { reloadInFlight.set(false) }
         return 1

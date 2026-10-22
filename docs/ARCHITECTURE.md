@@ -338,9 +338,10 @@ sévérité maximale, durée des pièges, fréquence des règles. Les plafonds q
 situation du Directeur lui montre ce qui le limite (`Pacing`) avant qu'il n'y bute.
 
 ### 9.7 Difficulté et reliques (M7)
-**Le socle de difficulté** vit dans `difficulty/`, avec la section `difficulty` de la configuration, lue au démarrage du serveur. Il marche sans Claude.
+**Le socle de difficulté** vit dans `difficulty/`, avec la section `difficulty` de la configuration, lue au démarrage du serveur puis relue par `/narrator reload`, qui l'applique aussitôt (les créatures hostiles chargées sont réconciliées, voir `design/handoff/M7-RELOAD.md`). Il marche sans Claude.
 - **Créatures hostiles** (`Enemy`, boss exclus) : +50 % de PV.
 - **Dégâts reçus par les joueurs** quand un `Enemy` en est l'auteur : ×1,25.
+- **Vitesse**, par type de créature (`mobSpeed`) : creepers ×2.
 - **Minerais** : moins de filons, chacun de taille vanilla. Diamant, émeraude et or ×0,5 ; fer et cuivre ×0,75 ; les grandes veines ne changent pas. Seuls les chunks générés ensuite sont concernés.
 - **Régénération naturelle** : deux fois plus lente.
 - **Coffres** : les diamants et les pommes dorées enchantées sont gardés une fois sur deux.
