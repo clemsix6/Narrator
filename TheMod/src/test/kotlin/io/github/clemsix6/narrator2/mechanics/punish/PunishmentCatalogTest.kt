@@ -15,6 +15,7 @@ import io.github.clemsix6.narrator2.tool.action.ParticleKey
 import io.github.clemsix6.narrator2.tool.action.ParticlesArgs
 import io.github.clemsix6.narrator2.tool.action.SetAttributeArgs
 import io.github.clemsix6.narrator2.tool.action.SpawnArgs
+import io.github.clemsix6.narrator2.tool.action.WornItem
 import org.junit.jupiter.api.Test
 import kotlin.random.Random
 import kotlin.test.assertEquals
@@ -65,7 +66,7 @@ class PunishmentCatalogTest {
             PunishmentId.GUESTS -> {
                 val zombies = SpawnArgs(
                     "zombie", count = count("zombies", s + 1), near = player, name = "Comité d'accueil", target = true,
-                    equipment = EquipmentSpec(head = "carved_pumpkin"), lifetimeMinutes = 2, baby = s <= 2,
+                    equipment = EquipmentSpec(head = WornItem("carved_pumpkin")), lifetimeMinutes = 2, baby = s <= 2,
                 )
                 plan(120, true, Peril.ANY, null, listOf(Step.Spawn(zombies)))
             }
@@ -189,7 +190,7 @@ class PunishmentCatalogTest {
     fun `the guests bear their name and a hat, babies when the severity is low`() {
         val low = (PunishmentCatalog.plan(PunishmentId.GUESTS, 1, Caps.of(3), player, name = "Comité").steps.single() as Step.Spawn).args
         assertEquals(Triple(2, true, "Comité"), Triple(low.count, low.baby, low.name))
-        assertEquals(EquipmentSpec(head = "carved_pumpkin"), low.equipment)
+        assertEquals(EquipmentSpec(head = WornItem("carved_pumpkin")), low.equipment)
         assertTrue(low.target)
         val high = (PunishmentCatalog.plan(PunishmentId.GUESTS, 4, Caps.of(3), player).steps.single() as Step.Spawn).args
         assertEquals(Triple(5, false, null), Triple(high.count, high.baby, high.name))

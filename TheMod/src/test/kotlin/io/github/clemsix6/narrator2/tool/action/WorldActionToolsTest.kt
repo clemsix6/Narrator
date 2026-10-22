@@ -93,12 +93,15 @@ class WorldActionToolsTest {
     fun `spawn reads its nested specs and its defaults`() {
         val args = decode(
             SpawnArgs.serializer(),
-            """{"entity":"creeper","count":4,"near":"Bob","target":true,"equipment":{"head":"carved_pumpkin"},
+            """{"entity":"creeper","count":4,"near":"Bob","target":true,"equipment":{"head":"carved_pumpkin",
+               "chest":{"item":"leather_chestplate","color":"#F9D71C"}},
                "attributes":[{"attribute":"movement_speed","multiply":2.5}],"explode":{"after_seconds":3}}""",
         )
         assertEquals(8, args.distance)
         assertEquals(5, args.lifetimeMinutes)
-        assertEquals(EquipmentSpec(head = "carved_pumpkin"), args.equipment)
+        // An item id alone stands for the item (the equipment as written before M7-CREATURES).
+        assertEquals(EquipmentSpec(head = WornItem("carved_pumpkin"), chest = WornItem("leather_chestplate", color = "#F9D71C")), args.equipment)
+        assertEquals(0.0, args.dropChance)
         assertEquals(listOf(MobAttribute(MobAttributeKey.MOVEMENT_SPEED, 2.5)), args.attributes)
         assertEquals(ExplodeSpec(afterSeconds = 3, power = 2.0, hurts = true), args.explode)
         assertEquals(

@@ -35,7 +35,8 @@ import kotlinx.serialization.json.longOrNull
  * boolean as the JSON text of it (`"players": "[\"Mimosa\"]"`, `"valence": "1"`), and lost a turn on the
  * refusal. Where the schema wants one of these types and the argument is a string that parses as a value
  * of that type, the value is taken instead ([Decoded.Ok.coerced] names them). Any other string is refused
- * as before, with the type expected and the value given.
+ * as before, with the type expected and the value given. Likewise, a plain string where the schema wants an object
+ * with a single required string argument is that argument (M7-CREATURES: an item id for a creature's equipment).
  */
 object ToolArgs {
     /** Strict decoding: no unknown key, no lenient literal, no silent default for a bad value; absent nullable = null. */
@@ -90,7 +91,7 @@ object ToolArgs {
 
     private fun coerce(d: SerialDescriptor, value: JsonElement, path: String, coerced: MutableList<String>): JsonElement {
         val type = ArgType.of(d, path)
-        val element = (value as? JsonPrimitive)?.takeIf { it.isString }?.let { text -> parsedAs(type, text.content) }
+        val element = (value as? JsonPrimitive)?.takeIf { it.isString }?.let { text -> parsedAs(type, text.content) ?: shorthand(d, type, text) }
             ?.also { coerced += path }
             ?: value
         return when {
@@ -119,6 +120,17 @@ object ToolArgs {
             ArgType.STRING, ArgType.ENUM -> false
         }
         return element.takeIf { fits }
+    }
+
+    /**
+     * [text] as the object [d] when it has one required argument and that is a string: `"head": "golden_helmet"` reads
+     * as `{"item": "golden_helmet"}` (M7-CREATURES: the item id alone, as the equipment was written before). Else null.
+     */
+    private fun shorthand(d: SerialDescriptor, type: ArgType, text: JsonPrimitive): JsonObject? {
+        if (type != ArgType.OBJECT) return null
+        val required = (0 until d.elementsCount).filter { isRequired(d, it) }
+        val only = required.singleOrNull()?.takeIf { d.getElementDescriptor(it).kind == PrimitiveKind.STRING } ?: return null
+        return JsonObject(mapOf(d.getElementName(only) to text))
     }
 
     private fun checkObject(d: SerialDescriptor, value: JsonObject, path: String, problems: MutableList<String>) {

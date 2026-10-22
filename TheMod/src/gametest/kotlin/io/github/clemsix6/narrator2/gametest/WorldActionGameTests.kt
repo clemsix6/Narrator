@@ -42,11 +42,13 @@ import io.github.clemsix6.narrator2.tool.action.SpawnTool
 import io.github.clemsix6.narrator2.tool.action.TimeOfDay
 import io.github.clemsix6.narrator2.tool.action.WeatherKind
 import io.github.clemsix6.narrator2.tool.action.WorldLimits
+import io.github.clemsix6.narrator2.tool.action.WornItem
 import io.github.clemsix6.narrator2.tool.of
 import io.github.clemsix6.narrator2.tool.toolUse
 import kotlinx.coroutines.runBlocking
 import net.fabricmc.fabric.api.gametest.v1.GameTest
 import net.minecraft.core.BlockPos
+import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket
@@ -62,6 +64,7 @@ import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
 import net.minecraft.world.entity.ai.attributes.Attributes
+import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.entity.monster.zombie.Zombie
 import net.minecraft.world.entity.projectile.FireworkRocketEntity
 import net.minecraft.world.item.ItemStack
@@ -101,7 +104,7 @@ class WorldActionGameTests {
             helper, SpawnTool(),
             SpawnArgs(
                 entity = "zombie", count = 3, near = bob.name, distance = 3, name = "§6Gérard", lifetimeMinutes = 2,
-                equipment = EquipmentSpec(head = "golden_helmet", mainhand = "minecraft:diamond_sword"),
+                equipment = EquipmentSpec(head = WornItem("golden_helmet"), mainhand = WornItem("minecraft:diamond_sword")),
                 attributes = listOf(MobAttribute(MobAttributeKey.MOVEMENT_SPEED, 2.0)),
             ),
         )
@@ -131,6 +134,54 @@ class WorldActionGameTests {
             helper.assertTrue(guards(helper).death.isArmed(bob.live), "the death guard is armed")
         } finally {
             zombies.forEach { it.discard() }
+        }
+    }
+
+    /**
+     * A character in costume (M7-CREATURES), as every vanilla client shows it: its name, dyed leather, a player's face,
+     * its size, its glow. Killed by a player, it drops none of its costume, unless a drop chance is asked.
+     */
+    @GameTest
+    fun aCostumedCreatureWearsItsCostumeAndDropsNoneOfIt(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        fun huissier(dropChance: Double) = SpawnArgs(
+            entity = "zombie", near = bob.name, distance = 3, name = "Huissier du Lit Jaune", lifetimeMinutes = 1, glowing = true,
+            attributes = listOf(MobAttribute(MobAttributeKey.SCALE, 1.5)), dropChance = dropChance,
+            equipment = EquipmentSpec(
+                head = WornItem("player_head", skin = "clemsix6"),
+                chest = WornItem("leather_chestplate", color = "#F9D71C"),
+                mainhand = WornItem("paper", name = "Mandat de saisie", glint = true),
+            ),
+        )
+
+        /** The costume pieces lying around the test's area. */
+        fun dropped(): List<ItemEntity> = helper.level.getEntitiesOfClass(ItemEntity::class.java, AABB(helper.absolutePos(BlockPos.ZERO)).inflate(16.0)) {
+            it.item.`is`(Items.LEATHER_CHESTPLATE) || it.item.`is`(Items.PLAYER_HEAD) || it.item.`is`(Items.PAPER)
+        }
+
+        /** Kills [mob] as [bob] would. */
+        fun slay(mob: Mob) = mob.hurtServer(helper.level, helper.level.damageSources().playerAttack(bob.live), 1_000f)
+
+        val result = call(helper, SpawnTool(), huissier(dropChance = 0.0))
+        try {
+            helper.assertTrue(
+                "equipped (head player_head of clemsix6, chest leather_chestplate #F9D71C, mainhand paper \"Mandat de saisie\" shimmering), glowing;" in result.text,
+                result.text,
+            )
+            val one = summonedFor(helper, bob.uuid).single()
+            helper.assertEquals("Huissier du Lit Jaune", one.customName?.string, "named")
+            helper.assertEquals(0xF9D71C, one.getItemBySlot(EquipmentSlot.CHEST).get(DataComponents.DYED_COLOR)?.rgb(), "yellow leather")
+            helper.assertEquals("clemsix6", one.getItemBySlot(EquipmentSlot.HEAD).get(DataComponents.PROFILE)?.name()?.orElse(null), "clemsix6's face")
+            helper.assertEquals(1.5f, one.scale, "half as big again")
+            helper.assertTrue(one.hasGlowingTag(), "glowing")
+            slay(one)
+            helper.assertTrue(one.isDeadOrDying && dropped().isEmpty(), "killed by ${bob.name}, it drops none of its costume: ${dropped().map { it.item }}")
+
+            helper.assertTrue("each piece drops at 100% when a player kills one" in call(helper, SpawnTool(), huissier(dropChance = 1.0)).text, "a trophy asked")
+            slay(summonedFor(helper, bob.uuid).single { it.isAlive })
+            helper.assertEquals(3, dropped().size, "with a drop chance of 1, the whole costume drops: ${dropped().map { it.item }}")
+        } finally {
+            summonedFor(helper, bob.uuid).forEach { it.discard() }
+            dropped().forEach { it.discard() }
         }
     }
 
@@ -165,7 +216,7 @@ class WorldActionGameTests {
         helper.assertTrue(tnt.status == ToolStatus.DENIED && "not a creature" in tnt.text, tnt.text)
         val typo = call(helper, tool, SpawnArgs(entity = "zombi", near = bob.name))
         helper.assertTrue(typo.text.startsWith("Invalid arguments: unknown creature \"zombi\"; closest ids: zombie"), typo.text)
-        val block = call(helper, tool, SpawnArgs(entity = "zombie", near = bob.name, equipment = EquipmentSpec(mainhand = "command_block")))
+        val block = call(helper, tool, SpawnArgs(entity = "zombie", near = bob.name, equipment = EquipmentSpec(mainhand = WornItem("command_block"))))
         helper.assertTrue(block.text.startsWith("DENIED (${ItemSpecs.FORBIDDEN_ITEM}): command_block is never given"), block.text)
         val cow = call(helper, tool, SpawnArgs(entity = "cow", near = bob.name, attributes = listOf(MobAttribute(MobAttributeKey.ATTACK_DAMAGE, 2.0))))
         helper.assertEquals("Invalid arguments: minecraft:cow has no attack_damage; leave that change out", cow.text, "a cow cannot hit harder")
@@ -635,11 +686,11 @@ class WorldActionGameTests {
         helper.assertTrue(typo?.text?.startsWith("Invalid arguments: unknown creature \"zombi\"; closest ids: zombie") == true, "$typo")
         val enderman = check(helper, spawn, SpawnArgs(entity = "enderman", near = "nobody_here"))
         helper.assertTrue(enderman?.text?.startsWith("DENIED (${SpawnPolicy.FORBIDDEN_CREATURE}): minecraft:enderman is not summoned: ") == true, "$enderman")
-        val block = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = "command_block")))
+        val block = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = WornItem("command_block"))))
         helper.assertTrue(block?.text?.startsWith("DENIED (${ItemSpecs.FORBIDDEN_ITEM}): command_block is never given") == true, "$block")
-        val sword = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = "diamant_sword")))
+        val sword = check(helper, spawn, SpawnArgs(entity = "zombie", near = "nobody_here", equipment = EquipmentSpec(mainhand = WornItem("diamant_sword"))))
         helper.assertTrue(sword?.text?.startsWith("Invalid arguments: unknown item \"diamant_sword\"") == true, "$sword")
-        helper.assertEquals(null, check(helper, spawn, SpawnArgs(entity = "zombie", near = bob.name, equipment = EquipmentSpec(head = "golden_helmet"))), "a zombie")
+        helper.assertEquals(null, check(helper, spawn, SpawnArgs(entity = "zombie", near = bob.name, equipment = EquipmentSpec(head = WornItem("golden_helmet")))), "a zombie")
 
         val color = check(helper, FireworksTool(), FireworksArgs(x = 0, y = 64, z = 0, colors = listOf("chartreuse")))
         helper.assertTrue(color?.text?.startsWith("Invalid arguments: unknown color \"chartreuse\"; use #rrggbb or a dye name: ") == true, "$color")
