@@ -190,3 +190,14 @@ trancher.
   → 200 ; 8564 pour le rejugement), et je l'ai fermé après chaque lancement : seul le mien, et le port n'écoute plus.
 - **La clé** n'a jamais été affichée. Une recherche exacte ne la trouve dans aucun des 1 100 fichiers de l'archive, de
   `TheMod/src` et de `docs/`.
+
+## Décisions du superviseur (22/10/2026)
+
+Fusionnée.
+
+1. **Le juge et les duels : accepté en l'état.** T2 passe à 19/20. On ajoutera « a duel ends with its winner » si une
+   vraie soirée montre le refus d'un duel.
+2. **Le Forgeron compte aussi en « requêtes » : corriger (M6-FIX-15).** Le défaut est le même et le correctif coûte peu :
+   le compteur du moteur s'active pour le Forgeron, et `forger.md` passe à « messages » à taille égale.
+3. **La redite de fond sous un autre titre : acceptée.** Une commande voit maintenant les idées ouvertes ; la première
+   vraie partie dira si cela suffit.
