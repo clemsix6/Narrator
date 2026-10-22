@@ -749,6 +749,34 @@ class PlayerActionGameTests {
     }
 
     /**
+     * M7-SEIZE: another turn makes a running confiscation permanent while the inventory category rests. Taking only
+     * what the Narrator holds is no new punishment; reaching into the inventory still is, and is refused.
+     */
+    @GameTest
+    fun anotherTurnMakesAConfiscationPermanent(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        bob.live.inventory.setItem(0, ItemStack(Items.IRON_AXE))
+        bob.live.inventory.setItem(1, ItemStack(Items.DIAMOND, 4))
+        val tool = TakeItemTool()
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, TakeItemArgs(bob.name, "iron_axe", 1, 5)).status, "the axe for 5 minutes")
+
+        val later = CALLER.copy(turnId = CALLER.turnId!! + 1)
+        val diamonds = run(helper, tool, TakeItemArgs(bob.name, "diamond", 1, 5, permanent = true), caller = later)
+        helper.assertTrue(diamonds.text.startsWith("DENIED (${Rules.SAME_PUNISHMENT}): "), "from the inventory: a new punishment, resting: ${diamonds.text}")
+        helper.assertEquals(4, count(bob.live, Items.DIAMOND), "no diamond taken")
+
+        val axe = run(helper, tool, TakeItemArgs(bob.name, "iron_axe", 8, 5, reason = "trop forte", permanent = true), caller = later)
+        helper.assertTrue(
+            axe.text.startsWith("ok: took 1x minecraft:iron_axe (all they had) from ${bob.name} for good; 1x minecraft:iron_axe of it out of confiscation ") &&
+                Regex("; seizure \\d+$").containsMatchIn(axe.text),
+            "a seizure, written as a decision: ${axe.text}",
+        )
+        helper.assertTrue(GuardStates.read(bob.live).confiscations.isEmpty(), "the confiscation is gone with the axe")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "still the first turn's punishment")
+        guards(helper).items.giveBack(bob.live, helper.narrator().clock.millis() + HOUR_MS)
+        helper.assertEquals(0 to 4, count(bob.live, Items.IRON_AXE) to count(bob.live, Items.DIAMOND), "the axe never comes back")
+    }
+
+    /**
      * `/narrator relics revoke` (M7-REVOKE): every relic, from the inventory and out of a running confiscation, for
      * good; an ordinary item is never touched; an offline player is refused, with why.
      */
