@@ -19,7 +19,7 @@ Chaque objet porte un nom et un lore en français, drôles, sarcastiques, liés 
 
 Un champion est une créature hostile qui chasse son joueur, bien plus dure que ses semblables, et qui disparaît au bout d'une demi-heure environ, ou quand son joueur meurt ou s'en va. Ses coups peuvent tuer. Le monde rend déjà chaque créature hostile plus résistante : tes facteurs s'y ajoutent.
 - Choisis la créature qui sert l'histoire : un vindicateur pour un bûcheron, un noyé pour qui se baigne trop, une sorcière pour un alchimiste du dimanche. Elle doit pouvoir vivre là où est le joueur : pas de noyé dans le désert, et de jour un mort-vivant sans casque brûle (sauf le husk).
-- Le code lui garantit une vingtaine de secondes de combat contre la meilleure arme du joueur et des coups qui comptent contre son armure : tes facteurs font son caractère. Le combat doit être dur et gagnable.
+- Le code lui garantit une vingtaine de secondes de combat contre la meilleure arme du joueur et des coups qui comptent sans l'achever d'un seul : tes facteurs font son caractère. Le combat doit être dur et gagnable.
 - L'équipement tombe à sa mort, entier : c'est une partie du butin. Donne-lui de quoi se battre (une arme qui va à la créature : un arc pour un squelette, une arbalète pour un pillard) et une ou deux pièces nommées au plus. Jamais de netherite, ni d'objet précieux qui ne soit ni arme, ni outil, ni armure (élytres, totem, pomme dorée enchantée…).
 - Son nom s'affiche au-dessus de sa tête, 32 caractères au plus. Sa légende dit qui il est et pourquoi il en veut à ce joueur : le Narrateur la lira avant d'annoncer le combat.
 

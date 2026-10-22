@@ -2,7 +2,9 @@ package io.github.clemsix6.narrator2.gametest
 
 import io.github.clemsix6.narrator2.llm.Role
 import io.github.clemsix6.narrator2.relics.ChampionDraft
+import io.github.clemsix6.narrator2.relics.ChampionGear
 import io.github.clemsix6.narrator2.relics.ChampionMob
+import io.github.clemsix6.narrator2.relics.GearPiece
 import io.github.clemsix6.narrator2.relics.LiveChampion
 import io.github.clemsix6.narrator2.relics.RelicsService
 import io.github.clemsix6.narrator2.relics.Threat
@@ -38,10 +40,15 @@ class ChampionGameTests {
         player.standAt(BlockPos(FIELD_SIZE / 2, 1, FIELD_SIZE / 2))
         player.live.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.WOODEN_AXE))
         var lowest = player.live.health
+        var before = player.live.health
+        var hardest = 0f
         helper.onEachTick {
             player.live.doTick() // what a client's ticks do: the cooldown between two blows
-            lowest = minOf(lowest, player.live.health)
-            if (player.live.health < HEAL_BELOW) player.live.health = player.live.maxHealth // the test is about blows, not a death
+            val now = player.live.health
+            lowest = minOf(lowest, now)
+            hardest = maxOf(hardest, before - now)
+            if (now < HEAL_BELOW) player.live.health = player.live.maxHealth // the test is about blows, not a death
+            before = player.live.health
         }
         val caller = Caller(Role.ARMORER, "armorer-gametest", turnId = null, taskId = null)
         lateinit var standing: kotlinx.coroutines.Deferred<LiveChampion>
@@ -60,6 +67,8 @@ class ChampionGameTests {
                 helper.assertTrue(champion.health == champion.maxHealth, "full health: ${champion.health}/${champion.maxHealth}")
             }
             .thenWaitUntil { helper.assertTrue(lowest < player.live.maxHealth, "its player takes its blows: lowest health $lowest") }
+            // Its stone sword would take 8.75 (more on hard): a twenty-second fight stays winnable.
+            .thenExecute { helper.assertTrue(hardest <= Threat.MAX_BLOW + 0.01, "a blow takes ${Threat.MAX_BLOW} at most: $hardest") }
             .thenExecute { champion.target = null }
             .thenWaitUntil { helper.assertTrue(champion.target === player.live, "it goes for its player again: ${champion.target}") }
             .thenExecute { runtime.guards.rescue(player.live, "a test's rescue", inPlace = true) }
@@ -75,12 +84,13 @@ class ChampionGameTests {
         /** The player is healed below this: the test watches blows land, not a death. */
         const val HEAL_BELOW = 10f
 
-        /** A husk (it does not burn by day) with the smallest factors the schema allows: the floor does the rest. */
+        /** A husk (it does not burn by day) with the smallest factors the schema allows and a stone sword: the code does the rest. */
         val DRAFT = ChampionDraft(
             mob = ChampionMob.HUSK,
             name = "Lumignon, Syndic des Torches",
             lore = "La cendre des torches cassées a pris un avocat.",
             health = 1.5,
+            gear = ChampionGear(mainhand = GearPiece("stone_sword")),
         )
     }
 }

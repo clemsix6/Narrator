@@ -112,11 +112,23 @@ class RelicBalanceTest {
         // The game's own numbers (CombatRules): 10 damage through full diamond (20 armor, 8 toughness) leaves 3.
         assertEquals(3.0, Threat.afterArmor(10.0, 20.0, 8.0), 1e-9)
         assertEquals(5.0, Threat.afterArmor(5.0, 0.0, 0.0), 1e-9)
-        assertEquals(2.5, Threat.bareDamage(0.0, 0.0, 1.25), 1e-9, "a bare player")
-        assertEquals(3.5, Threat.bareDamage(7.0, 0.0, 1.25), 1e-9, "Thawyn: iron helmet and leggings")
-        assertEquals(8.0, Threat.bareDamage(20.0, 8.0, 1.25), 1e-9, "full diamond")
-        assertEquals(Threat.MAX_BARE_DAMAGE, Threat.bareDamage(20.0, 12.0, 0.1), 1e-9, "never above the cap")
-        assertTrue(Threat.bareDamage(20.0, 8.0, 3.0) < Threat.bareDamage(20.0, 8.0, 1.0), "the layer's factor counts")
+        assertEquals(3.6, Threat.afterArmor(10.0, 0.0, 0.0, 16.0), 1e-9, "protection IV on four pieces")
+        assertEquals(2.5, Threat.bareDamage(0.0, 0.0, 0.0, 1.25), 1e-9, "a bare player")
+        assertEquals(3.5, Threat.bareDamage(7.0, 0.0, 0.0, 1.25), 1e-9, "Thawyn: iron helmet and leggings")
+        assertEquals(8.0, Threat.bareDamage(20.0, 8.0, 0.0, 1.25), 1e-9, "full diamond")
+        assertEquals(Threat.MAX_BARE_DAMAGE, Threat.bareDamage(20.0, 12.0, 16.0, 1.25), 1e-9, "never above the cap")
+        assertTrue(Threat.bareDamage(20.0, 8.0, 0.0, 3.0) < Threat.bareDamage(20.0, 8.0, 0.0, 1.0), "the layer's factor counts")
+    }
+
+    @Test
+    fun `a champion's whole blow takes five health at most`() {
+        // The live trial: a husk with a stone sword (3 + 4) on a bare player took 8.75; now 5.
+        assertEquals(4.0, Threat.cappedDamage(7.0, 0.0, 0.0, 0.0, 1.25), 1e-9)
+        // Thawyn's evening: a husk ×1.1 with an iron sword ((3 + 5) × 1.1) on hard (×1.5 × 1.25), through 7 armor: 15.6, now 4.3.
+        val thawyn = Threat.cappedDamage(8.8, 7.0, 0.0, 0.0, 1.875)
+        assertEquals(2.8, thawyn, 1e-9)
+        assertTrue(Threat.afterArmor(thawyn * 1.875, 7.0, 0.0) <= Threat.MAX_BLOW, "${Threat.afterArmor(thawyn * 1.875, 7.0, 0.0)}")
+        assertEquals(12.0, Threat.cappedDamage(12.0, 20.0, 8.0, 16.0, 1.25), 1e-9, "a blow that takes little is left as it is")
     }
 
     @Test

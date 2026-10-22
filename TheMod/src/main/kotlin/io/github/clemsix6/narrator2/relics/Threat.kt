@@ -14,14 +14,17 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.component.ItemAttributeModifiers
 import net.minecraft.world.item.enchantment.EnchantmentHelper
+import kotlin.math.abs
 
 /**
  * How hard a champion is for its player (M7-BALANCE), whatever factors the armorer chose and whatever the difficulty layer
  * gives every hostile creature (×1 to ×10):
  * - **health**: at least [FLOOR_SECONDS] of blows with the best weapon the player carries (its damage, enchantments
  *   against this champion included, times its attack speed), and at most [CEILING_SECONDS] of them, [MAX_HEALTH] in all;
- * - **its own blow** (before its weapon and the layer's factor on damage): enough to take [MIN_BLOW] health through the
- *   player's armor, [MAX_BARE_DAMAGE] at most.
+ * - **its blow**, once the layer's factor on damage and the world's difficulty (hard: ×1.5) apply, through the player's
+ *   armor and protection: its bare blow (before its weapon) takes [MIN_BLOW] health at least ([MAX_BARE_DAMAGE] bare at
+ *   most), and its whole blow, weapon included, [MAX_BLOW] at most. A twenty-second fight must stay winnable: on the
+ *   owner's evening, one blow of an iron sword on hard took 16.5 of Thawyn's 18 health.
  *
  * The pure arithmetic is here, tested; [size] applies it to a champion as it stands, and [tierOf] reads a player's tier.
  */
@@ -30,8 +33,11 @@ object Threat {
     const val CEILING_SECONDS = 60.0
     const val MAX_HEALTH = 400.0
 
-    /** Health a champion's bare blow takes from its player, armor counted. */
+    /** Health a champion's bare blow takes from its player at least, armor and protection counted. */
     const val MIN_BLOW = 3.0
+
+    /** Health a champion's whole blow, weapon included, takes from its player at most. */
+    const val MAX_BLOW = 5.0
 
     /** The most the floor makes of a champion's bare blow. */
     const val MAX_BARE_DAMAGE = 10.0
@@ -51,17 +57,27 @@ object Threat {
         return current.coerceIn(minOf(dps * FLOOR_SECONDS, ceiling), ceiling)
     }
 
-    /** What is left of a blow of [damage] through [armor] and [toughness], as the game counts it (`CombatRules`, enchantments aside). */
-    fun afterArmor(damage: Double, armor: Double, toughness: Double): Double {
+    /**
+     * What is left of a blow of [damage] through [armor], [toughness] and [protection] (the enchantments' protection
+     * points), as the game counts it (`CombatRules.getDamageAfterAbsorb`, then `getDamageAfterMagicAbsorb`).
+     */
+    fun afterArmor(damage: Double, armor: Double, toughness: Double, protection: Double = 0.0): Double {
         val absorbed = (armor - damage / (2.0 + toughness / 4.0)).coerceIn(armor * 0.2, 20.0)
-        return damage * (1.0 - absorbed / 25.0)
+        return damage * (1.0 - absorbed / 25.0) * (1.0 - protection.coerceIn(0.0, 20.0) / 25.0)
     }
 
-    /** The bare blow (by half points) that takes [MIN_BLOW] through [armor] and [toughness] once the layer's [factor] applies; [MAX_BARE_DAMAGE] at most. */
-    fun bareDamage(armor: Double, toughness: Double, factor: Double): Double {
+    /** The bare blow (by half points) that takes [MIN_BLOW] through the armor once [factor] applies; [MAX_BARE_DAMAGE] at most. */
+    fun bareDamage(armor: Double, toughness: Double, protection: Double, factor: Double): Double {
         var bare = 0.5
-        while (bare < MAX_BARE_DAMAGE && afterArmor(bare * factor, armor, toughness) < MIN_BLOW) bare += 0.5
+        while (bare < MAX_BARE_DAMAGE && afterArmor(bare * factor, armor, toughness, protection) < MIN_BLOW) bare += 0.5
         return bare
+    }
+
+    /** [whole], lowered by half points until it takes [MAX_BLOW] at most through the armor once [factor] applies. */
+    fun cappedDamage(whole: Double, armor: Double, toughness: Double, protection: Double, factor: Double): Double {
+        var damage = whole
+        while (damage > 0.5 && afterArmor(damage * factor, armor, toughness, protection) > MAX_BLOW) damage -= 0.5
+        return damage
     }
 
     /** [player]'s tier by the tools, weapons and armor they carry ([Tier.ofPlayer]). Server thread. */
@@ -78,8 +94,9 @@ object Threat {
     }
 
     /**
-     * Brings [mob], a champion just dressed, to what [player] calls for: its health ([health], kept full) and its bare blow
-     * ([bareDamage]). Returns what it did, for the logs and the Director. Server thread.
+     * Brings [mob], a champion just dressed (its gear not counted in its attributes yet: the game does it at its next
+     * tick), to what [player] calls for: its health ([health], kept full) and its blow ([bareDamage], [cappedDamage]).
+     * Returns what it did, for the logs. Server thread.
      */
     fun size(mob: Mob, player: ServerPlayer): String {
         val (dps, weapon) = bestDps(player, mob)
@@ -90,15 +107,21 @@ object Threat {
         mob.health = mob.maxHealth
         val line = "health ${number(before)} → ${number(mob.maxHealth.toDouble())} against ${number(dps)} damage a second ($weapon)"
         val damage = mob.getAttribute(Attributes.ATTACK_DAMAGE)?.takeIf { it.baseValue > 0 } ?: return line
-        val factor = Difficulty.config?.takeIf { it.enabled }?.mobDamage ?: 1.0
-        val needed = bareDamage(player.armorValue.toDouble(), player.getAttributeValue(Attributes.ARMOR_TOUGHNESS), factor)
-        val bare = damage.value
-        if (bare < needed) {
-            // Added before the champion's own factor (spawn's multiplier): its weapon is not multiplied by the floor.
-            val multiplier = bare / damage.baseValue
-            damage.addOrReplacePermanentModifier(AttributeModifier(DAMAGE_ID, needed / multiplier - damage.baseValue, AttributeModifier.Operation.ADD_VALUE))
-        }
-        return "$line; bare blow ${number(bare)} → ${number(damage.value)} against armor ${player.armorValue}"
+        val level = player.level()
+        val factor = (Difficulty.config?.takeIf { it.enabled }?.mobDamage ?: 1.0) * if (level.difficulty == net.minecraft.world.Difficulty.HARD) 1.5 else 1.0
+        val armor = player.armorValue.toDouble()
+        val toughness = player.getAttributeValue(Attributes.ARMOR_TOUGHNESS)
+        val protection = EnchantmentHelper.getDamageProtection(level, player, level.damageSources().mobAttack(mob)).toDouble()
+        // The attribute is (base + additions) × the champion's own factor (spawn's multiplier); its weapon is an addition.
+        val multiplier = damage.value / damage.baseValue
+        val held = mob.mainHandItem.getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY).compute(Attributes.ATTACK_DAMAGE, 0.0, EquipmentSlot.MAINHAND)
+        val bare = maxOf(damage.value, bareDamage(armor, toughness, protection, factor))
+        val whole = cappedDamage((bare / multiplier + held) * multiplier, armor, toughness, protection, factor)
+        val added = whole / multiplier - damage.baseValue - held
+        if (abs(added) > 1e-6) damage.addOrReplacePermanentModifier(AttributeModifier(DAMAGE_ID, added, AttributeModifier.Operation.ADD_VALUE))
+        val blow = afterArmor(whole * factor, armor, toughness, protection)
+        return "$line; blow ${number(bare + held * multiplier)} → ${number(whole)} with its weapon, taking ${number(blow)} through armor " +
+            "${player.armorValue} and protection ${number(protection)} (factor ${number(factor)})"
     }
 
     /** The damage a second [player] deals to [target] with the best weapon they carry (fists at least), and that weapon. */
