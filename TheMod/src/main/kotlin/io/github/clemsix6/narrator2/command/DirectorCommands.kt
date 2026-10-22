@@ -235,7 +235,7 @@ object DirectorCommands {
         add(
             detailLine(
                 "Launch: strength ${number(caps.launchStrength)} · teleport: ${caps.teleportBlocks} blocks · confiscation: ${caps.confiscatedItems} items · " +
-                    "deaths caused: ${caps.narratorKillsPerHour} per played hour",
+                    "deaths caused: ${caps.narratorKillsPerHour} per played hour · punishments: ${caps.punishmentsPerHour} per player an hour",
             ),
         )
     }

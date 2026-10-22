@@ -85,7 +85,7 @@ class ModuleToolsTest {
         )
         assertEquals(
             "Runs a module of your arsenal for some minutes: a law (public: announce it) or a plan (secret). The engine runs it under " +
-                "your rules: its actions are refused like yours (protected, recently dead, already punished, the same kind of punishment " +
+                "your rules: its actions are refused like yours (protected, recently dead, too often, the same kind of punishment " +
                 "too soon); it never gives nor takes an item and touches no block but a few temporary ones. Recorded in your canon " +
                 "(C-…); MODULE events tell you how it ends. With challenge, it referees a running judged challenge and names the " +
                 "winners itself.",

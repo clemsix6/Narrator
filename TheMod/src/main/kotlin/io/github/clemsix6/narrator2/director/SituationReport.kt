@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.director.EventFormatter.Companion.number
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.quote
 import io.github.clemsix6.narrator2.director.EventFormatter.Companion.who
 import io.github.clemsix6.narrator2.guard.PlayerPacing
+import io.github.clemsix6.narrator2.guard.TargetingPolicy
 import io.github.clemsix6.narrator2.mechanics.MechanicsLimits
 import io.github.clemsix6.narrator2.observer.LivePlayer
 import io.github.clemsix6.narrator2.runtime.NarratorServices
@@ -177,7 +178,7 @@ class SituationReport(private val services: NarratorServices, private val digest
         const val RECENT_MINUTES = 5
 
         /** Hostile actions are refused against a player who died less than this long ago (`Rules.NO_PILE_ON`). */
-        const val NO_PILE_ON_MS = 5 * 60_000L
+        const val NO_PILE_ON_MS = TargetingPolicy.NO_PILE_ON_MS
 
         /** Longest line of the memory in the situation. */
         const val MEMORY_LINE_MAX = 400

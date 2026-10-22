@@ -150,8 +150,8 @@ class ArsenalWorldGameTests {
 
     /**
      * `gravity_storm` over a protected Bob and Ann: the first wave lifts Ann (the guards spare Bob); the next waves find
-     * Bob protected and Ann already punished, so they pass: the Director is told, and after the last one the module ends
-     * itself.
+     * Bob protected and Ann's gravity resting (`same_punishment`), so they pass: the Director is told, and after the
+     * last one the module ends itself.
      */
     @GameTest(environment = FORGE_ENVIRONMENT, maxTicks = MAX_TICKS)
     fun gravityStormLiftsWhomTheGuardsLetThroughAndOtherwiseWaits(helper: GameTestHelper) = helper.runScript(MAX_TICKS) {
@@ -172,7 +172,7 @@ class ArsenalWorldGameTests {
                 val punish = rig.actions(view.ref).filter { it.startsWith("punish") }
                 check(punish.count { it.startsWith("punish ok") } == 1) { "Ann lifted once: $punish" }
                 check(punish.any { it.startsWith("punish denied: DENIED (protected)") }) { "Bob spared, protected: $punish" }
-                check(punish.any { it.startsWith("punish denied: DENIED (already_punished)") }) { "Ann spared, already floating: $punish" }
+                check(punish.any { it.startsWith("punish denied: DENIED (same_punishment)") }) { "Ann spared, her gravity resting: $punish" }
                 Log.forge.info("M5-17 in the server: gravity_storm ${rig.measures}")
             } finally {
                 rig.runtime.guards.setProtected(bob.uuid, bob.name, on = false)

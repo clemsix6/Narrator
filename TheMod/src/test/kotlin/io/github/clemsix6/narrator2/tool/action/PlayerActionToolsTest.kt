@@ -145,29 +145,29 @@ class PlayerActionToolsTest {
 
         // set_attribute: a change that is in the player's disfavor whatever their attribute now.
         assertEquals(
-            "Invalid arguments: this change of scale is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 600 s)",
-            SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":600}""")?.text,
+            "Invalid arguments: this change of scale is in Bob's disfavor: at chaos 3 it lasts at most 600 s (asked 900 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":900}""")?.text,
         )
         assertEquals(
-            "Invalid arguments: this change of movement_speed is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 400 s)",
-            SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":-0.05,"seconds":400}""")?.text,
+            "Invalid arguments: this change of movement_speed is in Bob's disfavor: at chaos 3 it lasts at most 600 s (asked 700 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":-0.05,"seconds":700}""")?.text,
         )
         assertEquals(
-            "Invalid arguments: this change of fall_damage_multiplier is in Bob's disfavor: at chaos 3 it lasts at most 300 s (asked 900 s)",
-            SetAttributeTool().dry("""{"player":"Bob","attribute":"fall_damage_multiplier","add":1,"seconds":900}""")?.text,
+            "Invalid arguments: this change of fall_damage_multiplier is in Bob's disfavor: at chaos 3 it lasts at most 600 s (asked 1800 s)",
+            SetAttributeTool().dry("""{"player":"Bob","attribute":"fall_damage_multiplier","add":1,"seconds":1800}""")?.text,
         )
-        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":300}"""), "within the cap")
+        assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"scale","multiply":0.5,"seconds":600}"""), "within the cap")
         assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"movement_speed","add":0.05,"seconds":900}"""), "a gift")
         // A factor depends on the player's value (a luck of 0 stays 0): run tells.
         assertNull(SetAttributeTool().dry("""{"player":"Bob","attribute":"luck","multiply":0.5,"seconds":900}"""))
 
         assertEquals(
-            "Invalid arguments: at chaos 3 a launch has a strength of at most 2 (asked 2.5)",
-            LaunchTool().dry("""{"player":"Bob","direction":"up","strength":2.5}""")?.text,
+            "Invalid arguments: at chaos 3 a launch has a strength of at most 2.5 (asked 3)",
+            LaunchTool().dry("""{"player":"Bob","direction":"up","strength":3}""")?.text,
         )
-        assertNull(LaunchTool().dry("""{"player":"Bob","direction":"up","strength":2}"""))
+        assertNull(LaunchTool().dry("""{"player":"Bob","direction":"up","strength":2.5}"""))
 
-        assertNull(TeleportTool().dry("""{"player":"Bob","random_radius":500}"""), "1000 blocks at chaos 3")
+        assertNull(TeleportTool().dry("""{"player":"Bob","random_radius":500}"""), "3000 blocks at chaos 3")
         assertNull(TeleportTool().dry("""{"player":"Bob","x":100000,"z":0}"""), "the distance of a column depends on where the player is")
 
         chaos(1)
@@ -227,7 +227,7 @@ class PlayerActionToolsTest {
     fun `a launch stronger than the chaos level allows is refused with the cap`() = runTest {
         online("Bob")
         val result = LaunchTool().call("""{"player":"Bob","direction":"forward","strength":3}""")
-        assertEquals(ToolStatus.INVALID to "Invalid arguments: at chaos 3 a launch has a strength of at most 2 (asked 3)", result.status to result.text)
+        assertEquals(ToolStatus.INVALID to "Invalid arguments: at chaos 3 a launch has a strength of at most 2.5 (asked 3)", result.status to result.text)
     }
 
     @Test

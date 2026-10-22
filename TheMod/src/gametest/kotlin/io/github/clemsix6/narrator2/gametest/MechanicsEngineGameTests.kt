@@ -136,7 +136,7 @@ class MechanicsEngineGameTests {
         helper.assertTrue(guards.death.isArmed(bob.live), "the death guard is armed")
 
         val other = runBlocking { actions.run(actions.open("fired", RULE, bob.name), "explosion", blast) }
-        helper.assertTrue(other.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), "another act may not pile on: ${other.text}")
+        helper.assertTrue(other.text.startsWith("DENIED (${Rules.SAME_PUNISHMENT}): "), "another act may not blast him again so soon: ${other.text}")
 
         helper.assertTrue(sink.toolCalls.isEmpty(), "no tool_calls row for the engine: ${sink.toolCalls}")
         val calls = sink.decisions.filter { it.kind == DecisionRecord.Kind.MECHANIC && it.decision == EngineActions.ACTION }

@@ -26,7 +26,8 @@ data class Strike(val act: Long?, val at: Long)
  * The punishments running against each player, when the recent ones began, the categories they were
  * struck in, and the punishments of the catalogue (`punish`) each act put on them. An episode opens with the
  * first hostile action of an act against a player; the hostile actions of the same act extend it (one
- * punishment = several coordinated actions); it ends when its last effect ends, or at a pardon ([close]). The
+ * punishment = several coordinated actions); another act's takes its place, with the later end (punishments stack,
+ * M7-LOOSEN); it ends when its last effect ends, or at a pardon ([close]). The
  * guards rebuild it from the player's guard state when they join after a restart.
  *
  * Kept in memory for the life of the server: a player who leaves and comes back finds their episode, their
@@ -81,7 +82,7 @@ class Episodes(private val clock: Clock) {
                 live.copy(until = maxOf(live.until, until))
             } else {
                 began.compute(target) { _, times -> recent(times, now) + now }
-                // The guards never open an episode over another act's; if it happens, the later end wins.
+                // Over another act's still running (punishments stack, M7-LOOSEN): the later end wins.
                 Episode(target, act, maxOf(until, live?.until ?: until))
             }
         }
@@ -100,7 +101,9 @@ class Episodes(private val clock: Clock) {
      * Withdraws the `punish` [act] put on [target], which did nothing at all (M4 review, finding 39): the
      * player's episode, the hour's punishments and the categories' rest are put back as they were just before
      * it, as if it had never been asked; the act may punish them again. Whatever the act did to them since
-     * goes with it: nobody else acts on a player while the act's episode runs. Returns whether there was one.
+     * goes with it. When another act punished them since (punishments stack, M7-LOOSEN), nothing is put back,
+     * so as not to undo that act's punishment: this one stays counted, and the act may still punish them again.
+     * Returns whether it was put back.
      */
     fun withdraw(target: UUID, act: Long?): Boolean {
         var mark: Punished? = null
@@ -109,6 +112,7 @@ class Episodes(private val clock: Clock) {
             (marks - act).ifEmpty { null }
         }
         val before = mark?.before ?: return false
+        if (running[target]?.let { it.act != act } == true) return false
         restore(running, target, before.running)
         restore(began, target, before.began)
         restore(struck, target, before.struck)

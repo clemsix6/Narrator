@@ -102,7 +102,7 @@ class ModuleActsGameTests {
 
     /**
      * A module's acts go through the real tools and their guards (M5 §4.4): a protected player is refused, a second
-     * call (another act of the engine) may not punish a player the first one punishes, and what a law may not do a
+     * call (another act of the engine) may not strike a player in the kind the first one just did, and what a law may not do a
      * module may not either; an explosion of power 100, a horde, a boss are refused.
      */
     @GameTest(environment = FORGE_ENVIRONMENT)
@@ -121,8 +121,8 @@ class ModuleActsGameTests {
             val episode = GuardStates.read(bob.live).episode
             helper.assertTrue((episode?.act ?: 0L) < 0L, "the punishment is an act of the engine's, never a turn's: $episode")
 
-            val again = rig.outcome { rig.acts.punish(bob.name, "slow_hands", 1, "a encore bougé") }
-            helper.assertTrue(again.text().startsWith("DENIED (already_punished): "), "another call of the module is another act: ${again.text()}")
+            val again = rig.outcome { rig.acts.punish(bob.name, "tiny", 1, "a encore bougé") }
+            helper.assertTrue(again.text().startsWith("DENIED (same_punishment): "), "another call of the module is another act: ${again.text()}")
             val wither = rig.outcome { rig.acts.effect(bob.name, "wither", 10, 1) }
             helper.assertTrue(wither.text().startsWith("DENIED (forbidden_effect): a module never gives wither"), wither.text())
             val blast = rig.outcome { rig.acts.explosion(CreatureControl.placeOf(bob.live), 100.0, true) }

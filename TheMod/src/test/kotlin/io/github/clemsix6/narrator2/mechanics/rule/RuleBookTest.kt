@@ -188,8 +188,8 @@ class RuleBookTest {
         suspend fun check(tool: String, json: String) = f.actions.check(tool, Json.parseToJsonElement(json).jsonObject, f.caller)?.text
         assertNull(check("mob_effect", """{"effect":"glowing","seconds":3,"level":2}"""))
         assertEquals(
-            "Invalid arguments: at chaos 3 an effect on a creature lasts at most 300 s and goes up to level 2 (asked 600 s, level 1)",
-            check("mob_effect", """{"effect":"speed","seconds":600}"""),
+            "Invalid arguments: at chaos 3 an effect on a creature lasts at most 600 s and goes up to level 3 (asked 900 s, level 1)",
+            check("mob_effect", """{"effect":"speed","seconds":900}"""),
         )
         assertEquals("DENIED (forbidden_effect): resistance is never put on a creature by a rule: it makes the creature hard to kill.", check("mob_effect", """{"effect":"resistance","seconds":60}"""))
         assertEquals("DENIED (forbidden_effect): bad_omen is never put on a creature by a rule: it acts on the world.", check("mob_effect", """{"effect":"bad_omen","seconds":60}"""))

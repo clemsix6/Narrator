@@ -341,7 +341,7 @@ class WorldActionGameTests {
 
     /**
      * Summoning a creature that can hurt is a punishment, monster or not (M2 review, finding 9): a polar bear
-     * opens one against Bob, bees summoned by another turn are refused (`already_punished`), and cows, harmless,
+     * opens one against Bob, bees summoned by another turn are refused (`same_punishment`: creatures again), and cows, harmless,
      * are no punishment even then. Every harmless creature exists, may be summoned, and is not forbidden.
      */
     @GameTest
@@ -352,7 +352,7 @@ class WorldActionGameTests {
             helper.assertTrue(bear.status == ToolStatus.OK && bear.text.endsWith("a punishment of ${bob.name}"), bear.text)
             helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "the turn's punishment is open")
             val bees = call(helper, tool, SpawnArgs(entity = "bee", count = 2, near = bob.name, distance = 3), OTHER_TURN)
-            helper.assertTrue(bees.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}):"), bees.text)
+            helper.assertTrue(bees.text.startsWith("DENIED (${Rules.SAME_PUNISHMENT}):"), bees.text)
             val cows = call(helper, tool, SpawnArgs(entity = "cow", near = bob.name, distance = 3), OTHER_TURN)
             helper.assertTrue(cows.status == ToolStatus.OK && "punishment" !in cows.text, cows.text)
             for (id in SpawnPolicy.HARMLESS) {
@@ -516,10 +516,10 @@ class WorldActionGameTests {
                 helper.assertTrue(guards(helper).death.isArmed(player.live), "${player.name}'s death guard is armed")
             }
 
-            // Another turn: Alice is already being punished by this one.
+            // Another turn: this one just caught them in an explosion, a kind that rests.
             val health = listOf(bob.live.health, alice.live.health, scene.spider.health)
             val refused = call(helper, tool, ExplosionArgs(x = center.x, y = center.y, z = center.z, power = 2.0), OTHER_TURN)
-            helper.assertTrue(refused.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}):"), refused.text)
+            helper.assertTrue(refused.text.startsWith("DENIED (${Rules.SAME_PUNISHMENT}):"), refused.text)
             val harmless = call(helper, tool, ExplosionArgs(x = center.x, y = center.y, z = center.z, power = 2.0, hurts = false), OTHER_TURN)
             helper.assertTrue(harmless.text.startsWith("ok: ") && ": harmless; no block touched" in harmless.text, harmless.text)
             helper.assertEquals(health, listOf(bob.live.health, alice.live.health, scene.spider.health), "nobody hurt by the refused or the harmless one")

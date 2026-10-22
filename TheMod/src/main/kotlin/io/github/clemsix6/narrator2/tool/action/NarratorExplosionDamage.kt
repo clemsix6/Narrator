@@ -66,7 +66,7 @@ class NarratorExplosionDamage private constructor(private val hurts: Boolean) : 
         /**
          * The players an explosion at [center] counts as hostile against (M1_M2 §10.3): within
          * [Caps.HOSTILE_EXPLOSION_BLOCKS], not spectating, and not spared by `ExplosionGuard` (a protected
-         * player, or one dead less than 5 minutes ago: the blast leaves them alone anyway). Server thread.
+         * player, or one dead less than a minute ago: the blast leaves them alone anyway). Server thread.
          */
         fun bystanders(level: ServerLevel, center: Vec3): List<ServerPlayer> =
             level.players().filter { player ->

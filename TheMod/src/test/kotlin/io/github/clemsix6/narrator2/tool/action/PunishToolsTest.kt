@@ -69,10 +69,10 @@ class PunishToolsTest {
     fun `a severity beyond the chaos level is refused, with the cap`() = runBlocking<Unit> {
         val tool = PunishTool()
         val five = args("""{"player":"Bartok","punishment":"tiny","severity":5,"reason":"insolent"}""")
-        assertEquals(ToolResult.invalid("at chaos 3 a punishment has a severity of at most 4 (asked 5)"), tool.check(context(3), five))
+        assertEquals(ToolResult.invalid("at chaos 2 a punishment has a severity of at most 3 (asked 5)"), tool.check(context(2), five))
         assertEquals(ToolResult.invalid("at chaos 1 a punishment has a severity of at most 2 (asked 5)"), tool.check(context(1), five))
-        assertNull(tool.check(context(4), five), "chaos 4 allows the full wrath")
-        assertEquals(ToolResult.invalid("at chaos 3 a punishment has a severity of at most 4 (asked 5)"), tool.run(context(3), five), "run starts with the dry checks")
+        assertNull(tool.check(context(3), five), "chaos 3 allows the full wrath (M7-LOOSEN)")
+        assertEquals(ToolResult.invalid("at chaos 2 a punishment has a severity of at most 3 (asked 5)"), tool.run(context(2), five), "run starts with the dry checks")
     }
 
     @Test

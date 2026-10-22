@@ -135,7 +135,7 @@ class ChallengeStakesGameTests {
 
     /**
      * Nobody wins: the forfeit for each participant enrolled at the start and online — one refused by the guards (another
-     * act punishes him), one paid, one gone offline — and never for the latecomer.
+     * act just struck him in the same kind), one paid, one gone offline — and never for the latecomer.
      */
     @GameTest(maxTicks = ASYNC_MAX_TICKS)
     fun aLostChallengesForfeitSparesTheLatecomerAndTheOffline(helper: GameTestHelper) = helper.runScript(ASYNC_MAX_TICKS) {
@@ -153,9 +153,9 @@ class ChallengeStakesGameTests {
                 rig.store.update { state ->
                     state.copy(challenges = state.challenges.map { it.copy(participants = it.participants + Participant(dan.uuid.toString(), dan.name, late = true)) })
                 }
-                // Bob is under another act's punishment: the forfeit may not pile on.
+                // Another act just slowed Bob's mining: the forfeit (slow_hands) may not strike that kind again so soon.
                 val other = Caller(Role.DIRECTOR, "stakes-gametest", turnId = 777, taskId = null)
-                val verdict = rig.services.guards.hostile(bob.live, other, rig.services.clock.millis() + 600_000, PunishmentCategory.HARM)
+                val verdict = rig.services.guards.hostile(bob.live, other, rig.services.clock.millis() + 600_000, PunishmentCategory.MINING)
                 check(verdict == Verdict.Allowed) { "Bob's other punishment: $verdict" }
                 rig.second()
             }
@@ -168,7 +168,7 @@ class ChallengeStakesGameTests {
             val line = rig.awaitEnd(view.ref)
             val (head, penalty) = line.split(" · ")
             check(head == "${view.ref} lost: nobody held 1 emerald in 3m") { "the line: $line" }
-            check(Regex("^penalty: ${bob.name} refused \\(${Rules.ALREADY_PUNISHED}: .+\\), ${ann.name} slow_hands \\(1\\) until \\d\\d:\\d\\d, ${cid.name} offline, not paid$").matches(penalty)) {
+            check(Regex("^penalty: ${bob.name} refused \\(${Rules.SAME_PUNISHMENT}: .+\\),${ann.name} slow_hands \\(1\\) until \\d\\d:\\d\\d, ${cid.name} offline, not paid$").matches(penalty)) {
                 "the forfeit: refused, paid, offline; nothing for the latecomer: $penalty"
             }
             rig.onServer {

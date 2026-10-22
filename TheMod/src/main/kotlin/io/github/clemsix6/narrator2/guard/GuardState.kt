@@ -223,7 +223,7 @@ data class OpenEpisode(val act: Long?, val until: Long) {
  *   played hour.
  * @property lastDeathAt when the player last died, whatever killed them, epoch milliseconds (real time,
  *   like the no-piling-on rule); forgotten once that rule no longer applies. Saved with the player, so a
- *   player who dies, leaves and comes back within the 5 minutes is still spared.
+ *   player who dies, leaves and comes back within the minute is still spared.
  * @property perils what the death guard covers: for each [Peril] id, until which value of the `PLAY_TIME`
  *   stat; [armedUntil] is the latest of them.
  * @property rescues when the death guard rescued the player beyond the quota, epoch milliseconds (real

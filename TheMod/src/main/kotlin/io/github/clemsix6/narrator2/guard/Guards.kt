@@ -26,10 +26,13 @@ object Rules {
     /** Chaos 0: no hostile action at all. */
     const val CHAOS_0 = "chaos_0"
 
-    /** The player died less than 5 minutes ago, or was saved from a death lately (`Guards.shield`). */
+    /** The player died less than a minute ago, or was saved from a death lately (`Guards.shield`). */
     const val NO_PILE_ON = "no_pile_on"
 
-    /** A punishment opened by another act is still running against the player, or this act already used `punish` on them. */
+    /**
+     * This act already used `punish` on the player (one per act and player). Since M7-LOOSEN a punishment of another
+     * act still running is no refusal: punishments stack.
+     */
     const val ALREADY_PUNISHED = "already_punished"
 
     /** The player fights a duel: nothing hostile against a duelist while it runs (M4 review, finding 19). */
@@ -59,9 +62,10 @@ interface Guards {
 
     /**
      * Checks a hostile action of [caller] against [target] (protection, chaos 0, the player's grace, a duel,
-     * a recent death or rescue, a punishment of another act still running, fairness, and the rest of
-     * [category] against them) and, when allowed, opens or extends the caller's episode against [target] until
-     * [until] (epoch milliseconds), its act being [Caller.act]. [category]: the kind of punishment (M4
+     * a recent death or rescue, a second `punish` of the act, fairness, and the rest of [category] against them;
+     * another act's punishment still running is no refusal: punishments stack) and, when allowed, opens or
+     * extends the caller's episode against [target] until [until] (epoch milliseconds), its act being
+     * [Caller.act]. [category]: the kind of punishment (M4
      * §6.1), deduced by the tool from its arguments; null for an action without one. [punishment]: the action
      * is `punish` of the catalogue, which an act uses once per player (M4 review, finding 16). Every refusal is a
      * `guard denied` decision. Server thread only.
@@ -196,7 +200,7 @@ interface Guards {
     fun pacing(players: List<UUID>, now: Long): List<PlayerPacing>
 
     companion object {
-        /** How long a player saved from a death is shielded ([shield]): as long as no piling on after a real death, 5 minutes. */
+        /** How long a player saved from a death is shielded ([shield]): as long as no piling on after a real death, a minute (M7-LOOSEN). */
         const val RESCUE_SHIELD_MS = TargetingPolicy.NO_PILE_ON_MS
     }
 }

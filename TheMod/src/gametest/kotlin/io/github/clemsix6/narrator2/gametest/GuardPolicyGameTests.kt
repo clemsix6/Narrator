@@ -354,9 +354,12 @@ class GuardPolicyGameTests {
         helper.succeed()
     }
 
-    /** Through the guards: one turn's actions form one punishment, saved with the player; another turn waits. */
+    /**
+     * Through the guards: one turn's actions form one punishment, saved with the player; another turn's stacks on it
+     * (M7-LOOSEN), saved until the later end, and both count.
+     */
     @GameTest
-    fun oneTurnOnePunishmentThroughTheGuards(helper: GameTestHelper) {
+    fun oneTurnOnePunishmentAndAnotherStacksThroughTheGuards(helper: GameTestHelper) {
         val guards = guards(helper)
         val player = mockPlayer(helper, BlockPos(1, 1, 1))
         try {
@@ -365,8 +368,9 @@ class GuardPolicyGameTests {
             helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(101), now + 60_000), "the punishment opens")
             helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(101), now + 90_000), "the same turn adds to it")
             helper.assertEquals(OpenEpisode(101, now + 90_000), GuardStates.read(player).episode, "saved with the player")
-            val other = guards.hostile(player, turn(102), now + 60_000)
-            helper.assertTrue(other is Verdict.Denied && other.rule == Rules.ALREADY_PUNISHED, "another turn waits: $other")
+            helper.assertEquals(Verdict.Allowed, guards.hostile(player, turn(102), now + 60_000), "another turn's punishment stacks")
+            helper.assertEquals(OpenEpisode(102, now + 90_000), GuardStates.read(player).episode, "saved until the later end")
+            helper.assertEquals(2, guards.pacing(listOf(player.uuid), now).single().punishedThisHour, "two punishments this hour")
         } finally {
             helper.level.server.playerList.remove(player)
         }
@@ -375,7 +379,7 @@ class GuardPolicyGameTests {
 
     /**
      * An explosion refused for one bystander punishes none of the others (M4 review, finding 11): Bob, next to
-     * Mimosa whom another act already punishes, is not counted punished by a blast that never hurt him.
+     * Mimosa whom another act just caught in an explosion, is not counted punished by a blast that never hurt him.
      */
     @GameTest
     fun aRefusedExplosionPunishesNoBystander(helper: GameTestHelper) {
@@ -385,9 +389,9 @@ class GuardPolicyGameTests {
         try {
             val now = System.currentTimeMillis()
             fun turn(id: Long) = Caller(Role.DIRECTOR, "policy-test", turnId = id, taskId = null)
-            helper.assertEquals(Verdict.Allowed, guards.hostile(mimosa, turn(201), now + 60_000, PunishmentCategory.SIZE), "another act punishes Mimosa")
+            helper.assertEquals(Verdict.Allowed, guards.hostile(mimosa, turn(201), now + 60_000, PunishmentCategory.EXPLOSION), "another act blasts Mimosa")
             val verdict = NarratorExplosionDamage.allow(listOf(bob, mimosa), guards, turn(202), now + 5_000, PunishmentCategory.EXPLOSION)
-            helper.assertTrue(verdict is Verdict.Denied && verdict.rule == Rules.ALREADY_PUNISHED, "the explosion is refused: $verdict")
+            helper.assertTrue(verdict is Verdict.Denied && verdict.rule == Rules.SAME_PUNISHMENT, "the explosion is refused: $verdict")
             helper.assertEquals(null, GuardStates.read(bob).episode, "no punishment opened on Bob")
             val pace = guards.pacing(listOf(bob.uuid), now).single()
             helper.assertEquals(0 to emptySet<PunishmentCategory>(), pace.punishedThisHour to pace.resting.keys, "nothing counted against Bob, explosion not resting")

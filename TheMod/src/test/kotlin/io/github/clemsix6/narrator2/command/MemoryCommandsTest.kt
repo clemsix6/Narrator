@@ -107,7 +107,7 @@ class MemoryCommandsTest {
         assertNull(MemoryCommands.refusal(FakeMemory()), "an available memory refuses nothing")
         val status = AdminCommands.statusLines(TestServices(memory = disabled), Path.of("config"), DisabledDashboard(DisabledDashboard.SWITCHED_OFF))
         assertEquals("Memory: unavailable (not wired yet)", status[10].string)
-        assertEquals("Guards: chaos 3 · creatures 0 of 16 · protected online: nobody", status[9].string, "the lines before it stay in place")
+        assertEquals("Guards: chaos 3 · creatures 0 of 24 · protected online: nobody", status[9].string, "the lines before it stay in place")
     }
 
     // ── status ──────────────────────────────────────────────────────────────────────────────────────

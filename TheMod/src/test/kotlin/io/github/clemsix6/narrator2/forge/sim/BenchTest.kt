@@ -708,12 +708,12 @@ class BenchTest {
         val actions = actions()
         val report = BenchRun(KotlinHost(Harsh::class.java), emptyList(), emptyList(), { tool, args -> actions.check(tool, args, MechanicsSamples.director) }).run()
         assertFalse(report.ok)
-        val (severity, wither) = report.problems
-        assertEquals(Diagnostic.Kind.REFUSED, severity.kind)
-        assertEquals("act \"punish Bartok tiny 5\"", severity.where)
-        assertTrue(severity.message.startsWith("Invalid arguments: at chaos 3 "), severity.message)
-        assertContains(severity.message, "(asked 5)")
-        assertTrue(severity.line > 0, "the module's line that asked it")
+        val (strong, wither) = report.problems
+        assertEquals(Diagnostic.Kind.REFUSED, strong.kind)
+        assertEquals("act \"effect Bartok slowness 30s level 4\"", strong.where)
+        assertTrue(strong.message.startsWith("Invalid arguments: slowness is harmful: at chaos 3 "), strong.message)
+        assertContains(strong.message, "level 4)")
+        assertTrue(strong.line > 0, "the module's line that asked it")
         assertEquals("act \"effect Bartok wither 30s level 1\"", wither.where)
         assertTrue(wither.message.startsWith("DENIED (forbidden_effect): "), wither.message)
         assertContains(report.summary, "(2 refused by the dry checks)")
@@ -1047,10 +1047,10 @@ class BenchTest {
         }
     }
 
-    /** A punishment too severe for chaos 3, and an effect a module never gives. */
+    /** An effect too strong for chaos 3, and an effect a module never gives. */
     class Harsh : ForgeModule {
         override fun start(ctx: ModuleContext) {
-            ctx.acts().punish("Bartok", "tiny", 5, "a bougé")
+            ctx.acts().effect("Bartok", "slowness", 30, 4)
             ctx.acts().effect("Bartok", "wither", 30, 1)
         }
     }

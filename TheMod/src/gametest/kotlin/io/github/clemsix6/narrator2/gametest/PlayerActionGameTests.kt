@@ -263,10 +263,12 @@ class PlayerActionGameTests {
             guards.death.armedFor(bob.live, Peril.ANY) >= DeathGuard.playTime(bob.live) + (30 + 30) * 20,
             "the death guard covers the loss until the shorter effect has ended, and 30 s more",
         )
+        // Punishments stack (M7-LOOSEN): this turn may punish Bob too while the other turn's runs.
         bob.live.addEffect(MobEffectInstance(MobEffects.WATER_BREATHING, 9_600, 0))
         val piledOn = run(helper, tool, ApplyEffectArgs(listOf(bob.name), "water_breathing", seconds = 30, level = 2))
-        helper.assertTrue(piledOn.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), piledOn.text)
-        helper.assertEquals(9_600, bob.live.getEffect(MobEffects.WATER_BREATHING)?.duration, "untouched")
+        helper.assertEquals(ToolStatus.OK, piledOn.status, piledOn.text)
+        helper.assertEquals(1, bob.live.getEffect(MobEffects.WATER_BREATHING)?.amplifier, "replaced by level II")
+        helper.assertEquals(CALLER.turnId, GuardStates.read(bob.live).episode?.act, "this turn's punishment, stacked")
 
         guards.setProtected(alice.uuid, alice.name, true)
         try {
@@ -294,14 +296,10 @@ class PlayerActionGameTests {
         helper.assertFalse(bob.live.hasEffect(MobEffects.SLOWNESS), "the Narrator's slowness is gone")
         helper.assertTrue(bob.live.hasEffect(MobEffects.FIRE_RESISTANCE), "the player's own potion stays")
 
-        // Another turn may not take the fire resistance away: this turn's punishment still runs.
+        // Another turn may take the fire resistance away while this turn's punishment runs: punishments stack (M7-LOOSEN).
         val otherTurn = run(helper, tool, RemoveEffectArgs(listOf(bob.name), "fire_resistance"), OTHER_TURN)
-        helper.assertEquals(ToolStatus.DENIED, otherTurn.status, otherTurn.text)
-        helper.assertTrue(otherTurn.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), otherTurn.text)
-        helper.assertTrue(bob.live.hasEffect(MobEffects.FIRE_RESISTANCE), "still resistant")
-
-        val sameTurn = run(helper, tool, RemoveEffectArgs(listOf(bob.name), "fire_resistance"))
-        helper.assertEquals("ok: removed fire_resistance I from ${bob.name}", sameTurn.text, "result")
+        helper.assertEquals("ok: removed fire_resistance I from ${bob.name}", otherTurn.text, "result")
+        helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.act, "a punishment of the other turn")
         helper.assertTrue(guards(helper).death.armedFor(bob.live, Peril.FIRE) > DeathGuard.playTime(bob.live), "armed for fire: in lava, this would kill")
 
         val none = run(helper, tool, RemoveEffectArgs(listOf(bob.name), "glowing"))
@@ -339,11 +337,10 @@ class PlayerActionGameTests {
         helper.assertEquals("ok: put back ${bob.name}'s scale 0.5 → 1", back.text, "result")
         helper.assertEquals(1.0, bob.live.getAttributeValue(Attributes.SCALE), "full size")
 
-        // Taking the speed back is a punishment: another turn may not, while this turn's runs.
+        // Taking the speed back is a punishment, which another turn may add while this turn's runs (M7-LOOSEN).
         val otherTurn = run(helper, reset, ResetAttributeArgs(bob.name), OTHER_TURN)
-        helper.assertTrue(otherTurn.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), otherTurn.text)
-        val all = run(helper, reset, ResetAttributeArgs(bob.name))
-        helper.assertEquals("ok: put back ${bob.name}'s movement_speed 0.15 → 0.1", all.text, "result")
+        helper.assertEquals("ok: put back ${bob.name}'s movement_speed 0.15 → 0.1", otherTurn.text, "result")
+        helper.assertEquals(OTHER_TURN.turnId, GuardStates.read(bob.live).episode?.act, "a punishment of the other turn")
         helper.assertTrue(GuardStates.read(bob.live).modifiers.isEmpty(), "the ledger is empty")
         val nothing = run(helper, reset, ResetAttributeArgs(bob.name, AttributeKey.GRAVITY))
         helper.assertEquals("Invalid arguments: the Narrator did not change ${bob.name}'s gravity; its changes on ${bob.name}: none", nothing.text, "nothing")

@@ -272,17 +272,20 @@ class PunishGameTests {
         }
     }
 
-    /** `tree_top` opens its own episode (a short teleport is not hostile for `teleport`): refused while another act punishes. */
+    /**
+     * `tree_top` opens its own episode (a short teleport is not hostile for `teleport`): refused while the teleport another
+     * act struck rests; on another act's punishment of another kind, it stacks (M7-LOOSEN).
+     */
     @GameTest
-    fun treeTopIsRefusedWhileAnotherActPunishes(helper: GameTestHelper) = bench(helper) { b ->
+    fun treeTopIsRefusedWhileItsKindRests(helper: GameTestHelper) = bench(helper) { b ->
         tree(helper)
         try {
             val start = b.player.position()
-            helper.assertEquals(Verdict.Allowed, b.guards.hostile(b.player, b.caller(7), b.clock.millis() + 60_000, PunishmentCategory.SIZE), "another act punishes")
+            helper.assertEquals(Verdict.Allowed, b.guards.hostile(b.player, b.caller(7), b.clock.millis() + 60_000, PunishmentCategory.TELEPORT), "another act teleports")
             val result = b.punish(PunishmentId.TREE_TOP, 1, act = 8)
-            helper.assertTrue(result.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): ${b.name} is already being punished"), result.text)
+            helper.assertTrue(result.text.startsWith("DENIED (${Rules.SAME_PUNISHMENT}): ${b.name} was already teleported"), result.text)
             helper.assertEquals(start, b.player.position(), "not moved")
-            helper.assertEquals(listOf(PunishmentCategory.SIZE), b.guards.pacing(listOf(b.bob.uuid), b.clock.millis()).single().resting.keys.toList(), "no teleport struck")
+            helper.assertEquals(1, b.guards.pacing(listOf(b.bob.uuid), b.clock.millis()).single().punishedThisHour, "not counted")
         } finally {
             fell(helper)
         }
@@ -344,7 +347,8 @@ class PunishGameTests {
         val health = b.player.health
         val smite = b.punish(PunishmentId.SMITE, 2, act = 1)
         helper.assertEquals(
-            "DENIED (${Rules.ALREADY_PUNISHED}): this act already punished ${b.name} (hunger); one punish per act and player: compose it with the other tools, or let it run.",
+            "DENIED (${Rules.ALREADY_PUNISHED}): this act already punished ${b.name} (hunger); one punish per act and player: compose it with the other tools, " +
+                "or punish again in another turn.",
             smite.text, "a second punish of the same act",
         )
         helper.assertEquals(health, b.player.health, "not struck")
@@ -506,7 +510,7 @@ class PunishGameTests {
         /**
          * The first `punish` of a lifecycle: its episode opened with its category until its end, every category it
          * strikes resting, the death guard armed for [perils] (a death by one of them counts in the Narrator's quota),
-         * and another act refused while it runs.
+         * and another act refused its kind while it rests, though not another kind (punishments stack, M7-LOOSEN).
          */
         fun guarded(plan: PunishmentPlan, act: Long, perils: List<Peril>) {
             val now = clock.millis()
@@ -516,8 +520,9 @@ class PunishGameTests {
             helper.assertEquals(plan.strikes, pacing.resting.keys, "the categories it struck rest")
             plan.peril?.let { helper.assertTrue(guards.death.armedFor(player, it) >= DeathGuard.playTime(player) + plan.seconds * 20L, "the death guard covers ${it.id} as long as it runs") }
             for (peril in perils) helper.assertTrue(guards.death.attributed(player, sourceOf(peril)), "a death by ${peril.id} would be the Narrator's, in its quota")
-            val other = punish(if (plan.punishment == PunishmentId.HUNGER) PunishmentId.TINY else PunishmentId.HUNGER, 1, act + 1)
-            helper.assertTrue(other.text.startsWith("DENIED (${Rules.ALREADY_PUNISHED}): "), "another act may not pile on: ${other.text}")
+            val other = guards.vet(player, caller(act + 1), plan.category)
+            helper.assertTrue(other is Verdict.Denied && other.rule == Rules.SAME_PUNISHMENT, "another act may not strike its kind again so soon: $other")
+            helper.assertEquals(Verdict.Allowed, guards.vet(player, caller(act + 1), null), "another act may punish them otherwise")
         }
 
         /** Nothing of the punishment left. */

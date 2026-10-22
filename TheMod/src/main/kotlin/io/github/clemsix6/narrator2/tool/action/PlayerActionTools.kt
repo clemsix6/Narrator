@@ -112,7 +112,7 @@ data class ApplyEffectArgs(
     @MaxLen(64)
     val effect: String,
     @Doc("How long, in seconds. Ignored by the instant effects (instant_health, instant_damage, saturation), applied once.")
-    @Range(1.0, 900.0)
+    @Range(1.0, 1_800.0)
     val seconds: Int,
     @Doc("Level, 1 being the effect's first level.")
     @Range(1.0, 5.0)
@@ -420,7 +420,7 @@ data class SetAttributeArgs(
     @Range(-100.0, 100.0)
     val add: Double? = null,
     @Doc("How long it lasts, in seconds; then the attribute comes back by itself, across deaths and restarts.")
-    @Range(10.0, 900.0)
+    @Range(10.0, 1_800.0)
     val seconds: Int,
 ) {
     init {

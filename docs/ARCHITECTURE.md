@@ -167,7 +167,7 @@ La liste exacte des 32 outils de M2, avec leurs paramètres, garde-fous et retou
 Les attributs de 26.x offrent des châtiments et récompenses spectaculaires, visibles par tous les clients, sans une ligne de code : `scale` (joueur minuscule ou géant), `gravity` (gravité lunaire), `jump_strength`, `movement_speed`, `block_break_speed`, `safe_fall_distance`, `step_height`, `block_interaction_range`, `entity_interaction_range`, `max_health`, `attack_speed`, `knockback_resistance`, `oxygen_bonus`, `burning_time`… Chaque modification porte un identifiant et une durée : elle est retirée automatiquement, même après un redémarrage.
 
 ### 6.3 Garde-fous
-Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets, la progression ou des entités, y compris derrière `execute … run`) ; seules les commandes relues pour le Narrateur passent, celles des autres mods sont refusées tant qu'un opérateur ne les a pas autorisées. Puissance d'explosion plafonnée, nombre d'entités invoquées plafonné, joueurs protégés configurables (ses créatures ne les blessent pas plus que les joueurs morts depuis peu), aucune destruction de base. Les plafonds dépendent du niveau de chaos ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10, et ce que M4 y ajoute (catégories de châtiments, grâce, séquestre, `BlockRestorer`) dans le [design M4](design/M4.md) §13.
+Commandes interdites (`stop`, `op`, `deop`, `ban`, `whitelist`, `save-off`… et toutes celles qui modifient des blocs, des objets, la progression ou des entités, y compris derrière `execute … run`) ; seules les commandes relues pour le Narrateur passent, celles des autres mods sont refusées tant qu'un opérateur ne les a pas autorisées. Puissance d'explosion plafonnée (4 au plus, une explosion ne détruit jamais de bloc), nombre d'entités invoquées plafonné, joueurs protégés configurables (ses créatures ne les blessent pas plus que les joueurs morts ou sauvés depuis moins d'une minute), aucune destruction de base. Les plafonds dépendent du niveau de chaos (desserrés aux niveaux 3 à 5 en M7-LOOSEN, à la demande du propriétaire) ; le composant qui applique chaque règle du §17 est décrit dans le [design M1/M2](design/M1_M2.md) §10, et ce que M4 y ajoute (catégories de châtiments, grâce, séquestre, `BlockRestorer`) dans le [design M4](design/M4.md) §13.
 
 ## 7. Le Cerveau
 
@@ -294,9 +294,11 @@ chaos : joueur minuscule, gravité lunaire, pioche au ralenti, pieds de plomb, f
 foudre, cage de verre, toiles (les pièges de blocs, §9.4). Les outils bruts restent pour le reste. Le gage d'un défi
 perdu est une punition légère (sévérité 1 ou 2), jamais pour un joueur arrivé en cours de défi. Toute action hostile, de n'importe
 quel outil, d'une règle ou d'un enjeu, porte une **catégorie** (taille, gravité, mouvement, foudre…) : une même
-catégorie ne frappe pas deux fois le même joueur avant un délai qui dépend du chaos (30 min au chaos 3). Chaque
+catégorie ne frappe pas deux fois le même joueur avant un délai qui dépend du chaos (15 min au chaos 3). Chaque
 châtiment a une raison, gardée dans l'historique du joueur, et une durée ; il passe par les garde-fous comme tout
-(protégé, mort récente, déjà puni, quatre par heure au plus). Les « poules en orbite » sont un module de l'arsenal de
+(protégé, mort récente, un nombre par heure qui dépend du chaos : huit au chaos 3). Les châtiments **s'empilent** : un
+joueur déjà puni par un autre tour peut l'être de nouveau ; seul un même tour n'utilise `punish` qu'une fois par joueur
+(desserré en M7-LOOSEN à la demande du propriétaire). Les « poules en orbite » sont un module de l'arsenal de
 départ de la Forge (M5).
 
 ### 9.3 Faveurs
@@ -332,10 +334,12 @@ texte du récit et les plans du Grimoire.
 ### 9.6 Rythme
 Des objectifs indicatifs dans le prompt (un défi toutes les 20–40 min quand les joueurs sont actifs, une loi
 rarement, des plans librement) et des **limites dures dans le moteur** : deux défis à la fois et 10 min entre deux
-départs, huit règles actives, deux récits, quatre châtiments par heure et par joueur, délais par catégorie,
-sévérité maximale, durée des pièges, fréquence des règles. Les plafonds qui dépendent du **niveau de chaos** (0 à 5,
-3 par défaut) sont dans le tableau du [design M1/M2](design/M1_M2.md) §10.4 et du [design M4](design/M4.md) §6.2. La
-situation du Directeur lui montre ce qui le limite (`Pacing`) avant qu'il n'y bute.
+départs, huit règles actives, deux récits, un nombre de châtiments par heure et par joueur (4, 6, 8, 12 et 20 aux
+niveaux de chaos 1 à 5), délais par catégorie, sévérité maximale, durée des pièges, fréquence des règles. Les plafonds
+qui dépendent du **niveau de chaos** (0 à 5, 3 par défaut) sont dans le tableau du [design M1/M2](design/M1_M2.md)
+§10.4 et du [design M4](design/M4.md) §6.2 ; les niveaux 3 à 5 ont été desserrés en M7-LOOSEN à la demande du
+propriétaire (`handoff/M7-LOOSEN.md`), les niveaux 0 à 2 restent le réglage doux. La situation du Directeur lui montre
+ce qui le limite (`Pacing`, avec le plafond de l'heure au chaos en vigueur) avant qu'il n'y bute.
 
 ### 9.7 Difficulté et reliques (M7)
 **Le socle de difficulté** vit dans `difficulty/`, avec la section `difficulty` de la configuration, lue au démarrage du serveur puis relue par `/narrator reload`, qui l'applique aussitôt (les créatures hostiles chargées sont réconciliées, voir `design/handoff/M7-RELOAD.md`). Il marche sans Claude.
@@ -641,9 +645,9 @@ Tranché le 25/09/2026 :
 4. **Chaos et interdits** : le chaos vaut 3 sur 5 par défaut. Le moteur applique ces règles, quel que soit le prompt (composant par règle : [design M1/M2](design/M1_M2.md) §10) :
    - Les constructions des joueurs ne sont jamais détruites définitivement. Un bloc posé par un joueur ne peut être modifié que temporairement, et il est restauré automatiquement.
    - Un objet n'est jamais perdu définitivement : une confiscation est temporaire ou compensée, et sa restitution est tracée.
-   - Le Narrateur tue directement un joueur au plus une fois par heure de jeu (au chaos 3), l'heure se comptant en temps joué par ce joueur. Le joueur conserve alors son inventaire ; au-delà du quota, la mort est toujours empêchée : le joueur est sauvé, c'est-à-dire ramené à son point de réapparition et soustrait au danger qui le tuait. Un châtiment du catalogue est un gag, pas une exécution (tranché le 19/10/2026, `M4-POST`) : ses créatures (invités, pluie de slimes) ne visent et ne blessent que le joueur puni, disparaissent à sa mort, à son départ et à la fin du châtiment, et leur coup fatal devient un sauvetage sur place, hors quota et sans rien perdre. Il en va de même des créatures hostiles que le Directeur (ou une règle) invoque avec `spawn` (`M4-LEFTOVERS`) : une créature invoquée par le Narrateur ne tue jamais. Celles d'un module non plus (tranché le 21/10/2026, relecture de M5, décision D1, `M5-FIX-1`) : le module les vise et les envoie sur qui il veut, elles poursuivent et frappent, mais leur coup fatal devient un sauvetage sur place, hors quota et sans rien perdre (M5 §4.5).
+   - Le Narrateur tue directement un joueur au plus deux fois par heure de jeu au chaos 3 (trois au chaos 4, cinq au chaos 5 ; une fois au chaos 3 avant M7-LOOSEN), l'heure se comptant en temps joué par ce joueur. Le joueur conserve alors son inventaire ; au-delà du quota, la mort est toujours empêchée : le joueur est sauvé, c'est-à-dire ramené à son point de réapparition et soustrait au danger qui le tuait. Un châtiment du catalogue est un gag, pas une exécution (tranché le 19/10/2026, `M4-POST`) : ses créatures (invités, pluie de slimes) ne visent et ne blessent que le joueur puni, disparaissent à sa mort, à son départ et à la fin du châtiment, et leur coup fatal devient un sauvetage sur place, hors quota et sans rien perdre. Il en va de même des créatures hostiles que le Directeur (ou une règle) invoque avec `spawn` (`M4-LEFTOVERS`) : une créature invoquée par le Narrateur ne tue jamais. Celles d'un module non plus (tranché le 21/10/2026, relecture de M5, décision D1, `M5-FIX-1`) : le module les vise et les envoie sur qui il veut, elles poursuivent et frappent, mais leur coup fatal devient un sauvetage sur place, hors quota et sans rien perdre (M5 §4.5).
    - Le PvP n'est jamais forcé : un duel exige l'acceptation des deux joueurs. Les courses et les défis non violents n'en ont pas besoin.
-   - Pas d'acharnement : un joueur mort dans les 5 dernières minutes, ou déjà en plein châtiment, n'est pas ciblé par un nouveau châtiment.
+   - Pas d'acharnement : un joueur mort, ou sauvé d'une mort, dans la dernière minute n'est pas ciblé par un nouveau châtiment. Un joueur déjà en plein châtiment peut en recevoir un autre (les châtiments s'empilent), dans la limite d'un nombre par heure et d'un délai par catégorie qui dépendent du chaos (desserré le 22/10/2026 en M7-LOOSEN à la demande du propriétaire : 5 minutes et « un châtiment à la fois » auparavant).
    - Les commandes d'administration sont interdites (§6.3).
 5. **Réflexes** (révisé le 19/10/2026) : **Claude Haiku 5.5**, par LLMGW, remplace Jev, qui n'a jamais eu de clé. Il s'active dès que la clé LLMGW est présente (`reflex.enabled`, vrai par défaut), sans réflexion (`reflex.thinking = false` : sur notre jeu d'éval, la réflexion à l'effort `low` gagne 2 à 3 tons et 1 intention sur 52, pas un message adressé, pour un p95 plus lent d'environ 0,9 s), avec un délai de 3 s et l'heuristique locale en repli. Le chat ne part vers aucun nouveau tiers. Mesures et choix : passation `REFLEX-HAIKU`.
 

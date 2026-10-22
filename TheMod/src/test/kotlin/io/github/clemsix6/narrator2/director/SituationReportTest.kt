@@ -68,7 +68,7 @@ class SituationReportTest {
     @Test
     fun `the situation, reference`() {
         players.put(live("Bartok", onlineFor = 72 * 60_000L))
-        players.put(live("Mimosa", onlineFor = 25 * 60_000L, health = 0f, lastDeathAt = now - 60_000))
+        players.put(live("Mimosa", onlineFor = 25 * 60_000L, health = 0f, lastDeathAt = now - 30_000))
         players.put(
             live(
                 "clemsix6", onlineFor = 5 * 60_000L, pos = Pos("minecraft:the_nether", 3, 72, 9), gameMode = "creative", biome = "minecraft:nether_wastes",
@@ -77,7 +77,7 @@ class SituationReportTest {
         )
         guards.protectedPlayers += ref("clemsix6").uuid
         guards.active[ref("Bartok").uuid] = listOf(ActiveEffect("effect", "slowness II", now + 80_000, harmful = true))
-        // Chaos 3: one death per played hour; Mimosa's was spent, clemsix6 is protected.
+        // Chaos 3: two deaths per played hour; Mimosa's was spent, clemsix6 is protected.
         guards.deaths[ref("Mimosa").uuid] = 0
         listOf(-54, -51, -52).forEach { y -> digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, y, 0), "minecraft:diamond_ore", null, false, true, null))) }
         repeat(2) { digest.record(Envelope(1, now, 0, BlockBroken(ref("Bartok"), Pos("minecraft:overworld", 0, -50, 0), "minecraft:stone", null, false, true, null))) }
@@ -91,10 +91,10 @@ class SituationReportTest {
             """
             <situation now="21:32:41" day="37" time="night" weather="clear">
             Bartok: overworld underground y=-58 dripstone_caves · hp 14/20 food 12 · online 1h12m · last 5m: mined 5 (3 diamond_ore y=-54..-51, stone 2)
-            Mimosa: overworld, dead · online 25m · protected from hostile actions until 21:36 (died)
+            Mimosa: overworld, dead · online 25m · protected from hostile actions until 21:33 (died)
             clemsix6: the_nether creative in fortress y=72 nether_wastes · hp 20/20 food 20 · online 5m, idle · protected from every hostile action (operators)
             Your active effects: Bartok slowness II until 21:34
-            Deaths you may still cause: Bartok 1, Mimosa 0, clemsix6 0
+            Deaths you may still cause: Bartok 2, Mimosa 0, clemsix6 0
             Tasks: T-13 analyst running 12s, T-14 analyst queued · Reminders: R-3 at 21:40 "check Bob's village"
             Your last actions: -12m say · -8m apply_effect→Bartok
             </situation>
@@ -141,8 +141,8 @@ class SituationReportTest {
     }
 
     @Test
-    fun `the death protection ends 5 minutes after the death`() {
-        players.put(live("Mimosa", onlineFor = 60_000L, lastDeathAt = now - 5 * 60_000L))
+    fun `the death protection ends a minute after the death`() {
+        players.put(live("Mimosa", onlineFor = 60_000L, lastDeathAt = now - 60_000L))
         assertEquals(
             "Mimosa: overworld underground y=-58 dripstone_caves · hp 14/20 food 12 · online 1m",
             report.render(now, world, emptyList(), emptyList()).lines()[1],

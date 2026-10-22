@@ -14,7 +14,7 @@ import net.minecraft.world.entity.player.Player
 
 /**
  * The Narrator's creatures never hurt a player the Narrator may not act against (ARCHITECTURE §17: the
- * protected players, and no piling on a player who is dead or died less than 5 minutes ago; from M4 also the
+ * protected players, and no piling on a player who is dead or died less than a minute ago; from M4 also the
  * player's grace, a rescue's shield and a duel), whatever they do: blows, arrows, potions, fangs, spit, thorns,
  * explosions, and the effects that come with them. [GuardsImpl.spares] says who is spared. And the creatures it
  * summons go for players only, never a villager, a golem or an animal (M4 review, finding 17). The creatures of
