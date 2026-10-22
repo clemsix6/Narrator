@@ -104,4 +104,7 @@ lois gardent leurs propres bornes (900 s, `Spawn.of` 1 à 12).
 - GameTests adaptés : une seconde punition d'un autre acte est désormais refusée par `same_punishment` quand elle frappe
   la même catégorie (explosion, créatures, gravité de `gravity_storm`, `slow_hands` du gage d'un défi, `tree_top`), et
   acceptée sinon (`GuardPolicyGameTests.oneTurnOnePunishmentAndAnotherStacksThroughTheGuards`, `PlayerActionGameTests`).
-- Build : voir le rapport de la tâche.
+  Les tests « au-delà du quota » (`GuardGameTests.spendQuota`) épuisent maintenant tout le quota du chaos (2 morts) ;
+  les tests du bouclier et de la mort récente suivent la minute.
+- `.\gradlew.bat build --continue` après fusion de `main` (M7-REVOKE puis M7-SKELETONS) : 2 336 tests unitaires sans
+  échec, « All 412 required tests passed » pour les GameTests. Aucun appel à Claude, aucun serveur lancé.
