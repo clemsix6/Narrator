@@ -165,7 +165,7 @@ class NarratorGameTests {
                 helper.assertTrue(output.lines.any { "Phase: running · settings: loaded" in it }, "status: ${output.lines}")
                 helper.assertTrue(output.lines.any { fake.baseUrl in it && "cache marker off" in it }, "status: ${output.lines}")
                 helper.assertTrue(output.lines.any { "Key: present (environment variable $KEY_ENV)" in it }, "status: ${output.lines}")
-                helper.assertTrue(output.lines.any { "director: claude-opus-5-5 · effort medium" in it }, "status: ${output.lines}")
+                helper.assertTrue(output.lines.any { "director: claude-opus-5-5 · effort high" in it }, "status: ${output.lines}")
 
                 output.lines.clear()
                 pingClient.set(after.claude)

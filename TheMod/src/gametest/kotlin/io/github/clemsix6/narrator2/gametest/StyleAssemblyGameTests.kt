@@ -146,7 +146,7 @@ class StyleAssemblyGameTests {
         val earlier = listOf(
             "Attendu que le prévenu $tag creuse sous sa propre maison, la cour prend note.",
             "Considérant que le prévenu $tag saute dans chaque trou, la cour soupire.",
-            "Vu le dossier du prévenu $tag, la cour réclame un plan de la mine.",
+            "Vu les aveux du prévenu $tag, la cour réclame un plan de la mine.",
         )
         val line = "La cour déclare le prévenu $tag coupable de jardinage nocturne aggravé."
 
