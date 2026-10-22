@@ -46,8 +46,9 @@ import java.util.UUID
  *   of the last reply is the report (at most [RESULT_MAX_CHARS]).
  * - **The forger** (M5 §8.1) works only while the Forge and the mechanics engine run and no operator switched the
  *   Forge off; its system prompt is two blocks, `forger.md` then the SDK's reference (`Prompts.SDK`); its task runs
- *   within `forge.taskSteps` requests and `forge.taskMinutes`; one forger task runs at a time, the next ones wait in
- *   the common line while the other roles' tasks go past them.
+ *   within `forge.taskSteps` requests and `forge.taskMinutes`, and each request that answers its tool calls counts the
+ *   messages it has left of `forge.taskSteps` (`TurnLimits.countdown`, M6-FIX-15); one forger task runs at a time, the
+ *   next ones wait in the common line while the other roles' tasks go past them.
  * - **The storyteller** (M6 §6.4) works only while the memory and the Journal run, where its ideas go; its conversation sees `inspire`
  *   (`ToolEnv.storytellerAvailable`), and it runs within [STORYTELLER_STEPS] requests at most (fewer when
  *   `workers.maxSteps` says so): three ideas and a report take three to five. Its opening shows its open ideas in short,
@@ -245,7 +246,7 @@ class Workers(
             val caller = Caller(record.role, conversationId, turnId = null, taskId = task.id)
             val opening = Pending.text(opening(task))
             val outcome = withTimeoutOrNull(timeoutMs) {
-                agent.runTurn(conversation, opening, caller, TurnLimits(steps, countdown = storyteller))
+                agent.runTurn(conversation, opening, caller, TurnLimits(steps, countdown = storyteller || forger))
             }
             if (outcome == null) Ending(Status.TIMEOUT, null, "no report within ${duration(timeoutMs)}") else endingOf(outcome)
         } catch (e: CancellationException) {

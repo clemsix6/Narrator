@@ -88,7 +88,8 @@ import kotlin.test.fail
  * The workers (M1_M2 §13) and the delegation tools (§9.6) against the strict fake Anthropic server: a
  * task per conversation and session, the limit of tasks at once and the line, the timeout, the
  * cancellation, the failures (402 budget, refusal, empty report), and the report posted to the Director;
- * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits, one task at a time, the switch;
+ * the forger (M5 §8.1): wired with the Forge only, its two system blocks, its limits and their countdown, one task at a
+ * time, the switch;
  * the storyteller (M6 §6.4): wired with the memory and the Journal only, `inspire` in its conversation, six requests at most.
  * Virtual time, except where the test needs real threads.
  */
@@ -645,8 +646,12 @@ class WorkersTest {
         assertTrue(fake.rejections.isEmpty(), "${fake.rejections}")
     }
 
+    /**
+     * M6-FIX-15: like the storyteller, the forger counted in « requêtes » it never sees; it now counts its messages, and
+     * the engine's countdown follows `forge.taskSteps`, the very limit past which its tool calls do not run.
+     */
     @Test
-    fun `a forger task runs within forge_taskSteps requests and forge_taskMinutes, not the workers' limits`() {
+    fun `a forger task runs within forge_taskSteps requests and forge_taskMinutes, not the workers' limits, and counts its messages against them`() {
         val rig = Rig(maxSteps = 15, timeoutSeconds = 180, forgeConfig = ForgeConfig(taskSteps = 3, taskMinutes = 5))
         val runaway = rig.submit(brief, Role.FORGER)
         val slow = rig.submit("Un autre jeu : des vaches en ballon autour de Bartok.", Role.FORGER)
@@ -654,6 +659,16 @@ class WorkersTest {
         rig.awaitStatus(runaway, Status.FAILED)
         assertEquals("step limit: still calling tools after 5 requests, no report", rig.task(runaway).error)
         assertEquals(listOf("SELECT 0", "SELECT 1"), rig.queries, "requests past forge.taskSteps run no tool")
+        assertEquals(
+            listOf(
+                "Engine: 1 of your 3 messages used (a message counts once, whatever its tool calls): 2 left, the report included.",
+                "Engine: 2 of your 3 messages used: the next one is your report, without tool calls (they would not run).",
+            ) + List(2) { "Engine: ${AgentLoop.STEP_LIMIT_NOTE}" },
+            rig.requestsOf(runaway).drop(1).map { it.json.path("messages").last().path("content").asText() },
+            "counted against forge.taskSteps (3), not workers.maxSteps (15), then the step limit speaks alone",
+        )
+        val second = rig.requestsOf(runaway)[1].json.path("messages")
+        assertEquals("tool_result", second[second.size() - 2].path("content")[0].path("type").asText(), "the note follows the tool results")
 
         val hold = Hold()
         enqueueFor(rig.session(slow), held(hold, "Module : trop tard."))
@@ -818,7 +833,7 @@ class WorkersTest {
     /**
      * M6-FIX-14: a task for a « soirée creuse » saw none of the open ideas, proposed the title of P-31 and was refused. Its
      * opening now shows every open idea in short, the latest first (the season too: its title is taken as well); an
-     * Analyst's task shows none, and only a storyteller's task counts its messages.
+     * Analyst's task shows none, nor counts its messages (a storyteller's and a forger's do, M6-FIX-15).
      */
     @Test
     fun `a storyteller task sees every open idea in short, and an Analyst task neither them nor a countdown`() {
