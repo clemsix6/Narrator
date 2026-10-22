@@ -9,6 +9,7 @@ import io.github.clemsix6.narrator2.guard.PunishmentCategory
 import io.github.clemsix6.narrator2.guard.Rules
 import io.github.clemsix6.narrator2.guard.Verdict
 import io.github.clemsix6.narrator2.llm.Role
+import io.github.clemsix6.narrator2.relics.RelicItems
 import io.github.clemsix6.narrator2.testing.FakeGuards
 import io.github.clemsix6.narrator2.testing.TestServices
 import io.github.clemsix6.narrator2.tool.Caller
@@ -49,6 +50,7 @@ import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.core.registries.Registries
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Style
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket
 import net.minecraft.resources.Identifier
@@ -60,6 +62,7 @@ import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.CustomData
 import net.minecraft.world.item.enchantment.Enchantments
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.phys.Vec3
@@ -727,6 +730,55 @@ class PlayerActionGameTests {
         helper.assertTrue(GuardStates.read(bob.live).confiscations.isEmpty(), "nothing held")
     }
 
+    /** A permanent `take_item` (M7-REVOKE): out of a running confiscation first, then from the inventory; nothing comes back. */
+    @GameTest
+    fun aPermanentTakeNeverGivesBack(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        bob.live.inventory.setItem(0, ItemStack(Items.DIAMOND, 10))
+        val tool = TakeItemTool()
+        helper.assertEquals(ToolStatus.OK, run(helper, tool, TakeItemArgs(bob.name, "diamond", 3, 5)).status, "a confiscation for a while")
+
+        val forGood = run(helper, tool, TakeItemArgs(bob.name, "diamond", 5, 5, reason = "triche", permanent = true))
+        helper.assertTrue(
+            forGood.text.startsWith("ok: took 5x minecraft:diamond from ${bob.name} for good; 3x minecraft:diamond of it out of confiscation "),
+            forGood.text,
+        )
+        helper.assertEquals(5, count(bob.live, Items.DIAMOND), "2 more from the inventory")
+        helper.assertTrue(GuardStates.read(bob.live).confiscations.isEmpty(), "the confiscation is gone with its diamonds")
+        guards(helper).items.giveBack(bob.live, helper.narrator().clock.millis() + HOUR_MS)
+        helper.assertEquals(5, count(bob.live, Items.DIAMOND), "nothing comes back")
+    }
+
+    /**
+     * `/narrator relics revoke` (M7-REVOKE): every relic, from the inventory and out of a running confiscation, for
+     * good; an ordinary item is never touched; an offline player is refused, with why.
+     */
+    @GameTest
+    fun relicsAreRevokedForGood(helper: GameTestHelper) = withPlayer(helper) { bob ->
+        val inventory = bob.live.inventory
+        inventory.setItem(0, relic(Items.IRON_AXE))
+        inventory.setItem(1, ItemStack(Items.IRON_AXE))
+        inventory.setItem(2, relic(Items.SHIELD))
+        inventory.setItem(3, ItemStack(Items.DIAMOND, 4))
+        val now = helper.narrator().clock.millis()
+        guards(helper).items.confiscate(bob.live, { it.`is`(Items.SHIELD) || it.`is`(Items.DIAMOND) }, 10, now + 60_000L, "a while", null)
+        helper.assertEquals(0, count(bob.live, Items.SHIELD), "the relic shield is held")
+
+        val server = helper.level.server
+        val output = CommandOutput()
+        server.commands.performPrefixedCommand(server.createCommandSourceStack().withSource(output), "narrator relics revoke ${bob.name}")
+        helper.assertTrue(output.lines.any { "revoked for good from ${bob.name}" in it }, "reply: ${output.lines}")
+        helper.assertTrue(output.lines.any { "(minecraft:iron_axe)" in it } && output.lines.any { "(minecraft:shield)" in it }, "what went: ${output.lines}")
+
+        helper.assertEquals(1, count(bob.live, Items.IRON_AXE), "one axe left")
+        helper.assertFalse(RelicItems.isRelic(find(bob.live, Items.IRON_AXE)), "the ordinary one")
+        guards(helper).items.giveBack(bob.live, now + HOUR_MS)
+        helper.assertEquals(0 to 4, count(bob.live, Items.SHIELD) to count(bob.live, Items.DIAMOND), "the diamonds come back, never the relic")
+
+        output.lines.clear()
+        server.commands.performPrefixedCommand(server.createCommandSourceStack().withSource(output), "narrator relics revoke nobody_here")
+        helper.assertTrue(output.lines.any { "nobody_here is not online" in it }, "offline: ${output.lines}")
+    }
+
     // ── For the mechanics engine (M4-03) ────────────────────────────────────────────────────────
 
     /**
@@ -902,5 +954,15 @@ class PlayerActionGameTests {
 
         fun find(player: ServerPlayer, item: Item): ItemStack =
             (0 until player.inventory.containerSize).map { player.inventory.getItem(it) }.firstOrNull { it.`is`(item) } ?: ItemStack.EMPTY
+
+        const val HOUR_MS = 3_600_000L
+
+        /** One [item] marked as a relic of the Narrator (`{narrator2: {kind: "relic"}}`, M7-RELICS). */
+        fun relic(item: Item): ItemStack {
+            val stack = ItemStack(item)
+            val mark = CompoundTag().apply { putString("kind", RelicItems.RELIC_KIND) }
+            CustomData.set(DataComponents.CUSTOM_DATA, stack, CompoundTag().apply { put(Speech.CUSTOM_DATA_KEY, mark) })
+            return stack
+        }
     }
 }

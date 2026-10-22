@@ -53,7 +53,8 @@ lois gardent leurs propres bornes (900 s, `Spawn.of` 1 à 12).
   duel, celui des créatures d'une punition). Les créatures du Narrateur et ses explosions épargnent un joueur mort ou
   sauvé pendant une minute seulement. `SituationReport.NO_PILE_ON_MS` lit désormais la constante de `TargetingPolicy`
   au lieu de recopier 5 min.
-- **Le prompt `director.md`** (34 989 caractères, contre 34 998 avant) :
+- **Le prompt `director.md`** (34 989 caractères avant la fusion de M7-REVOKE, contre 34 998 ; 34 955 après, la
+  clause « aucune perte définitive d'objet » étant retirée par M7-REVOKE) :
   - « La proportion » : plus de « bref (quelques minutes) » ni de « tuer est exceptionnel » ; une faute grave ou répétée
     appelle une peine lourde, les peines s'empilent, tuer « se mérite » ;
   - « Pas d'acharnement » devient « Pas d'acharnement gratuit » : la taquinerie pour qui vient de mourir ou enchaîne les
@@ -76,6 +77,13 @@ lois gardent leurs propres bornes (900 s, `Spawn.of` 1 à 12).
 - Le délai par catégorie (`same_punishment`), raccourci.
 
 ## 4. Pour les tâches suivantes
+
+- **`take_item` permanent (M7-REVOKE) sur un objet qu'un autre tour a déjà confisqué** : `already_punished` ne le
+  refuse plus. Mais les deux confiscations sont de la catégorie `inventory` : tant que celle-ci se repose (15 min au
+  chaos 3, 10 au chaos 4, 5 au chaos 5, depuis la première confiscation), un autre tour reçoit `same_punishment`. Le
+  même tour, lui, passe toujours. Si le propriétaire veut pouvoir rendre définitive, plus tard, une confiscation en
+  cours, il faudra exempter de ce délai une saisie qui ne prend que des objets déjà tenus (par exemple en la passant en
+  catégorie `other`). Je ne l'ai pas fait : `take_item` n'était pas dans mon périmètre.
 
 - **Retrait d'un `punish` qui n'a rien fait** (`Episodes.withdraw`) : si un autre acte a empilé une punition entre-temps,
   rien n'est remis en arrière (on n'efface pas ses traces) ; le `punish` raté reste alors compté, et l'acte peut
