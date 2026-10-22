@@ -74,7 +74,8 @@ data class RelicAttribute(
 data class RelicDraft(
     @Doc(
         "The base item: a weapon or a tool (swords, axes, pickaxes, shovels, hoes, spears, mace, trident, bow, crossbow), " +
-            "a piece of armor or a shield; never netherite. E.g. iron_sword, diamond_pickaxe, golden_helmet, shield.",
+            "a piece of armor or a shield; never netherite. E.g. iron_sword, diamond_pickaxe, golden_helmet, shield; another " +
+            "mod's weapon, tool or armor by its full id (namespace:path).",
     )
     @MaxLen(64)
     val item: String,
@@ -116,10 +117,11 @@ enum class Tier(val id: String) {
         /**
          * The tier of the material of a tool, a weapon, a piece of armor or a relic base, by its id: wooden and leather
          * items and the bow are wood; stone, golden and copper ones and the shield, stone; iron and chainmail ones and the
-         * crossbow, iron; diamond ones, the trident and the mace, diamond. Null for anything else.
+         * crossbow, iron; diamond ones, the trident and the mace, diamond. Another mod's item goes by its path the same way
+         * (`othermod:iron_knife` is iron). Null for anything else.
          */
         fun ofMaterial(id: String): Tier? {
-            val bare = id.trim().lowercase().removePrefix("minecraft:")
+            val bare = id.trim().lowercase().substringAfter(':')
             return when {
                 bare.startsWith("wooden_") || bare.startsWith("leather_") || bare == "bow" -> WOOD
                 bare.startsWith("stone_") || bare.startsWith("golden_") || bare.startsWith("copper_") || bare == "shield" -> STONE
@@ -180,34 +182,6 @@ data class RelicCaps(val tier: Tier, val trivial: Boolean = false) {
 
 // ── Consumables ─────────────────────────────────────────────────────────────────────────────────────
 
-/** The foods a strange consumable is made from: plain ones, whose own effects it replaces. */
-@Serializable
-enum class ConsumableFood(val id: String) {
-    @SerialName("apple") APPLE("apple"),
-    @SerialName("bread") BREAD("bread"),
-    @SerialName("cookie") COOKIE("cookie"),
-    @SerialName("carrot") CARROT("carrot"),
-    @SerialName("golden_carrot") GOLDEN_CARROT("golden_carrot"),
-    @SerialName("potato") POTATO("potato"),
-    @SerialName("baked_potato") BAKED_POTATO("baked_potato"),
-    @SerialName("beetroot") BEETROOT("beetroot"),
-    @SerialName("cooked_beef") COOKED_BEEF("cooked_beef"),
-    @SerialName("cooked_porkchop") COOKED_PORKCHOP("cooked_porkchop"),
-    @SerialName("cooked_chicken") COOKED_CHICKEN("cooked_chicken"),
-    @SerialName("cooked_mutton") COOKED_MUTTON("cooked_mutton"),
-    @SerialName("cooked_cod") COOKED_COD("cooked_cod"),
-    @SerialName("cooked_salmon") COOKED_SALMON("cooked_salmon"),
-    @SerialName("melon_slice") MELON_SLICE("melon_slice"),
-    @SerialName("sweet_berries") SWEET_BERRIES("sweet_berries"),
-    @SerialName("glow_berries") GLOW_BERRIES("glow_berries"),
-    @SerialName("pumpkin_pie") PUMPKIN_PIE("pumpkin_pie"),
-    @SerialName("dried_kelp") DRIED_KELP("dried_kelp"),
-    @SerialName("honey_bottle") HONEY_BOTTLE("honey_bottle"),
-    @SerialName("mushroom_stew") MUSHROOM_STEW("mushroom_stew"),
-    @SerialName("beetroot_soup") BEETROOT_SOUP("beetroot_soup"),
-    @SerialName("rabbit_stew") RABBIT_STEW("rabbit_stew"),
-}
-
 /**
  * An effect a consumable may give, at most [maxSeconds] long and [maxLevel] strong. Nothing that can kill: no
  * instant damage, no wither, no levitation (the fall); poison stops at half a heart in the game.
@@ -261,10 +235,18 @@ data class ConsumableEffect(
     val chance: Double = 1.0,
 )
 
-/** A strange consumable: a plain food with a name, a lore and effects of its own, never deadly. */
+/**
+ * A strange consumable: a food with a name, a lore and effects of its own, never deadly. Any food of the game's registry,
+ * other mods' included (M7-NOTES), but a precious one; `RelicItems` checks it on the server thread.
+ */
 @Serializable
 data class ConsumableDraft(
-    @Doc("The food it is made from.") val food: ConsumableFood,
+    @Doc(
+        "The food it is made from: any food item, of the game (bread, cooked_beef, sweet_berries…) or of another mod " +
+            "(its full id, namespace:path); never a golden apple. Its own effects give way to yours.",
+    )
+    @MaxLen(64)
+    val food: String,
     @Doc("Its name, in French.") @MaxLen(NAME_MAX) val name: String,
     @Doc("Its lore, in French: one to four short lines; it may warn, lie, or do neither.")
     @Items(1, LORE_LINES)

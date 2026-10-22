@@ -30,7 +30,7 @@ class ConfigStoreTest {
         val written = Json.parseToJsonElement(file.readText()).jsonObject
         assertEquals(
             setOf(
-                "gateway", "roles", "language", "chaos", "difficulty", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex",
+                "gateway", "roles", "language", "chaos", "difficulty", "worldNotes", "journal", "observer", "director", "workers", "memory", "mechanics", "forge", "safety", "reflex",
                 "style", "dashboard", "relics", "prices", "logging",
             ),
             written.keys,

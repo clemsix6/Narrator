@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.director
 
+import io.github.clemsix6.narrator2.config.WorldNotes
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.difficulty.Difficulty
@@ -35,7 +36,7 @@ import java.util.UUID
  * The briefing that opens a chapter (M1_M2 §12.11, M3 §11.1): the first block of the chapter's first
  * message, everything the Narrator knows when its conversation starts afresh. English, written by the
  * engine, with the memory's seven sections between its own, from the steadiest to the most changing:
- * `<grimoire>`, `<programme>`, `<chronicle>`, `<previous_chapters>`, `<canon>`, `<world/>`, `<players_online>`,
+ * `<grimoire>`, `<programme>`, `<chronicle>`, `<previous_chapters>`, `<canon>`, `<world/>`, `<server_notes>`, `<players_online>`,
  * `<sheets>`, `<players_recent>`, `<memories>`, `<notes>`, `<recent_chat>`, `<your_recent_actions>`,
  * `<engine_state>`. The memory writes its sections (`Memory.briefing`, already escaped); the briefing
  * places them, keeps each within its budget ([MEMORY_BUDGETS]) and, when they cannot be read, says so
@@ -45,6 +46,7 @@ import java.util.UUID
  *   chronicle covers the older ones), with their factual summaries (commitments included) or why they
  *   have none;
  * - `<world …/>`: the Overworld's day, hour and weather, and what the difficulty layer changes (`difficulty="…"`);
+ * - `<server_notes>`: the operator's notes on this server (`worldNotes`, [WorldNotes]), one a line; left out without any;
  * - `<players_online>`: each player online with their dimension, position and state, how long they have
  *   played and what they did in the last minutes;
  * - `<players_recent>`: who else played in the last 24 hours;
@@ -137,6 +139,7 @@ class Briefing(
             section("previous_chapters", previousChapters(chapters.await(), closed, now, places))
             memory("canon")
             append(worldLine(captured)).append('\n')
+            WorldNotes.render(services.settings.get().config.worldNotes)?.let { append(it).append('\n') }
             section("players_online", playersOnline(captured, now))
             memory("sheets")
             section("players_recent window=\"24h\"", recent.await().fold({ it.ifEmpty { listOf("(no other player in the last 24 hours)") } }, ::unavailableLines))
@@ -490,9 +493,9 @@ class Briefing(
         /**
          * The whole briefing stays within this many characters: about 20,000 tokens at 3.5 characters per token
          * (M3 §11.1), the 1,200 of the mechanics' lines in `<engine_state>` (M4 §4.5), the 1,200 of the arsenal
-         * (M5 §9.3) and the 3,000 of the storyteller's `<programme>` (M6 §7).
+         * (M5 §9.3), the 3,000 of the storyteller's `<programme>` (M6 §7) and the operator's `<server_notes>` (M7-NOTES).
          */
-        const val MAX_CHARS = 75_400
+        const val MAX_CHARS = 75_400 + WorldNotes.BLOCK_MAX
 
         /** How far back the players and the chat go. */
         const val WINDOW_MS = 24 * 3_600_000L

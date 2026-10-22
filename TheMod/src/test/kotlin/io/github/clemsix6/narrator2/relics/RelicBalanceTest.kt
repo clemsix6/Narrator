@@ -34,6 +34,8 @@ class RelicBalanceTest {
         assertEquals(Tier.IRON, Tier.ofMaterial("chainmail_helmet"))
         assertEquals(Tier.DIAMOND, Tier.ofMaterial("mace"))
         assertEquals(null, Tier.ofMaterial("turtle_helmet"))
+        assertEquals(Tier.IRON, Tier.ofMaterial("othermod:iron_knife"), "another mod's item goes by its path (M7-NOTES)")
+        assertEquals(Tier.DIAMOND, Tier.ofPlayer(listOf("othermod:diamond_knife"), emptyList()))
     }
 
     @Test
