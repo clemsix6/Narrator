@@ -348,6 +348,8 @@ situation du Directeur lui montre ce qui le limite (`Pacing`) avant qu'il n'y bu
 
 Le Directeur voit ces réglages dans l'attribut `difficulty=` de `<world/>`. Détails dans `design/handoff/M7-BASE.md`, mesures dans `research/DIFFICULTY_API.md`.
 
+**Les notes du serveur** (`worldNotes`, M7-NOTES) : jusqu'à 12 notes de l'opérateur, sur les autres mods par exemple, que le Directeur lit dans `<server_notes>` juste après `<world/>`, et l'Armurier et le Scénariste au début de leurs tâches ; relues par `/narrator reload` (`design/handoff/M7-NOTES.md`).
+
 **L'Armurier** (`armorer`) conçoit, avec le ton du Narrateur, ce qui se gagne ou se trouve.
 - **Les champions.** Le Directeur en lâche un sur un joueur avec `summon_champion` : au plus un par joueur, trois en tout. L'Armurier choisit le mob, son nom, son équipement et ses pouvoirs, dans des limites fixées par le code. Un champion peut tuer, dans la limite du quota de morts du Narrateur. Tué par un joueur, il lâche son équipement, et l'Armurier forge une **relique** pour son tueur.
 - **Les réserves.** Des reliques, des consommables étranges et des livres sur l'histoire du serveur sont préparés à l'avance. Ils sont réassortis quand ils passent sous la moitié de leur cible, et tirés dans les coffres des structures.

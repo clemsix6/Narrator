@@ -82,7 +82,7 @@ data class ChapterLimit(val reason: EndReason, val why: String)
  * - **Limits**: the context of the last request reaching `director.chapterTokenLimit` marks the chapter
  *   for closing at the next quiet moment; reaching `director.chapterHardLimit` closes it at the end of
  *   the turn ([limit]). So do `/narrator chapter close` and a `/narrator reload` that changed the prompt,
- *   the model, the effort or the operator channel ([reloadChange]), and a server empty for
+ *   the model, the effort, the operator channel or the `worldNotes` ([reloadChange]), and a server empty for
  *   `director.emptyServerCloseMinutes` ([emptyServerCloseAt]).
  * - **Closing with a summary** ([closeWithSummary]): one more request on the chapter's own conversation
  *   (its cache is warm: only the closing message is new), whose engine note is the `chapter_summary`
@@ -221,9 +221,10 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
 
     /**
      * Why the reload from [old] to [new] must close the open chapter (at a quiet moment): its prompt, the
-     * Director's model or effort, or the operator channel changed. The model and the effort stay those of
-     * the chapter's conversation until it closes (`llm/Conversation`): the change applies to the next
-     * chapter. Null when there is no chapter or nothing of the sort changed.
+     * Director's model or effort, the operator channel or the `worldNotes` of its briefing (M7-NOTES)
+     * changed. The model and the effort stay those of the chapter's conversation until it closes
+     * (`llm/Conversation`): the change applies to the next chapter. Null when there is no chapter or
+     * nothing of the sort changed.
      */
     fun reloadChange(old: Settings, new: Settings): String? {
         val chapter = current ?: return null
@@ -237,6 +238,7 @@ class Chapters(private val services: NarratorServices, private val toolSet: (Too
             if (old.config.director.operatorChannel != new.config.director.operatorChannel) {
                 add("director.operatorChannel went from ${old.config.director.operatorChannel} to ${new.config.director.operatorChannel}")
             }
+            if (old.config.worldNotes != new.config.worldNotes) add("worldNotes changed")
         }
         return changes.joinToString(" and ").ifEmpty { null }
     }

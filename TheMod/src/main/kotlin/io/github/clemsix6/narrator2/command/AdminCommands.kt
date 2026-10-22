@@ -272,7 +272,8 @@ object AdminCommands {
     /**
      * Loads the configuration, prompts and texts again, off the server thread, and installs them; the
      * services keep running. When loading fails, the settings in force stay. The difficulty section is put
-     * in force too, its loaded creatures reconciled on the server thread (M7-RELOAD).
+     * in force too, its loaded creatures reconciled on the server thread (M7-RELOAD). The reply counts the `worldNotes`
+     * (M7-NOTES): a change closes the Director's chapter at a quiet moment (`Chapters.reloadChange`).
      */
     private fun reload(source: CommandSourceStack): Int {
         val runtime = runningNarrator(source) ?: return 0
@@ -294,6 +295,7 @@ object AdminCommands {
             listOf(
                 narratorLine("configuration and prompts reloaded ($key)."),
                 detailLine("[Difficulty] ${Difficulty.state(difficulty)} · $reconciled loaded creatures reconciled."),
+                detailLine("worldNotes: ${next.config.worldNotes.size} server notes; the Director reads a change from its next chapter."),
             )
         }
         job.invokeOnCompletion { reloadInFlight.set(false) }

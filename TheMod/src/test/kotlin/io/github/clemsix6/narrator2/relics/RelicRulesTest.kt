@@ -83,7 +83,7 @@ class RelicRulesTest {
     @Test
     fun `a strange consumable keeps its effects within their caps`() {
         val apple = ConsumableDraft(
-            ConsumableFood.APPLE, "Pomme douteuse", listOf("Une chance sur deux. Au moins."),
+            "apple", "Pomme douteuse", listOf("Une chance sur deux. Au moins."),
             listOf(ConsumableEffect(ConsumableEffectKey.SPEED, 60, 2, 0.5), ConsumableEffect(ConsumableEffectKey.NAUSEA, 10, 1, 0.5)),
         )
         assertEquals(emptyList(), RelicRules.consumable(apple))
@@ -129,7 +129,6 @@ class RelicRulesTest {
         assertEquals(emptyList(), ConsumableEffectKey.entries.filterNot { has(BuiltInRegistries.MOB_EFFECT, it.id) })
         assertEquals(emptyList(), ChampionEffectKey.entries.filterNot { has(BuiltInRegistries.MOB_EFFECT, it.id) })
         assertEquals(emptyList(), ChampionMob.entries.filterNot { has(BuiltInRegistries.ENTITY_TYPE, it.id) })
-        assertEquals(emptyList(), ConsumableFood.entries.filterNot { has(BuiltInRegistries.ITEM, it.id) })
     }
 
     private companion object {

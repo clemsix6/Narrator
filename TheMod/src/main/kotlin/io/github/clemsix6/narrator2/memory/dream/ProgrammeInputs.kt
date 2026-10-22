@@ -1,5 +1,6 @@
 package io.github.clemsix6.narrator2.memory.dream
 
+import io.github.clemsix6.narrator2.config.WorldNotes
 import io.github.clemsix6.narrator2.core.Log
 import io.github.clemsix6.narrator2.core.ModelText
 import io.github.clemsix6.narrator2.director.ArsenalLine
@@ -53,6 +54,7 @@ import kotlin.random.Random
  * the companion, checked at their maximum by a test). It starts with `<job kind="dream" run="…" step="5" of="6"
  * task="programme"/>`, then:
  *
+ * - `<server_notes>`: the operator's notes on this server ([WorldNotes], M7-NOTES), left out without any;
  * - `<grimoire>` and `<review>`: the Grimoire the Dreamer just rewrote, the review of step 2;
  * - `<players>`: the players active in the last [ACTIVE_DAYS] days, the most active first, [PLAYERS_COUNT] at most: who
  *   they are, their sure traits and skills, their progression (gear, dimensions, bosses, diamonds, deaths), their favor
@@ -105,8 +107,9 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
                 resting = restingThemes(connection, now),
             )
         }
-        return listOf(
+        return listOfNotNull(
             inputs.job(runId, STEP, "programme"),
+            WorldNotes.render(services.settings.get().config.worldNotes),
             inputs.document("grimoire", store.doc(DocKey.Grimoire.key), GRIMOIRE_MAX, "(none yet)"),
             inputs.document("review", store.doc(DocKey.Review.key), REVIEW_MAX, "(none yet)"),
             players(active, nowMs),
@@ -515,7 +518,7 @@ internal class ProgrammeInputs(private val services: NarratorServices, private v
         const val DRAWS_MAX = 800
 
         /** The longest opening: the sum of its blocks, plus the job line. */
-        const val STEP_MAX = 300 + GRIMOIRE_MAX + REVIEW_MAX + PLAYERS_MAX + CANON_MAX + HISTORY_MAX + IDEAS_MAX + ARSENAL_MAX + SEASON_MAX + DRAWS_MAX
+        const val STEP_MAX = 300 + WorldNotes.BLOCK_MAX + GRIMOIRE_MAX + REVIEW_MAX + PLAYERS_MAX + CANON_MAX + HISTORY_MAX + IDEAS_MAX + ARSENAL_MAX + SEASON_MAX + DRAWS_MAX
 
         private const val READ_TIMEOUT_MS = 15_000L
         private const val DEFAULT_LANGUAGE = "fr"
