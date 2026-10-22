@@ -56,6 +56,7 @@ Le profil Windows s'appelle `Clément` (non-ASCII), ce qui casse les sockets AF_
   | Scénariste | `storyteller` |
   | Chroniqueur | `chronicler` |
   | Rêveur | `dreamer` |
+  | Armurier | `armorer` |
 
   De même, la fiche joueur s'appelle `PlayerSheet`, le Journal `Journal`, l'Oracle `Oracle` et la Forge `Forge`.
 - **Logs** : passe par `core/Log` (`Log.of("Tag")`), avec un tag par sous-système. On journalise tout ce qui aide à déboguer : décisions du moteur, appels d'outils avec leurs arguments et résultats, erreurs avec leur contexte, durées. Les conversations avec Claude sont intégralement transcrites par `trace/Transcripts`.
