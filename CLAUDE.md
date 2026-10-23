@@ -12,7 +12,7 @@ Mod Minecraft **26.3** (Fabric, côté serveur uniquement, Kotlin) qui branche C
 - On utilise **le serveur LLMGW existant du propriétaire** : **on ne clone ni n'installe jamais LLMGW en local**.
 - Depuis le 18/10/2026, on y accède par un tunnel SSH qui passe par Cloudflare Access (`cloudflared` est installé dans `C:\Program Files (x86)\cloudflared\`) :
   `ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -o HostKeyAlias=192.168.1.20 -o ProxyCommand="\"C:/Program Files (x86)/cloudflared/cloudflared.exe\" access ssh --hostname %h" -N -L 8088:localhost:8088 <user>@<ssh-host>`.
-  L'option `HostKeyAlias` vérifie la clé d'hôte contre celle du serveur du réseau local, déjà connue. L'ancienne IP locale (`192.168.1.20`) ne répond plus.
+  La commande complète, avec le vrai `<user>@<ssh-host>`, se trouve dans `.secrets/llmgw-tunnel.txt` (non versionné). L'option `HostKeyAlias` vérifie la clé d'hôte contre celle du serveur du réseau local, déjà connue. L'ancienne IP locale (`192.168.1.20`) ne répond plus.
 - URL de base : `http://localhost:8088/`. Authentification : en-tête `x-api-key: <clé>` (`Authorization: Bearer` marche aussi). Test : `GET /v1/models`.
 - La clé se trouve dans `.secrets/llmgw.key` (non versionné). Pour le mod, elle passe par la variable d'environnement `NARRATOR_LLMGW_KEY`. **Ne jamais l'afficher, la logger, la commiter ni la recopier ailleurs.**
 - Tunnel partagé : avant d'ouvrir le tunnel, vérifie si le port 8088 écoute déjà (`netstat -ano | findstr :8088`). S'il écoute, réutilise ce tunnel. Ne ferme que le processus ssh que tu as lancé toi-même.
@@ -91,6 +91,7 @@ Pendant les vagues parallèles, chaque agent travaille dans son propre worktree 
 - Ferme les serveurs de jeu que tu as lancés. **N'utilise jamais `gradlew --stop`** : il arrête les démons Gradle de TOUS les agents et casse leurs builds en cours. Les démons inactifs s'arrêtent seuls au bout de 3 h.
 
 ## Git
-- Dépôt local sur la branche `main`, sans remote : **ne jamais pousser**.
+- Branche `main`. Le remote `origin` est le dépôt GitHub **public** `clemsix6/Narrator` : **les agents ne poussent jamais**. Seul le superviseur pousse, et seulement quand le propriétaire le demande.
+- Tout ce qui est versionné devient public. On n'y met ni secret (clés, tokens), ni nom d'hôte ou login d'accès, ni donnée personnelle (e-mail…). Ces informations vont dans `.secrets/`. L'auteur des commits utilise l'adresse noreply GitHub du propriétaire, réglée dans la config git du dépôt.
 - Commite chaque étape validée, avec un message court en anglais à l'impératif et le trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Ne réécris jamais l'historique : pas de `reset --hard`, pas de `push --force`, pas de `commit --amend` sur un commit existant.
